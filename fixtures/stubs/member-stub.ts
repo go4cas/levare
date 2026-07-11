@@ -16,7 +16,9 @@ interface Canned {
   consumes: string[];
   status: string;
   body: string;
-  usage: { model: string; tokens_in: number; tokens_out: number; usd: number; wall_clock_s: number };
+  // `null` means the member reports nothing — a wrapped foreign CLI with no token accounting. The
+  // phase-3 adapter records this honestly as an `unreported` receipt (§10), never a fabricated $0.
+  usage: { model: string; tokens_in: number; tokens_out: number; usd: number; wall_clock_s: number } | null;
 }
 
 // Keyed by `${member}:${kind}`. Values are byte-for-byte deterministic.
@@ -55,7 +57,8 @@ const CANNED: Record<string, Canned> = {
     consumes: ["spec-checkout-flow-v1"],
     status: "in-review",
     body: "# Review — checkout-flow spec\n\nApproved with one note: name the idempotency key column in the spec.\n",
-    usage: { model: "codex", tokens_in: 4200, tokens_out: 900, usd: 0.0, wall_clock_s: 60 },
+    // Codex (wrapped foreign CLI) surfaces no usage → the adapter records an `unreported` receipt.
+    usage: null,
   },
 };
 
@@ -75,7 +78,7 @@ function opt(args: string[], name: string, fallback: string): string {
 export function render(member: string, kind: string, unit: string, project: string): string {
   const c = CANNED[`${member}:${kind}`];
   if (!c) throw new Error(`no canned artifact for member '${member}' kind '${kind}'`);
-  const fm = [
+  const lines = [
     "---",
     `kind: ${kind}`,
     `id: ${c.id}`,
@@ -89,16 +92,20 @@ export function render(member: string, kind: string, unit: string, project: stri
     // Fixed created date so replays are byte-for-byte deterministic (no clock).
     "created: 2026-07-11",
     "files: []",
-    "usage:",
-    `  model: ${c.usage.model}`,
-    `  tokens_in: ${c.usage.tokens_in}`,
-    `  tokens_out: ${c.usage.tokens_out}`,
-    `  usd: ${c.usage.usd}`,
-    `  wall_clock_s: ${c.usage.wall_clock_s}`,
-    "---",
-    "",
-  ].join("\n");
-  return fm + c.body;
+  ];
+  // A member that reports nothing emits no usage block at all — the adapter records `unreported`.
+  if (c.usage !== null) {
+    lines.push(
+      "usage:",
+      `  model: ${c.usage.model}`,
+      `  tokens_in: ${c.usage.tokens_in}`,
+      `  tokens_out: ${c.usage.tokens_out}`,
+      `  usd: ${c.usage.usd}`,
+      `  wall_clock_s: ${c.usage.wall_clock_s}`,
+    );
+  }
+  lines.push("---", "");
+  return lines.join("\n") + c.body;
 }
 
 if (import.meta.main) {

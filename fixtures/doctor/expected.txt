@@ -1,0 +1,11 @@
+levare doctor · 2 connectors
+
+github · cli
+  env GITHUB_TOKEN present
+  cli gh not found on PATH
+  → ok
+
+linear · mcp
+  env LINEAR_API_KEY missing
+  mcp linear-mcp
+  → missing-env

@@ -12,11 +12,17 @@ import { join } from "node:path";
 import { CAPABILITIES, render } from "../fixtures/stubs/member-stub.ts";
 import { loadRepo } from "./repo.ts";
 import { Runner, type Decision, type DecisionSource, type Gate, type MemberRunner, type RunEvent, type RunResult, type Verb } from "./runner.ts";
+import { AdapterRunner, bunSpawn, type InvokeRequest, type NativeBoundary, type RemoteBoundary } from "./adapters.ts";
+import { loadPricing } from "./pricing.ts";
+import { formatReceipt } from "./receipts.ts";
+import type { Repo } from "./repo.ts";
 
 // ---------------------------------------------------------------------------
 // Injected collaborators for replay
 // ---------------------------------------------------------------------------
 
+// A minimal MemberRunner that renders the stub artifacts directly (phase-2 shape). Retained for
+// unit tests that drive the engine without the adapter layer.
 export class StubRunner implements MemberRunner {
   capabilities() {
     return CAPABILITIES;
@@ -24,6 +30,33 @@ export class StubRunner implements MemberRunner {
   produce(member: string, kind: string, unit: string, project: string): { doc: string } {
     return { doc: render(member, kind, unit, project) };
   }
+}
+
+// Absolute path to the stub member CLI, so the CLI adapter can spawn it regardless of cwd.
+const STUB_CLI = Bun.fileURLToPath(new URL("../fixtures/stubs/member-stub.ts", import.meta.url));
+
+// Native/remote members are mocked at their boundary by rendering the same canned stub artifact —
+// this is the "native against a mocked SDK boundary" / "remote → MCP call, mocked" of §11 phase 3.
+const stubNative: NativeBoundary = { invoke: (r: InvokeRequest) => ({ doc: render(r.member, r.kind, r.unit, r.project) }) };
+const stubRemote: RemoteBoundary = { call: (r: InvokeRequest) => ({ doc: render(r.member, r.kind, r.unit, r.project) }) };
+
+/**
+ * The phase-3 replay MemberRunner: drives the real AdapterRunner. Native/remote members go through
+ * mocked boundaries; the one CLI member (finch/Codex) is genuinely spawned as a subprocess of the
+ * stub CLI with its allowlisted env — exercising the real CLI adapter path. Every invocation yields
+ * a normalized receipt, including the deliberately `unreported` one from the silent CLI member.
+ */
+export function stubAdapterRunner(repo: Repo): AdapterRunner {
+  return new AdapterRunner(repo, {
+    pricing: loadPricing(repo.root),
+    capabilities: CAPABILITIES,
+    native: stubNative,
+    remote: stubRemote,
+    spawn: bunSpawn,
+    // --stubs mode: spawn the stub CLI in place of the member's real command template. Use the
+    // absolute interpreter path so resolution never depends on the allowlisted env's PATH.
+    cliCommand: (r: InvokeRequest) => [process.execPath, STUB_CLI, r.member, r.kind, "--unit", r.unit, "--project", r.project],
+  });
 }
 
 interface ScriptEntry {
@@ -117,7 +150,7 @@ export function runReplay(root: string): ReplayReport {
 function runScenario(root: string, name: string, title: string, script: ScriptEntry[]): ScenarioReport {
   // Fresh load per scenario; replay reconstructs from a clean slate (no seeded artifacts).
   const repo = loadRepo(root);
-  const runner = new Runner(repo, { members: new StubRunner(), decisions: new ScriptedDecisions(script) });
+  const runner = new Runner(repo, { members: stubAdapterRunner(repo), decisions: new ScriptedDecisions(script) });
   const result = runner.run();
   return { name, title, events: result.events, statuses: extractStatuses(result) };
 }
@@ -172,9 +205,10 @@ function formatEvents(events: RunEvent[]): string[] {
         lines.push(`walk · ${e.project}/${e.unit} · ${e.note}`);
         break;
       case "produce": {
-        const cost = e.usage?.usd != null ? ` · $${e.usage.usd.toFixed(2)}` : "";
         const sup = e.supersedes ? ` (supersedes ${e.supersedes})` : "";
-        lines.push(`  ${e.member} produced ${e.kind} → ${e.id} [${e.status}]${sup}${cost}`);
+        lines.push(`  ${e.member} produced ${e.kind} → ${e.id} [${e.status}]${sup}`);
+        // §10 receipt, one per invocation — quiet mono figures, `unreported` recorded honestly.
+        if (e.receipt) lines.push(`         ${formatReceipt(e.receipt)}`);
         break;
       }
       case "gate-raised":
