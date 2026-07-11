@@ -49,6 +49,9 @@ export type Verb =
 
 export interface Decision {
   verb: Verb;
+  /** The Conductor's identity — "name + ISO date" — recorded as approved_by on any approval (C5). */
+  by?: string;
+  /** Optional human reason (e.g. a change-request note); never a substitute for `by`. */
   note?: string;
 }
 
@@ -129,6 +132,10 @@ export class Runner {
   private readonly events: RunEvent[] = [];
   private readonly artifacts = new Map<string, Map<string, Artifact>>();
   private readonly unitStatus = new Map<string, string>();
+  // Budget acknowledgment memory (C3), keyed by `${project}/${unit}`: the spend a `continue`
+  // acknowledged, and a `raise`-lifted effective budget. Budget gates inform, they never spam.
+  private readonly budgetAck = new Map<string, number>();
+  private readonly effBudget = new Map<string, number>();
 
   constructor(repo: Repo, opts: RunnerOptions) {
     this.repo = repo;
@@ -312,7 +319,7 @@ export class Runner {
         verbs: ["approve", "request", "reject"],
       });
       if (d.verb === "approve") {
-        this.approve(unit, art, d.note);
+        this.approve(unit, art, d.by);
         return "complete";
       }
       if (d.verb === "reject") {
@@ -362,8 +369,11 @@ export class Runner {
         verbs: ["approve", "request", "reject"],
         note: `round ${round}/${loop.maxRounds}; until ${loop.until}`,
       });
+      // C2: on any loop-gate resolution the round's companion review resolves to approved — the
+      // Conductor accepted it as read. (A later round's review supersedes it; the last stays approved.)
+      this.approve(unit, this.getArtifact(unit, second.id)!, d.by);
       if (d.verb === "approve") {
-        this.approve(unit, art, d.note);
+        this.approve(unit, art, d.by);
         if (this.untilSatisfied(unit, loop.until)) {
           this.emit({ t: "loop-end", unit: unit.unit, reason: "condition", round });
           return "complete";
@@ -380,19 +390,24 @@ export class Runner {
     // Exhausted: max_rounds reached without `until`.
     this.emit({ t: "loop-end", unit: unit.unit, reason: "exhausted", round: loop.maxRounds });
     if (loop.onExhaust === "gate") {
+      // Verbs are approve|reject only, so the escalation always resolves the spec (C2): it never
+      // leaves the artifact at in-review. The companion review of the final round is already
+      // approved by that round's gate resolution.
       const d = this.raiseGate({
         type: "exhaust",
         unit: unit.unit,
         project: unit.project,
         label: `${firstLabel} exhausted`,
         artifactId: prevFirstId,
-        verbs: ["approve", "reject", "rescope"],
+        verbs: ["approve", "reject"],
         note: `loop hit max_rounds ${loop.maxRounds} without ${loop.until}`,
       });
-      if (d.verb === "approve" && prevFirstId) {
-        this.approve(unit, this.getArtifact(unit, prevFirstId)!, d.note);
+      const spec = prevFirstId ? this.getArtifact(unit, prevFirstId) : undefined;
+      if (d.verb === "approve" && spec) {
+        this.approve(unit, spec, d.by);
         return "complete";
       }
+      if (spec) spec.status = "rejected";
       this.setUnitStatus(key, "paused", "loop exhausted → escalation gate");
       return "paused";
     }
@@ -426,10 +441,14 @@ export class Runner {
     return d;
   }
 
-  private approve(unit: WorkUnit, art: Artifact, note?: string): void {
-    // Only the Conductor sets approved_by (invariant 4); the note carries "name + ISO date".
+  private approve(unit: WorkUnit, art: Artifact, by?: string): void {
+    // Only the Conductor sets approved_by (invariant 4), and it always carries the Conductor's
+    // "name + ISO date" (C5): no defaults, no placeholders, provenance never fabricated.
+    if (!by || !/\d{4}-\d{2}-\d{2}/.test(by)) {
+      throw new RunnerError(`approved_by must carry the Conductor's name + ISO date; got '${by ?? ""}'`);
+    }
     art.status = "approved";
-    art.approved_by = note ?? "conductor";
+    art.approved_by = by;
   }
 
   // -------------------------------------------------------------------------
@@ -437,21 +456,31 @@ export class Runner {
   // -------------------------------------------------------------------------
 
   private overBudget(unit: WorkUnit): boolean {
-    if (unit.budget === undefined || unit.budget === null) return false;
+    const key = `${unit.project}/${unit.unit}`;
+    const budget = this.effBudget.get(key) ?? unit.budget;
+    if (budget === undefined || budget === null) return false;
     const spent = this.spentUsd(unit);
-    if (spent <= unit.budget) return false;
-    this.emit({ t: "budget", unit: unit.unit, spent, budget: unit.budget });
+    if (spent <= budget) return false;
+    // C3: a prior `continue` acknowledged this spend level — don't re-raise until spend crosses
+    // a new threshold beyond the acknowledged amount.
+    const ack = this.budgetAck.get(key);
+    if (ack !== undefined && spent <= ack) return false;
+
+    this.emit({ t: "budget", unit: unit.unit, spent, budget });
     const d = this.raiseGate({
       type: "budget",
       unit: unit.unit,
       project: unit.project,
       label: "budget",
       verbs: ["continue", "raise", "stop"],
-      note: `spend $${spent.toFixed(2)} crossed budget $${unit.budget.toFixed(2)}`,
+      note: `spend $${spent.toFixed(2)} crossed budget $${budget.toFixed(2)}`,
     });
-    // continue/raise → keep going (a real raise would edit the unit; here we just proceed);
-    // stop → pause the unit's walk.
-    return d.verb === "stop";
+    if (d.verb === "stop") return true;
+    // raise lifts the effective budget to the current spend for the rest of the run; both verbs
+    // acknowledge the current level so the gate re-raises only on a further crossing.
+    if (d.verb === "raise") this.effBudget.set(key, spent);
+    this.budgetAck.set(key, spent);
+    return false;
   }
 
   private overTimebox(unit: WorkUnit): boolean {

@@ -21,11 +21,24 @@ describe("replay", () => {
       "design-checkout-v1": "approved",
       "product-brief-v1": "approved",
       "review-checkout-flow-v1": "superseded",
-      "review-checkout-flow-v2": "in-review",
+      "review-checkout-flow-v2": "approved",
       "spec-checkout-flow-v1": "superseded",
       "spec-checkout-flow-v2": "approved",
     });
     expect(report.oracle.unit.status).toBe("active");
+  });
+
+  test("no scenario leaves an artifact at in-review with no open gate (C2)", () => {
+    for (const sc of report.scenarios) {
+      const inReview = Object.entries(sc.statuses.artifacts).filter(([, s]) => s === "in-review");
+      expect(inReview).toEqual([]);
+    }
+  });
+
+  test("exhaustion resolves the spec to rejected and its final review to approved (C2)", () => {
+    const exhaust = report.scenarios.find((s) => s.name === "exhaust")!;
+    expect(exhaust.statuses.artifacts["spec-checkout-flow-v3"]).toBe("rejected");
+    expect(exhaust.statuses.artifacts["review-checkout-flow-v3"]).toBe("approved");
   });
 
   test("transcript shows the walk halting at each declared gate and resuming", () => {

@@ -30,6 +30,8 @@ interface ScriptEntry {
   /** Assert the raised gate's label — keeps the script and engine in lockstep; drift fails loudly. */
   expect: string;
   verb: Verb;
+  /** Conductor identity ("name + ISO date") recorded on any approval this decision triggers (C5). */
+  by?: string;
   note?: string;
 }
 
@@ -44,7 +46,7 @@ export class ScriptedDecisions implements DecisionSource {
     if (s.expect !== gate.label) {
       throw new Error(`scripted decision #${this.i} expected gate '${s.expect}' but the Runner raised '${gate.label}'`);
     }
-    return { verb: s.verb, note: s.note };
+    return { verb: s.verb, by: s.by, note: s.note };
   }
   get consumed(): number {
     return this.i;
@@ -60,21 +62,21 @@ const CAS = "cas 2026-07-11";
 // The golden replay: brief approved, design approved, then the spec/review loop requests changes in
 // round 1 and approves in round 2 → terminates by `until: spec.approved`. This is the oracle.
 const GOLDEN_SCRIPT: ScriptEntry[] = [
-  { expect: "brief", verb: "approve", note: CAS },
-  { expect: "design", verb: "approve", note: CAS },
-  { expect: "spec review", verb: "request", note: "name the idempotency key column" },
-  { expect: "spec review", verb: "approve", note: CAS },
+  { expect: "brief", verb: "approve", by: CAS },
+  { expect: "design", verb: "approve", by: CAS },
+  { expect: "spec review", verb: "request", by: CAS, note: "name the idempotency key column" },
+  { expect: "spec review", verb: "approve", by: CAS },
 ];
 
 // The exhaustion case: the spec is never approved, so the loop runs all three rounds and escalates
 // through the `on_exhaust: gate`, where the Conductor rejects (unit paused).
 const EXHAUST_SCRIPT: ScriptEntry[] = [
-  { expect: "brief", verb: "approve", note: CAS },
-  { expect: "design", verb: "approve", note: CAS },
-  { expect: "spec review", verb: "request", note: "round 1: more detail on payments" },
-  { expect: "spec review", verb: "request", note: "round 2: idempotency still unclear" },
-  { expect: "spec review", verb: "request", note: "round 3: still not build-ready" },
-  { expect: "spec exhausted", verb: "reject", note: "cannot converge; pausing for a re-scope" },
+  { expect: "brief", verb: "approve", by: CAS },
+  { expect: "design", verb: "approve", by: CAS },
+  { expect: "spec review", verb: "request", by: CAS, note: "round 1: more detail on payments" },
+  { expect: "spec review", verb: "request", by: CAS, note: "round 2: idempotency still unclear" },
+  { expect: "spec review", verb: "request", by: CAS, note: "round 3: still not build-ready" },
+  { expect: "spec exhausted", verb: "reject", by: CAS, note: "cannot converge; pausing for a re-scope" },
 ];
 
 export interface ScenarioReport {

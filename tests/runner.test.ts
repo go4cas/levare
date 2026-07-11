@@ -23,14 +23,16 @@ import { StubRunner } from "../src/replay.ts";
 // A DecisionSource driven by a positional script; each entry asserts the gate label it answers.
 class Script implements DecisionSource {
   private i = 0;
-  constructor(private readonly entries: Array<{ expect: string; verb: Verb; note?: string }>) {}
+  constructor(private readonly entries: Array<{ expect: string; verb: Verb; by?: string; note?: string }>) {}
   decide(gate: Gate): Decision {
     const e = this.entries[this.i++];
     if (!e) throw new Error(`no scripted decision for gate '${gate.label}'`);
     expect(gate.label).toBe(e.expect);
-    return { verb: e.verb, note: e.note };
+    return { verb: e.verb, by: e.by, note: e.note };
   }
 }
+
+const CAS = "cas 2026-07-11";
 
 // A member runner whose emitted artifacts carry caller-controlled usage (for budget/timebox tests).
 class FakeMembers implements MemberRunner {
@@ -150,10 +152,10 @@ describe("golden walk against stub members", () => {
   test("halts at each declared gate and matches expected.json", () => {
     const repo = loadRepo("fixtures/golden");
     const script = new Script([
-      { expect: "brief", verb: "approve", note: "cas 2026-07-11" },
-      { expect: "design", verb: "approve", note: "cas 2026-07-11" },
-      { expect: "spec review", verb: "request" },
-      { expect: "spec review", verb: "approve", note: "cas 2026-07-11" },
+      { expect: "brief", verb: "approve", by: CAS },
+      { expect: "design", verb: "approve", by: CAS },
+      { expect: "spec review", verb: "request", by: CAS },
+      { expect: "spec review", verb: "approve", by: CAS },
     ]);
     const runner = new Runner(repo, { members: new StubRunner(), decisions: script });
     const result = runner.run();
@@ -171,21 +173,34 @@ describe("golden walk against stub members", () => {
     expect(arts.get("design-checkout-v1")!.status).toBe("approved");
     expect(arts.get("spec-checkout-flow-v1")!.status).toBe("superseded");
     expect(arts.get("spec-checkout-flow-v2")!.status).toBe("approved");
-    expect(arts.get("review-checkout-flow-v2")!.status).toBe("in-review");
+    // C2: the round's companion review resolves to approved, not left at in-review.
+    expect(arts.get("review-checkout-flow-v1")!.status).toBe("superseded");
+    expect(arts.get("review-checkout-flow-v2")!.status).toBe("approved");
     expect(result.unitStatus.get("storefront/checkout-flow")).toBe("active");
+
+    // C2 (generalized): no artifact is left at in-review once every gate has been resolved.
+    expect([...arts.values()].some((a) => a.status === "in-review")).toBe(false);
   });
 
-  test("only the Conductor's approval sets approved_by", () => {
+  test("only the Conductor's approval sets approved_by, always name + ISO date", () => {
     const repo = loadRepo("fixtures/golden");
     const script = new Script([
-      { expect: "brief", verb: "approve", note: "cas 2026-07-11" },
-      { expect: "design", verb: "approve", note: "cas 2026-07-11" },
-      { expect: "spec review", verb: "request" },
-      { expect: "spec review", verb: "approve", note: "cas 2026-07-11" },
+      { expect: "brief", verb: "approve", by: CAS },
+      { expect: "design", verb: "approve", by: CAS },
+      { expect: "spec review", verb: "request", by: CAS },
+      { expect: "spec review", verb: "approve", by: CAS },
     ]);
     const result = new Runner(repo, { members: new StubRunner(), decisions: script }).run();
     const brief = result.artifacts.get("storefront/checkout-flow")!.get("product-brief-v1")!;
-    expect(brief.approved_by).toBe("cas 2026-07-11");
+    expect(brief.approved_by).toBe(CAS);
+  });
+
+  test("an approval without a name + ISO date is a hard error (C5)", () => {
+    const repo = loadRepo("fixtures/golden");
+    const script = new Script([{ expect: "brief", verb: "approve" }]); // no `by`
+    expect(() => new Runner(repo, { members: new StubRunner(), decisions: script }).run()).toThrow(
+      /name \+ ISO date/,
+    );
   });
 });
 
@@ -197,12 +212,12 @@ describe("loop exhaustion", () => {
   test("three rounds without approval escalate via on_exhaust gate and pause the unit", () => {
     const repo = loadRepo("fixtures/golden");
     const script = new Script([
-      { expect: "brief", verb: "approve" },
-      { expect: "design", verb: "approve" },
-      { expect: "spec review", verb: "request" },
-      { expect: "spec review", verb: "request" },
-      { expect: "spec review", verb: "request" },
-      { expect: "spec exhausted", verb: "reject" },
+      { expect: "brief", verb: "approve", by: CAS },
+      { expect: "design", verb: "approve", by: CAS },
+      { expect: "spec review", verb: "request", by: CAS },
+      { expect: "spec review", verb: "request", by: CAS },
+      { expect: "spec review", verb: "request", by: CAS },
+      { expect: "spec exhausted", verb: "reject", by: CAS },
     ]);
     const result = new Runner(repo, { members: new StubRunner(), decisions: script }).run();
 
@@ -211,6 +226,13 @@ describe("loop exhaustion", () => {
     const exhaustGate = result.events.find((e) => e.t === "gate-raised" && e.gate.type === "exhaust");
     expect(exhaustGate).toBeDefined();
     expect(result.unitStatus.get("storefront/checkout-flow")).toBe("paused");
+
+    // C2: the exhaust gate resolves the spec (reject → rejected) and the final review is approved;
+    // nothing is left at in-review.
+    const arts = result.artifacts.get("storefront/checkout-flow")!;
+    expect(arts.get("spec-checkout-flow-v3")!.status).toBe("rejected");
+    expect(arts.get("review-checkout-flow-v3")!.status).toBe("approved");
+    expect([...arts.values()].some((a) => a.status === "in-review")).toBe(false);
   });
 });
 
@@ -317,6 +339,47 @@ describe("declared limits", () => {
     }).run();
     expect(result.unitStatus.get("p/u")).toBe("active");
     expect(result.events.filter((e) => e.t === "produce").length).toBe(2);
+  });
+
+  test("after 'continue' the budget gate does not re-raise at the same spend level (C3)", () => {
+    // Four steps: the first two each cost $0.06 (crossing $0.10 after the second), the last two are
+    // free. A single continue at $0.12 must silence the gate for the remaining producing steps.
+    const fourStepTeam = team({
+      name: "acme",
+      produces: ["alpha", "beta", "gamma", "delta"],
+      members: ["m1", "m2", "m3", "m4"],
+      flow: [
+        { kind: "step", step: "alpha" },
+        { kind: "step", step: "beta" },
+        { kind: "step", step: "gamma" },
+        { kind: "step", step: "delta" },
+      ],
+    });
+    const fourCaps = [
+      { member: "m1", kind: "alpha" },
+      { member: "m2", kind: "beta" },
+      { member: "m3", kind: "gamma" },
+      { member: "m4", kind: "delta" },
+    ];
+    const cost: Record<string, number> = { alpha: 0.06, beta: 0.06, gamma: 0, delta: 0 };
+    const members = new FakeMembers(fourCaps, (m, k, u, p) =>
+      doc({ kind: k, id: `${k}-1`, unit: u, project: p, produced_by: `acme/${m}`, usd: cost[k] }),
+    );
+    const repo = makeRepo({
+      teams: [fourStepTeam],
+      types: [type("t", ["alpha", "beta", "gamma", "delta"])],
+      projects: [project("p")],
+      units: [unit({ unit: "u", project: "p", type: "t", budget: 0.1 })],
+    });
+    const result = new Runner(repo, {
+      members,
+      decisions: new Script([{ expect: "budget", verb: "continue" }]),
+    }).run();
+    // Exactly one budget gate despite two further producing steps after the acknowledgment.
+    expect(result.events.filter((e) => e.t === "budget").length).toBe(1);
+    expect(result.events.filter((e) => e.t === "gate-raised" && e.gate.type === "budget").length).toBe(1);
+    expect(result.events.filter((e) => e.t === "produce").length).toBe(4);
+    expect(result.unitStatus.get("p/u")).toBe("active");
   });
 
   test("crossing the timebox raises a timebox gate", () => {
