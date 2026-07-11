@@ -68,6 +68,27 @@ describe("replay", () => {
     expect(report.scenarios.map((s) => s.name)).toEqual(["golden", "exhaust"]);
   });
 
+  test("the transcript shows a usage receipt for every invocation (§10, phase 3)", () => {
+    const golden = report.scenarios.find((s) => s.name === "golden")!;
+    const produced = golden.events.filter((e) => e.t === "produce");
+    // Every produce event carries a normalized receipt from the adapter boundary.
+    expect(produced.every((e) => e.t === "produce" && e.receipt !== undefined)).toBe(true);
+    const t = formatReport({ ...report, scenarios: [golden] });
+    expect(t).toContain("usage: $0.06"); // wren's brief, priced from the table
+    expect(t).toContain("usage: unreported"); // finch/Codex reports nothing
+  });
+
+  test("the deliberately-silent CLI member is recorded as unreported, never $0 (§10)", () => {
+    const golden = report.scenarios.find((s) => s.name === "golden")!;
+    const finch = golden.events.filter((e) => e.t === "produce" && e.member === "kestrel/finch");
+    expect(finch.length).toBeGreaterThan(0);
+    for (const e of finch) {
+      if (e.t !== "produce") continue;
+      expect(e.receipt?.unreported).toBe(true);
+      expect(e.receipt?.usd).toBe(null);
+    }
+  });
+
   test("CLI `replay <path> --stubs` exits 0", () => {
     expect(main(["replay", "fixtures/golden", "--stubs"])).toBe(0);
   });

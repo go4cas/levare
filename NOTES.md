@@ -195,7 +195,91 @@ C4 — Responsible-team selection (B7) is a fixture-scale shortcut, not the sema
 
 C5 — approved_by always carries the Conductor's name plus ISO date. No defaults, no placeholders; provenance is never fabricated.
 
+# NOTES — uncertainties and assumptions (Phase 3)
+
+Phase-3 delivers the adapters, context assembly, §10 receipts, guardrails, and doctor. These entries
+record where §6/§10's prose left a mechanical choice, and the highest-confidence reading taken.
+
+## D1. Adapter boundary — the SDK is a platform, not a dependency (invariant 10)
+The native adapter targets the Claude Agent SDK, but adding it this phase would fail `deps:check`. So
+each adapter kind sits behind an injectable interface in `src/adapters.ts`: `NativeBoundary.invoke`
+(the mocked SDK boundary), `RemoteBoundary.call` (the mocked MCP call), and `CliSpawn.run` (a real
+`Bun.spawnSync`, injectable for tests). `AdapterRunner implements MemberRunner`, so the phase-2 Runner
+drives the real adapters unchanged. Replay's `--stubs` mode spawns the **stub CLI** in place of a
+member's real command (finch/Codex) while native/remote members render the canned stub artifact —
+this is "CLI adapters tested against stubs; native against a mocked SDK boundary" (§11) made literal.
+
+## D2. Context command default root, step, and the consumed set (§6 recipe)
+`levare context <agent> --unit <u> --dry-run` takes no path, so it defaults its root to
+`fixtures/golden` (the studio-during-development, per A1); `--root <path>` overrides. When an agent
+maps to more than one flow step (lyra → design, spec) the default is the **last** step in flow order
+(spec, the richest context); `--step <label>` selects another. Recipe item 7 ("paths to consumed
+artifacts") is read as **the unit's currently-approved artifacts**, sorted by id, rendered as
+root-relative paths — the vetted inputs available at that step. The in-review spec on disk is *not*
+listed: it is not yet an approved input. Paths only, never contents — asserted by test. Capability
+(member→kind) resolution uses the same source the Runner uses (the stub `CAPABILITIES`); real
+adapters will expose the same shape.
+
+## D3. `fixtures/context/lyra.txt` and the doctor fixture are authored deliverables
+Both frozen fixtures are generated from the implementation and reviewed, then committed as the oracle
+their tests pin. lyra.txt is the exact §6 recipe output; the doctor fixture is the exact `levare
+doctor` output given GITHUB_TOKEN present, LINEAR_API_KEY absent, `gh` not on PATH.
+
+## D4. Skill + team-LEARNINGS fixtures added to make the recipe meaningful
+lyra references skills `flow-design`/`spec-writing`, which had no files; the recipe injects skill
+*content* (parallel to knowledge), so both were authored under `skills/`. Team LEARNINGS.md
+(recipe item 4) lives beside the team file as `teams/<team>.learnings.md` — a plain markdown note
+(no frontmatter), skipped by both the entity loader and the validator (`classify` returns non-schema
+for `*.learnings.md`). `teams/kestrel.learnings.md` was authored. None of this changes the phase-1/2
+oracle.
+
+## D5. Env scoping is an allowlist, never a denylist (invariant 11; phase-3 security posture)
+A member's spawned environment (`buildMemberEnv`) contains **only**: the baseline vars `PATH` and
+`HOME` (documented here — PATH so a wrapped CLI resolves its own tools, HOME so it finds its config;
+nothing sensitive is baseline), plus the env-var *names* declared by the member's **granted**
+connectors, pulled from the base env. Nothing else from `process.env` is carried through — a secret
+for an ungranted connector cannot leak, and an unrelated secret (e.g. `AWS_SECRET_ACCESS_KEY`) never
+appears. Grants are the union of an agent's `connectors:` and its team's `connectors:` (new optional
+fields on both schemas; the golden fixture grants none, so lyra/wren/finch spawn with no `GITHUB_*`).
+
+## D6. Receipts: levare estimates USD; silence is recorded as silence (§10)
+`normalizeReceipt` derives USD from `knowledge/model-pricing.md` (tokens × rate), **not** from any
+member-reported `usd` — levare prices cost, members report tokens. An unknown model is unpriceable →
+`usd: null` (a quiet gap, never a guessed figure). A member that reports no usage block at all is
+recorded `unreported: true` with every figure null — never a $0 that would read as "ran for free".
+The finch/Codex stub was made deliberately silent (a wrapped foreign CLI with no token accounting),
+so the replay transcript carries the required `unreported` receipt without changing any status oracle.
+Wall-clock in replay uses the member-reported value for determinism; a live adapter additionally
+stamps its own measured wall-clock, elided from the byte-for-byte transcript.
+
+## D7. Doctor status = env presence; CLI/MCP reachability is advisory
+The §11 acceptance is "one ok, one missing-env", so a connector's headline status is driven purely by
+whether its declared env-var names are present (all present → ok, else missing-env). A missing CLI
+binary (`gh` not on PATH) or an MCP server name is reported as an advisory line and does **not** flip
+the status — it is a warning to fix, not an invalid connector definition. Doctor reads only var
+*presence*, never values (invariant 11). Determinism comes from injecting the env probe and the CLI
+probe; the CLI wires `process.env` presence and `Bun.which`. Default root is `fixtures/golden`.
+
+## D8. Guardrails, and C1 loop-style support
+`checkGuardrails` inspects a proposed merge diff against a team's `protected_paths`/`never` before a
+merge gate (deterministic, no LLM); `allowedTools` is the pure projection of an agent's `tools:` the
+native adapter hands to the SDK. On **C1** (adapters must support both loop styles): the adapter layer
+is loop-style-agnostic — it emits an artifact + receipt identically whether the loop terminates on a
+Conductor gate (`spec.approved`, the style kestrel's fixture exercises, B3) or on a member-set verdict
+field. Fully wiring the *verdict-terminated* autonomous loop (an optional artifact `verdict` field +
+`untilSatisfied` reading a member field) is Runner machinery with no phase-3 fixture to exercise it;
+it is deferred to when a multi-style fixture lands, consistent with B3. Nothing in the adapters
+precludes it.
+
+## D9. Unresolved `cwd` templates spawn in the default directory
+A CLI agent's `cwd: "{feature_repo}"` is a template bound to a project checkout that does not exist in
+replay. Rather than spawn into a bogus path, the adapter treats a `cwd` still holding an unresolved
+`{…}` as "no cwd" and runs in the default directory. Real operation substitutes `{feature_repo}`
+before this point.
+
 ## Learnings
 Subprocess-calling code inherits a hostile world: pin git config at the spawn site, canonicalize paths before comparing them, and test against dirty environments (symlinked tmpdirs, hostile global config) — not just clean ones.
 Validation must fail closed: every early-exit "valid" state is an escape hatch; make the taken state observable and assert it explicitly in tests.
 Keep the deterministic core injectable: the Runner takes its member invoker and decision source as interfaces, so replay scripts, unit tests, and (phase 3) real adapters drive the same engine with no clocks or randomness in the pass that produces the oracle.
+Security is an allowlist, not a filter: a member's environment is *built up* from granted names, never *stripped down* from process.env — the default is empty, so a new secret is invisible until a connector is granted.
+Estimate honestly or not at all: levare prices cost from the pricing table and records member silence as `unreported`; it never dresses a missing number as $0.

@@ -91,6 +91,7 @@ function team(over: Partial<Team> & { name: string; flow: FlowNode[]; produces: 
     mode: "declarative",
     style: { color: "#000" },
     charter: "",
+    learnings: "",
     ...over,
   };
 }
@@ -111,6 +112,7 @@ function makeRepo(parts: { teams: Team[]; types: TypeTemplate[]; projects: Proje
     types: new Map(parts.types.map((t) => [t.name, t])),
     projects: new Map(parts.projects.map((p) => [p.name, p])),
     agents: new Map(),
+    connectors: new Map(),
     units: parts.units,
     artifacts: new Map(),
   };

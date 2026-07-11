@@ -47,13 +47,40 @@ from frontmatter on every walk and drives each unit's team flow through the gate
 - **Oracle** — [fixtures/golden/expected.json](fixtures/golden/expected.json): the golden
   scenario's final artifact statuses, reproduced byte-for-byte on every replay.
 
+## Phase 3 — adapters, context assembly, receipts, guardrails, doctor
+
+The Runner's boundary made real: how members are actually invoked, what context they receive, what a
+run costs, and what a member is allowed to touch (§6, §10).
+
+- **Adapters** — [src/adapters.ts](src/adapters.ts): `AdapterRunner implements MemberRunner`,
+  dispatching by agent kind. `native` → a mockable Claude Agent SDK boundary (the SDK is a platform,
+  not a dependency — invariant 10); `cli` → a real `Bun.spawn` of the command template with the
+  scoped env and timeout enforced; `remote` → a mockable MCP call. All three normalize a §10 receipt.
+- **Context assembly** — [src/context.ts](src/context.ts): the fixed §6 recipe (agent · skills ·
+  knowledge · team charter+LEARNINGS · house rules · task · consumed *paths*). `levare context
+  <agent> --unit <unit> --dry-run` prints the exact assembled bytes; frozen in
+  [fixtures/context/lyra.txt](fixtures/context/lyra.txt).
+- **Receipts** — [src/receipts.ts](src/receipts.ts) + [src/pricing.ts](src/pricing.ts): wall-clock
+  (always), tokens (when reported), USD (estimated from `knowledge/model-pricing.md`, nullable). A
+  member that reports nothing is recorded `unreported`, never a fabricated $0.
+- **Guardrails** — env scoping ([src/env.ts](src/env.ts)) is **allowlist-only**: a member's spawned
+  environment is *built up* from its granted connectors' env-var names plus a `PATH`/`HOME` baseline
+  — never a denylist over `process.env`. Plus protected-path/`never` diff checks and tool allowlists
+  ([src/guardrails.ts](src/guardrails.ts)).
+- **Doctor** — [src/doctor.ts](src/doctor.ts): `levare doctor` walks connectors and reports env
+  presence (the ok / missing-env headline) plus CLI/MCP reachability (advisory), reading names not
+  values. Frozen in [fixtures/doctor/expected.txt](fixtures/doctor/expected.txt).
+
 ### Run it
 
 ```sh
-bun test                              # full suite
-./levare validate fixtures/golden     # prints "valid", exits 0
-./levare replay fixtures/golden --stubs  # end-to-end transcript; oracle match, exits 0
-bun run deps:check                    # dependency policy (zero runtime deps)
+bun test                                 # full suite
+./levare validate fixtures/golden        # prints "valid", exits 0
+./levare replay fixtures/golden --stubs  # end-to-end transcript with a receipt per invocation
+./levare context lyra --unit checkout-flow --dry-run  # the exact §6 context for a member
+GITHUB_TOKEN=… ./levare doctor           # connector env/reachability report
+bun run deps:check                       # dependency policy (zero runtime deps)
 ```
 
-Uncertainties and assumptions are recorded in [NOTES.md](NOTES.md) (phase-1 A1–A8, phase-2 B1–B7).
+Uncertainties and assumptions are recorded in [NOTES.md](NOTES.md) (phase-1 A1–A8, phase-2 B1–B7,
+phase-3 D1–D9).
