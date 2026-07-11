@@ -9,10 +9,11 @@ import { readFileSync, existsSync, statSync } from "node:fs";
 import { join, extname, dirname, resolve, sep } from "node:path";
 import { loadRepo, type Repo } from "../repo.ts";
 import { renderStudio, renderProject, renderRun, renderRegistry } from "./render.ts";
-import { resolveGate, patchFrontmatter, CONDUCTOR_NAME, CONDUCTOR_EMAIL } from "./gateops.ts";
+import { resolveGate } from "./gateops.ts";
 import { validatePath } from "../validate.ts";
 import type { Verb } from "../runner.ts";
-import { spawnSync } from "node:child_process";
+import { conductorCommit, CONDUCTOR_NAME } from "../git.ts";
+import { handle as orchestratorHandle } from "../orchestrator.ts";
 
 export interface RouteDef {
   method: "GET" | "POST";
@@ -154,7 +155,7 @@ export const ROUTES: RouteDef[] = [
         }
         return json({ ok: false, error: result.errors.slice(0, 5).map((e) => `${e.code}: ${e.message}`).join("; ") }, 422);
       }
-      const commit = gitCommitFile(ctx.root, file, `edit ${relPath}`);
+      const commit = conductorCommit(ctx.root, [file], `edit ${relPath}`);
       ctx.broadcast("reload");
       return json({ ok: true, commit });
     },
@@ -171,10 +172,12 @@ export const ROUTES: RouteDef[] = [
       } catch {
         /* ignore */
       }
-      // Phase 5 wires a real SDK-backed Orchestrator (PRD §7); for now this route exists (it is one
-      // of the three write routes, §9) and returns a deterministic acknowledgement — no state changes,
-      // consistent with "the Orchestrator holds no state; everything is re-derived."
-      const reply = text.trim() ? `Noted: "${text.trim()}". Nothing changes state until you act on a gate.` : "Say more and I'll fold it into the next briefing.";
+      // PRD §7: the Orchestrator holds no state — every call re-derives from the repo. `handle` is
+      // the same entry point a scripted/chat driver uses in tests; a gate-decision message round-trips
+      // to the identical `resolveGate` mutation the POST /gates route uses (ruling C7).
+      const today = new Date().toISOString().slice(0, 10);
+      const { reply, result } = orchestratorHandle(text, { root: ctx.root, by: `${CONDUCTOR_NAME} ${today}` });
+      if (result && "ok" in result && result.ok && result.commit) ctx.broadcast("reload");
       ctx.broadcast(`orchestrator:${JSON.stringify({ text: reply })}`);
       return json({ ok: true, reply });
     },
@@ -182,26 +185,6 @@ export const ROUTES: RouteDef[] = [
 ];
 
 export const MUTATING_ROUTES = ROUTES.filter((r) => r.mutating).map((r) => ({ method: r.method, pattern: r.pattern }));
-
-function gitCommitFile(root: string, file: string, message: string): string {
-  const gitArgs = (args: string[]) => [
-    "-C",
-    root,
-    "-c",
-    `user.name=${CONDUCTOR_NAME}`,
-    "-c",
-    `user.email=${CONDUCTOR_EMAIL}`,
-    "-c",
-    "commit.gpgsign=false",
-    "-c",
-    "core.hooksPath=/dev/null",
-    ...args,
-  ];
-  spawnSync("git", gitArgs(["add", "--", file]));
-  spawnSync("git", gitArgs(["commit", "-q", "-m", message]));
-  const rev = spawnSync("git", gitArgs(["rev-parse", "HEAD"]), { encoding: "utf8" });
-  return rev.stdout.trim();
-}
 
 // ---------------------------------------------------------------------------
 // Router
