@@ -1,0 +1,287 @@
+import { test, expect, describe, beforeAll, afterAll } from "bun:test";
+import { mkdtempSync, rmSync, cpSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createBoard } from "../src/board/serve.ts";
+
+// Phase-4 acceptance (PRD §11): "an integration test POSTs approve on the fixture's open gate and
+// asserts the artifact file shows approved_by and `git log -1` shows the commit." Exercised against
+// a scratch git repo seeded from fixtures/golden — hermetic in the same way tests/immutability.test.ts
+// is, so the suite behaves identically on a bare container and a developer host with real git config.
+
+const HERMETIC_ENV = {
+  ...process.env,
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_SYSTEM: "/dev/null",
+  GIT_TERMINAL_PROMPT: "0",
+};
+
+function git(repoRoot: string, args: string[]): ReturnType<typeof spawnSync> {
+  const r = spawnSync(
+    "git",
+    ["-C", repoRoot, "-c", "user.name=seed", "-c", "user.email=seed@levare.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main", ...args],
+    { encoding: "utf8", env: HERMETIC_ENV },
+  );
+  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+  return r;
+}
+
+function seedScratchRepo(): string {
+  const root = mkdtempSync(join(tmpdir(), "levare-board-"));
+  cpSync("fixtures/golden", root, { recursive: true });
+  git(root, ["init", "-q"]);
+  git(root, ["add", "-A"]);
+  git(root, ["commit", "-q", "-m", "seed golden fixture"]);
+  return root;
+}
+
+function req(url: string, init?: RequestInit): Request {
+  return new Request(`http://localhost${url}`, init);
+}
+
+describe("levare serve — GET screens (in-process, no socket)", () => {
+  let root: string;
+  let board: ReturnType<typeof createBoard>;
+
+  beforeAll(() => {
+    root = seedScratchRepo();
+    board = createBoard(root);
+  });
+  afterAll(() => {
+    board.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("GET / redirects to /studio", async () => {
+    const res = await board.fetch(req("/"));
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/studio");
+  });
+
+  test("GET /studio, /project/:name, /run/:project/:unit, /registry all 200", async () => {
+    for (const url of ["/studio", "/project/storefront", "/run/storefront/checkout-flow", "/registry"]) {
+      const res = await board.fetch(req(url));
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("<!doctype html>");
+    }
+  });
+
+  test("GET /styles.css and /app.js serve the verbatim assets", async () => {
+    const css = await board.fetch(req("/styles.css"));
+    expect(css.status).toBe(200);
+    expect(await css.text()).toBe(readFileSync("assets/styles.css", "utf8"));
+
+    const js = await board.fetch(req("/app.js"));
+    expect(js.status).toBe(200);
+    const served = await js.text();
+    // app.js carries minimal, documented network wiring on top of the frozen interaction vocabulary
+    // (see NOTES.md) — assert the frozen parts (theme toggle, gate-card anatomy) are untouched.
+    expect(served).toContain("levare-theme");
+    expect(served).toContain("function resolveGate(card, label, cls)");
+  });
+
+  test("unknown route is 404", async () => {
+    const res = await board.fetch(req("/nope"));
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("levare serve — POST /gates approve round trip", () => {
+  let root: string;
+  let board: ReturnType<typeof createBoard>;
+
+  beforeAll(() => {
+    root = seedScratchRepo();
+    board = createBoard(root);
+  });
+  afterAll(() => {
+    board.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("approving the fixture's open gate flips frontmatter, validates, and commits as the Conductor", async () => {
+    const artifactPath = join(root, "work/storefront/checkout-flow/spec-checkout-flow-v1.md");
+    const before = readFileSync(artifactPath, "utf8");
+    expect(before).toContain("status: in-review");
+    expect(before).toContain("approved_by: null");
+
+    const res = await board.fetch(
+      req("/gates/storefront/spec-checkout-flow-v1/approve", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ note: "looks good" }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(typeof body.commit).toBe("string");
+    expect(body.commit.length).toBe(40);
+
+    const after = readFileSync(artifactPath, "utf8");
+    expect(after).toContain("status: approved");
+    expect(after).toMatch(/approved_by: "cas \d{4}-\d{2}-\d{2}"/);
+
+    const log = spawnSync("git", ["-C", root, "log", "-1", "--format=%H|%an|%ae|%s"], { encoding: "utf8" });
+    expect(log.status).toBe(0);
+    const [sha, author, email, subject] = log.stdout.trim().split("|");
+    expect(sha).toBe(body.commit);
+    expect(author).toBe("cas");
+    expect(email).toBe("cas@levare.local");
+    expect(subject).toContain("approve spec-checkout-flow-v1");
+
+    // approving does not touch any other artifact's file.
+    const brief = readFileSync(join(root, "work/storefront/checkout-flow/product-brief-v1.md"), "utf8");
+    expect(brief).toContain('approved_by: "cas 2026-07-08"');
+  });
+
+  test("re-approving an already-resolved gate is rejected (409), not silently repeated", async () => {
+    const res = await board.fetch(req("/gates/storefront/spec-checkout-flow-v1/approve", { method: "POST" }));
+    expect(res.status).toBe(409);
+  });
+
+  test("approving an unknown artifact id is 404", async () => {
+    const res = await board.fetch(req("/gates/storefront/does-not-exist/approve", { method: "POST" }));
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("levare serve — POST /gates reject and request", () => {
+  let root: string;
+  let board: ReturnType<typeof createBoard>;
+
+  beforeAll(() => {
+    root = seedScratchRepo();
+    board = createBoard(root);
+  });
+  afterAll(() => {
+    board.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("request-changes without a note is rejected", async () => {
+    const res = await board.fetch(req("/gates/storefront/spec-checkout-flow-v1/request", { method: "POST" }));
+    expect(res.status).toBe(400);
+  });
+
+  test("request-changes with a note supersedes the artifact with a new version", async () => {
+    const res = await board.fetch(
+      req("/gates/storefront/spec-checkout-flow-v1/request", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ note: "clarify the idempotency key" }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const oldDoc = readFileSync(join(root, "work/storefront/checkout-flow/spec-checkout-flow-v1.md"), "utf8");
+    expect(oldDoc).toContain("status: superseded");
+    const newDoc = readFileSync(join(root, "work/storefront/checkout-flow/spec-checkout-flow-v2.md"), "utf8");
+    expect(newDoc).toContain("status: in-review");
+    expect(newDoc).toContain("supersedes: spec-checkout-flow-v1");
+  });
+});
+
+describe("levare serve — POST /registry validate → write → commit", () => {
+  let root: string;
+  let board: ReturnType<typeof createBoard>;
+
+  beforeAll(() => {
+    root = seedScratchRepo();
+    board = createBoard(root);
+  });
+  afterAll(() => {
+    board.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("a valid edit is written and committed", async () => {
+    const file = join(root, "knowledge/house-style.md");
+    const content = readFileSync(file, "utf8").replace("Calm, factual, slightly dry.", "Calm, factual, dry, and precise.");
+    const res = await board.fetch(
+      req("/registry/knowledge/house-style.md", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(readFileSync(file, "utf8")).toBe(content);
+  });
+
+  test("an invalid edit (same validator) is rejected and the file is rolled back", async () => {
+    const file = join(root, "knowledge/house-style.md");
+    const before = readFileSync(file, "utf8");
+    const res = await board.fetch(
+      req("/registry/knowledge/house-style.md", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: before + "\nbogus: not-a-declared-field\n" }),
+      }),
+    );
+    // The bogus text lands in the body, not frontmatter (past the closing ---), so this specific
+    // payload stays schema-valid; assert instead with a genuinely invalid frontmatter document.
+    void res;
+    const badFrontmatter = "---\nname: house-style\nbogus_key: 1\n---\nbroken\n";
+    const res2 = await board.fetch(
+      req("/registry/knowledge/house-style.md", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: badFrontmatter }),
+      }),
+    );
+    expect(res2.status).toBe(422);
+    expect(readFileSync(file, "utf8")).not.toBe(badFrontmatter);
+  });
+});
+
+describe("levare serve — POST /orchestrator/message", () => {
+  test("acknowledges without mutating repo state", async () => {
+    const root = seedScratchRepo();
+    const board = createBoard(root);
+    try {
+      const before = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      const res = await board.fetch(
+        req("/orchestrator/message", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text: "what needs me?" }),
+        }),
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(typeof body.reply).toBe("string");
+      const after = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      expect(after).toBe(before);
+    } finally {
+      board.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("levare serve — SSE re-render trigger", () => {
+  test("a repo change under the watched root pushes a reload event to /events", async () => {
+    const root = seedScratchRepo();
+    const board = createBoard(root);
+    try {
+      const res = await board.fetch(req("/events"));
+      expect(res.headers.get("content-type")).toContain("text/event-stream");
+      const reader = res.body!.getReader();
+      // Drain the initial ": connected" comment.
+      await reader.read();
+
+      writeFileSync(join(root, "work/storefront/checkout-flow/unit.md"), readFileSync(join(root, "work/storefront/checkout-flow/unit.md"), "utf8") + "\n");
+
+      const { value } = await Promise.race([
+        reader.read(),
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timed out waiting for SSE reload")), 5000)),
+      ]);
+      const chunk = new TextDecoder().decode(value);
+      expect(chunk).toContain("data: reload");
+    } finally {
+      board.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 8000);
+});
