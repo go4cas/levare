@@ -342,7 +342,7 @@ export function renderProject(repo: Repo, projectName: string, now: Date = new D
         .join("\n");
       const reviewRounds = artifacts.filter((a) => a.kind === "review").length;
       const summon = gate
-        ? `<button class="verb is-secondary" data-summon="tpl-gate-${esc(gate.artifact!.id)}">Review gate</button>`
+        ? `<button class="verb is-secondary" data-summon="tpl-gate-${esc(gate.target)}">Review gate</button>`
         : "";
       const openCls = gate ? " is-open" : "";
       return `<div class="unit${openCls}">
@@ -366,7 +366,7 @@ export function renderProject(repo: Repo, projectName: string, now: Date = new D
     .join("\n");
 
   const templates = gates
-    .map((g) => `<template id="tpl-gate-${esc(g.artifact!.id)}">${gateCardHtml(repo, g, now, { cta: true })}</template>`)
+    .map((g) => `<template id="tpl-gate-${esc(g.target)}">${gateCardHtml(repo, g, now, { cta: true })}</template>`)
     .join("\n");
 
   const main = `<main class="main">
