@@ -577,3 +577,123 @@ this note can fully explain. It does not matter for correctness any more: the li
 attempted directly against the real `fixtures/golden` during this same verification returned `405`
 and `git status`/`levare validate` confirmed no mutation. That is the point of building the guarantee
 into `serve()` itself rather than into "remember not to."
+
+# NOTES — uncertainties and assumptions (Phase 5)
+
+Phase-5 delivers the Orchestrator (§7) against a mocked SDK boundary, plus three inherited debts:
+ruling C7 (board/Runner gate-resolution convergence), E4 (real member invocation replacing the
+`doRequest` stub reuse), and E5 (the `start` verb). These entries record the mechanical choices made
+closing each.
+
+## F1. Ruling C7 closed: `src/gates.ts` + `src/git.ts` are the shared implementation
+The gap C7 named was never "the board and the Runner call different functions for approve/reject" —
+`applyApproval`/`bumpVersion` were already shared as of phase 4. The real gap was ruling C2's
+loop-companion rule ("on any loop-gate resolution the round's companion review resolves to approved"),
+which only existed inside the Runner's in-memory `runLoop`. `gates.ts#loopMembershipFor` is the one
+definition of "is this artifact kind one half of a team's loop, and who is its companion" — resolving
+step labels to kinds via the same `kindMatches` capability lookup the Runner's `resolveStep` uses, so
+board and Runner can never drift on which artifact is the companion. `board/gateops.ts`'s
+`resolveGate` now applies it ahead of every approve/reject/request, patching the live companion into
+the SAME commit as the primary resolution (tests/gateops-phase5.test.ts asserts one commit, not two).
+`responsibleTeamFor` and `resolveStep` (gates.ts) are deliberately NOT extracted from `runner.ts`'s
+private methods of the same name — that would require `runner.ts` to import from `gates.ts` while
+`gates.ts` already imports `RunnerError`/`kindMatches` FROM `runner.ts`, a circular dependency. Instead
+`gates.ts` holds its own copy of the (small, ~10-line) selection algorithm, commented as mirroring
+`runner.ts`'s private one; the two are pure lookups over the same repo shape, not the stateful gate-
+resolution logic C7 actually asked to converge. `src/git.ts#conductorCommit` was also extracted (board's
+gate-approve commit and the registry-edit commit were near-identical hand-rolled `git` invocations) so
+"commit as the Conductor" — identity, non-interactive-safe flags, everything — is one function every
+write path (gates, registry, Orchestrator operations) now calls.
+
+## F2. Ruling E4 closed: `doRequest` (and the new `doStart`) drive the real MemberRunner boundary
+`board/gateops.ts` no longer imports `fixtures/stubs/member-stub.ts`'s `render()` directly. It builds
+a `MemberRunner` via `stubAdapterRunner` (already exported from `replay.ts` for exactly this reuse) —
+the same `AdapterRunner` phase-3 wired up and `levare replay` drives: real context assembly, real env
+scoping, a real normalized usage receipt, behind the still-mocked native/CLI boundaries (invariant 10
+holds — no SDK dependency was added). `doRequest`'s capability check now reads `memberRunner
+.capabilities()` instead of the stub's exported constant, and `doStart` (below) uses the identical
+boundary. The board's `ResolveOpts.memberRunner` is injectable, matching the rest of the codebase's
+"deterministic core is injectable" pattern (NOTES Phase-2 Learnings).
+
+## F3. Ruling E5 closed, scoped narrowly: `start` runs the flow's first step, not the whole walk
+"Kicking off a team's flow" from a synchronous HTTP handler cannot mean "run the Runner's full
+in-memory walk to completion" — that would silently fast-forward through every later `gate: human`
+without a Conductor decision, violating invariant 1 more than a 501 ever did. Read literally, §6's
+model is that a flow "halts the walk" at every declared gate; the honest single-request analogue is:
+execute exactly the flow's first node as one member invocation, write the produced artifact to disk,
+stop. That new artifact sits at `in-review`, which `openGates` (board/derive.ts) already renders as an
+ordinary gate on the next read — no bespoke "this gate came from a start" bookkeeping needed, because
+files are the truth (invariant 2) and the walk's next declared gate falls straight out of what's on
+disk. **Scope boundary, documented rather than silently handled:** if a team's flow does not open with
+a plain `step` (e.g. it opens with a `loop`, or the project is `pace: step` and would need a pace nod
+first), `doStart` returns `501` with an explicit reason rather than guessing — no fixture exercises
+either shape yet (kestrel's flow opens `step: brief` under `pace: auto`), so building untested branches
+for them would trade one honest gap for a silent one. `unmetAfter` (gates.ts) re-checks the after:
+condition before starting (409 if unmet) so the route can't be tricked into starting an unmet unit by
+calling it directly, bypassing the UI's own gate.
+
+## F4. The Orchestrator's mocked SDK boundary is a small documented pattern grammar, not free NLU
+Per this phase's directive, the SDK stays behind `OrchestratorBoundary` (`interpret`/`narrate`) exactly
+as `adapters.ts`'s `NativeBoundary` mocks the native SDK call — invariant 10 holds, nothing new enters
+`package.json`. Unlike the adapter boundary (which always has *some* future real backend), the
+Orchestrator's default `deterministicBoundary` is presented as the real phase-5 implementation of the
+mechanical dispatch: a documented regex grammar (`approve <id>`, `capture idea: name | pitch | tags`,
+`open <type> unit <unit> in <project>`, `promote idea <idea> to <project> [as <unit>]`, `stats`) covers
+every operation this phase's acceptance criteria name. Free-form natural-language understanding is
+explicitly out of scope this phase (that's the real SDK's job, later); what's under test is that the
+*dispatch* — briefing derivation, one gate-resolution path, proposal-not-write semantics, unit-op repo
+changes — is correct regardless of how the intent was extracted. `boundary` is an injected parameter of
+`handle()`, so a real SDK-backed boundary drops in later without touching any of this dispatch logic.
+
+## F5. Proposals hold no state; the caller (the conversation) carries them
+§7: "the Orchestrator holds no state; everything it knows is re-derived from the repo and the
+conversation." A `Proposal` (retro → LEARNINGS append, research report → knowledge promotion) is
+therefore a plain returned value, never written anywhere on `proposeRetro`/`proposeKnowledgePromotion`
+— it becomes a write only when `resolveProposal(root, proposal, "approve", by)` is called with that
+same object back. In a real chat session "the conversation" is where that proposal value lives between
+turns (the transcript, or whatever the SDK session keeps); tests hold it in a local variable across two
+calls, which is the same shape. `reject` is a true no-op (no file touched at all) — the proposal is
+simply discarded, matching "propose, never apply."
+
+## F6. new-project skill: a real `git clone` against a scratch bare repo, never `gh`/real GitHub
+`runNewProjectSkill` never shells out to `gh`; the caller (tests, or eventually the Orchestrator's own
+Q&A flow) is responsible for having already produced a remote — a plain `git init --bare` scratch
+directory stands in for what `gh repo create` would hand back. Everything past that point is real, not
+mocked: an actual `git clone` of that scratch remote, a real initial commit in the resulting checkout,
+then the `projects/<name>.md` pointer written into the studio repo, validated with the same validator
+as every other write path, and committed as the Conductor. No push back to the scratch remote is
+attempted — §7 lists "create, clone, write pointer, ask deploy target + house rules, commit" and a push
+isn't among them; adding one would be an untested, unrequested extra write.
+
+## F7. Golden fixture: `cart-icon-fix` (shipped) + `loyalty-flow` (`after:`) — a start gate to exercise
+Phase 5 asked for a golden-fixture unit with a satisfied `after:` so E5's `start` verb has real
+coverage, not just a synthetic-repo test. A start gate requires *some* other unit to be `shipped`
+(NOTES A6 — "queued" is derived, never persisted; `after:` is only ever checked against `status:
+shipped`), so two units were added, not one: `cart-icon-fix` (type `fix`, `status: shipped`, no
+artifacts — it exists purely to be a satisfied prerequisite) and `loyalty-flow` (type `feature`,
+`after: [cart-icon-fix]`, `status: active`), both under the existing `storefront` project so no new
+project/team fixture surface was needed. **Consequence, handled rather than avoided:** both `levare
+replay` and any `Runner.run()` against `fixtures/golden` walk *every* unit, not just `checkout-flow` —
+so `loyalty-flow`'s now-satisfied start gate is raised during the golden/exhaustion replay scenarios
+and every `loadRepo("fixtures/golden")`-backed test in `tests/runner.test.ts`. Each affected script was
+extended with one trailing `{ expect: "start", verb: "notyet" }` decision (walk order is
+alphabetical by `project/unit`, so `loyalty-flow` always sorts after `checkout-flow` and before nothing
+else) — `notyet` was chosen deliberately over `start` so replay's scope stays exactly what its own
+oracle (`expected.json`, scoped to `checkout-flow`) describes; `loyalty-flow`'s own flow is exercised
+directly by `tests/gateops-phase5.test.ts` (part f) instead, against the board's `start` route.
+`src/board/render.ts`'s `renderProject`/registry-summon template code assumed every open gate carries
+an `.artifact` (true before this phase, when only artifact-shaped gates existed in the fixture); fixed
+to key off `OpenGate.target` (already the right value for both artifact and start gates) instead of
+`gate.artifact!.id`, which crashed both `renderProject` and the project-screen test the moment a real
+start gate existed to render.
+
+## Learnings
+A pure-derivation test (buildBriefing, computeStats, loopMembershipFor) is worth writing against a
+tiny synthetic repo even when a real-fixture version also exists: the synthetic one can assert an
+*ordering* property (oldest-first) that the golden fixture's single open gate can never exercise on
+its own, because there's nothing to sort.
+"Converge on one implementation" (C7) does not always mean "delete the duplicate and call the other
+copy" — sometimes the two callers have genuinely different execution shapes (an in-memory simulated
+walk vs. a single on-disk mutation) and the honest convergence is extracting the *rule* they must both
+obey (here, `loopMembershipFor`) into one place both call, while leaving each caller's own control flow
+intact.
