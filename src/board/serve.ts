@@ -6,7 +6,7 @@
 
 import { watch, type FSWatcher } from "node:fs";
 import { readFileSync, existsSync, statSync } from "node:fs";
-import { join, extname, dirname } from "node:path";
+import { join, extname, dirname, resolve, sep } from "node:path";
 import { loadRepo, type Repo } from "../repo.ts";
 import { renderStudio, renderProject, renderRun, renderRegistry } from "./render.ts";
 import { resolveGate, patchFrontmatter, CONDUCTOR_NAME, CONDUCTOR_EMAIL } from "./gateops.ts";
@@ -24,6 +24,15 @@ export interface RouteDef {
 export interface BoardCtx {
   root: string;
   broadcast: (msg: string) => void;
+  /** When true, every mutating route refuses with 405 before its handler ever runs (see NOTES E14). */
+  readOnly: boolean;
+}
+
+// A demo/screenshot server pointed at a fixtures/ tree must not be able to mutate it, structurally —
+// not "don't do that", a route that literally cannot execute. `fixtures/golden` and any future
+// fixtures directory both qualify: any path with a literal `fixtures` path segment.
+export function isUnderFixtures(root: string): boolean {
+  return resolve(root).split(sep).includes("fixtures");
 }
 
 const ASSET_DIR = new URL("../../assets/", import.meta.url).pathname;
@@ -284,9 +293,11 @@ export interface Board {
   ctx: BoardCtx;
 }
 
-export function createBoard(root: string): Board {
+export function createBoard(root: string, opts: { readOnly?: boolean } = {}): Board {
+  const readOnly = opts.readOnly ?? isUnderFixtures(root);
   const ctx: BoardCtx = {
     root,
+    readOnly,
     broadcast: (msg) => {
       for (const send of subscribersOf(ctx)) send(msg);
     },
@@ -314,6 +325,14 @@ export function createBoard(root: string): Board {
       const url = new URL(req.url);
       const matched = matchRoute(req.method, url.pathname);
       if (!matched) return json({ ok: false, error: "not found" }, 404);
+      // Enforced ahead of the handler, not inside it: a read-only board's write routes cannot run at
+      // all, by construction — there is no handler code path left to accidentally trigger a mutation.
+      if (matched.route.mutating && ctx.readOnly) {
+        return json(
+          { ok: false, error: "this board is running read-only (serving a path under fixtures/, or --read-only was passed); write routes are disabled" },
+          405,
+        );
+      }
       try {
         return await matched.route.handler(req, matched.params, ctx);
       } catch (e) {
@@ -338,9 +357,9 @@ export interface ServeHandle {
 // just from inside the same network namespace the process runs in. Returns the ServeHandle instead
 // of exiting; the caller (the CLI's `serve` command, which is the long-running exception to
 // process.exit — see runCli in cli.ts) is what keeps the process alive by simply never exiting.
-export function serve(root: string, port = 4173, opts: { keepProcessAlive?: boolean } = {}): ServeHandle {
+export function serve(root: string, port = 4173, opts: { keepProcessAlive?: boolean; readOnly?: boolean } = {}): ServeHandle {
   const keepAlive = opts.keepProcessAlive ?? true;
-  const board = createBoard(root);
+  const board = createBoard(root, { readOnly: opts.readOnly });
   const server = Bun.serve({ port, hostname: "0.0.0.0", fetch: (req) => board.fetch(req) });
   const url = `http://${server.hostname}:${server.port}`;
 

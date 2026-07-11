@@ -84,12 +84,18 @@ export function runDoctorCmd(rest: string[]): number {
   }
 }
 
-// `levare serve [root] [--port N]` — the board (§9): four screens, SSE live updates, three write routes.
+// `levare serve [root] [--port N] [--read-only]` — the board (§9): four screens, SSE live
+// updates, three write routes. Read-only when --read-only is passed, or by default when root sits
+// under a fixtures/ tree (NOTES E14).
 export function runServeCmd(rest: string[]): number {
   const root = rest.find((a) => !a.startsWith("-")) ?? DEFAULT_ROOT;
   const port = Number(flag(rest, "--port") ?? 4173);
-  const { url } = serve(root, port);
-  console.log(`levare serve · ${root} → ${url}`);
+  // --read-only forces write routes off for any path; without it, a path under fixtures/ is
+  // read-only by default (structural, not a rule to remember — see NOTES E14) and any other path
+  // stays read-write.
+  const readOnly = rest.includes("--read-only") ? true : undefined;
+  const { url, board } = serve(root, port, { readOnly });
+  console.log(`levare serve · ${root} → ${url}${board.ctx.readOnly ? " (read-only)" : ""}`);
   return 0;
 }
 
@@ -99,7 +105,7 @@ function usage(): number {
       "       levare replay <path> --stubs\n" +
       "       levare context <agent> --unit <unit> [--step <step>] [--root <path>] [--dry-run]\n" +
       "       levare doctor [root]\n" +
-      "       levare serve [root] [--port N]",
+      "       levare serve [root] [--port N] [--read-only]",
   );
   return 2;
 }
