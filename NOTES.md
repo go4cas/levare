@@ -524,10 +524,54 @@ modified on disk (`status: approved`, `approved_by: "cas 2026-07-11"`) though ne
 immediately by `levare validate` refusing to load the repo (`MODIFIED_AFTER_APPROVAL` — the phase-1
 immutability check doing exactly its job) while starting work on this ticket. The stray process was
 killed (`kill -9`) and the file restored via `git checkout --`; `levare validate fixtures/golden`
-confirms clean, and `git status` shows no unintended changes.
-**Standing rule going forward:** any live/backgrounded `levare serve` process — even one only being
-exercised with GETs *right now* — is a standing write surface for as long as it stays up, because it
-can outlive the shell session that started it and nothing about a "read-only demo" plan prevents a
-later request (from any source able to reach the port) from hitting a mutating route. Every manual
-`serve` demonstration from here on runs against a throwaway copy of the fixture, never `fixtures/
-golden` directly, exactly as every automated test in this suite already does.
+confirms clean, and `git status` shows no unintended changes. The root cause of exactly how a stray
+process outlived its own `kill -INT`/`kill -9` was never fully pinned down — see E14 below, where it
+recurred during that fix's own verification, this time as a process `ps` could see and (eventually)
+kill but that a same-context `curl` could not reach at all. Whatever this sandbox's process/network
+lifecycle quirk is, it is outside this codebase's control, which is exactly why E14 replaces an
+operator rule ("don't point serve at fixtures/") with a structural one: it no longer matters whether
+a stray process outlives its shell, because nothing it can do the write routes execute against a
+fixtures/ path.
+
+## E14. `--read-only`: the incident above, fixed structurally instead of by operator discipline
+
+The first response to the incident above was a *rule* — "never point a demo `serve` at fixtures/
+golden directly" — recorded as a note to remember. A rule that has to be remembered is exactly the
+kind of thing that fails under pressure (or, as it turned out, under a sandbox quirk neither predicted
+nor fully diagnosable), so it is replaced here with a structural guarantee: `levare serve` now refuses
+all three write routes with `405` before their handlers ever run, whenever the board is read-only.
+
+**Mechanics.** `BoardCtx.readOnly` is computed once at `createBoard(root, opts)` time as `opts.readOnly
+?? isUnderFixtures(root)` — `isUnderFixtures` resolves `root` to an absolute path and checks for a
+literal `fixtures` path segment (not a substring match: `/tmp/my-fixtures-dir` does not qualify,
+`/tmp/x/fixtures/golden` does). The check sits in the router's `fetch()` dispatcher, ahead of and
+outside every handler: `if (matched.route.mutating && ctx.readOnly) return 405(...)`. This is the
+important property — it is not each of the three handlers individually remembering to check a flag
+(which would be exactly as fragile as the operator rule it replaces, just moved into code); the
+mutating handler bodies (`doApprove`/`doReject`/`doRequest`, the registry write, the orchestrator
+route) are structurally unreachable when read-only, full stop. `levare serve [root] [--read-only]`:
+the flag forces read-only for *any* path (useful for a read-only demo of a normal repo too); without
+it, the default is computed from the path alone, so pointing `serve` at `fixtures/golden` — with no
+flag, no memory required — is safe by construction. GET routes and the SSE channel are unaffected;
+only the three write routes are gated.
+
+**New coverage (`tests/board-readonly.test.ts`).** `isUnderFixtures` against relative/absolute/
+substring-adjacent paths; a fixtures-path board reports `ctx.readOnly === true` and all three POST
+routes return `405` with an unchanged file on disk (byte-for-byte, asserted directly); the identical
+approve POST against a plain scratch studio-repo path (no `fixtures` segment) succeeds exactly as
+`tests/board-serve.test.ts` already covers, added here specifically as the negative-case pair so the
+path-detection logic itself — not just "approve works somewhere" — is under test; and `--read-only`
+forcing read-only on an otherwise-writable path.
+
+**Recurrence during this very fix's own verification.** While confirming the fix live against the
+real `fixtures/golden`, the same class of stray-process behavior from the incident above recurred: a
+`bun ./levare serve fixtures/golden` process was found running (via `ps aux`) that this session had
+not knowingly left alive, and a `curl` from the same kind of shell invocation that had just
+successfully talked to a sibling instance on the same port number got `000` (no connection) against
+it — then a subsequent plain `kill -9` from a *different* (default-sandboxed, not
+`dangerouslyDisableSandbox`) shell invocation did successfully kill it. This is consistent with some
+process/network-namespace boundary inside the harness's sandboxing that neither this codebase nor
+this note can fully explain. It does not matter for correctness any more: the live POST-approve
+attempted directly against the real `fixtures/golden` during this same verification returned `405`
+and `git status`/`levare validate` confirmed no mutation. That is the point of building the guarantee
+into `serve()` itself rather than into "remember not to."
