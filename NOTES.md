@@ -309,3 +309,137 @@ Validation must fail closed: every early-exit "valid" state is an escape hatch; 
 Keep the deterministic core injectable: the Runner takes its member invoker and decision source as interfaces, so replay scripts, unit tests, and (phase 3) real adapters drive the same engine with no clocks or randomness in the pass that produces the oracle.
 Security is an allowlist, not a filter: a member's environment is *built up* from granted names, never *stripped down* from process.env — the default is empty, so a new secret is invisible until a connector is granted.
 Estimate honestly or not at all: levare prices cost from the pricing table and records member silence as `unreported`; it never dresses a missing number as $0.
+
+# NOTES — uncertainties and assumptions (Phase 4)
+
+Phase-4 delivers `levare serve` (§9): four server-rendered screens, SSE re-renders fed by `fs.watch`,
+and exactly three write routes. These entries record where §9's prose left a mechanical choice and
+where the golden fixture's actual shape forced the CD prototype markup to be trimmed.
+
+## E1. Fixture is truth; the studio/project demo markup was trimmed to match it
+`assets/studio.html` and `assets/project.html` (the CD round-3.1 prototypes) show richer demo data
+than `fixtures/golden` actually has: multiple projects with live "Running Now" members, a
+start-gate example, release history, per-project stat strips with numbers that don't derive from
+anything on disk. The golden fixture has exactly one project (`storefront`) with no shipped units,
+no releases, no `after:`-gated unit, and no live-process registry. Per the standing instruction
+("where fixture data and the assets/ demo markup disagree, the fixture is truth and the markup
+adapts to it"), the board renders honest empty/derived states instead of fabricating demo content:
+"No live process registry yet" for Running Now, "no releases tracked yet" for Releases, and no
+start-gate card (none exists to render). `src/board/render.ts` is a pure function of repo state —
+the demo's decorative numbers were never load-bearing to begin with.
+
+## E2. No live process registry — "Members running" is always 0
+PRD invariant 2 ("the binary holds no state that cannot be reconstructed by re-reading the repo")
+and §3 ("all state is markdown files with YAML frontmatter... no database") mean the board has no
+channel to observe an in-flight member process — that requires a running Runner instance reporting
+live state, which is Runner/Orchestrator wiring (phase 5), not a board concern. The studio stat and
+the "Running Now" section render their true, honest state: zero, with a note rather than a fabricated
+list. When a live Runner exists, this becomes a real projection of its in-memory state; nothing in
+the board's rendering contract needs to change, only the data source.
+
+## E3. Board gate resolution is the direct §4 operation, not the Runner's loop-walk machinery
+`src/board/gateops.ts` intentionally does NOT drive `src/runner.ts`'s `raiseGate`/loop engine — that
+engine simulates a full walk against an injected `MemberRunner` and `DecisionSource` (phase 2/3). The
+board instead performs exactly what §4 describes for one Conductor click: flip the target artifact's
+frontmatter, validate at the same boundary (`validateArtifactSource`, reused, not reimplemented),
+write, commit as the Conductor (`applyApproval`/`bumpVersion`, exported from `runner.ts` for this
+purpose and reused, not reimplemented). Ruling C2's loop-specific side effect ("on any loop-gate
+resolution the round's companion review artifact resolves to approved") is Runner-walk behavior for
+an *active* loop round in flight; the golden fixture's open gate (`spec-checkout-flow-v1`) is a
+static in-review artifact on disk, not a loop round the board is mid-walking, so no companion
+artifact exists to auto-approve. If a future fixture exercises board approval of a live loop round,
+this distinction should be revisited.
+
+## E4. `request` reuses the phase-1 stub member CLI, deterministically
+Producing a real successor artifact for request-changes requires re-invoking a member — full member
+invocation (native SDK / CLI spawn / MCP) is the phase-3 adapter layer, which needs live credentials
+or a mocked SDK boundary neither present nor appropriate to wire into a synchronous HTTP handler.
+`doRequest` instead reuses `fixtures/stubs/member-stub.ts`'s `render()` — the same deterministic
+canned-artifact producer the Runner's stub-mode replay already trusts — keyed by the artifact's
+`produced_by` member and its `kind`. This only succeeds for (member, kind) pairs the stub knows
+(`wren:product-brief`, `lyra:design`, `lyra:spec`, `finch:review`); an artifact whose producer isn't
+in that table returns `501` with an honest "no producer available" error rather than fabricating a
+new artifact. Wiring the real adapters here is a natural phase-5 (Orchestrator) extension once live
+member invocation has a place to live in the server process.
+
+## E5. Start-gate verbs (`start` / `notyet` / `rescope`) are honestly incomplete
+No unit in the golden fixture has an `after:` dependency, so no start gate exists anywhere to
+exercise. §9's route enumerates `start|notyet|rescope` as valid verbs regardless, so the route
+accepts them: `notyet` and `rescope` are no-ops beyond the decision itself (there is no persisted
+"queued" status to flip — NOTES A6 — and rescoping a unit with no artifacts yet has nothing to
+commit). `start` returns `501` with a clear message: kicking off a team's flow is genuine Runner
+member-invocation machinery, and building an untested code path for a verb with zero fixture coverage
+would violate "no half-finished implementations" more than declining to build it does. Deferred to
+whichever phase first lands a fixture with a real start gate.
+
+## E6. Conductor git identity
+Git commits made by gate resolution and registry edits use author `cas <cas@levare.local>` — matching
+the golden fixture's own `approved_by: "cas <date>"` convention (there is no other named identity
+anywhere in the PRD/fixtures). Every commit passes explicit `-c user.name/-c user.email/-c
+commit.gpgsign=false/-c core.hooksPath=/dev/null`, mirroring the hermetic git pattern already
+established in `tests/immutability.test.ts`: a Conductor action must never hang on a host signing
+prompt or a stray commit hook, in production as much as in tests.
+
+## E7. `assets/app.js` is not byte-for-byte verbatim — a narrow, documented exception
+`assets/styles.css` is untouched: 100% verbatim, as instructed. `assets/app.js`, as shipped, has zero
+network code — its gate-card `resolveGate()` and the Orchestrator composer only ever mutated the DOM
+locally with canned copy; no `fetch` anywhere. That is irreconcilable with an explicit hard
+requirement of this phase ("the gate-verb POST must flip frontmatter, commit as the Conductor, and
+trigger an SSE re-render") — a verbatim `app.js` would make every gate button in a real browser
+decorative. The fix is the smallest one that closes the gap: a `postGate()` fetch call fires before
+the existing optimistic `resolveGate()` animation (so the felt motion the design brief asks for is
+unchanged), the `send` button now carries the original verb (`request`/`rescope`) and note text to
+that POST, the composer POSTs to `/orchestrator/message` and renders the real reply (falling back to
+the original canned line only if the request fails), and an `EventSource('/events')` listener reloads
+the page on the SSE `reload` message. No existing class name, DOM structure, animation, or timing was
+changed. `tests/board-serve.test.ts` asserts the frozen parts (theme toggle, `resolveGate` anatomy)
+are still present verbatim.
+
+## E8. Registry "Edit source" stays a read-only preview; the write route is real and tested directly
+The CD registry prototype's `data-edit-toggle` only ever swapped a `<pre class="rawmd">` between
+shown/hidden — there was never an editable control (textarea/contenteditable) in the shipped markup,
+so there is no verbatim element to wire a save action to. Adding one would be a structural change
+("restyling"), not data-binding. `POST /registry/*path` (validate → write → commit, reusing
+`validatePath` — the same validator the whole repo is checked against, not a second copy) is fully
+implemented and covered directly in `tests/board-serve.test.ts` (a valid edit commits; an invalid one
+is rejected with the file rolled back to its prior content). Wiring a real client-side editor is left
+for whenever the registry screen gets its own design pass.
+
+## E9. Run-view timeline is built from two real sources, never fabricated
+"Every runner walk, member spawn, and gate event" (design brief) has no live event store to read in a
+static-fixture board — so `src/board/timeline.ts` builds the timeline from what's actually on disk:
+the unit's `ledger.ndjson` (§10 usage receipts, one line per member invocation) merged with `git log`
+on the unit's directory, sorted by timestamp. Both are genuinely "derived from the repo on every
+request" (invariant 2); nothing is synthesized. A currently-open gate is rendered separately in the
+Orchestrator panel (age computed live), not injected as a synthetic timeline row.
+
+## E10. Score nodes: one per expected kind, in-review is the gate itself (ruling C2)
+`src/board/derive.ts#scoreNodes` walks the unit type's `expects:` list (e.g. feature: product-brief,
+design, spec, code, review) and renders one node per kind from its current (non-superseded) artifact:
+approved → a filled circle, in-review → the gate diamond itself (never a separate "active" circle —
+C2: an artifact at in-review always means an open gate), nothing yet → a hollow "queued" circle. The
+team-tinted avatar column renders the producing member's initials on the owning team's declared
+color for every node that has a producer; queued nodes carry no avatar, matching the design brief's
+own upcoming/gate treatment.
+
+## E11. Registry loads skills/knowledge/evals/ideas independently of `repo.ts`
+`src/repo.ts`'s `Repo` shape is the Runner's working set (teams/agents/types/projects/connectors/work)
+and deliberately does not include skills, knowledge, evals, or ideas — extending it risked touching
+code and tests phases 1–3 already pin. `src/board/extra.ts` loads those four directories directly
+(same frontmatter parser, same "files are the truth" posture) purely for the registry screen and the
+studio ideas rail, without changing `repo.ts`'s shape or any of its existing tests.
+
+## Learnings
+A frontmatter patcher that edits specific scalar lines by regex — rather than a full parse-mutate-
+reserialize round trip — is the right tool when the subset-YAML writer doesn't exist yet: it
+preserves every byte of formatting and comments the human/member originally wrote, and it fails
+loudly (`frontmatter key not found`) rather than silently if a field it expects has moved or been
+renamed, which a generic serializer could paper over.
+Prefer calling a Bun.serve-shaped `fetch(Request): Response` handler directly in tests over opening
+a real TCP port: it is faster, avoids sandbox/port flakiness entirely, and exercises the exact same
+router and handler code a real socket would call into.
+`process.exit()` after a command dispatcher is only safe for commands that are supposed to run once
+and exit; a long-lived listener (`serve`) must be special-cased or the process tears itself down the
+instant the server starts — caught by manually curling the server rather than by any unit test, a
+reminder to smoke-test any new long-running command end-to-end, not just its route handlers in
+isolation.
