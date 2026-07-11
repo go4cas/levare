@@ -49,6 +49,21 @@
     });
 
     /* ---------- gate cards ---------- */
+    /* The board is a stateless projection (PRD invariant 2): a gate verb POSTs to the real route,
+       flips frontmatter server-side and commits as the Conductor; the SSE listener below reloads on
+       the fs.watch-driven re-render trigger. The local resolveGate() call is purely the felt, quiet
+       motion the design brief asks for while that round-trip is in flight. */
+    function postGate(card, verb, note) {
+      var project = card.getAttribute('data-gate-project');
+      var target = card.getAttribute('data-gate-target');
+      if (!project || !target) return Promise.resolve();
+      return fetch('/gates/' + encodeURIComponent(project) + '/' + encodeURIComponent(target) + '/' + encodeURIComponent(verb), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ note: note || undefined })
+      }).catch(function (err) { console.error('gate verb failed', err); });
+    }
+
     document.addEventListener('click', function (e) {
       var btn = e.target.closest('.gate [data-verb]');
       if (!btn) return;
@@ -66,10 +81,15 @@
         send:    ['changes sent', 'is-neutral']
       };
       var m = map[verb];
-      if (m) resolveGate(card, m[0], m[1]);
+      if (!m) return;
+      var realVerb = verb === 'send' ? (card._pendingVerb || 'request') : verb;
+      var note = verb === 'send' && card._note ? card._note.querySelector('.gate__note').value : undefined;
+      postGate(card, realVerb, note);
+      resolveGate(card, m[0], m[1]);
     });
 
     function openNote(card, verb) {
+      card._pendingVerb = verb;
       var verbs = card.querySelector('.gate__verbs');
       if (card.querySelector('.gate__note')) return;
       var container = verbs.parentNode;
@@ -162,17 +182,35 @@
         body.appendChild(u);
         input.value = '';
         body.scrollTop = body.scrollHeight;
-        setTimeout(function () {
+        function showReply(text) {
           var r = document.createElement('div');
           r.className = 'msg';
-          r.innerHTML =
-            '<div class="msg__label"><span class="k">reply</span><span class="t">now</span></div>' +
-            '<p class="msg__body">Noted. I\u2019ll fold that into the next brief \u2014 nothing here changes state until you act on a gate.</p>';
+          r.innerHTML = '<div class="msg__label"><span class="k">reply</span><span class="t">now</span></div><p class="msg__body"></p>';
+          r.querySelector('.msg__body').textContent = text;
           body.appendChild(r);
           body.scrollTop = body.scrollHeight;
-        }, 480);
+        }
+        fetch('/orchestrator/message', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ text: text })
+        }).then(function (res) { return res.json(); })
+          .then(function (data) { showReply(data.reply || 'Noted.'); })
+          .catch(function () {
+            showReply('Noted. I\u2019ll fold that into the next brief \u2014 nothing here changes state until you act on a gate.');
+          });
       });
     });
+
+    /* ---------- SSE: reload on a repo change (fs.watch-driven re-render trigger) ---------- */
+    if (window.EventSource) {
+      try {
+        var es = new EventSource('/events');
+        es.onmessage = function (e) {
+          if (e.data === 'reload') location.reload();
+        };
+      } catch (e) { /* no SSE support; the board still works as plain server-rendered pages */ }
+    }
 
     /* ---------- registry: entity switch + edit source ---------- */
     var entities = document.querySelectorAll('[data-entity]');
