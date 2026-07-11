@@ -582,17 +582,33 @@ function crossReference(artifacts: DiscoveredArtifact[], errors: ValidationError
 // Approved-immutability check (against git; §4)
 // ---------------------------------------------------------------------------
 
+// Environment-sensitivity audit (NOTES.md A4):
+//  - Baseline is always `HEAD`, never a hardcoded branch name (`main`/`master`/`trunk`), so the
+//    check is correct on any repo regardless of its default branch.
+//  - Two distinct "valid" states are separated explicitly, so a missing baseline is never mistaken
+//    for an unchanged one:
+//      S0  target is not a git repo            → cannot verify; treated as VALID (no error).
+//      S1  the file has no history in HEAD      → not yet committed; nothing to compare against;
+//                                                 treated as VALID (the approval is what will be
+//                                                 committed — there is no prior baseline to violate).
+//      S2a the file is in HEAD and unchanged    → VALID.
+//      S2b the file is in HEAD and differs      → MODIFIED_AFTER_APPROVAL.
+//  - Comparison uses `git diff` (which honours the repo's own normalization, e.g. core.autocrlf)
+//    rather than a raw byte-compare of `git show` output, so a checkout filter cannot manufacture a
+//    false "modified" verdict.
 function gitImmutabilityCheck(target: string, artifacts: DiscoveredArtifact[], errors: ValidationError[]): void {
   const toplevel = gitToplevel(target);
-  if (!toplevel) return; // not a git repo — cannot verify; skip silently.
+  if (!toplevel) return; // S0 — not a git repo; cannot verify.
   for (const a of artifacts) {
     if (a.data.status !== "approved") continue;
     const rel = relative(toplevel, a.file);
-    const show = spawnSync("git", ["-C", toplevel, "show", `HEAD:${rel}`], { encoding: "utf8" });
-    if (show.status !== 0) continue; // untracked / not yet committed — nothing to compare against.
-    const committed = show.stdout;
-    const current = readFileSync(a.file, "utf8");
-    if (committed !== current) {
+    // S1: does the approved file exist in the current commit at all?
+    const inHead = spawnSync("git", ["-C", toplevel, "cat-file", "-e", `HEAD:${rel}`], { encoding: "utf8" });
+    if (inHead.status !== 0) continue; // no history for this file yet — nothing to compare.
+    // S2: has the working tree diverged from the committed (approved) version?
+    // `git diff --quiet` exits 0 when identical, 1 when different, >1 on error.
+    const diff = spawnSync("git", ["-C", toplevel, "diff", "--quiet", "HEAD", "--", rel], { encoding: "utf8" });
+    if (diff.status === 1) {
       errors.push({
         code: "MODIFIED_AFTER_APPROVAL",
         message: "approved artifact has been modified since its committed version; approved artifacts are immutable",
