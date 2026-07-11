@@ -158,13 +158,16 @@ describe("golden walk against stub members", () => {
       { expect: "design", verb: "approve", by: CAS },
       { expect: "spec review", verb: "request", by: CAS },
       { expect: "spec review", verb: "approve", by: CAS },
+      // loyalty-flow's after: is satisfied (E5 fixture), so its own start gate is raised too —
+      // walk order is by "project/unit", so it comes after checkout-flow's four gates.
+      { expect: "start", verb: "notyet", by: CAS },
     ]);
     const runner = new Runner(repo, { members: new StubRunner(), decisions: script });
     const result = runner.run();
 
-    // Four gates were raised (brief, design, and two loop rounds).
+    // Five gates were raised (brief, design, two loop rounds, and loyalty-flow's start gate).
     const gates = result.events.filter((e) => e.t === "gate-raised");
-    expect(gates.length).toBe(4);
+    expect(gates.length).toBe(5);
 
     // Loop terminated by condition in round 2.
     const end = result.events.find((e) => e.t === "loop-end");
@@ -191,6 +194,7 @@ describe("golden walk against stub members", () => {
       { expect: "design", verb: "approve", by: CAS },
       { expect: "spec review", verb: "request", by: CAS },
       { expect: "spec review", verb: "approve", by: CAS },
+      { expect: "start", verb: "notyet", by: CAS },
     ]);
     const result = new Runner(repo, { members: new StubRunner(), decisions: script }).run();
     const brief = result.artifacts.get("storefront/checkout-flow")!.get("product-brief-v1")!;
@@ -220,6 +224,7 @@ describe("loop exhaustion", () => {
       { expect: "spec review", verb: "request", by: CAS },
       { expect: "spec review", verb: "request", by: CAS },
       { expect: "spec exhausted", verb: "reject", by: CAS },
+      { expect: "start", verb: "notyet", by: CAS },
     ]);
     const result = new Runner(repo, { members: new StubRunner(), decisions: script }).run();
 

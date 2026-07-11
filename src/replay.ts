@@ -94,11 +94,16 @@ const CAS = "cas 2026-07-11";
 
 // The golden replay: brief approved, design approved, then the spec/review loop requests changes in
 // round 1 and approves in round 2 → terminates by `until: spec.approved`. This is the oracle.
+// A second fixture unit, loyalty-flow (E5), has a satisfied `after:` and so raises its own start
+// gate during a full-repo walk, after checkout-flow's (walk order is by "project/unit"; "loyalty-
+// flow" sorts after "checkout-flow"). Replay's job is to reproduce the checkout-flow oracle, so this
+// scenario declines to start it ("notyet") rather than exercising a second unit's flow here.
 const GOLDEN_SCRIPT: ScriptEntry[] = [
   { expect: "brief", verb: "approve", by: CAS },
   { expect: "design", verb: "approve", by: CAS },
   { expect: "spec review", verb: "request", by: CAS, note: "name the idempotency key column" },
   { expect: "spec review", verb: "approve", by: CAS },
+  { expect: "start", verb: "notyet", by: CAS },
 ];
 
 // The exhaustion case: the spec is never approved, so the loop runs all three rounds and escalates
@@ -110,6 +115,7 @@ const EXHAUST_SCRIPT: ScriptEntry[] = [
   { expect: "spec review", verb: "request", by: CAS, note: "round 2: idempotency still unclear" },
   { expect: "spec review", verb: "request", by: CAS, note: "round 3: still not build-ready" },
   { expect: "spec exhausted", verb: "reject", by: CAS, note: "cannot converge; pausing for a re-scope" },
+  { expect: "start", verb: "notyet", by: CAS },
 ];
 
 export interface ScenarioReport {
