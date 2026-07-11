@@ -25,7 +25,8 @@ export interface ValidationError {
 //   S1  file has no history in HEAD       → nothing to compare (valid)
 //   S2a file in HEAD and unchanged        → valid
 //   S2b file in HEAD and differs          → MODIFIED_AFTER_APPROVAL
-export type ImmutabilityState = "S0" | "S1" | "S2a" | "S2b";
+//   S2e git diff errored (status > 1)     → unverifiable; fail-open (valid), never mistaken for S2a
+export type ImmutabilityState = "S0" | "S1" | "S2a" | "S2b" | "S2e";
 export interface ImmutabilityCheck {
   file: string;
   state: ImmutabilityState;
@@ -641,7 +642,9 @@ function gitImmutabilityCheck(
     // S2: has the working tree diverged from the committed (approved) version?
     // `git diff --quiet` exits 0 when identical, 1 when different, >1 on error.
     const diff = spawnSync("git", ["-C", toplevel, "diff", "--quiet", "HEAD", "--", rel], { encoding: "utf8" });
-    if (diff.status === 1) {
+    if (diff.status === 0) {
+      checks.push({ file: a.file, state: "S2a" }); // identical — verified unchanged.
+    } else if (diff.status === 1) {
       checks.push({ file: a.file, state: "S2b" });
       errors.push({
         code: "MODIFIED_AFTER_APPROVAL",
@@ -649,8 +652,9 @@ function gitImmutabilityCheck(
         file: a.file,
       });
     } else {
-      // status 0 (identical) — or >1, which we treat as unverifiable-but-not-a-violation (fail-open).
-      checks.push({ file: a.file, state: "S2a" });
+      // status > 1 (or null) — git itself errored; unverifiable. Fail-open (consistent with S0/S1)
+      // but recorded distinctly so a diff error never impersonates a verified-unchanged S2a.
+      checks.push({ file: a.file, state: "S2e" });
     }
   }
   return checks;

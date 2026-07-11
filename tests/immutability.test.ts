@@ -161,3 +161,32 @@ describe("approved-immutability across a symlinked repo path", () => {
     expect(r.errors.map((e) => e.code)).toContain("MODIFIED_AFTER_APPROVAL");
   });
 });
+
+// A git diff that errors (status > 1) must never be recorded as a verified-unchanged S2a. We reach
+// S2 (cat-file -e HEAD:rel succeeds, worktree file stays readable so discovery parses it) but make
+// `git diff` fail by corrupting .git/index — a git error, not a real diff. The result is S2e:
+// unverifiable, fail-open for `ok` (consistent with S0/S1) but distinct from "verified unchanged".
+describe("approved-immutability when git diff errors", () => {
+  let root: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), "levare-diff-error-"));
+    seedApprovedRepo(root);
+    // Corrupt the index so `git diff --quiet HEAD -- <rel>` exits 128, while the committed blob
+    // (cat-file -e) and the on-disk worktree file both remain intact and readable.
+    writeFileSync(join(root, ".git", "index"), "GARBAGE-NOT-AN-INDEX");
+  });
+
+  afterAll(() => {
+    if (root) rmSync(root, { recursive: true, force: true });
+  });
+
+  test("a git diff error is recorded as S2e, fails open, and is not S2a", () => {
+    const r = validatePath(root);
+    const state = stateOf(r, "spec-immutable-v1.md");
+    expect(state).toBe("S2e");
+    expect(state).not.toBe("S2a");
+    // Fail-open: an environment hiccup must not fabricate a MODIFIED_AFTER_APPROVAL violation.
+    expect(r.errors.map((e) => e.code)).not.toContain("MODIFIED_AFTER_APPROVAL");
+  });
+});

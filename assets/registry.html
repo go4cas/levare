@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>levare · registry</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="styles.css?v=6"/>
+</head>
+<body>
+
+<div class="mobilebar">
+  <button class="togglebtn" data-rail-toggle aria-label="Open registry nav">&#9776;</button>
+  <a class="logo" href="studio.html"><span class="logo__mark"><i></i><b></b></span><span class="logo__word">levare</span></a>
+  <span class="sp"></span>
+  <button class="themebtn" data-theme-toggle></button>
+</div>
+
+<div class="app">
+
+  <!-- ================= LEFT: entity types ================= -->
+  <aside class="rail">
+    <a class="logo" href="studio.html"><span class="logo__mark"><i></i><b></b></span><span class="logo__word">levare</span></a>
+    <section class="railsec">
+      <h3 class="railsec__h">Registry</h3>
+      <nav class="reg-nav">
+        <a href="#" data-goto="teams" class="is-active">teams <span class="ct">3</span></a>
+        <a href="#" data-goto="agents">agents <span class="ct">5</span></a>
+        <a href="#" data-goto="skills">skills <span class="ct">9</span></a>
+        <a href="#" data-goto="knowledge">knowledge <span class="ct">4</span></a>
+        <a href="#" data-goto="types">types <span class="ct">5</span></a>
+        <a href="#" data-goto="connectors">connectors <span class="ct">3</span></a>
+        <a href="#" data-goto="evals">evals <span class="ct">6</span></a>
+      </nav>
+    </section>
+    <div class="railfoot">
+      <button class="themebtn" data-theme-toggle></button>
+      <div class="stamp">derived from the repo root<br/>on every request</div>
+    </div>
+  </aside>
+
+  <!-- ================= CENTER: rendered entity ================= -->
+  <main class="main">
+    <div class="crumb"><a href="studio.html">studio</a><span>/</span><span>registry</span></div>
+
+    <!-- TEAMS -->
+    <section class="entity" data-entity="teams">
+      <div class="entity__head">
+        <span class="sq" style="width:16px;height:16px;border-radius:4px;background:#A6437A"></span>
+        <span class="entity__title">kestrel</span>
+        <span class="entity__kind">team</span>
+      </div>
+      <div class="rendered">
+        <div class="card">
+          <div class="card__h">Declared flow</div>
+          <div class="flowstrip">
+            <div class="m"><span class="avatar" style="background:#A6437A">sc</span><span class="mn">scout</span></div>
+            <span class="arr">&rarr;</span>
+            <div class="m"><span class="avatar" style="background:#A6437A">ly</span><span class="mn">lyra</span></div>
+            <span class="arr">&rarr;</span>
+            <div class="m"><span class="avatar" style="background:#A6437A">va</span><span class="mn">vale</span></div>
+            <span class="arr">&rarr;</span>
+            <div class="m"><span class="avatar" style="background:#A6437A">ov</span><span class="mn">ovid</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card__h">Definition</div>
+          <div class="prow"><span class="k">color</span><span class="v mono" style="color:#A6437A">#A6437A</span></div>
+          <div class="prow"><span class="k">members</span><span class="v">4 &middot; scout, lyra, vale, ovid</span></div>
+          <div class="prow"><span class="k">runs</span><span class="v">feature, fix</span></div>
+          <div class="stamp" style="margin-top:6px">last commit 2d ago by cas</div>
+        </div>
+        <div class="editbar">
+          <button class="togglebtn" data-edit-toggle>Edit source</button>
+          <span class="validity"><span class="status-dot is-ok"></span>valid</span>
+          <button class="togglebtn" data-save style="display:none;background:var(--fg);color:var(--bg);border-color:var(--fg)">Save and commit</button>
+        </div>
+      </div>
+      <pre class="rawmd">---
+id: kestrel
+kind: team
+color: "#A6437A"
+runs: [feature, fix]
+members: [scout, lyra, vale, ovid]
+---
+# kestrel
+
+Fast product team. Scout frames, lyra drafts the spec,
+vale researches edge cases, ovid reviews before the gate.</pre>
+    </section>
+
+    <!-- AGENTS -->
+    <section class="entity" data-entity="agents" style="display:none">
+      <div class="entity__head">
+        <span class="avatar lg" style="background:#A6437A">ly</span>
+        <span class="entity__title">lyra</span>
+        <span class="entity__kind">agent &middot; kestrel</span>
+      </div>
+      <div class="rendered">
+        <div class="card">
+          <div class="card__h">Context recipe</div>
+          <div class="recipe">
+            <a class="pill" href="#" data-goto="knowledge">house-rules.md</a>
+            <a class="pill" href="#">checkout.knowledge.md</a>
+            <a class="pill" href="#" data-goto="skills">spec-writer</a>
+            <a class="pill" href="#">web-search</a>
+            <a class="pill" href="#">repo-map</a>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card__h">Definition</div>
+          <div class="prow"><span class="k">role</span><span class="v">drafts specifications from a brief</span></div>
+          <div class="prow"><span class="k">model</span><span class="v mono">claude-sonnet</span></div>
+          <div class="prow"><span class="k">wears</span><span class="v"><span class="sq" style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#A6437A;vertical-align:middle"></span> kestrel</span></div>
+          <div class="stamp" style="margin-top:6px">last commit 6d ago by cas</div>
+        </div>
+        <div class="editbar">
+          <button class="togglebtn" data-edit-toggle>Edit source</button>
+          <span class="validity"><span class="status-dot is-ok"></span>valid</span>
+          <button class="togglebtn" data-save style="display:none;background:var(--fg);color:var(--bg);border-color:var(--fg)">Save and commit</button>
+        </div>
+      </div>
+      <pre class="rawmd">---
+id: lyra
+kind: agent
+team: kestrel
+model: claude-sonnet
+context: [house-rules.md, checkout.knowledge.md, spec-writer, web-search, repo-map]
+---
+# lyra
+
+Turns an approved brief into a spec. Surfaces open questions
+rather than guessing; never edits code.</pre>
+    </section>
+
+    <!-- SKILLS -->
+    <section class="entity" data-entity="skills" style="display:none">
+      <div class="entity__head">
+        <span class="entity__title">spec-writer</span>
+        <span class="entity__kind">skill</span>
+      </div>
+      <div class="rendered">
+        <div class="card">
+          <div class="card__h">SKILL.md</div>
+          <p style="margin:0;font-size:13.5px;line-height:1.6;color:var(--fg-dim)">Produce a specification from a brief. Structure: problem, constraints, open questions, recommendation. Cite founding artifacts by id. Stop at unknowns &mdash; do not invent requirements.</p>
+        </div>
+        <div class="card">
+          <div class="card__h">Bundled scripts</div>
+          <div class="prow"><span class="k mono" style="width:auto">lint-spec.ts</span><span class="v">validates structure &amp; citations</span></div>
+          <div class="prow"><span class="k mono" style="width:auto">cite-check.ts</span><span class="v">resolves every id to an artifact</span></div>
+          <div class="stamp" style="margin-top:6px">vendored from <a class="link" href="#">github.com/acme/skills@a1f9c2</a> &middot; 12d ago</div>
+        </div>
+        <div class="editbar">
+          <button class="togglebtn" data-edit-toggle>Edit source</button>
+          <span class="validity"><span class="status-dot is-ok"></span>valid</span>
+          <button class="togglebtn" data-save style="display:none;background:var(--fg);color:var(--bg);border-color:var(--fg)">Save and commit</button>
+        </div>
+      </div>
+      <pre class="rawmd">---
+id: spec-writer
+kind: skill
+scripts: [lint-spec.ts, cite-check.ts]
+vendored: github.com/acme/skills@a1f9c2
+---
+# spec-writer
+Produce a spec: problem, constraints, open questions, recommendation.
+Cite founding artifacts. Stop at unknowns.</pre>
+    </section>
+
+    <!-- KNOWLEDGE -->
+    <section class="entity" data-entity="knowledge" style="display:none">
+      <div class="entity__head">
+        <span class="entity__title">house-rules.md</span>
+        <span class="entity__kind">knowledge</span>
+      </div>
+      <div class="rendered">
+        <div class="card">
+          <div class="card__h">Injected into</div>
+          <div class="backlink"><span class="avatar sm" style="background:#A6437A">ly</span><a class="link" href="#" data-goto="agents">lyra</a><span class="muted" style="font-size:12px">agent</span></div>
+          <div class="backlink"><span class="avatar sm" style="background:#2C7C9C">pk</span><a class="link" href="#">pike</a><span class="muted" style="font-size:12px">agent</span></div>
+          <div class="backlink"><span class="sq" style="width:10px;height:10px;border-radius:3px;background:#A6437A"></span><a class="link" href="#" data-goto="teams">kestrel</a><span class="muted" style="font-size:12px">team default</span></div>
+        </div>
+        <div class="editbar">
+          <button class="togglebtn" data-edit-toggle>Edit source</button>
+          <span class="validity"><span class="status-dot is-ok"></span>valid</span>
+          <button class="togglebtn" data-save style="display:none;background:var(--fg);color:var(--bg);border-color:var(--fg)">Save and commit</button>
+        </div>
+      </div>
+      <pre class="rawmd">---
+id: house-rules
+kind: knowledge
+---
+# House rules
+Ship weekly, Friday cut. Prefer boring tech. Guest checkout
+must never block on account creation.</pre>
+    </section>
+
+    <!-- TYPES -->
+    <section class="entity" data-entity="types" style="display:none">
+      <div class="entity__head">
+        <span class="entity__title" style="font-family:var(--mono)">&#9656; feature</span>
+        <span class="entity__kind">type</span>
+      </div>
+      <div class="rendered">
+        <div class="card">
+          <div class="card__h">Five kinds</div>
+          <div class="prow"><span class="k mono" style="width:auto" aria-hidden="true">&#9672;</span><span class="v"><b style="font-weight:600">inception</b> &middot; new product</span></div>
+          <div class="prow"><span class="k mono" style="width:auto" aria-hidden="true">&#9656;</span><span class="v"><b style="font-weight:600">feature</b> &middot; net-new work</span></div>
+          <div class="prow"><span class="k mono" style="width:auto" aria-hidden="true">&#9702;</span><span class="v"><b style="font-weight:600">fix</b> &middot; repair</span></div>
+          <div class="prow"><span class="k mono" style="width:auto" aria-hidden="true">&#8727;</span><span class="v"><b style="font-weight:600">spike</b> &middot; throwaway probe</span></div>
+          <div class="prow"><span class="k mono" style="width:auto" aria-hidden="true">&#9636;</span><span class="v"><b style="font-weight:600">research</b> &middot; report</span></div>
+        </div>
+        <div class="card">
+          <div class="card__h">Expected kinds</div>
+          <div class="prow"><span class="k">glyph</span><span class="v mono">&#9656;</span></div>
+          <div class="prow"><span class="k">produces</span><span class="v">spec &rarr; impl &rarr; tests</span></div>
+          <div class="prow"><span class="k">gates</span><span class="v">spec review, ship</span></div>
+        </div>
+        <div class="editbar">
+          <button class="togglebtn" data-edit-toggle>Edit source</button>
+          <span class="validity"><span class="status-dot is-ok"></span>valid</span>
+          <button class="togglebtn" data-save style="display:none;background:var(--fg);color:var(--bg);border-color:var(--fg)">Save and commit</button>
+        </div>
+      </div>
+      <pre class="rawmd">---
+id: feature
+kind: type
+glyph: "&#9656;"
+steps: [spec, impl, tests]
+gates: [spec-review, ship]
+---
+# feature
+Net-new work. One spec gate, one ship gate.</pre>
+    </section>
+
+    <!-- CONNECTORS -->
+    <section class="entity" data-entity="connectors" style="display:none">
+      <div class="entity__head">
+        <span class="status-dot is-ok" style="width:12px;height:12px"></span>
+        <span class="entity__title">github</span>
+        <span class="entity__kind">connector</span>
+      </div>
+      <div class="rendered">
+        <div class="card">
+          <div class="card__h">Health &middot; from doctor</div>
+          <div class="prow"><span class="k">status</span><span class="v" style="color:var(--ok)">ok &middot; checked 2m ago</span></div>
+          <div class="prow"><span class="k">scopes</span><span class="v mono">repo, workflow, packages</span></div>
+          <div class="prow"><span class="k">account</span><span class="v"><a class="link" href="#">acme-bot</a></span></div>
+        </div>
+        <div class="editbar">
+          <button class="togglebtn" data-edit-toggle>Edit source</button>
+          <span class="validity"><span class="status-dot is-ok"></span>valid</span>
+          <button class="togglebtn" data-save style="display:none;background:var(--fg);color:var(--bg);border-color:var(--fg)">Save and commit</button>
+        </div>
+      </div>
+      <pre class="rawmd">---
+id: github
+kind: connector
+scopes: [repo, workflow, packages]
+account: acme-bot
+---
+# github
+Source of truth for repos, branches, and releases.</pre>
+    </section>
+
+    <!-- EVALS -->
+    <section class="entity" data-entity="evals" style="display:none">
+      <div class="entity__head">
+        <span class="entity__title" style="font-family:var(--mono)">golden/checkout.eval</span>
+        <span class="entity__kind">eval</span>
+      </div>
+      <div class="rendered">
+        <div class="card">
+          <div class="card__h">Golden inputs</div>
+          <div class="prow"><span class="k mono" style="width:auto">guest-happy</span><span class="v">buys without an account</span></div>
+          <div class="prow"><span class="k mono" style="width:auto">expired-session</span><span class="v">resumes cart after timeout</span></div>
+          <div class="prow"><span class="k mono" style="width:auto">saved-card</span><span class="v">one-tap re-purchase</span></div>
+        </div>
+        <div class="card">
+          <div class="card__h">Last results</div>
+          <div class="crow"><span class="status-dot is-ok"></span><span class="nm">guest-happy</span><span class="st" style="color:var(--ok)">pass</span></div>
+          <div class="crow"><span class="status-dot is-ok"></span><span class="nm">expired-session</span><span class="st" style="color:var(--ok)">pass</span></div>
+          <div class="crow"><span class="status-dot is-danger"></span><span class="nm">saved-card</span><span class="st" style="color:var(--danger)">fail</span></div>
+          <div class="stamp" style="margin-top:6px">ran 9m ago &middot; 11/12 &middot; on <a class="link" href="run.html">checkout-flow</a></div>
+        </div>
+        <div class="editbar">
+          <button class="togglebtn" data-edit-toggle>Edit source</button>
+          <span class="validity"><span class="status-dot is-ok"></span>valid</span>
+          <button class="togglebtn" data-save style="display:none;background:var(--fg);color:var(--bg);border-color:var(--fg)">Save and commit</button>
+        </div>
+      </div>
+      <pre class="rawmd">---
+id: checkout
+kind: eval
+golden: [guest-happy, expired-session, saved-card]
+---
+# checkout eval
+Golden-path checks for the checkout flow. Gate the ship on green.</pre>
+    </section>
+  </main>
+
+  <!-- ================= ORCHESTRATOR ================= -->
+  <aside class="orch">
+    <header class="orch__head">
+      <span class="orch__mark"><i></i><b></b></span>
+      <span class="orch__title">Orchestrator</span>
+      <span class="orch__scope">registry scope</span>
+    </header>
+    <div class="orch__body">
+      <div class="msg">
+        <div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
+        <p class="msg__body">This is the registry &mdash; every definition the studio runs on. The only write here is <span class="mono">Edit source</span>: raw markdown, a validity check, then <span class="mono">Save and commit</span>. Ask me to scaffold a new team or agent and I&rsquo;ll open its source for you.</p>
+      </div>
+    </div>
+    <div class="composer">
+      <form><input type="text" placeholder="Message the Orchestrator" aria-label="Message the Orchestrator"/><span class="ret">&#8629;</span></form>
+    </div>
+  </aside>
+
+</div>
+
+<script src="app.js?v=5"></script>
+</body>
+</html>

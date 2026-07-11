@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>levare · Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="styles.css?v=6"/>
+</head>
+<body>
+
+<div class="mobilebar">
+  <button class="togglebtn" data-rail-toggle aria-label="Open registry">&#9776;</button>
+  <a class="logo" href="studio.html"><span class="logo__mark"><i></i><b></b></span><span class="logo__word">levare</span></a>
+  <span class="sp"></span>
+  <button class="themebtn" data-theme-toggle></button>
+</div>
+
+<div class="app">
+
+  <!-- ================= LEFT RAIL ================= -->
+  <aside class="rail">
+    <a class="logo" href="studio.html"><span class="logo__mark"><i></i><b></b></span><span class="logo__word">levare</span></a>
+
+    <section class="railsec">
+      <h3 class="railsec__h">Projects</h3>
+      <a class="rel" href="project.html"><span class="nm">storefront</span><span class="ag">4</span></a>
+      <a class="rel" href="project.html"><span class="nm">api</span><span class="ag">2</span></a>
+      <a class="rel" href="project.html"><span class="nm">marketing-site</span><span class="ag">1</span></a>
+    </section>
+
+    <section class="railsec">
+      <h3 class="railsec__h">Registry</h3>
+      <nav class="reg-nav">
+        <a href="registry.html">teams <span class="ct">3</span></a>
+        <a href="registry.html">agents <span class="ct">5</span></a>
+        <a href="registry.html">skills <span class="ct">9</span></a>
+        <a href="registry.html">knowledge <span class="ct">4</span></a>
+        <a href="registry.html">types <span class="ct">5</span></a>
+        <a href="registry.html">connectors <span class="ct">3</span></a>
+        <a href="registry.html">evals <span class="ct">6</span></a>
+      </nav>
+    </section>
+
+    <section class="railsec">
+      <h3 class="railsec__h">Connectors</h3>
+      <div class="crow"><span class="status-dot is-ok"></span><span class="nm">github</span><span class="st">ok</span></div>
+      <div class="crow"><span class="status-dot is-ok"></span><span class="nm">vercel</span><span class="st">ok</span></div>
+      <div class="crow"><span class="status-dot is-idle"></span><span class="nm">linear</span><span class="st">degraded</span></div>
+    </section>
+
+    <section class="railsec">
+      <h3 class="railsec__h">Recent releases</h3>
+      <a class="rel" href="#"><span class="nm">storefront@v2.4.0</span><span class="ag">2d</span></a>
+      <a class="rel" href="#"><span class="nm">api@v0.9.1</span><span class="ag">5d</span></a>
+    </section>
+
+    <section class="railsec">
+      <h3 class="railsec__h">Ideas</h3>
+      <div class="idea">offline-mode</div>
+      <div class="idea">referral-loops</div>
+      <div class="idea">bulk-export</div>
+      <div class="idea">saved-carts</div>
+    </section>
+
+    <div class="railfoot">
+      <button class="themebtn" data-theme-toggle></button>
+      <div class="stamp">last commit 2d ago<br/>by cas</div>
+    </div>
+  </aside>
+
+  <!-- ================= MAIN ================= -->
+  <main class="main">
+    <header class="phead">
+      <h1>Studio</h1>
+      <span class="deriv">derived from work/ on every request</span>
+    </header>
+
+    <div class="statstrip" style="grid-template-columns:repeat(5,1fr)">
+      <div class="stat"><div class="n is-gate" data-gatestat="3">3</div><div class="l">Gates on you</div></div>
+      <div class="stat"><div class="n">5</div><div class="l">Members running</div></div>
+      <div class="stat"><div class="n">12</div><div class="l">Units shipped &middot; 30d</div></div>
+      <div class="stat"><div class="n">18m</div><div class="l">Median gate response</div></div>
+      <div class="stat"><div class="n">$142</div><div class="l">Spend &middot; 30d</div></div>
+    </div>
+
+    <section class="sec" id="needs">
+      <div class="sec__h"><h2>Needs you</h2><span class="sec__count" data-gatecount="3">3</span></div>
+
+      <article class="gate">
+        <div class="gate__top">
+          <span class="gate__marker" aria-hidden="true">&#9656;</span>
+          <div class="gate__body">
+            <div class="gate__name-row">
+              <a class="gate__name link" href="run.html">checkout-flow.spec.md</a>
+              <span class="gate__producer">member/<b>lyra</b></span>
+            </div>
+            <p class="gate__ctx">Spec ready for review; two open questions on guest checkout.</p>
+            <div class="gate__consumes">consumes: <a href="run.html">product-brief-v1</a> &middot; <a href="run.html">design-checkout-v1</a></div>
+            <div class="gate__meta"><span>14m</span><span class="cost">38k tok &middot; ~$0.58</span></div>
+          </div>
+          <span class="gate__badge">on you</span>
+        </div>
+        <div class="gate__verbs">
+          <button class="verb is-primary" data-verb="approve">Approve</button>
+          <button class="verb is-secondary" data-verb="request">Request changes</button>
+          <button class="verb is-danger" data-verb="reject">Reject</button>
+        </div>
+      </article>
+
+      <article class="gate gate--start">
+        <div class="gate__top">
+          <span class="gate__marker">&#9672;</span>
+          <div class="gate__body">
+            <div class="gate__name-row">
+              <a class="gate__name link" href="run.html">onboarding-revamp</a>
+              <span class="gate__producer">inception</span>
+            </div>
+            <p class="gate__ctx">Queued work unit awaiting your beat to begin.</p>
+            <div class="gate__meta"><span>&#8592; pitch/onboarding</span><span>3m</span></div>
+          </div>
+          <span class="gate__badge is-start">start gate</span>
+        </div>
+        <div class="gate__verbs">
+          <button class="verb is-primary" data-verb="start">Start</button>
+          <button class="verb is-secondary" data-verb="notyet">Not yet</button>
+          <button class="verb" data-verb="rescope">Re-scope</button>
+        </div>
+      </article>
+
+      <article class="gate">
+        <div class="gate__top">
+          <span class="gate__marker" aria-hidden="true">&#9702;</span>
+          <div class="gate__body">
+            <div class="gate__name-row">
+              <a class="gate__name link" href="run.html">auth-refresh.patch.md</a>
+              <span class="gate__producer">member/<b>pike</b></span>
+            </div>
+            <p class="gate__ctx">Token refresh race fixed; needs sign-off before merge.</p>
+            <div class="gate__consumes">consumes: <a href="run.html">api-auth-v1</a></div>
+            <div class="gate__meta"><span>41m</span><span class="cost">22k tok &middot; ~$0.31</span></div>
+          </div>
+          <span class="gate__badge">on you</span>
+        </div>
+        <div class="gate__verbs">
+          <button class="verb is-primary" data-verb="approve">Approve</button>
+          <button class="verb is-secondary" data-verb="request">Request changes</button>
+          <button class="verb is-danger" data-verb="reject">Reject</button>
+        </div>
+      </article>
+    </section>
+
+    <section class="sec">
+      <div class="sec__h"><h2>Running now</h2></div>
+      <div>
+        <div class="mrow">
+          <span class="avatar sm" style="background:#A6437A;--pulse-c:#A6437A;animation:lv-pulse 1.9s infinite">ly</span>
+          <span class="who">lyra</span><span class="doing">drafting checkout spec</span>
+          <span class="step">step 3/6</span><span class="elapsed">14m</span>
+        </div>
+        <div class="mrow">
+          <span class="avatar sm" style="background:#2C7C9C;--pulse-c:#2C7C9C;animation:lv-pulse 1.9s infinite">pk</span>
+          <span class="who">pike</span><span class="doing">writing auth patch</span>
+          <span class="step">step 5/5</span><span class="elapsed">41m</span>
+        </div>
+        <div class="mrow">
+          <span class="avatar sm" style="background:#3E7C52;--pulse-c:#3E7C52;animation:lv-pulse 1.9s infinite">wr</span>
+          <span class="who">wren</span><span class="doing">generating test suite</span>
+          <span class="step">step 2/4</span><span class="elapsed">6m</span>
+        </div>
+        <div class="mrow">
+          <span class="avatar sm" style="background:#2C7C9C;--pulse-c:#2C7C9C;animation:lv-pulse 1.9s infinite">ov</span>
+          <span class="who">ovid</span><span class="doing">reviewing pull request</span>
+          <span class="step">step 4/6</span><span class="elapsed">2m</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec">
+      <div class="sec__h"><h2>Projects</h2></div>
+      <div class="pcards">
+        <a class="pcard" href="project.html">
+          <div class="pcard__top"><span class="chip is-gate">1 gate</span><span class="pcard__age" style="margin-left:auto">14m</span></div>
+          <span class="pcard__name">storefront</span>
+          <span class="pcard__desc">Checkout spec is at a gate, awaiting your review.</span>
+          <div class="pcard__meta"><span>3 running</span><span>4 units</span></div>
+          <div class="pcard__tags">
+            <span class="tag">v2.4.0</span>
+            <span class="tag"><span class="status-dot is-danger"></span>11/12 evals</span>
+          </div>
+        </a>
+        <a class="pcard" href="project.html">
+          <div class="pcard__top"><span class="chip is-gate">1 gate</span><span class="pcard__age" style="margin-left:auto">41m</span></div>
+          <span class="pcard__name">api</span>
+          <span class="pcard__desc">Auth patch ready and awaiting sign-off before merge.</span>
+          <div class="pcard__meta"><span>1 running</span><span>2 units</span></div>
+          <div class="pcard__tags">
+            <span class="tag">v0.9.1</span>
+            <span class="tag"><span class="status-dot is-ok"></span>8/8 evals</span>
+          </div>
+        </a>
+        <a class="pcard" href="project.html">
+          <div class="pcard__top"><span class="chip is-progress">running</span><span class="pcard__age" style="margin-left:auto">3h</span></div>
+          <span class="pcard__name">marketing-site</span>
+          <span class="pcard__desc">Landing copy refresh underway; nothing on you.</span>
+          <div class="pcard__meta"><span>1 running</span><span>1 unit</span></div>
+          <div class="pcard__tags">
+            <span class="tag">v1.2.0</span>
+            <span class="tag"><span class="status-dot is-ok"></span>4/4 evals</span>
+          </div>
+        </a>
+      </div>
+    </section>
+  </main>
+
+  <!-- ================= ORCHESTRATOR ================= -->
+  <aside class="orch">
+    <header class="orch__head">
+      <span class="orch__mark"><i></i><b></b></span>
+      <span class="orch__title">Orchestrator</span>
+      <span class="orch__scope">studio scope</span>
+    </header>
+    <div class="orch__body">
+      <div class="msg">
+        <div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
+        <p class="msg__body">Three gates are on you. The oldest, <a class="link" href="run.html">auth-refresh.patch.md</a>, has waited <span class="mono">41m</span> &mdash; median is holding at <span class="mono">18m</span>. <a class="link" href="run.html">checkout-flow</a> raised two guest-checkout questions worth a look. Nothing else needs a decision.</p>
+      </div>
+      <div class="summon" data-summon="tpl-authgate" data-narrate="auth-refresh from pike &mdash; the token refresh race is fixed and it needs sign-off before merge.">
+        <span class="dia" aria-hidden="true"></span><span>Review auth-refresh</span>
+      </div>
+    </div>
+    <div class="composer">
+      <form><input type="text" placeholder="Message the Orchestrator" aria-label="Message the Orchestrator"/><span class="ret">&#8629;</span></form>
+    </div>
+  </aside>
+
+</div>
+
+<template id="tpl-authgate">
+  <article class="gate gate--cta">
+    <div class="gate__banner"><span class="dia" aria-hidden="true"></span><span class="t">Gate &middot; auth sign-off</span></div>
+    <div class="gate__inner">
+      <div class="gate__name-row"><a class="gate__name link" href="run.html">auth-refresh.patch.md</a><span class="gate__producer">member/<b>pike</b></span></div>
+      <p class="gate__ctx">Token refresh race fixed; needs sign-off before merge.</p>
+      <div class="gate__consumes">consumes: <a href="#">api-auth-v1</a></div>
+      <div class="gate__meta"><span>&#8592; api/auth</span><span>41m</span><span class="cost">22k tok &middot; ~$0.31</span></div>
+      <div class="gate__verbs">
+        <button class="verb is-primary" data-verb="approve">Approve</button>
+        <button class="verb is-secondary" data-verb="request">Request changes</button>
+        <button class="verb is-danger" data-verb="reject">Reject</button>
+      </div>
+    </div>
+  </article>
+</template>
+
+<script src="app.js?v=5"></script>
+</body>
+</html>

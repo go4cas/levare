@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>levare · run · checkout-flow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="styles.css?v=6"/>
+</head>
+<body>
+
+<div class="mobilebar">
+  <button class="togglebtn" data-rail-toggle aria-label="Open score">&#9776;</button>
+  <a class="logo" href="studio.html"><span class="logo__mark"><i></i><b></b></span><span class="logo__word">levare</span></a>
+  <span class="sp"></span>
+  <button class="themebtn" data-theme-toggle></button>
+</div>
+
+<div class="app app--run">
+
+  <!-- ================= LEFT: SCORE ================= -->
+  <aside class="rail">
+    <a class="logo" href="studio.html"><span class="logo__mark"><i></i><b></b></span><span class="logo__word">levare</span></a>
+    <section class="railsec">
+      <h3 class="railsec__h">Score &middot; run #1</h3>
+      <div class="score2" style="margin-top:14px">
+        <div class="sstep done">
+          <div class="sstep__rail"><span class="snode done" aria-hidden="true"></span><span class="sstep__line" aria-hidden="true"></span></div>
+          <div class="sstep__av"><span class="avatar avatar--conductor sm">C</span></div>
+          <div class="sstep__body"><span class="sstep__label">Brief</span><span class="sstep__sub">you &middot; product-brief.md</span><span class="chip is-approved sstep__chip">approved</span></div>
+        </div>
+        <div class="sstep done">
+          <div class="sstep__rail"><span class="snode done" aria-hidden="true"></span><span class="sstep__line" aria-hidden="true"></span></div>
+          <div class="sstep__av"><span class="avatar sm" style="background:#A6437A">ly</span></div>
+          <div class="sstep__body"><span class="sstep__label">Research</span><span class="sstep__sub">kestrel/lyra &middot; research.md</span><span class="chip is-approved sstep__chip">approved</span></div>
+        </div>
+        <div class="sstep done">
+          <div class="sstep__rail"><span class="snode done" aria-hidden="true"></span><span class="sstep__line" aria-hidden="true"></span></div>
+          <div class="sstep__av"><span class="avatar sm" style="background:#A6437A">ly</span></div>
+          <div class="sstep__body"><span class="sstep__label">Spec</span><span class="sstep__sub">kestrel/lyra &middot; checkout-flow.spec.md</span><span class="chip is-approved sstep__chip">approved</span></div>
+        </div>
+        <div class="sstep">
+          <div class="sstep__rail"><span class="snode is-gate-open" aria-hidden="true"></span><span class="sstep__line" aria-hidden="true"></span></div>
+          <div class="sstep__av"></div>
+          <div class="sstep__body"><span class="sstep__label">Gate &middot; spec review</span><span class="sstep__sub">awaiting you</span><span class="chip is-gate sstep__chip">needs you</span></div>
+        </div>
+        <div class="sstep">
+          <div class="sstep__rail"><span class="snode active" aria-hidden="true"></span><span class="sstep__line" aria-hidden="true"></span></div>
+          <div class="sstep__av"><span class="avatar sm blink" style="background:#A6437A">ly</span></div>
+          <div class="sstep__body"><span class="sstep__label">Build</span><span class="sstep__sub">kestrel/lyra &middot; checkout.impl.md</span></div>
+        </div>
+        <div class="sstep upcoming">
+          <div class="sstep__rail"><span class="snode is-gate" aria-hidden="true"></span></div>
+          <div class="sstep__av"></div>
+          <div class="sstep__body"><span class="sstep__label">Ship gate</span><span class="sstep__sub">queued</span></div>
+        </div>
+      </div>
+    </section>
+    <div class="railfoot">
+      <button class="themebtn" data-theme-toggle></button>
+      <div class="stamp">run/units/0f3a<br/>started 22m ago</div>
+    </div>
+  </aside>
+
+  <!-- ================= CENTER: TIMELINE ================= -->
+  <main class="main">
+    <header class="phead">
+      <div class="crumb"><a href="studio.html">studio</a><span>/</span><a href="project.html">storefront</a><span>/</span><span>checkout-flow</span></div>
+      <h1><span style="font-family:var(--mono);font-weight:400;margin-right:8px" aria-hidden="true">&#9656;</span>checkout-flow</h1>
+      <span class="deriv">feature &middot; derived from work/storefront/checkout-flow/ on every request</span>
+    </header>
+
+    <section class="sec">
+      <div class="sec__h"><h2>Timeline <span class="mono" style="color:var(--fg-mute);font-weight:400">&middot; from git log + runner events</span></h2></div>
+      <div class="tl-date">Saturday 11 July</div>
+      <div class="timeline">
+        <div class="tlrow"><span class="tlrow__time">13:44</span><span class="tlrow__text"><span class="avatar avatar--conductor sm">C</span><span class="who">you</span> kicked off <a class="tok" href="#">checkout-flow</a> &mdash; brief captured as <a class="tok" href="#">product-brief.md</a></span></div>
+        <div class="tlrow"><span class="tlrow__time">13:44</span><span class="tlrow__text"><span class="avatar avatar--runner sm">R</span><span class="who">runner</span> walked DAG &middot; <a class="tok" href="#">spec</a> producible &rarr; invoked <a class="tok" href="registry.html">kestrel/lyra</a> (fresh context)</span></div>
+        <div class="tlrow"><span class="tlrow__time">13:52</span><span class="tlrow__text"><span class="avatar sm" style="background:#A6437A">ly</span><span class="who" style="color:#A6437A">lyra</span> gathered context &rarr; wrote <a class="tok" href="#">research.md</a> <span class="cost">&middot; 24k tok &middot; ~$0.36</span></span></div>
+        <div class="tlrow"><span class="tlrow__time">14:00</span><span class="tlrow__text"><span class="avatar sm" style="background:#A6437A">ly</span><span class="who" style="color:#A6437A">lyra</span> wrote <a class="tok" href="#">checkout-flow.spec.md</a> &rarr; in-review &middot; 2 open questions <span class="cost">&middot; 41k tok &middot; ~$0.62</span></span></div>
+        <div class="tlrow"><span class="tlrow__time">14:00</span><span class="tlrow__text"><span class="diamond is-gate" style="width:15px;height:15px" aria-hidden="true"></span><span class="who" style="color:var(--gate)">gate</span> raised on <a class="tok" href="#">checkout-flow.spec.md</a> &mdash; awaiting cas</span></div>
+        <div class="tlrow"><span class="tlrow__time">14:02</span><span class="tlrow__text"><span class="avatar sm blink" style="background:#A6437A">ly</span><span class="who" style="color:#A6437A">lyra</span> drafting <a class="tok" href="#">checkout.impl.md</a> while the review is open</span></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ================= ORCHESTRATOR ================= -->
+  <aside class="orch">
+    <header class="orch__head">
+      <span class="orch__mark"><i></i><b></b></span>
+      <span class="orch__title">Orchestrator</span>
+      <span class="orch__scope">run scope</span>
+    </header>
+    <div class="orch__body">
+      <div class="msg">
+        <div class="msg__label"><span class="k">briefing</span><span class="t">14m</span></div>
+        <p class="msg__body">lyra finished the spec. Two questions are open: whether guest checkout falls back to a saved card, and how we handle expired sessions. Her recommendation is in the draft &mdash; the gate is below.</p>
+      </div>
+
+      <article class="gate gate--cta">
+        <div class="gate__banner"><span class="dia" aria-hidden="true"></span><span class="t">Gate &middot; spec review</span></div>
+        <div class="gate__inner">
+          <div class="gate__name-row"><a class="gate__name link" href="#">checkout-flow.spec.md</a><span class="gate__producer">member/<b>lyra</b></span></div>
+          <p class="gate__ctx">Guest checkout with saved-card fallback &middot; 2 open questions flagged.</p>
+          <div class="gate__consumes">consumes: <a href="#">product-brief-v1</a> &middot; <a href="#">design-checkout-v1</a></div>
+          <div class="gate__meta"><span>&#8592; storefront/checkout</span><span>14m</span><span class="cost">38k tok &middot; ~$0.58</span></div>
+          <div class="gate__verbs">
+            <button class="verb is-primary" data-verb="approve">Approve</button>
+            <button class="verb is-secondary" data-verb="request">Request changes</button>
+            <button class="verb is-danger" data-verb="reject">Reject</button>
+          </div>
+        </div>
+      </article>
+    </div>
+    <div class="composer">
+      <form><input type="text" placeholder="Message the Orchestrator" aria-label="Message the Orchestrator"/><span class="ret">&#8629;</span></form>
+    </div>
+  </aside>
+
+</div>
+
+<script src="app.js?v=5"></script>
+</body>
+</html>

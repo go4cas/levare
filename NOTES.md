@@ -64,7 +64,10 @@ setup rather than proceeding.
     treated as **valid**, because the approval itself is what will be committed, so there is no
     prior baseline to violate;
   - **S2a** file tracked in `HEAD` and unchanged → **valid**;
-  - **S2b** file tracked in `HEAD` and differs → **`MODIFIED_AFTER_APPROVAL`**.
+  - **S2b** file tracked in `HEAD` and differs → **`MODIFIED_AFTER_APPROVAL`**;
+  - **S2e** `git diff` itself errored (status > 1, e.g. a corrupt index) → unverifiable → treated as
+    **valid** (fail-open, consistent with S0/S1) but recorded distinctly so a git error can never
+    impersonate a verified-unchanged `S2a`.
 - the S2 comparison uses `git diff --quiet HEAD -- <path>` (honours the repo's own normalization
   such as `core.autocrlf`) rather than a raw byte-compare of `git show` output, so a checkout
   filter cannot manufacture a false "modified" verdict.
@@ -85,3 +88,29 @@ The validator dispatches a schema by file location (folder → entity kind; `wor
 work unit; other files under `work/.../` with a `kind:` → artifact). It validates structure/types,
 enum membership, unknown-key rejection, and cross-artifact `consumes`/`supersedes` resolution
 within a project. Deeper runtime rules (DAG walk, flow execution, gate lifecycle) are Phase 2.
+
+## A6. Work-unit status enum was invented
+The PRD gives artifact `status` an explicit enum (§4) but does not enumerate **work-unit** `status`.
+**Assumption:** the work-unit enum is `active | paused | blocked | shipped | abandoned`. `queued` is
+**deliberately excluded**: a unit with an unmet `after:` is not a stored status but a *computed*
+state — §6 says such units are "invisible to the walk" until the `after:` condition is satisfied, at
+which point a start gate is raised. Making "queued" a persisted status would duplicate (and risk
+contradicting) that derivation, violating the files-are-truth invariant. When the Runner lands in
+Phase 2 this enum should be reconciled against how the walk actually reports unit state.
+
+## A7. Immutability check detects uncommitted drift only (known limitation)
+The current `MODIFIED_AFTER_APPROVAL` check compares the working tree against `HEAD`, so it catches
+an approved artifact edited **but not yet committed** (state S2b). It does **not** implement the true
+§4 rule — "an approved artifact's file content may not change in a *later commit*", i.e. unchanged
+since *the commit in which it was approved*. A mutation that is itself committed advances `HEAD`, so
+the working tree matches `HEAD` again and the check reports S2a (valid). Detecting that requires
+knowing the approval commit ref for each artifact, which does not exist yet at Phase 1.
+**Deferred.** The natural future mechanism: the gate handler (Phase 4's `POST /gates/...approve`)
+commits at approval time — with the Conductor as author (§4) — so the approving commit's SHA is
+knowable and can be recorded (e.g. in the artifact's frontmatter or a lineage index). The
+immutability check would then diff the artifact against *that* ref rather than `HEAD`, closing the
+committed-mutation gap.
+
+## Learnings
+Subprocess-calling code inherits a hostile world: pin git config at the spawn site, canonicalize paths before comparing them, and test against dirty environments (symlinked tmpdirs, hostile global config) — not just clean ones.
+Validation must fail closed: every early-exit "valid" state is an escape hatch; make the taken state observable and assert it explicitly in tests.

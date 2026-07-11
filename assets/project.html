@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>levare · storefront</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="styles.css?v=6"/>
+</head>
+<body>
+
+<div class="mobilebar">
+  <button class="togglebtn" data-rail-toggle aria-label="Open context">&#9776;</button>
+  <a class="logo" href="studio.html"><span class="logo__mark"><i></i><b></b></span><span class="logo__word">levare</span></a>
+  <span class="sp"></span>
+  <button class="themebtn" data-theme-toggle></button>
+</div>
+
+<div class="app">
+
+  <!-- ================= LEFT RAIL: project context ================= -->
+  <aside class="rail">
+    <a class="logo" href="studio.html"><span class="logo__mark"><i></i><b></b></span><span class="logo__word">levare</span></a>
+
+    <section class="railsec">
+      <h3 class="railsec__h">Pointer &middot; storefront</h3>
+      <div class="prow"><span class="k">repo</span><a class="link" href="#">acme/storefront</a></div>
+      <div class="prow"><span class="k">deploy</span><a class="link" href="#">storefront.acme.dev</a></div>
+      <div class="prow"><span class="k">pace</span><span class="v">weekly &middot; Fri cut</span></div>
+    </section>
+
+    <section class="railsec">
+      <h3 class="railsec__h">Constitution</h3>
+      <div class="founding"><a class="link" href="run.html">product-brief.md</a><span class="cite">cited 8</span></div>
+      <div class="founding"><a class="link" href="run.html">house-rules.md</a><span class="cite">cited 5</span></div>
+      <div class="founding"><a class="link" href="run.html" style="color:var(--fg-mute);"><s>v1-checkout.spec.md</s></a><span class="cite">superseded</span></div>
+    </section>
+
+    <section class="railsec">
+      <h3 class="railsec__h">Releases</h3>
+      <a class="rel" href="#"><span class="nm">storefront@v2.4.0</span><span class="ag">2d</span></a>
+      <a class="rel" href="#"><span class="nm">storefront@v2.3.4</span><span class="ag">9d</span></a>
+    </section>
+
+    <div class="railfoot">
+      <button class="themebtn" data-theme-toggle></button>
+      <div class="stamp">last commit 14m ago<br/>by cas</div>
+    </div>
+  </aside>
+
+  <!-- ================= MAIN ================= -->
+  <main class="main">
+    <header class="phead">
+      <div class="crumb"><a href="studio.html">studio</a><span>/</span><span>storefront</span></div>
+      <h1>storefront</h1>
+      <span class="deriv">derived from work/storefront/ on every request</span>
+    </header>
+
+    <div class="statstrip">
+      <div class="stat"><div class="n">8</div><div class="l">Shipped units</div></div>
+      <div class="stat"><div class="n">3</div><div class="l">Active</div></div>
+      <div class="stat"><div class="n">1.5</div><div class="l">Median review rounds</div></div>
+      <div class="stat"><div class="n">26m</div><div class="l">Median gate response</div></div>
+    </div>
+
+    <section class="sec">
+      <div class="sec__h"><h2>Work units</h2></div>
+      <div class="units">
+
+        <div class="unit is-open">
+          <div class="unit__head">
+            <span class="unit__glyph">&#9656;</span>
+            <div class="unit__titlewrap">
+              <span class="unit__name">checkout-flow</span>
+              <a class="unit__path link" href="run.html">work/storefront/checkout-flow/</a>
+            </div>
+            <span class="chip is-gate">at gate</span>
+          </div>
+          <div class="unit__desc">Guest checkout with saved-card fallback &middot; lyra drafting</div>
+          <div class="miniscore unit__score">
+            <span class="dot is-done"></span><span class="dot is-done"></span><span class="dot is-active"></span><span class="diamond is-gate"></span><span class="dot is-wait"></span>
+          </div>
+          <div class="unit__detail">
+            <div class="aitem"><span class="ind ind-done"></span><a class="nm link" href="run.html">product-brief.md</a><span class="st">approved</span></div>
+            <div class="aitem"><span class="ind ind-gate"></span><a class="nm link" href="run.html">checkout-flow.spec.md</a><span class="st gate">at gate</span></div>
+            <div class="aitem"><span class="ind ind-prog"></span><a class="nm link" href="run.html">checkout.impl.md</a><span class="st">in progress</span></div>
+            <div class="unit__foot">1 review round &middot; 2 gates <span class="cost">&middot; 128k tok &middot; ~$1.94</span></div>
+            <div class="unit__actions">
+              <a class="verb is-primary" href="run.html">Open run view</a>
+              <button class="verb is-secondary" data-summon="tpl-checkoutgate" data-narrate="checkout-flow from lyra &mdash; the spec is ready with two open questions on guest checkout.">Review gate</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="unit">
+          <div class="unit__head">
+            <span class="unit__glyph">&#9702;</span>
+            <div class="unit__titlewrap">
+              <span class="unit__name">auth-refresh</span>
+              <a class="unit__path link" href="run.html">work/storefront/auth-refresh/</a>
+            </div>
+            <span class="chip is-gate">at gate</span>
+          </div>
+          <div class="unit__desc">Fix a token refresh race before merge &middot; pike</div>
+          <div class="miniscore unit__score">
+            <span class="dot is-done"></span><span class="dot is-active"></span><span class="diamond is-gate"></span>
+          </div>
+          <div class="unit__detail">
+            <div class="aitem"><span class="ind ind-gate"></span><a class="nm link" href="run.html">auth-refresh.patch.md</a><span class="st gate">at gate</span></div>
+            <div class="unit__foot">0 review rounds &middot; 1 gate <span class="cost">&middot; 22k tok &middot; ~$0.31</span></div>
+            <div class="unit__actions">
+              <a class="verb is-primary" href="run.html">Open run view</a>
+              <button class="verb is-secondary" data-summon="tpl-authgate" data-narrate="auth-refresh from pike &mdash; token refresh race fixed, needs sign-off before merge.">Review gate</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="unit">
+          <div class="unit__head">
+            <span class="unit__glyph">&#9656;</span>
+            <div class="unit__titlewrap">
+              <span class="unit__name">search-ranking</span>
+              <a class="unit__path link" href="run.html">work/storefront/search-ranking/</a>
+            </div>
+            <span class="chip is-progress">in progress</span>
+          </div>
+          <div class="unit__desc">Re-rank results by recency and stock &middot; wren generating tests</div>
+          <div class="miniscore unit__score">
+            <span class="dot is-done"></span><span class="dot is-active"></span><span class="dot is-wait"></span><span class="diamond is-start"></span>
+          </div>
+          <div class="unit__detail">
+            <div class="aitem"><span class="ind ind-done"></span><a class="nm link" href="run.html">search-ranking.spec.md</a><span class="st">approved</span></div>
+            <div class="aitem"><span class="ind ind-prog"></span><a class="nm link" href="run.html">ranking.impl.md</a><span class="st">in progress</span></div>
+            <div class="unit__foot">1 review round &middot; 1 gate <span class="cost">&middot; 63k tok &middot; ~$0.95</span></div>
+            <div class="unit__actions">
+              <a class="verb is-primary" href="run.html">Open run view</a>
+            </div>
+          </div>
+        </div>
+
+        <div class="unit">
+          <div class="unit__head">
+            <span class="unit__glyph">&#9672;</span>
+            <div class="unit__titlewrap">
+              <span class="unit__name">storefront-v2</span>
+              <a class="unit__path link" href="run.html">work/storefront/storefront-v2/</a>
+            </div>
+            <span class="chip is-approved">shipped</span>
+          </div>
+          <div class="unit__desc">Founding rebuild: PRD, design system, architecture &middot; shipped 28 Jun</div>
+          <div class="miniscore unit__score">
+            <span class="dot is-done"></span><span class="dot is-done"></span><span class="diamond is-cleared"></span><span class="dot is-done"></span><span class="dot is-done"></span><span class="dot is-done"></span>
+          </div>
+          <div class="unit__detail">
+            <div class="aitem"><span class="ind ind-done"></span><a class="nm link" href="run.html">storefront-v2.inception.md</a><span class="st">approved</span></div>
+            <div class="aitem"><span class="ind ind-done"></span><a class="nm link" href="run.html">design-system.md</a><span class="st">approved</span></div>
+            <div class="aitem"><span class="ind ind-super"></span><a class="nm link" href="run.html"><s>v1-checkout.spec.md</s></a><span class="st">superseded</span></div>
+            <div class="aitem"><span class="ind ind-done"></span><a class="nm link" href="run.html">launch-brief.md</a><span class="st">approved</span></div>
+            <div class="unit__foot">2 review rounds &middot; 6 gates <span class="cost">&middot; 410k tok &middot; ~$6.20</span></div>
+            <div class="unit__actions">
+              <a class="verb is-primary" href="run.html">Open run view</a>
+            </div>
+          </div>
+        </div>
+
+        <div class="unit">
+          <div class="unit__head">
+            <span class="unit__glyph">&#8727;</span>
+            <div class="unit__titlewrap">
+              <span class="unit__name">webhook-probe</span>
+              <a class="unit__path link" href="run.html">work/storefront/webhook-probe/</a>
+            </div>
+            <span class="chip is-progress">in progress</span>
+          </div>
+          <div class="unit__desc">Time-boxed probe: can we verify webhooks without a staging account? &middot; wren</div>
+          <div class="miniscore unit__score">
+            <span class="dot is-done"></span><span class="dot is-active"></span>
+          </div>
+          <div class="unit__detail">
+            <div class="aitem"><span class="ind ind-prog"></span><a class="nm link" href="run.html">findings.md</a><span class="st">in progress</span></div>
+            <div class="unit__foot">0 review rounds &middot; 0 gates &middot; disposable <span class="cost">&middot; 12k tok &middot; ~$0.18</span></div>
+            <div class="unit__actions">
+              <a class="verb is-primary" href="run.html">Open run view</a>
+            </div>
+          </div>
+        </div>
+
+        <div class="unit">
+          <div class="unit__head">
+            <span class="unit__glyph">&#9636;</span>
+            <div class="unit__titlewrap">
+              <span class="unit__name">checkout-benchmarks</span>
+              <a class="unit__path link" href="run.html">work/storefront/checkout-benchmarks/</a>
+            </div>
+            <span class="chip is-approved">shipped</span>
+          </div>
+          <div class="unit__desc">Competitive teardown of five checkout flows &middot; report delivered 2 Jul</div>
+          <div class="miniscore unit__score">
+            <span class="dot is-done"></span><span class="dot is-done"></span><span class="diamond is-cleared"></span>
+          </div>
+          <div class="unit__detail">
+            <div class="aitem"><span class="ind ind-done"></span><a class="nm link" href="run.html">checkout-benchmarks.report.md</a><span class="st">approved</span></div>
+            <div class="unit__foot">1 review round &middot; 1 gate <span class="cost">&middot; 63k tok &middot; ~$0.95</span></div>
+            <div class="unit__actions">
+              <a class="verb is-primary" href="run.html">Open run view</a>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </main>
+
+  <!-- ================= ORCHESTRATOR ================= -->
+  <aside class="orch">
+    <header class="orch__head">
+      <span class="orch__mark"><i></i><b></b></span>
+      <span class="orch__title">Orchestrator</span>
+      <span class="orch__scope">project scope</span>
+    </header>
+    <div class="orch__body">
+      <div class="msg">
+        <div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
+        <p class="msg__body">storefront has two units at a gate &mdash; <a class="link" href="run.html">checkout-flow</a> and <a class="link" href="run.html">auth-refresh</a>. <span class="mono">search-ranking</span> is mid-build and clean. Expand a unit to open its run or summon its gate here.</p>
+      </div>
+    </div>
+    <div class="composer">
+      <form><input type="text" placeholder="Message the Orchestrator" aria-label="Message the Orchestrator"/><span class="ret">&#8629;</span></form>
+    </div>
+  </aside>
+
+</div>
+
+<template id="tpl-checkoutgate">
+  <article class="gate gate--cta">
+    <div class="gate__banner"><span class="dia" aria-hidden="true"></span><span class="t">Gate &middot; spec review</span></div>
+    <div class="gate__inner">
+      <div class="gate__name-row"><a class="gate__name link" href="run.html">checkout-flow.spec.md</a><span class="gate__producer">member/<b>lyra</b></span></div>
+      <p class="gate__ctx">Guest checkout with saved-card fallback &middot; 2 open questions flagged.</p>
+      <div class="gate__consumes">consumes: <a href="#">product-brief-v1</a> &middot; <a href="#">design-checkout-v1</a></div>
+      <div class="gate__meta"><span>&#8592; storefront/checkout</span><span>14m</span><span class="cost">38k tok &middot; ~$0.58</span></div>
+      <div class="gate__verbs">
+        <button class="verb is-primary" data-verb="approve">Approve</button>
+        <button class="verb is-secondary" data-verb="request">Request changes</button>
+        <button class="verb is-danger" data-verb="reject">Reject</button>
+      </div>
+    </div>
+  </article>
+</template>
+<template id="tpl-authgate">
+  <article class="gate gate--cta">
+    <div class="gate__banner"><span class="dia" aria-hidden="true"></span><span class="t">Gate &middot; auth sign-off</span></div>
+    <div class="gate__inner">
+      <div class="gate__name-row"><a class="gate__name link" href="run.html">auth-refresh.patch.md</a><span class="gate__producer">member/<b>pike</b></span></div>
+      <p class="gate__ctx">Token refresh race fixed; needs sign-off before merge.</p>
+      <div class="gate__consumes">consumes: <a href="#">api-auth-v1</a></div>
+      <div class="gate__meta"><span>&#8592; api/auth</span><span>41m</span><span class="cost">22k tok &middot; ~$0.31</span></div>
+      <div class="gate__verbs">
+        <button class="verb is-primary" data-verb="approve">Approve</button>
+        <button class="verb is-secondary" data-verb="request">Request changes</button>
+        <button class="verb is-danger" data-verb="reject">Reject</button>
+      </div>
+    </div>
+  </article>
+</template>
+
+<script src="app.js?v=5"></script>
+</body>
+</html>
