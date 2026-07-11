@@ -495,3 +495,39 @@ process is broken," because it never goes through that entry point. A long-runni
 least one test that spawns the real binary/script a user actually runs and talks to it over an
 actual socket — the fast in-process tests and the one slow subprocess test are complementary, not
 substitutes for each other.
+
+## E13. Registry entities restyled as one bordered card each (design-fidelity fix)
+
+The registry previously rendered each entity as a bare `<section class="entity">` (no border/
+background of its own) containing one or more separately-bordered `<div class="card">` sub-panels
+("Declared flow", "Definition", etc.) plus an `.editbar` and a `.rawmd` `<pre>` that visually floated
+outside any bordered container — inconsistent with every other screen's component vocabulary (gate
+cards, unit rows, project cards are each a single bordered container). Fixed by making the outer
+wrapper itself `<article class="entity card">` — reusing the `.card` rule already declared for a
+labeled panel in `assets/styles.css` (no new CSS added) — and flattening the inner sub-panels from
+their own nested `<div class="card">` into plain `.card__h`-labeled sections directly inside that one
+outer card, so header, body, and the Edit-source actions all sit inside one bordered container with
+no card-in-a-card nesting. `.entity` is kept alongside `.card` on the same element purely so app.js's
+existing `[data-entity]`/`.entity.is-editing` selectors keep working unchanged; it contributes no
+styling `.card` doesn't already provide. `tests/board-render.test.ts` asserts one `.entity.card` per
+rendered entity, an `.editbar` inside every one of them, and zero remaining nested `<div class="card">`.
+
+## Incident: a stray `./levare serve fixtures/golden` process mutated the real golden fixture
+
+While demonstrating the phase-4 SIGINT fix (E12), a manual verification server was pointed directly
+at the real `fixtures/golden` (reasoned as "read-only, GETs only, so it's fine") and, despite the
+demo's own `kill -INT` appearing to succeed at the time (`ps -p $PID` returned not-found), a `bun
+./levare serve fixtures/golden` process was later found still running and had received (from an
+unidentified source — nothing in the recorded transcript issued it) a `POST
+/gates/storefront/spec-checkout-flow-v1/approve`, leaving the real fixture's `spec-checkout-flow-v1.md`
+modified on disk (`status: approved`, `approved_by: "cas 2026-07-11"`) though never committed. Caught
+immediately by `levare validate` refusing to load the repo (`MODIFIED_AFTER_APPROVAL` — the phase-1
+immutability check doing exactly its job) while starting work on this ticket. The stray process was
+killed (`kill -9`) and the file restored via `git checkout --`; `levare validate fixtures/golden`
+confirms clean, and `git status` shows no unintended changes.
+**Standing rule going forward:** any live/backgrounded `levare serve` process — even one only being
+exercised with GETs *right now* — is a standing write surface for as long as it stays up, because it
+can outlive the shell session that started it and nothing about a "read-only demo" plan prevents a
+later request (from any source able to reach the port) from hitting a mutating route. Every manual
+`serve` demonstration from here on runs against a throwaway copy of the fixture, never `fixtures/
+golden` directly, exactly as every automated test in this suite already does.
