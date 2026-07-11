@@ -1,6 +1,12 @@
-import { test, expect, describe } from "bun:test";
+import { test, expect, describe, afterEach } from "bun:test";
+import { mkdtempSync, rmSync, cpSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadRepo } from "../src/repo.ts";
 import { renderStudio, renderProject, renderRun, renderRegistry } from "../src/board/render.ts";
+import { scoreNodes } from "../src/board/derive.ts";
+import { resolveGate } from "../src/board/gateops.ts";
 
 // PRD §9 / phase-4 acceptance: snapshot tests assert each screen's rendered HTML contains the
 // required structures — score with state nodes + team-avatar column, gate cards with
@@ -140,5 +146,87 @@ describe("registry screen", () => {
     expect(kestrelCard).toContain('class="flowstrip"');
     expect(kestrelCard).toContain('class="editbar"');
     expect(kestrelCard).toContain("data-edit-toggle");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Run-view score rail: a node marker for EVERY step, artifact or not, including after a gate
+// resolution. Reproduced against a real scratch git repo through the actual `resolveGate` write
+// path (not a synthetic in-memory repo) — the same shape a reported regression described: queued
+// steps with no artifact (code, review) losing their hollow node marker specifically after a gate
+// is resolved and the repo is re-derived from disk.
+// ---------------------------------------------------------------------------
+
+const HERMETIC_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
+
+function git(repoRoot: string, args: string[]): ReturnType<typeof spawnSync> {
+  const r = spawnSync(
+    "git",
+    ["-C", repoRoot, "-c", "user.name=seed", "-c", "user.email=seed@levare.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main", ...args],
+    { encoding: "utf8", env: HERMETIC_ENV },
+  );
+  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+  return r;
+}
+
+function seedScratchRepo(): string {
+  const dir = mkdtempSync(join(tmpdir(), "levare-render-run-"));
+  cpSync("fixtures/golden", dir, { recursive: true });
+  git(dir, ["init", "-q"]);
+  git(dir, ["add", "-A"]);
+  git(dir, ["commit", "-q", "-m", "seed golden fixture"]);
+  return dir;
+}
+
+// One <span class="snode ..."> per <div class="sstep ...">, in order — the score rail must never
+// render a step's label/rail line without its node marker, regardless of state.
+function snodeClassesOf(scoreHtml: string): string[] {
+  return [...scoreHtml.matchAll(/<span class="(snode[^"]*)" aria-hidden="true">/g)].map((m) => m[1]);
+}
+function stepCount(scoreHtml: string): number {
+  // The outer <div class="sstep ..."> per node — not its sstep__rail/__av/__body sub-elements.
+  return (scoreHtml.match(/<div class="sstep(?: |")/g) || []).length;
+}
+function scoreBlock(html: string): string {
+  const start = html.indexOf('class="score2"');
+  const end = html.indexOf('class="railfoot"');
+  return html.slice(start, end);
+}
+
+describe("run screen — score rail node markers survive a real gate resolution", () => {
+  let scratchRoot: string | undefined;
+  afterEach(() => {
+    if (scratchRoot) rmSync(scratchRoot, { recursive: true, force: true });
+    scratchRoot = undefined;
+  });
+
+  test("every score step (approved, gate, and artifact-less queued) has exactly one node marker, both before and after approving the open gate", () => {
+    scratchRoot = seedScratchRepo();
+    const before = renderRun(loadRepo(scratchRoot), "storefront", "checkout-flow", scratchRoot, now);
+    const beforeScore = scoreBlock(before);
+
+    // Sanity on the fixture shape this pins: 5 expected kinds, 2 of them (code, review) genuinely
+    // have no artifact at all yet — the exact "artifact-shaped assumption" case.
+    const beforeNodes = scoreNodes(loadRepo(scratchRoot), loadRepo(scratchRoot).units.find((u) => u.unit === "checkout-flow")!);
+    expect(beforeNodes.map((n) => n.kind)).toEqual(["product-brief", "design", "spec", "code", "review"]);
+    expect(beforeNodes.filter((n) => !n.artifact).map((n) => n.kind)).toEqual(["code", "review"]);
+
+    expect(stepCount(beforeScore)).toBe(5);
+    expect(snodeClassesOf(beforeScore).length).toBe(5); // one marker per step — no gaps before the approve
+    expect(snodeClassesOf(beforeScore)).toEqual(["snode done", "snode done", "snode is-gate-open", "snode is-wait", "snode is-wait"]);
+
+    // The actual failing path: a real gate resolution against the real repo (not a hand-built one),
+    // then a fresh re-derive from disk — exactly what the board's GET handler does on the next request.
+    const result = resolveGate(scratchRoot, "storefront", "spec-checkout-flow-v1", "approve", { today: "2026-07-11" });
+    expect(result.ok).toBe(true);
+
+    const after = renderRun(loadRepo(scratchRoot), "storefront", "checkout-flow", scratchRoot, now);
+    const afterScore = scoreBlock(after);
+
+    expect(stepCount(afterScore)).toBe(5);
+    // Every step still carries its node marker post-resolution — code and review (still artifact-less)
+    // must still render their hollow "is-wait" marker, not a missing one.
+    expect(snodeClassesOf(afterScore).length).toBe(5);
+    expect(snodeClassesOf(afterScore)).toEqual(["snode done", "snode done", "snode done", "snode is-wait", "snode is-wait"]);
   });
 });
