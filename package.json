@@ -1,0 +1,8 @@
+{
+  "name": "levare",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "deps:check": "bun -e \"const d=Object.keys(require('./package.json').dependencies||{});const bad=d.filter(x=>x!=='@anthropic-ai/claude-agent-sdk');if(bad.length){console.error('forbidden deps: '+bad);process.exit(1)}console.log('deps ok')\""
+  }
+}
