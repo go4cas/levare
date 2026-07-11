@@ -48,8 +48,12 @@ export interface Team {
   style: { color: string };
   guardrails?: { protected_paths?: string[]; never?: string[] };
   knowledge?: string[];
+  /** Connector grants (§5): the Runner injects each named connector's env into this team's members. */
+  connectors?: string[];
   /** Team charter (markdown body), injected into member context (§6). */
   charter: string;
+  /** Team LEARNINGS.md content, injected after the charter (§6 recipe item 4); "" when none. */
+  learnings: string;
 }
 
 export interface Agent {
@@ -64,8 +68,21 @@ export interface Agent {
   skills?: string[];
   tools?: string[];
   knowledge?: string[];
+  /** Per-agent connector grants (§5), unioned with the team's grants for env scoping. */
+  connectors?: string[];
   style: { avatar: string };
   body: string;
+}
+
+// A connector definition (§5): names the env var *names* a granted member receives; values never
+// live in the repo (invariant 11). `kind: cli` wraps a command; `kind: mcp` names an MCP server.
+export interface Connector {
+  name: string;
+  kind: "mcp" | "cli";
+  server?: string;
+  command?: string;
+  env: string[];
+  scope?: string;
 }
 
 export interface TypeTemplate {
@@ -140,6 +157,21 @@ export interface Usage {
   tokens_out: number | null;
   usd: number | null;
   wall_clock_s: number | null;
+}
+
+// A normalized usage receipt (§10), produced at the Runner boundary by every adapter. Three numbers,
+// three reliabilities: wall-clock (always, when the adapter timed the member), tokens (when the
+// member reported them), USD (estimated from knowledge/model-pricing.md, nullable). `unreported` is
+// recorded honestly when the member gave nothing at all — silence is never dressed up as $0.
+export interface Receipt {
+  model: string | null;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  wall_clock_s: number | null;
+  usd: number | null;
+  unreported: boolean;
+  /** Subscription-plan members price at 0 with the plan noted here (§10). */
+  plan?: string;
 }
 
 // ---------------------------------------------------------------------------

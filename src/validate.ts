@@ -119,6 +119,7 @@ const TEAM_SCHEMA: Schema = {
       },
     },
     knowledge: { type: "str[]", required: false },
+    connectors: { type: "str[]", required: false },
   },
 };
 
@@ -139,6 +140,8 @@ const AGENT_SCHEMA: Schema = {
     result: { type: "str", required: false },
     // remote
     server: { type: "str", required: false },
+    // env scoping (§6): connectors granted to this agent, unioned with its team's grants.
+    connectors: { type: "str[]", required: false },
     style: { type: "map", required: true, fields: { avatar: { type: "str", required: true } } },
   },
 };
@@ -294,6 +297,9 @@ function classify(relPath: string): Kind {
   const parts = relPath.split(sep).filter(Boolean);
   const top = parts[0];
   const base = basename(relPath);
+  // Team LEARNINGS.md notes (`<team>.learnings.md`) are plain markdown injected into context, not
+  // schema entities — skip them wherever they sit so the validator doesn't demand team frontmatter.
+  if (base.endsWith(".learnings.md")) return { schema: null, isArtifact: false, isUnit: false };
   if (top === "work") {
     if (base === "unit.md") return { schema: WORK_UNIT_SCHEMA, isArtifact: false, isUnit: true };
     if (base === "ledger.ndjson") return { schema: null, isArtifact: false, isUnit: false };

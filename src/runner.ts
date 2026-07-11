@@ -17,6 +17,7 @@ import type {
   FlowLoop,
   FlowNode,
   Project,
+  Receipt,
   Team,
   TypeTemplate,
   Usage,
@@ -32,8 +33,11 @@ export class RunnerError extends Error {}
 /** Produces artifacts. The stub implementation drives phase-2 replay; phase-3 adds real adapters. */
 export interface MemberRunner {
   capabilities(): Array<{ member: string; kind: string }>;
-  /** Return the raw artifact markdown; the Runner validates it at the boundary before trusting it. */
-  produce(member: string, kind: string, unit: string, project: string): { doc: string };
+  /**
+   * Return the raw artifact markdown; the Runner validates it at the boundary before trusting it.
+   * Phase-3 adapters also return a normalized usage receipt (§10); phase-2 stubs may omit it.
+   */
+  produce(member: string, kind: string, unit: string, project: string): { doc: string; receipt?: Receipt };
 }
 
 export type Verb =
@@ -90,6 +94,8 @@ export type RunEvent =
       status: string;
       supersedes?: string;
       usage?: Usage | null;
+      /** Normalized usage receipt (§10) from the adapter; carries `unreported` when the member gave nothing. */
+      receipt?: Receipt;
     }
   | { t: "gate-raised"; gate: Gate }
   | { t: "gate-resolved"; gate: Gate; verb: Verb; note?: string }
@@ -271,7 +277,7 @@ export class Runner {
   ): Produced | "budget-stop" | "timebox-stop" {
     this.pace(unit, project, stepLabel);
     const { member, kind } = this.resolveStep(team, stepLabel);
-    const { doc } = this.members.produce(member, kind, unit.unit, unit.project);
+    const { doc, receipt } = this.members.produce(member, kind, unit.unit, unit.project);
 
     // Boundary contract enforcement (§6) with the same validator used on disk.
     const errs = validateArtifactSource(doc, `${member}:${kind}`);
@@ -295,6 +301,7 @@ export class Runner {
       status: art.status,
       supersedes: art.supersedes ?? undefined,
       usage: art.usage,
+      receipt,
     });
 
     // Enforce declared limits after each production.

@@ -5,7 +5,7 @@
 // "enforce the artifact contract at boundaries" with the same validator, not a second copy of it.
 
 import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
-import { join, basename } from "node:path";
+import { join, basename, dirname } from "node:path";
 import { parseFrontmatter, type YamlValue } from "./yaml.ts";
 import { validatePath, type ValidationResult } from "./validate.ts";
 import {
@@ -13,6 +13,7 @@ import {
   type Agent,
   type Artifact,
   type ArtifactStatus,
+  type Connector,
   type Project,
   type Team,
   type TypeTemplate,
@@ -27,6 +28,7 @@ export interface Repo {
   agents: Map<string, Agent>;
   types: Map<string, TypeTemplate>;
   projects: Map<string, Project>;
+  connectors: Map<string, Connector>;
   units: WorkUnit[];
   /** Artifacts keyed by `${project}/${unit}` → id → artifact (the on-disk starting state). */
   artifacts: Map<string, Map<string, Artifact>>;
@@ -46,13 +48,15 @@ export function loadRepo(root: string, { validate = true }: { validate?: boolean
     }
   }
 
-  const teams = loadEntities(join(root, "teams"), toTeam);
+  const teamsDir = join(root, "teams");
+  const teams = loadEntities(teamsDir, (d, body, file) => toTeam(d, body, file));
   const agents = loadEntities(join(root, "agents"), toAgent);
   const types = loadEntities(join(root, "types"), toType);
   const projects = loadEntities(join(root, "projects"), toProject);
+  const connectors = loadEntities(join(root, "connectors"), toConnector);
   const { units, artifacts } = loadWork(join(root, "work"));
 
-  return { root, teams, agents, types, projects, units, artifacts };
+  return { root, teams, agents, types, projects, connectors, units, artifacts };
 }
 
 // ---------------------------------------------------------------------------
@@ -67,6 +71,8 @@ function loadEntities<T extends { name: string }>(
   if (!existsSync(dir)) return out;
   for (const name of readdirSync(dir).sort()) {
     if (!name.endsWith(".md")) continue;
+    // `<team>.learnings.md` is a plain note read alongside its team file, not an entity of its own.
+    if (name.endsWith(".learnings.md")) continue;
     const file = join(dir, name);
     const { data, body } = parseFrontmatter(readFileSync(file, "utf8"));
     const entity = build(data, body, file);
@@ -75,8 +81,12 @@ function loadEntities<T extends { name: string }>(
   return out;
 }
 
-function toTeam(d: Record<string, YamlValue>, body: string): Team {
+function toTeam(d: Record<string, YamlValue>, body: string, file: string): Team {
   const name = reqStr(d, "name");
+  // Team LEARNINGS.md lives beside the team file as `teams/<name>.learnings.md` (§6 recipe item 4).
+  // It is a plain markdown note — read raw, not through the frontmatter parser.
+  const learningsFile = join(dirname(file), `${name}.learnings.md`);
+  const learnings = existsSync(learningsFile) ? readFileSync(learningsFile, "utf8") : "";
   return {
     name,
     consumes: strArr(d.consumes),
@@ -87,7 +97,20 @@ function toTeam(d: Record<string, YamlValue>, body: string): Team {
     style: { color: String((d.style as Record<string, YamlValue> | undefined)?.color ?? "") },
     guardrails: d.guardrails as Team["guardrails"],
     knowledge: d.knowledge ? strArr(d.knowledge) : undefined,
+    connectors: d.connectors ? strArr(d.connectors) : undefined,
     charter: body.trim(),
+    learnings,
+  };
+}
+
+function toConnector(d: Record<string, YamlValue>): Connector {
+  return {
+    name: reqStr(d, "name"),
+    kind: d.kind as Connector["kind"],
+    server: optStr(d.server),
+    command: optStr(d.command),
+    env: strArr(d.env),
+    scope: optStr(d.scope),
   };
 }
 
@@ -104,6 +127,7 @@ function toAgent(d: Record<string, YamlValue>, body: string): Agent {
     skills: d.skills ? strArr(d.skills) : undefined,
     tools: d.tools ? strArr(d.tools) : undefined,
     knowledge: d.knowledge ? strArr(d.knowledge) : undefined,
+    connectors: d.connectors ? strArr(d.connectors) : undefined,
     style: { avatar: String((d.style as Record<string, YamlValue> | undefined)?.avatar ?? "") },
     body: body.trim(),
   };
