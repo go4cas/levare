@@ -449,13 +449,7 @@ export class Runner {
   }
 
   private approve(unit: WorkUnit, art: Artifact, by?: string): void {
-    // Only the Conductor sets approved_by (invariant 4), and it always carries the Conductor's
-    // "name + ISO date" (C5): no defaults, no placeholders, provenance never fabricated.
-    if (!by || !/\d{4}-\d{2}-\d{2}/.test(by)) {
-      throw new RunnerError(`approved_by must carry the Conductor's name + ISO date; got '${by ?? ""}'`);
-    }
-    art.status = "approved";
-    art.approved_by = by;
+    applyApproval(art, by);
   }
 
   // -------------------------------------------------------------------------
@@ -604,13 +598,25 @@ interface Produced {
 // pure helpers
 // ---------------------------------------------------------------------------
 
-function kindMatches(kind: string, stepLabel: string): boolean {
+// Only the Conductor sets approved_by (invariant 4), and it always carries the Conductor's "name +
+// ISO date" (C5): no defaults, no placeholders, provenance never fabricated. Exported so the board's
+// manual gate resolution (phase 4) enforces the exact same rule the automated walk enforces.
+export function applyApproval(art: Artifact, by?: string): void {
+  if (!by || !/\d{4}-\d{2}-\d{2}/.test(by)) {
+    throw new RunnerError(`approved_by must carry the Conductor's name + ISO date; got '${by ?? ""}'`);
+  }
+  art.status = "approved";
+  art.approved_by = by;
+}
+
+export function kindMatches(kind: string, stepLabel: string): boolean {
   return kind === stepLabel || kind.endsWith(`-${stepLabel}`);
 }
 
 // Bump the trailing -vN of an id to the given round (spec-...-v1 → spec-...-v2). Ids without a
-// version suffix get one appended.
-function bumpVersion(id: string, round: number): string {
+// version suffix get one appended. Exported so the board's manual gate resolution (phase 4) can
+// reuse the exact same versioning rule the automated walk uses, rather than re-deriving it.
+export function bumpVersion(id: string, round: number): string {
   return /-v\d+$/.test(id) ? id.replace(/-v\d+$/, `-v${round}`) : `${id}-v${round}`;
 }
 
