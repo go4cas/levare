@@ -475,10 +475,17 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
 const REGISTRY_KINDS = ["teams", "agents", "skills", "knowledge", "types", "connectors", "evals"] as const;
 type RegistryKind = (typeof REGISTRY_KINDS)[number];
 
+// One bordered container per entity — the same `.card` recipe (background, border, radius, padding)
+// every other screen's bordered containers use (gate cards, unit rows, project cards each have their
+// own such class; the registry reuses `.card`, the one already used for a labeled panel, rather than
+// inventing a new one). `.entity` stays alongside it purely for the kind-switch/is-editing JS hooks
+// in app.js — it contributes no visual styling of its own beyond the flex layout `.card` already sets.
+// Header, body, and the edit-source actions all live inside this one element; nothing floats beside it.
 function entityBlock(kind: RegistryKind, title: string, kindLabel: string, inner: string, raw: string, active: boolean): string {
-  return `<section class="entity" data-entity="${kind}"${active ? "" : ' style="display:none"'}>
+  return `<article class="entity card" data-entity="${kind}"${active ? "" : ' style="display:none"'}>
     <div class="entity__head"><span class="entity__title">${title}</span><span class="entity__kind">${esc(kindLabel)}</span></div>
-    <div class="rendered">${inner}
+    <div class="rendered">
+      ${inner}
       <div class="editbar">
         <button class="togglebtn" data-edit-toggle>Edit source</button>
         <span class="validity"><span class="status-dot is-ok"></span>valid</span>
@@ -486,7 +493,7 @@ function entityBlock(kind: RegistryKind, title: string, kindLabel: string, inner
       </div>
     </div>
     <pre class="rawmd">${esc(raw)}</pre>
-  </section>`;
+  </article>`;
 }
 
 export function renderRegistry(repo: Repo, root: string, activeEntity?: string): string {
@@ -513,14 +520,13 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string):
 
   const teamBlocks = [...repo.teams.values()]
     .map((t) => {
-      const inner = `<div class="card"><div class="card__h">Declared flow</div><div class="flowstrip">${t.members
+      const inner = `<div class="card__h">Declared flow</div><div class="flowstrip">${t.members
         .map((m) => `<div class="m">${avatar(repo.agents.get(m)?.style.avatar ?? m.slice(0, 2), t.style.color)}<span class="mn">${esc(m)}</span></div>`)
-        .join('<span class="arr">&rarr;</span>')}</div></div>
-      <div class="card"><div class="card__h">Definition</div>
-        <div class="prow"><span class="k">color</span><span class="v mono" style="color:${esc(t.style.color)}">${esc(t.style.color)}</span></div>
-        <div class="prow"><span class="k">members</span><span class="v">${t.members.length} &middot; ${t.members.map(esc).join(", ")}</span></div>
-        <div class="prow"><span class="k">produces</span><span class="v mono">${t.produces.map(esc).join(", ")}</span></div>
-      </div>`;
+        .join('<span class="arr">&rarr;</span>')}</div>
+      <div class="card__h">Definition</div>
+      <div class="prow"><span class="k">color</span><span class="v mono" style="color:${esc(t.style.color)}">${esc(t.style.color)}</span></div>
+      <div class="prow"><span class="k">members</span><span class="v">${t.members.length} &middot; ${t.members.map(esc).join(", ")}</span></div>
+      <div class="prow"><span class="k">produces</span><span class="v mono">${t.produces.map(esc).join(", ")}</span></div>`;
       return entityBlock("teams", `<span class="sq" style="width:16px;height:16px;border-radius:4px;background:${esc(t.style.color)}"></span> ${esc(t.name)}`, "team", inner, rawFor(root, "teams", t.name), active === "teams");
     })
     .join("\n");
@@ -529,19 +535,18 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string):
     .map((a) => {
       const team = [...repo.teams.values()].find((t) => t.members.includes(a.name));
       const recipe = [...(a.skills ?? []), ...(a.knowledge ?? [])].map((p) => `<a class="pill" href="#">${esc(p)}</a>`).join("\n");
-      const inner = `<div class="card"><div class="card__h">Context recipe</div><div class="recipe">${recipe || '<span style="color:var(--fg-mute)">none declared</span>'}</div></div>
-      <div class="card"><div class="card__h">Definition</div>
-        <div class="prow"><span class="k">kind</span><span class="v mono">${esc(a.kind)}</span></div>
-        ${a.model ? `<div class="prow"><span class="k">model</span><span class="v mono">${esc(a.model)}</span></div>` : ""}
-        ${team ? `<div class="prow"><span class="k">wears</span><span class="v"><span class="sq" style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${esc(team.style.color)};vertical-align:middle"></span> ${esc(team.name)}</span></div>` : ""}
-      </div>`;
+      const inner = `<div class="card__h">Context recipe</div><div class="recipe">${recipe || '<span style="color:var(--fg-mute)">none declared</span>'}</div>
+      <div class="card__h">Definition</div>
+      <div class="prow"><span class="k">kind</span><span class="v mono">${esc(a.kind)}</span></div>
+      ${a.model ? `<div class="prow"><span class="k">model</span><span class="v mono">${esc(a.model)}</span></div>` : ""}
+      ${team ? `<div class="prow"><span class="k">wears</span><span class="v"><span class="sq" style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${esc(team.style.color)};vertical-align:middle"></span> ${esc(team.name)}</span></div>` : ""}`;
       return entityBlock("agents", `${avatar(a.style.avatar || a.name.slice(0, 2), team?.style.color, { size: "lg" })} ${esc(a.name)}`, `agent${team ? ` · ${team.name}` : ""}`, inner, rawFor(root, "agents", a.name), active === "agents");
     })
     .join("\n");
 
   const skillBlocks = extras.skills
     .map((s) => {
-      const inner = `<div class="card"><div class="card__h">SKILL.md</div><p style="margin:0;font-size:13.5px;line-height:1.6;color:var(--fg-dim)">${esc(String(s.data.description ?? firstParagraph(s.body)))}</p></div>`;
+      const inner = `<div class="card__h">SKILL.md</div><p style="margin:0;font-size:13.5px;line-height:1.6;color:var(--fg-dim)">${esc(String(s.data.description ?? firstParagraph(s.body)))}</p>`;
       return entityBlock("skills", esc(s.name), "skill", inner, rawFor(root, "skills", s.name), active === "skills");
     })
     .join("\n");
@@ -551,30 +556,28 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string):
       const referencedBy: string[] = [];
       for (const a of repo.agents.values()) if ((a.knowledge ?? []).includes(k.name)) referencedBy.push(`${a.name} (agent)`);
       for (const t of repo.teams.values()) if ((t.knowledge ?? []).includes(k.name)) referencedBy.push(`${t.name} (team default)`);
-      const inner = `<div class="card"><div class="card__h">Injected into</div>${
+      const inner = `<div class="card__h">Injected into</div>${
         referencedBy.length ? referencedBy.map((r) => `<div class="backlink">${esc(r)}</div>`).join("\n") : '<span style="color:var(--fg-mute)">not referenced yet</span>'
-      }</div>`;
+      }`;
       return entityBlock("knowledge", esc(k.name), "knowledge", inner, rawFor(root, "knowledge", k.name), active === "knowledge");
     })
     .join("\n");
 
   const typeBlocks = [...repo.types.values()]
     .map((t) => {
-      const inner = `<div class="card"><div class="card__h">Expected kinds</div>
-        <div class="prow"><span class="k">glyph</span><span class="v mono">${t.glyph}</span></div>
-        <div class="prow"><span class="k">expects</span><span class="v mono">${t.expects.map(esc).join(" &rarr; ")}</span></div>
-        <div class="prow"><span class="k">gates</span><span class="v">${t.gates.map(esc).join(", ")}</span></div>
-      </div>`;
+      const inner = `<div class="card__h">Expected kinds</div>
+      <div class="prow"><span class="k">glyph</span><span class="v mono">${t.glyph}</span></div>
+      <div class="prow"><span class="k">expects</span><span class="v mono">${t.expects.map(esc).join(" &rarr; ")}</span></div>
+      <div class="prow"><span class="k">gates</span><span class="v">${t.gates.map(esc).join(", ")}</span></div>`;
       return entityBlock("types", `<span style="font-family:var(--mono)">${t.glyph} ${esc(t.name)}</span>`, "type", inner, rawFor(root, "types", t.name), active === "types");
     })
     .join("\n");
 
   const connectorBlocks = [...repo.connectors.values()]
     .map((c) => {
-      const inner = `<div class="card"><div class="card__h">Definition</div>
-        <div class="prow"><span class="k">kind</span><span class="v mono">${esc(c.kind)}</span></div>
-        <div class="prow"><span class="k">env</span><span class="v mono">${c.env.map(esc).join(", ")}</span></div>
-      </div>`;
+      const inner = `<div class="card__h">Definition</div>
+      <div class="prow"><span class="k">kind</span><span class="v mono">${esc(c.kind)}</span></div>
+      <div class="prow"><span class="k">env</span><span class="v mono">${c.env.map(esc).join(", ")}</span></div>`;
       return entityBlock("connectors", esc(c.name), "connector", inner, rawFor(root, "connectors", c.name), active === "connectors");
     })
     .join("\n");
@@ -582,7 +585,7 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string):
   const evalBlocks = extras.evals
     .map((e) => {
       const rubric = Array.isArray(e.data.rubric) ? (e.data.rubric as string[]) : [];
-      const inner = `<div class="card"><div class="card__h">Rubric</div>${rubric.map((r) => `<div class="prow"><span class="v">${esc(String(r))}</span></div>`).join("\n")}</div>`;
+      const inner = `<div class="card__h">Rubric</div>${rubric.map((r) => `<div class="prow"><span class="v">${esc(String(r))}</span></div>`).join("\n")}`;
       return entityBlock("evals", esc(e.name), "eval", inner, rawFor(root, "evals", e.name), active === "evals");
     })
     .join("\n");

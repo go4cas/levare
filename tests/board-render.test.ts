@@ -114,4 +114,31 @@ describe("registry screen", () => {
     expect(html).not.toContain("&amp;middot;");
     expect(html).not.toContain("&amp;mdash;");
   });
+
+  test("each entity is one bordered card — header, body, and edit actions inside it, no nested cards", () => {
+    // One outer <article class="entity card"> per entity (matches the gate/unit/project card
+    // vocabulary — a single bordered container, not a bare heading beside a separately-bordered panel).
+    const cardOpens = (html.match(/<article class="entity card"/g) || []).length;
+    expect(cardOpens).toBeGreaterThan(0);
+    // teams(1) + agents(3) + skills(3) + knowledge(2) + types(5) + connectors(2) + evals(1)
+    expect(cardOpens).toBe(1 + 3 + 3 + 2 + 5 + 2 + 1);
+
+    // Every entity card carries its own Edit-source actions and validity indicator inside it — never
+    // a bare <div class="card"> floating outside, and never an editbar with nothing bordering it.
+    const editbarCount = (html.match(/class="editbar"/g) || []).length;
+    expect(editbarCount).toBe(cardOpens);
+
+    // No entity nests a second `.card` inside itself (that was the double-bordered-panel defect):
+    // every `<div class="card">` that used to wrap a sub-panel is gone — only the outer article
+    // carries the "card" class now.
+    expect(html).not.toContain('<div class="card">');
+
+    // Sanity: for a specific entity (kestrel), the header, the flow-strip body, and the edit actions
+    // all sit between the same opening <article> and its closing </article> — genuinely one container.
+    const kestrelCard = /<article class="entity card" data-entity="teams">[\s\S]*?<\/article>/.exec(html)![0];
+    expect(kestrelCard).toContain('class="entity__head"');
+    expect(kestrelCard).toContain('class="flowstrip"');
+    expect(kestrelCard).toContain('class="editbar"');
+    expect(kestrelCard).toContain("data-edit-toggle");
+  });
 });
