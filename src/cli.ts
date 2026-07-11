@@ -133,12 +133,23 @@ export function main(argv: string[]): number {
   }
 }
 
-if (import.meta.main) {
-  // `serve` starts a long-lived Bun.serve listener; every other command runs once and exits. Exiting
-  // here unconditionally would tear down the process the instant the listener started.
-  if (process.argv[2] === "serve") {
-    main(process.argv.slice(2));
+// Single entry point for every way this CLI gets invoked: this module's own `if (import.meta.main)`
+// block below, AND the separate `./levare` wrapper script (the actual documented invocation path,
+// NOTES A3) both call this — not `process.exit(main(argv))` directly — specifically so the
+// long-running-command exception can never be forgotten in one of the two places again (see NOTES
+// E12 for how exactly that happened).
+//
+// `serve` starts a long-lived Bun.serve listener; every other command runs once and exits. Exiting
+// unconditionally the instant `main()` returns would tear down the process before the listener ever
+// accepts a connection.
+export function runCli(argv: string[]): void {
+  if (argv[0] === "serve") {
+    main(argv);
   } else {
-    process.exit(main(process.argv.slice(2)));
+    process.exit(main(argv));
   }
+}
+
+if (import.meta.main) {
+  runCli(process.argv.slice(2));
 }

@@ -50,7 +50,14 @@ function withRepo(root: string): Repo {
 // ---------------------------------------------------------------------------
 
 export const ROUTES: RouteDef[] = [
-  { method: "GET", pattern: "/", mutating: false, handler: () => new Response(null, { status: 302, headers: { location: "/studio" } }) },
+  {
+    method: "GET",
+    pattern: "/",
+    mutating: false,
+    // Renders studio directly (200), not a redirect: a plain `curl /` with no `-L` must see real
+    // content, not a bounce (NOTES E12 — the phase-4 gate demonstration curls `/` directly).
+    handler: (_req, _params, ctx) => html(renderStudio(withRepo(ctx.root), ctx.root)),
+  },
   {
     method: "GET",
     pattern: "/studio",
@@ -320,8 +327,41 @@ export function createBoard(root: string): Board {
   };
 }
 
-export function serve(root: string, port = 4173): { board: Board; url: string } {
+export interface ServeHandle {
+  board: Board;
+  url: string;
+  /** Stop listening, close the fs.watch handle, and (unless `keepProcessAlive`) exit the process. */
+  stop(): void;
+}
+
+// Binds 0.0.0.0 (not loopback-only) so the port is reachable from a forwarded/container port, not
+// just from inside the same network namespace the process runs in. Returns the ServeHandle instead
+// of exiting; the caller (the CLI's `serve` command, which is the long-running exception to
+// process.exit — see runCli in cli.ts) is what keeps the process alive by simply never exiting.
+export function serve(root: string, port = 4173, opts: { keepProcessAlive?: boolean } = {}): ServeHandle {
+  const keepAlive = opts.keepProcessAlive ?? true;
   const board = createBoard(root);
-  Bun.serve({ port, fetch: (req) => board.fetch(req) });
-  return { board, url: `http://localhost:${port}` };
+  const server = Bun.serve({ port, hostname: "0.0.0.0", fetch: (req) => board.fetch(req) });
+  const url = `http://${server.hostname}:${server.port}`;
+
+  let stopped = false;
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    board.close();
+    server.stop(true);
+  };
+
+  if (keepAlive) {
+    // SIGINT (Ctrl-C) / SIGTERM must shut down cleanly — close the listener and the fs.watch handle
+    // rather than relying on the default signal disposition to just kill the process mid-request.
+    const onSignal = () => {
+      stop();
+      process.exit(0);
+    };
+    process.on("SIGINT", onSignal);
+    process.on("SIGTERM", onSignal);
+  }
+
+  return { board, url, stop };
 }

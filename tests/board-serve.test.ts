@@ -53,10 +53,12 @@ describe("levare serve — GET screens (in-process, no socket)", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  test("GET / redirects to /studio", async () => {
+  test("GET / renders studio directly (200, not a redirect)", async () => {
     const res = await board.fetch(req("/"));
-    expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe("/studio");
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain('class="deriv"');
+    expect(text).toContain('class="gate"');
   });
 
   test("GET /studio, /project/:name, /run/:project/:unit, /registry all 200", async () => {
