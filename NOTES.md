@@ -197,6 +197,8 @@ C5 — approved_by always carries the Conductor's name plus ISO date. No default
 
 C6 — Branches and file paths are different guardrail namespaces. A team's `protected_branches` match only a change's branch ref (exactly); `protected_paths` match only a change's file path (exact or `dir/` prefix). Neither is ever matched against the other, and there is no path-segment matcher — `main` as a protected branch never trips on a file path like `src/main/app.ts`, and `deploy/` as a protected path never trips on a branch. The old combined `protected_paths: [main, deploy/]` shape is retired; `teams/*.md` declare the two lists separately.
 
+C7 — One gate-resolution path. Board gate ops (src/board/gateops.ts) and Runner gate resolution (src/runner.ts) must converge on a single implementation before v1. A Conductor's approve means the same thing regardless of which surface received the click; ruling C2 (companion-artifact resolution on loop gates) applies to both. The phase-4 split — the board performing the direct §4 operation while the Runner drives the walk engine — is a scaffolding artifact, not the semantics. Close it in phase 5, when live member invocation enters the server process; that same convergence retires E4's stub-reuse in doRequest and E5's 501 on the `start` verb.
+
 # NOTES — uncertainties and assumptions (Phase 3)
 
 Phase-3 delivers the adapters, context assembly, §10 receipts, guardrails, and doctor. These entries
