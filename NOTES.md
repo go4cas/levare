@@ -195,6 +195,8 @@ C4 — Responsible-team selection (B7) is a fixture-scale shortcut, not the sema
 
 C5 — approved_by always carries the Conductor's name plus ISO date. No defaults, no placeholders; provenance is never fabricated.
 
+C6 — Branches and file paths are different guardrail namespaces. A team's `protected_branches` match only a change's branch ref (exactly); `protected_paths` match only a change's file path (exact or `dir/` prefix). Neither is ever matched against the other, and there is no path-segment matcher — `main` as a protected branch never trips on a file path like `src/main/app.ts`, and `deploy/` as a protected path never trips on a branch. The old combined `protected_paths: [main, deploy/]` shape is retired; `teams/*.md` declare the two lists separately.
+
 # NOTES — uncertainties and assumptions (Phase 3)
 
 Phase-3 delivers the adapters, context assembly, §10 receipts, guardrails, and doctor. These entries
@@ -261,9 +263,11 @@ the status — it is a warning to fix, not an invalid connector definition. Doct
 probe; the CLI wires `process.env` presence and `Bun.which`. Default root is `fixtures/golden`.
 
 ## D8. Guardrails, and C1 loop-style support
-`checkGuardrails` inspects a proposed merge diff against a team's `protected_paths`/`never` before a
-merge gate (deterministic, no LLM); `allowedTools` is the pure projection of an agent's `tools:` the
-native adapter hands to the SDK. On **C1** (adapters must support both loop styles): the adapter layer
+`checkGuardrails` inspects a proposed merge diff against a team's `protected_branches` (branch
+namespace) and `protected_paths` (file-path namespace) plus `never` actions before a merge gate
+(deterministic, no LLM; namespaces kept separate per **C6** — no path-segment matcher);
+`allowedTools` is the pure projection of an agent's `tools:` the native adapter hands to the SDK.
+On **C1** (adapters must support both loop styles): the adapter layer
 is loop-style-agnostic — it emits an artifact + receipt identically whether the loop terminates on a
 Conductor gate (`spec.approved`, the style kestrel's fixture exercises, B3) or on a member-set verdict
 field. Fully wiring the *verdict-terminated* autonomous loop (an optional artifact `verdict` field +
@@ -276,6 +280,28 @@ A CLI agent's `cwd: "{feature_repo}"` is a template bound to a project checkout 
 replay. Rather than spawn into a bogus path, the adapter treats a `cwd` still holding an unresolved
 `{…}` as "no cwd" and runs in the default directory. Real operation substitutes `{feature_repo}`
 before this point.
+
+## D10. Phase-3 security-gate fix-ups
+Five hardening changes on the phase-3 adapter/guardrail surface, none touching the oracle:
+- **Command injection closed.** An agent's `command` is now a structured argv array (§5), e.g.
+  `[codex, review, --input, "{task}", --repo, "{feature_repo}"]`. `defaultCliCommand` substitutes each
+  `{placeholder}` *in place* and keeps each template element as exactly one argv element — a
+  substituted value with spaces/quotes/metacharacters stays a single argument and is never re-split
+  (the old `.split(/\s+/)` on a substituted string is gone). The command is handed to shell-less
+  `Bun.spawnSync(argv)`, so nothing is shell-interpreted. Tests drive hostile task strings (space,
+  `"`, `; rm -rf .`, `$(whoami)`, tab, `&&`) through the real substitution and assert one argv slot
+  each, plus a real spawn proving an embedded `rm` deletes no marker file.
+- **Timeout is a distinct signal.** `bunSpawn` reads Bun's own `exitedDueToTimeout` flag, not an
+  inference from `SIGTERM`/empty output. A timeout throws a timeout error; a non-zero exit throws an
+  exit error; a slow-but-successful member (its own exit 0) is never misread as timed out. All three
+  paths are tested, including a real 1s-timeout `sleep`.
+- **Guardrail namespace split** (ruling C6, above).
+- **Context errors surfaced.** `AdapterRunner.assemble` no longer swallows every throw: an empty
+  consumed set is a normal silent success, but a genuine recipe error (missing agent/team/unit/step)
+  is logged to stderr, then a minimal empty context is returned so a mocked boundary can still run.
+- **Usage shape validated.** `readUsage` → `coerceUsage` checks the `usage` block is a map whose
+  fields are the right scalar types; a scalar/list usage field or a wrong-typed member (e.g.
+  `tokens_in: lots`) records `unreported` (usd `null`), never a fabricated or NaN receipt.
 
 ## Learnings
 Subprocess-calling code inherits a hostile world: pin git config at the spawn site, canonicalize paths before comparing them, and test against dirty environments (symlinked tmpdirs, hostile global config) — not just clean ones.

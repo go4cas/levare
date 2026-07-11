@@ -17,7 +17,8 @@ mode: declarative
 style:
   color: "#2E6FB0"
 guardrails:
-  protected_paths: [main, deploy/]
+  protected_branches: [main]
+  protected_paths: [deploy/]
   never: [force-push, delete-branch]
 knowledge: [house-style]
 ---

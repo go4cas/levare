@@ -115,6 +115,7 @@ const TEAM_SCHEMA: Schema = {
       required: false,
       fields: {
         protected_paths: { type: "str[]" },
+        protected_branches: { type: "str[]" },
         never: { type: "str[]" },
       },
     },
@@ -133,8 +134,8 @@ const AGENT_SCHEMA: Schema = {
     skills: { type: "str[]", required: false },
     tools: { type: "str[]", required: false },
     knowledge: { type: "str[]", required: false },
-    // cli
-    command: { type: "str", required: false },
+    // cli — argv template as a structured array; each element is one argv slot (§5, no shell split).
+    command: { type: "str[]", required: false },
     cwd: { type: "str", required: false },
     timeout: { type: "num", required: false },
     result: { type: "str", required: false },

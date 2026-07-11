@@ -21,14 +21,23 @@ describe("protected-path / never guardrails", () => {
     expect(v[0].detail).toContain("deploy/");
   });
 
-  test("touching the protected main branch/path is a violation", () => {
-    const v = checkGuardrails(kestrel, [{ path: "main", action: "force-push" }]);
-    // Both the protected-path (main) and the never (force-push) rules fire.
-    expect(v.map((x) => x.rule).sort()).toEqual(["never", "protected-path"]);
+  test("a force-push to the protected main BRANCH fires branch + never (C6)", () => {
+    const v = checkGuardrails(kestrel, [{ branch: "main", action: "force-push" }]);
+    expect(v.map((x) => x.rule).sort()).toEqual(["never", "protected-branch"]);
+    expect(v.find((x) => x.rule === "protected-branch")!.branch).toBe("main");
+  });
+
+  test("branches and paths are SEPARATE namespaces — a path with a 'main' segment is not a branch hit (C6)", () => {
+    // Neither a file path containing 'main' nor a 'deploy' substring path may match a protected entry.
+    expect(checkGuardrails(kestrel, [{ path: "src/main/app.ts", action: "modify" }])).toEqual([]);
+    expect(checkGuardrails(kestrel, [{ path: "deploy-notes.md", action: "modify" }])).toEqual([]);
+    // A protected BRANCH is not matched by a like-named file path, and vice-versa.
+    expect(checkGuardrails(kestrel, [{ path: "main", action: "modify" }])).toEqual([]);
+    expect(checkGuardrails(kestrel, [{ branch: "deploy/", action: "modify" }])).toEqual([]);
   });
 
   test("a `never` action (delete-branch) is flagged regardless of path", () => {
-    const v = checkGuardrails(kestrel, [{ path: "feature/x", action: "delete-branch" }]);
+    const v = checkGuardrails(kestrel, [{ branch: "feature/x", action: "delete-branch" }]);
     expect(v.length).toBe(1);
     expect(v[0].rule).toBe("never");
     expect(v[0].detail).toContain("delete-branch");
@@ -36,7 +45,7 @@ describe("protected-path / never guardrails", () => {
 
   test("a team with no guardrails passes everything", () => {
     const bare = { ...kestrel, guardrails: undefined };
-    expect(checkGuardrails(bare, [{ path: "deploy/x", action: "force-push" }])).toEqual([]);
+    expect(checkGuardrails(bare, [{ path: "deploy/x", branch: "main", action: "force-push" }])).toEqual([]);
   });
 });
 

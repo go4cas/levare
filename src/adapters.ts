@@ -73,8 +73,9 @@ export const bunSpawn: CliSpawn = {
     return {
       stdout: proc.stdout ? new TextDecoder().decode(proc.stdout) : "",
       exitCode: proc.exitCode ?? -1,
-      // Bun surfaces a timeout as a SIGTERM signal kill; treat any non-zero-without-output likewise.
-      timedOut: proc.signalCode === "SIGTERM" || proc.signalCode === "SIGKILL",
+      // Bun's own timeout flag — the authoritative signal. A slow-but-successful member (which exits
+      // 0 on its own) is never misread as timed out, and a plain non-zero exit stays a non-zero exit.
+      timedOut: proc.exitedDueToTimeout === true,
     };
   },
 };
@@ -94,15 +95,16 @@ export interface AdapterRunnerOptions {
   cliCommand?: (req: InvokeRequest) => string[];
 }
 
-// Substitute the agent.command template. {task} = the flow step's kind/label; {feature_repo} = the
-// project's checkout dir (unknown here → a placeholder the caller can override via cliCommand).
+// Substitute the agent.command argv template. {task} = the flow step's kind/label; {feature_repo} =
+// the project's checkout dir. Each template element maps to EXACTLY ONE argv element: the placeholder
+// is replaced in place and the resulting element is kept whole — a substituted value containing
+// spaces, quotes, or shell metacharacters stays a single argument and is never re-split. The command
+// is handed to shell-less Bun.spawnSync(argv), so no element is ever interpreted by a shell.
 function defaultCliCommand(req: InvokeRequest): string[] {
   const template = req.agent.command;
-  if (!template) throw new AdapterError(`cli agent '${req.member}' has no command template`);
-  const substituted = template
-    .replace(/\{task\}/g, req.kind)
-    .replace(/\{feature_repo\}/g, req.agent.cwd ?? ".");
-  return substituted.split(/\s+/).filter(Boolean);
+  if (!template || template.length === 0) throw new AdapterError(`cli agent '${req.member}' has no command template`);
+  const feature = req.agent.cwd ?? ".";
+  return template.map((element) => element.replace(/\{task\}/g, req.kind).replace(/\{feature_repo\}/g, feature));
 }
 
 /**
@@ -164,23 +166,49 @@ export class AdapterRunner implements MemberRunner {
     return result.stdout;
   }
 
-  // Best-effort context assembly; a member may run before any consumable exists, so a failure here is
-  // non-fatal (the member still gets its definition/skills/knowledge via the boundary).
+  // Assemble the §6 context. An empty consumed set ("no consumable produced yet") is a normal, silent
+  // success — assembleContext simply returns a context with an empty consumed section. A THROW is a
+  // genuine recipe error (missing agent/team/unit/step): that is surfaced on stderr, never silently
+  // swallowed as if it were an empty context.
   private assemble(member: string, unit: string, project: string): string {
     try {
       return assembleContext(this.repo, { root: this.repo.root, agent: member, unit, capabilities: this.opts.capabilities });
-    } catch {
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(`levare: context assembly error for member '${member}' (${project}/${unit}): ${msg}`);
       return "";
     }
   }
 }
 
-// Pull the reported usage block out of a raw artifact doc, tolerating its absence.
+// Pull the reported usage block out of a raw artifact doc and validate its SHAPE before it is priced.
+// A missing block, or a malformed one (not a map, or any field of the wrong type), records `unreported`
+// (returns null) rather than a fabricated or crashing receipt — silence and garbage both read as "no
+// trustworthy usage", never as a $0 run or a NaN estimate.
 function readUsage(doc: string): Usage | null {
+  let raw: unknown;
   try {
-    const { data } = parseFrontmatter(doc);
-    return (data.usage as Usage | null) ?? null;
+    raw = parseFrontmatter(doc).data.usage;
   } catch {
     return null;
   }
+  return coerceUsage(raw);
+}
+
+function coerceUsage(raw: unknown): Usage | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw !== "object" || Array.isArray(raw)) return null; // a scalar/list usage field is malformed.
+  const m = raw as Record<string, unknown>;
+  // A present-but-wrong-typed field yields the `undefined` sentinel → the whole block is malformed.
+  const asNum = (v: unknown): number | null | undefined =>
+    v === undefined || v === null ? null : typeof v === "number" && Number.isFinite(v) ? v : undefined;
+  const asStr = (v: unknown): string | null | undefined =>
+    v === undefined || v === null ? null : typeof v === "string" ? v : undefined;
+  const model = asStr(m.model);
+  const tokens_in = asNum(m.tokens_in);
+  const tokens_out = asNum(m.tokens_out);
+  const usd = asNum(m.usd);
+  const wall_clock_s = asNum(m.wall_clock_s);
+  if ([model, tokens_in, tokens_out, usd, wall_clock_s].some((v) => v === undefined)) return null;
+  return { model: model!, tokens_in: tokens_in!, tokens_out: tokens_out!, usd: usd!, wall_clock_s: wall_clock_s! };
 }

@@ -7,27 +7,29 @@
 
 import type { Agent, Team } from "./types.ts";
 
-/** A single changed path (and optionally the git action that produced it) from a proposed merge. */
+// A single change from a proposed merge. `path` is a changed file path; `branch` is the git ref the
+// change targets (e.g. the push destination). They are DIFFERENT namespaces (ruling C6): a file path
+// is never matched against protected branches, and vice-versa. `action` is matched against `never`.
 export interface DiffEntry {
-  path: string;
+  path?: string;
+  branch?: string;
   /** e.g. "force-push", "delete-branch", "modify" — matched against the team's `never` list. */
   action?: string;
 }
 
 export interface GuardrailViolation {
-  rule: "protected-path" | "never";
+  rule: "protected-path" | "protected-branch" | "never";
   detail: string;
   path?: string;
+  branch?: string;
 }
 
-// A protected entry matches a changed path when it names the path exactly, is a prefix directory
-// (trailing slash, e.g. `deploy/`), or names a path segment (e.g. branch `main`). Kept intentionally
-// simple: the team declares literal paths/branches, not globs.
-function protects(entry: string, path: string): boolean {
+// A protected path entry matches a changed FILE PATH when it names the path exactly or is a prefix
+// directory (trailing slash, e.g. `deploy/`). No segment matching — `deploy` never matches
+// `src/deploy-notes.ts` or a path merely CONTAINING a "deploy" segment. Literal paths, not globs.
+function protectsPath(entry: string, path: string): boolean {
   if (entry.endsWith("/")) return path === entry.slice(0, -1) || path.startsWith(entry);
-  if (path === entry) return true;
-  if (path.startsWith(`${entry}/`)) return true;
-  return path.split("/").includes(entry);
+  return path === entry || path.startsWith(`${entry}/`);
 }
 
 /** Check a proposed merge diff against a team's guardrails; [] means clear to gate. */
@@ -37,13 +39,21 @@ export function checkGuardrails(team: Team, diff: DiffEntry[]): GuardrailViolati
   const violations: GuardrailViolation[] = [];
   const never = g.never ?? [];
   const protectedPaths = g.protected_paths ?? [];
+  const protectedBranches = g.protected_branches ?? [];
   for (const entry of diff) {
     if (entry.action && never.includes(entry.action)) {
-      violations.push({ rule: "never", detail: `action '${entry.action}' is in team '${team.name}' never list`, path: entry.path });
+      violations.push({ rule: "never", detail: `action '${entry.action}' is in team '${team.name}' never list`, path: entry.path, branch: entry.branch });
     }
-    for (const p of protectedPaths) {
-      if (protects(p, entry.path)) {
-        violations.push({ rule: "protected-path", detail: `'${entry.path}' touches protected path '${p}' (team '${team.name}')`, path: entry.path });
+    // Branch namespace: a protected branch matches only the change's `branch` ref, exactly.
+    if (entry.branch !== undefined && protectedBranches.includes(entry.branch)) {
+      violations.push({ rule: "protected-branch", detail: `push to protected branch '${entry.branch}' (team '${team.name}')`, branch: entry.branch });
+    }
+    // Path namespace: a protected path matches only the change's file `path`.
+    if (entry.path !== undefined) {
+      for (const p of protectedPaths) {
+        if (protectsPath(p, entry.path)) {
+          violations.push({ rule: "protected-path", detail: `'${entry.path}' touches protected path '${p}' (team '${team.name}')`, path: entry.path });
+        }
       }
     }
   }

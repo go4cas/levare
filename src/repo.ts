@@ -119,7 +119,7 @@ function toAgent(d: Record<string, YamlValue>, body: string): Agent {
     name: reqStr(d, "name"),
     kind: d.kind as Agent["kind"],
     model: optStr(d.model),
-    command: optStr(d.command),
+    command: d.command !== undefined ? strArr(d.command) : undefined,
     cwd: optStr(d.cwd),
     timeout: typeof d.timeout === "number" ? d.timeout : undefined,
     result: optStr(d.result),

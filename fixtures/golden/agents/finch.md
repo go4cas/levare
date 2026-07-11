@@ -1,7 +1,7 @@
 ---
 name: finch
 kind: cli
-command: "codex review --input {task} --repo {feature_repo}"
+command: [codex, review, --input, "{task}", --repo, "{feature_repo}"]
 cwd: "{feature_repo}"
 timeout: 600
 result: "Emits a `review` artifact markdown file to stdout; the wrapper validates its frontmatter against the artifact contract before recording it."

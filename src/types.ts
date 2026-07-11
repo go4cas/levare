@@ -46,7 +46,9 @@ export interface Team {
   flow: FlowNode[];
   mode: "declarative" | "led";
   style: { color: string };
-  guardrails?: { protected_paths?: string[]; never?: string[] };
+  // Guardrails split branches from file paths (ruling C6): `protected_branches` match a branch ref,
+  // `protected_paths` match file paths in a diff — different namespaces, never cross-matched.
+  guardrails?: { protected_paths?: string[]; protected_branches?: string[]; never?: string[] };
   knowledge?: string[];
   /** Connector grants (§5): the Runner injects each named connector's env into this team's members. */
   connectors?: string[];
@@ -60,7 +62,12 @@ export interface Agent {
   name: string;
   kind: "native" | "cli" | "remote";
   model?: string;
-  command?: string;
+  /**
+   * CLI argv template as a structured array (§5), e.g. ["codex", "review", "--input", "{task}"].
+   * Each element is exactly one argv slot: a `{placeholder}` is substituted in place and the value —
+   * spaces, quotes, metacharacters and all — stays a single argument. Never a shell string to split.
+   */
+  command?: string[];
   cwd?: string;
   timeout?: number;
   result?: string;
