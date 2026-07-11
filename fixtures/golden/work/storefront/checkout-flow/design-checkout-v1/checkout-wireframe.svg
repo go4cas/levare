@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="220" viewBox="0 0 360 220">
+  <rect width="360" height="220" fill="#F5F6F7"/>
+  <rect x="16" y="16" width="220" height="28" fill="#fff" stroke="#191B21"/>
+  <text x="26" y="35" font-family="monospace" font-size="12" fill="#191B21">cart</text>
+  <rect x="16" y="52" width="220" height="28" fill="#fff" stroke="#191B21"/>
+  <text x="26" y="71" font-family="monospace" font-size="12" fill="#191B21">address</text>
+  <rect x="16" y="88" width="220" height="28" fill="#fff" stroke="#191B21"/>
+  <text x="26" y="107" font-family="monospace" font-size="12" fill="#191B21">payment</text>
+  <rect x="16" y="124" width="220" height="28" fill="#fff" stroke="#191B21"/>
+  <text x="26" y="143" font-family="monospace" font-size="12" fill="#191B21">confirm</text>
+  <rect x="248" y="16" width="96" height="136" fill="#fff" stroke="#2E6FB0"/>
+  <text x="258" y="35" font-family="monospace" font-size="11" fill="#2E6FB0">summary</text>
+</svg>

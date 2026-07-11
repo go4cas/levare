@@ -1,0 +1,3 @@
+{"ts":"2026-07-07T09:12:00Z","member":"kestrel/wren","event":"produce","kind":"product-brief","wall_clock_s":95,"tokens_in":8200,"tokens_out":2100,"usd":0.06}
+{"ts":"2026-07-08T14:03:00Z","member":"kestrel/lyra","event":"produce","kind":"design","wall_clock_s":210,"tokens_in":12400,"tokens_out":3800,"usd":0.10}
+{"ts":"2026-07-11T10:41:00Z","member":"kestrel/lyra","event":"produce","kind":"spec","wall_clock_s":480,"tokens_in":31000,"tokens_out":10000,"usd":0.58}
