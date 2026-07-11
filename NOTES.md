@@ -124,6 +124,63 @@ ready for review; two open questions on guest checkout" gate context). Because t
 check diffs approved artifacts against `HEAD` (see A7), rewriting an *approved* artifact's body is a
 re-commit, not a silent edit — the fixture's approved bodies and their commit move together.
 
+# NOTES — uncertainties and assumptions (Phase 2)
+
+Phase-2 delivers the Runner core (§6): DAG walk, flow execution, gate lifecycle, start gates, loops
+with exhaustion, the five type templates, `pace`, and timebox/budget gates, all against stub members.
+These entries record where §6's prose left a mechanical choice, and the highest-confidence reading taken.
+
+## B1. Replay reconstructs the story from a clean slate
+`levare replay fixtures/golden --stubs` starts each scenario from **only** the unit.md — it ignores the
+on-disk artifact files and rebuilds the whole score with the stub members. Rationale: this is the fullest
+demonstration of "halting at each declared gate" (a resume-from-current-state walk would skip the brief and
+design gates, which are already approved on disk). The Runner itself is resumable (it seeds from an existing
+artifact set and skips already-approved steps), but replay opts for the from-empty walk. The engine never
+mutates the golden fixture tree; replay is an in-memory simulation whose output is a transcript + a status map.
+
+## B2. Flow step → (member, kind) resolution
+§5 flow steps are bare labels (`brief`, `design`, `spec`, `review`); they name neither the member nor, for
+`brief`, the exact kind (`product-brief`). The Runner resolves a step to the single team member able to
+produce a matching kind, where "matching" is `kind === label` **or** `kind.endsWith("-"+label)` (so
+`brief` → `product-brief`). Zero matches or more than one is a hard `RunnerError` — a misconfigured flow
+fails loudly, never silently guesses. Capability facts come from the member layer (the stub exposes
+`CAPABILITIES`); phase-3 real adapters will supply the same shape.
+
+## B3. The loop's `until` gate
+`loop.until: spec.approved` can only become true through a Conductor approval (invariant 4: only the
+Conductor sets a terminal approval). The loop therefore raises **one gate per round on the first member's
+artifact** (`spec`): approve → evaluate `until` → terminate by condition; request → next round; reject →
+pause. This is the only reading consistent with "loop alternates until the `until` condition" + "members
+never set their own approval". The review artifact is the input the Conductor reads at that gate.
+
+## B4. Loop re-rounds version and supersede, never mutate
+Each request-changes round re-invokes both loop members. Because the stub emits fixed ids, the Runner bumps
+the trailing `-vN` (round 2 → `spec-checkout-flow-v2`) and sets `supersedes:` on the successor, flipping the
+prior artifact to `superseded` (invariant 3: approved/immutable artifacts are replaced, never rewritten).
+This is why the golden oracle shows `spec-checkout-flow-v1: superseded` alongside `-v2: approved`.
+
+## B5. `expected.json` scope and the unit's terminal status
+`fixtures/golden/expected.json` captures the **golden** scenario only (loop terminates in round 2) — the
+permanent replay oracle. The unit ends `active`, not `shipped`: kestrel is the product-shaping team and its
+flow completes at spec-approved, but the `feature` type still expects `code` + a `merge` gate, produced by a
+downstream build team that does not exist in the fixture. With no team producing `code`, the walk finds no
+further work and leaves the unit active. The exhaustion scenario ends `paused` and is demonstrated in the
+transcript but is not part of the oracle.
+
+## B6. Gate verb vocabularies beyond the §9 route table
+§9's write routes enumerate `approve|request|reject|start|notyet|rescope`. The Runner adds the §10 budget
+verbs `continue|raise|stop` (continue/raise proceed; stop pauses the unit's walk) and reuses `continue|stop`
+for a timebox gate. The loop-exhaustion escalation gate accepts `approve|reject|rescope` (approve accepts the
+un-converged spec; reject/rescope pauses). These are gate-decision verbs, not new HTTP routes — the route
+table stays at three (asserted in phase 4).
+
+## B7. Responsible-team selection
+A unit's flow is run by the team whose `produces` overlaps the unit type's `expects` most (ties broken by
+name). For the golden fixture this is unambiguously `kestrel`. When multiple shaping/build teams exist per
+type, this heuristic will need revisiting against how the walk hands a unit between teams (e.g. shaping →
+build). Deferred until a fixture exercises more than one producing team.
+
 ## Learnings
 Subprocess-calling code inherits a hostile world: pin git config at the spawn site, canonicalize paths before comparing them, and test against dirty environments (symlinked tmpdirs, hostile global config) — not just clean ones.
 Validation must fail closed: every early-exit "valid" state is an escape hatch; make the taken state observable and assert it explicitly in tests.
+Keep the deterministic core injectable: the Runner takes its member invoker and decision source as interfaces, so replay scripts, unit tests, and (phase 3) real adapters drive the same engine with no clocks or randomness in the pass that produces the oracle.

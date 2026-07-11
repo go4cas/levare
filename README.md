@@ -26,12 +26,34 @@ Implemented in this repo:
 - **Rejection fixtures** — [fixtures/rejections/](fixtures/rejections/): 16 malformed cases, each
   asserting a specific validator error.
 
+## Phase 2 — Runner core: DAG walk, flows, gates, loops, types
+
+The deterministic Runner (§6): no model, no judgment, no clock. It recomputes the dependency graph
+from frontmatter on every walk and drives each unit's team flow through the gate lifecycle.
+
+- **Domain model** — [src/types.ts](src/types.ts): teams, agents, type templates, projects, work
+  units, artifacts, and the normalized `flow` (step / gate / loop) nodes.
+- **Loaders** — [src/repo.ts](src/repo.ts): re-read the repo as truth; the whole tree is passed
+  through the phase-1 validator before the walk, and member output is contract-checked at the
+  boundary with the *same* validator ([`validateArtifactSource`](src/validate.ts)).
+- **Runner** — [src/runner.ts](src/runner.ts): DAG walk, responsible-team flow execution, gate
+  lifecycle (approve / request-changes / reject), start gates via `after:`, review loops to
+  `until` / `max_rounds` / `on_exhaust`, budget and timebox gates, and `pace: step`. Member
+  invocation and Conductor decisions are injected, so the engine stays pure.
+- **Replay** — `levare replay <path> --stubs` ([src/replay.ts](src/replay.ts)): reconstructs the
+  checkout-flow story from a clean slate against the stub members — gates halt and resume on
+  scripted decisions, the review loop terminates by condition in round 2, and a second scripted
+  case exhausts `max_rounds` and escalates via `on_exhaust: gate`.
+- **Oracle** — [fixtures/golden/expected.json](fixtures/golden/expected.json): the golden
+  scenario's final artifact statuses, reproduced byte-for-byte on every replay.
+
 ### Run it
 
 ```sh
-bun test                          # full suite
-./levare validate fixtures/golden # prints "valid", exits 0
-bun run deps:check                # dependency policy (zero runtime deps)
+bun test                              # full suite
+./levare validate fixtures/golden     # prints "valid", exits 0
+./levare replay fixtures/golden --stubs  # end-to-end transcript; oracle match, exits 0
+bun run deps:check                    # dependency policy (zero runtime deps)
 ```
 
-Uncertainties and assumptions are recorded in [NOTES.md](NOTES.md).
+Uncertainties and assumptions are recorded in [NOTES.md](NOTES.md) (phase-1 A1–A8, phase-2 B1–B7).
