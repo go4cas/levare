@@ -227,6 +227,28 @@ interface DiscoveredArtifact {
   data: Record<string, YamlValue>;
 }
 
+/**
+ * Validate one artifact document (raw markdown source) against the artifact contract — the Runner's
+ * boundary check (§6: "the contract is enforced at the boundary, never trusted from the member").
+ * Reuses the exact ARTIFACT_SCHEMA and semantic checks used for on-disk validation; no second copy.
+ * Returns [] when the document is on-contract. `dir`, if given, is where listed `files:` are resolved.
+ */
+export function validateArtifactSource(src: string, file = "<member-output>", dir?: string): ValidationError[] {
+  const errors: ValidationError[] = [];
+  let data: Record<string, YamlValue>;
+  try {
+    ({ data } = parseFrontmatter(src));
+  } catch (e) {
+    if (e instanceof YamlError) errors.push({ code: "PARSE_ERROR", message: e.message, file, line: e.line });
+    else errors.push({ code: "PARSE_ERROR", message: String(e), file });
+    return errors;
+  }
+  validateAgainstSchema(data, ARTIFACT_SCHEMA, file, errors);
+  // Resolve listed files relative to `dir` (a synthetic path lets the shared semantics run unchanged).
+  validateArtifactSemantics(data, dir ? join(dir, basename(file)) : file, errors);
+  return errors;
+}
+
 /** Validate a path (single file or a directory tree). */
 export function validatePath(target: string): ValidationResult {
   const errors: ValidationError[] = [];

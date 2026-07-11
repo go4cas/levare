@@ -59,6 +59,14 @@ const CANNED: Record<string, Canned> = {
   },
 };
 
+// The (member, kind) pairs this stub can produce, derived from CANNED. The phase-2 Runner reads
+// this to resolve a flow step label to the member+kind that satisfies it. Additive: does not change
+// any emitted artifact bytes.
+export const CAPABILITIES: Array<{ member: string; kind: string }> = Object.keys(CANNED).map((k) => {
+  const [member, kind] = k.split(":");
+  return { member, kind };
+});
+
 function opt(args: string[], name: string, fallback: string): string {
   const i = args.indexOf(name);
   return i >= 0 && i + 1 < args.length ? args[i + 1] : fallback;

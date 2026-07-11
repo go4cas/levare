@@ -1,0 +1,15 @@
+{
+  "unit": {
+    "id": "checkout-flow",
+    "project": "storefront",
+    "status": "active"
+  },
+  "artifacts": {
+    "design-checkout-v1": "approved",
+    "product-brief-v1": "approved",
+    "review-checkout-flow-v1": "superseded",
+    "review-checkout-flow-v2": "in-review",
+    "spec-checkout-flow-v1": "superseded",
+    "spec-checkout-flow-v2": "approved"
+  }
+}

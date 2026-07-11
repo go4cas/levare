@@ -1,7 +1,8 @@
-// levare CLI entry point. Phase 1 implements only `validate`; later phases add replay/context/
-// serve/doctor/stats behind the same dispatcher.
+// levare CLI entry point. Phase 1 implements `validate`; phase 2 adds `replay`. Later phases add
+// context/serve/doctor/stats behind the same dispatcher.
 
 import { validatePath, type ValidationResult } from "./validate.ts";
+import { formatReport, runReplay } from "./replay.ts";
 
 function formatResult(result: ValidationResult): string {
   const lines: string[] = [];
@@ -23,8 +24,19 @@ export function runValidate(path: string): number {
   return 1;
 }
 
+export function runReplayCmd(path: string, stubs: boolean): number {
+  if (!stubs) {
+    console.error("replay currently requires --stubs (phase 2 drives stub members)");
+    return 2;
+  }
+  const report = runReplay(path);
+  console.log(formatReport(report));
+  if (report.expected !== null && !report.match) return 1;
+  return 0;
+}
+
 function usage(): number {
-  console.error("usage: levare validate <path>");
+  console.error("usage: levare validate <path>\n       levare replay <path> --stubs");
   return 2;
 }
 
@@ -35,6 +47,11 @@ export function main(argv: string[]): number {
       const path = rest[0];
       if (!path) return usage();
       return runValidate(path);
+    }
+    case "replay": {
+      const path = rest.find((a) => !a.startsWith("-"));
+      if (!path) return usage();
+      return runReplayCmd(path, rest.includes("--stubs"));
     }
     case undefined:
     case "--help":
