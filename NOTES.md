@@ -48,7 +48,17 @@ setup rather than proceeding.
 **Validator git-comparison audit.** `gitImmutabilityCheck` in `src/validate.ts`:
 - always diffs against `HEAD` — never a hardcoded branch name (`main`/`master`/`trunk`) — so it is
   correct regardless of the repo's default branch;
-- explicitly separates *no baseline* from *unchanged baseline*. States and their verdicts:
+- **canonicalizes both sides with realpath** before computing the repo-relative path.
+  `git rev-parse --show-toplevel` returns a symlink-resolved path; on macOS the OS temp dir is under
+  `/var`, a symlink to `/private/var`, so git returns `/private/var/…` while the validator holds the
+  caller's `/var/…` path. Without canonicalization, `relative(toplevel, file)` yields a bogus
+  `../../…` path, `git cat-file -e HEAD:<bogus>` fails, and the check falls through to S1 — masking a
+  real mutation as "no history". Reproduced in the container by addressing the scratch repo through a
+  symlinked directory (`tests/immutability.test.ts`, "across a symlinked repo path").
+- returns the **state** it took for each approved artifact (`ImmutabilityState` on
+  `ValidationResult.immutability`), so tests assert the branch explicitly — the mutation test asserts
+  `S2b`, not merely `ok:false`, so a wrong-state exit can never pass silently again. States and
+  verdicts:
   - **S0** target is not a git repo → cannot verify → treated as **valid**;
   - **S1** the file has no history in `HEAD` (uncommitted / brand-new) → nothing to compare →
     treated as **valid**, because the approval itself is what will be committed, so there is no
@@ -58,6 +68,17 @@ setup rather than proceeding.
 - the S2 comparison uses `git diff --quiet HEAD -- <path>` (honours the repo's own normalization
   such as `core.autocrlf`) rather than a raw byte-compare of `git show` output, so a checkout
   filter cannot manufacture a false "modified" verdict.
+
+**Fail-open concern (deliberate, revisit in a later phase).** S0 and S1 are both reachable through
+git *errors* as well as through legitimately-uncommitted state — any failure of `rev-parse`,
+`cat-file`, or a non-canonicalizable path resolves to a "valid" verdict rather than an error. This
+is intentional at phase 1: the validator must not fabricate an immutability violation from an
+environment hiccup, and an artifact that has never been committed has no baseline to violate. The
+cost is that a genuinely-approved artifact that *should* have history but doesn't (e.g. it was never
+committed) passes silently. Open question for a future phase: `validate` should probably **surface an
+S1 count as a warning** (not an error) — "N approved artifacts have no committed baseline" — so the
+Conductor can distinguish "not yet committed" from "committed and intact" at a glance. The
+`immutability` states are already returned to make that reporting a pure projection when we add it.
 
 ## A5. Validator scope for phase 1
 The validator dispatches a schema by file location (folder → entity kind; `work/.../unit.md` →

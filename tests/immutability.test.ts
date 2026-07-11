@@ -1,9 +1,9 @@
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { validatePath } from "../src/validate.ts";
+import { basename, join } from "node:path";
+import { validatePath, type ImmutabilityState } from "../src/validate.ts";
 
 // PRD §4: "an approved artifact's file content may not change in a later commit (checked at
 // validation time against git)." This can only be exercised against a live git repo, so it lives
@@ -26,15 +26,14 @@ const HERMETIC_ENV = {
   HOME: tmpdir(), // last-resort isolation for any config path derived from HOME
 };
 
-let root: string;
-let artifactPath: string;
-
-function git(args: string[], opts: { allowFail?: boolean } = {}): ReturnType<typeof spawnSync> {
+// Run git hermetically inside `repoRoot` and throw (unless allowFail) on non-zero status, so a
+// failed commit fails the suite loudly at setup rather than leaving an empty repo.
+function git(repoRoot: string, args: string[], opts: { allowFail?: boolean } = {}): ReturnType<typeof spawnSync> {
   const r = spawnSync(
     "git",
     [
       "-C",
-      root,
+      repoRoot,
       "-c",
       "user.name=levare-test",
       "-c",
@@ -57,6 +56,27 @@ function git(args: string[], opts: { allowFail?: boolean } = {}): ReturnType<typ
   return r;
 }
 
+// Look up the immutability state the validator recorded for a given artifact file basename.
+function stateOf(r: ReturnType<typeof validatePath>, name: string): ImmutabilityState | undefined {
+  return r.immutability.find((c) => basename(c.file) === name)?.state;
+}
+
+// Stand up a scratch repo at `root` with one approved artifact committed; returns the artifact path.
+function seedApprovedRepo(root: string): string {
+  git(root, ["init", "-q"]);
+  const dir = join(root, "work", "storefront", "checkout-flow");
+  mkdirSync(dir, { recursive: true });
+  const artifactPath = join(dir, "spec-immutable-v1.md");
+  writeFileSync(artifactPath, APPROVED);
+  git(root, ["add", "-A"]);
+  git(root, ["commit", "-q", "-m", "approve spec"]);
+  const head = git(root, ["rev-parse", "HEAD"]);
+  if (!/^[0-9a-f]{40}/.test((head.stdout ?? "").trim())) {
+    throw new Error("hermetic setup failed: no commit was created");
+  }
+  return artifactPath;
+}
+
 const APPROVED = [
   "---",
   "kind: spec",
@@ -75,21 +95,12 @@ const APPROVED = [
   "",
 ].join("\n");
 
+let root: string;
+let artifactPath: string;
+
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), "levare-immutability-"));
-  git(["init", "-q"]);
-  const dir = join(root, "work", "storefront", "checkout-flow");
-  mkdirSync(dir, { recursive: true });
-  artifactPath = join(dir, "spec-immutable-v1.md");
-  writeFileSync(artifactPath, APPROVED);
-  git(["add", "-A"]);
-  git(["commit", "-q", "-m", "approve spec"]);
-  // Fail loudly if the commit did not actually produce a HEAD — otherwise the mutation check below
-  // would be a false negative (nothing committed → nothing to compare → wrongly "valid").
-  const head = git(["rev-parse", "HEAD"]);
-  if (!/^[0-9a-f]{40}/.test((head.stdout ?? "").trim())) {
-    throw new Error("hermetic setup failed: no commit was created");
-  }
+  artifactPath = seedApprovedRepo(root);
 });
 
 afterAll(() => {
@@ -97,15 +108,56 @@ afterAll(() => {
 });
 
 describe("approved-immutability against git", () => {
-  test("an unmodified committed approved artifact validates clean", () => {
+  test("an unmodified committed approved artifact is state S2a (valid)", () => {
     const r = validatePath(root);
+    expect(stateOf(r, "spec-immutable-v1.md")).toBe("S2a");
     expect(r.errors.map((e) => e.code)).not.toContain("MODIFIED_AFTER_APPROVAL");
   });
 
-  test("mutating an approved artifact after commit is rejected", () => {
+  test("mutating an approved artifact after commit is state S2b + MODIFIED_AFTER_APPROVAL", () => {
     writeFileSync(artifactPath, APPROVED.replace("Original approved body.", "Silently edited body."));
     const r = validatePath(root);
+    // Assert the STATE, not merely ok:false — a wrong-state exit (e.g. S1 masking the mutation)
+    // could otherwise leave the artifact "valid" and slip past.
+    expect(stateOf(r, "spec-immutable-v1.md")).toBe("S2b");
     expect(r.ok).toBe(false);
+    expect(r.errors.map((e) => e.code)).toContain("MODIFIED_AFTER_APPROVAL");
+  });
+});
+
+// Container repro of the macOS /var → /private/var canonicalization bug: the repo is reached
+// through a symlinked path, so `git rev-parse --show-toplevel` returns a canonical path that
+// differs from the one the validator holds. Before the realpath fix this exited via S1 ("no
+// history → valid"), masking the mutation. It must now correctly reach S2b.
+describe("approved-immutability across a symlinked repo path", () => {
+  let realBase: string;
+  let aliasRoot: string;
+
+  beforeAll(() => {
+    realBase = mkdtempSync(join(tmpdir(), "levare-symlink-real-"));
+    const realRoot = join(realBase, "repo");
+    mkdirSync(realRoot, { recursive: true });
+    seedApprovedRepo(realRoot);
+    // A sibling symlink whose target is the real base dir; the repo is then addressed *through* it.
+    const aliasBase = join(tmpdir(), `levare-symlink-alias-${basename(realBase)}`);
+    symlinkSync(realBase, aliasBase);
+    aliasRoot = join(aliasBase, "repo");
+  });
+
+  afterAll(() => {
+    if (realBase) rmSync(realBase, { recursive: true, force: true });
+  });
+
+  test("unmodified via symlinked path is S2a", () => {
+    const r = validatePath(aliasRoot);
+    expect(stateOf(r, "spec-immutable-v1.md")).toBe("S2a");
+  });
+
+  test("mutation via symlinked path is correctly detected as S2b (not masked as S1)", () => {
+    writeFileSync(join(aliasRoot, "work", "storefront", "checkout-flow", "spec-immutable-v1.md"),
+      APPROVED.replace("Original approved body.", "Edited through the symlink."));
+    const r = validatePath(aliasRoot);
+    expect(stateOf(r, "spec-immutable-v1.md")).toBe("S2b");
     expect(r.errors.map((e) => e.code)).toContain("MODIFIED_AFTER_APPROVAL");
   });
 });

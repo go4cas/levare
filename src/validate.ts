@@ -6,7 +6,7 @@
 // membership, unknown-key rejection, and cross-artifact consumes/supersedes resolution within a
 // project. The approved-immutability rule is checked against git when the path is a git repo.
 
-import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, existsSync, realpathSync } from "node:fs";
 import { join, relative, dirname, basename, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseFrontmatter, YamlError, type YamlValue } from "./yaml.ts";
@@ -18,10 +18,24 @@ export interface ValidationError {
   line?: number;
 }
 
+// Which branch the approved-immutability check took for a given target/artifact (see
+// gitImmutabilityCheck). Exposed so tests can assert the *state*, not merely ok/not-ok — a
+// wrong-state exit (e.g. masking a mutation as "no history") must never pass again.
+//   S0  target is not a git repo         → cannot verify (valid)
+//   S1  file has no history in HEAD       → nothing to compare (valid)
+//   S2a file in HEAD and unchanged        → valid
+//   S2b file in HEAD and differs          → MODIFIED_AFTER_APPROVAL
+export type ImmutabilityState = "S0" | "S1" | "S2a" | "S2b";
+export interface ImmutabilityCheck {
+  file: string;
+  state: ImmutabilityState;
+}
+
 export interface ValidationResult {
   ok: boolean;
   errors: ValidationError[];
   fileCount: number;
+  immutability: ImmutabilityCheck[];
 }
 
 // ---------------------------------------------------------------------------
@@ -220,7 +234,12 @@ export function validatePath(target: string): ValidationResult {
 
   const st = existsSync(target) ? statSync(target) : null;
   if (!st) {
-    return { ok: false, errors: [{ code: "NOT_FOUND", message: `path does not exist: ${target}`, file: target }], fileCount: 0 };
+    return {
+      ok: false,
+      errors: [{ code: "NOT_FOUND", message: `path does not exist: ${target}`, file: target }],
+      fileCount: 0,
+      immutability: [],
+    };
   }
 
   if (st.isFile()) {
@@ -239,9 +258,9 @@ export function validatePath(target: string): ValidationResult {
 
   // Cross-artifact checks over everything discovered.
   crossReference(artifacts, errors);
-  gitImmutabilityCheck(target, artifacts, errors);
+  const immutability = gitImmutabilityCheck(target, artifacts, errors);
 
-  return { ok: errors.length === 0, errors, fileCount };
+  return { ok: errors.length === 0, errors, fileCount, immutability };
 }
 
 type Kind =
@@ -585,36 +604,64 @@ function crossReference(artifacts: DiscoveredArtifact[], errors: ValidationError
 // Environment-sensitivity audit (NOTES.md A4):
 //  - Baseline is always `HEAD`, never a hardcoded branch name (`main`/`master`/`trunk`), so the
 //    check is correct on any repo regardless of its default branch.
-//  - Two distinct "valid" states are separated explicitly, so a missing baseline is never mistaken
-//    for an unchanged one:
-//      S0  target is not a git repo            → cannot verify; treated as VALID (no error).
-//      S1  the file has no history in HEAD      → not yet committed; nothing to compare against;
-//                                                 treated as VALID (the approval is what will be
-//                                                 committed — there is no prior baseline to violate).
-//      S2a the file is in HEAD and unchanged    → VALID.
-//      S2b the file is in HEAD and differs      → MODIFIED_AFTER_APPROVAL.
-//  - Comparison uses `git diff` (which honours the repo's own normalization, e.g. core.autocrlf)
-//    rather than a raw byte-compare of `git show` output, so a checkout filter cannot manufacture a
-//    false "modified" verdict.
-function gitImmutabilityCheck(target: string, artifacts: DiscoveredArtifact[], errors: ValidationError[]): void {
+//  - Paths are canonicalized with realpath on BOTH sides before the repo-relative path is computed.
+//    `git rev-parse --show-toplevel` returns a symlink-resolved path (on macOS the temp dir lives
+//    under /var, a symlink to /private/var), while the validator holds the caller's uncanonical
+//    path. Without canonicalization, `relative(toplevel, file)` produces a bogus `../../…` path,
+//    `cat-file -e HEAD:<bogus>` fails, and the check would fall through to S1 — masking a mutation
+//    as "no history". Canonicalizing both sides makes the relative path correct regardless.
+//  - Two distinct "valid" states are separated explicitly (S0 no repo, S1 no history) so a missing
+//    baseline is never silently mistaken for an unchanged one.
+//  - The S2 comparison uses `git diff` (which honours the repo's own normalization, e.g.
+//    core.autocrlf) rather than a raw byte-compare of `git show` output, so a checkout filter
+//    cannot manufacture a false "modified" verdict.
+// Returns the state taken for each approved artifact (plus a single S0 entry when the target is not
+// a git repo) so callers/tests can assert the branch, not merely the pass/fail outcome.
+function gitImmutabilityCheck(
+  target: string,
+  artifacts: DiscoveredArtifact[],
+  errors: ValidationError[],
+): ImmutabilityCheck[] {
+  const checks: ImmutabilityCheck[] = [];
   const toplevel = gitToplevel(target);
-  if (!toplevel) return; // S0 — not a git repo; cannot verify.
+  if (!toplevel) {
+    checks.push({ file: canonical(target), state: "S0" }); // not a git repo; cannot verify.
+    return checks;
+  }
   for (const a of artifacts) {
     if (a.data.status !== "approved") continue;
-    const rel = relative(toplevel, a.file);
+    // Canonicalize both sides so the symlinked-tmpdir case (macOS /var → /private/var) resolves.
+    const rel = relative(toplevel, canonical(a.file));
     // S1: does the approved file exist in the current commit at all?
     const inHead = spawnSync("git", ["-C", toplevel, "cat-file", "-e", `HEAD:${rel}`], { encoding: "utf8" });
-    if (inHead.status !== 0) continue; // no history for this file yet — nothing to compare.
+    if (inHead.status !== 0) {
+      checks.push({ file: a.file, state: "S1" }); // no history for this file yet — nothing to compare.
+      continue;
+    }
     // S2: has the working tree diverged from the committed (approved) version?
     // `git diff --quiet` exits 0 when identical, 1 when different, >1 on error.
     const diff = spawnSync("git", ["-C", toplevel, "diff", "--quiet", "HEAD", "--", rel], { encoding: "utf8" });
     if (diff.status === 1) {
+      checks.push({ file: a.file, state: "S2b" });
       errors.push({
         code: "MODIFIED_AFTER_APPROVAL",
         message: "approved artifact has been modified since its committed version; approved artifacts are immutable",
         file: a.file,
       });
+    } else {
+      // status 0 (identical) — or >1, which we treat as unverifiable-but-not-a-violation (fail-open).
+      checks.push({ file: a.file, state: "S2a" });
     }
+  }
+  return checks;
+}
+
+// realpath, tolerant of a path that does not resolve (returns the input unchanged).
+function canonical(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
   }
 }
 
@@ -622,5 +669,6 @@ function gitToplevel(target: string): string | null {
   const dir = existsSync(target) && statSync(target).isDirectory() ? target : dirname(target);
   const r = spawnSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
   if (r.status !== 0) return null;
-  return r.stdout.trim();
+  // Canonicalize so it matches realpath-resolved artifact paths on symlinked filesystems.
+  return canonical(r.stdout.trim());
 }
