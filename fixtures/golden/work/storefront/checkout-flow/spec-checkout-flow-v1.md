@@ -18,12 +18,10 @@ usage:
   wall_clock_s: 480
 ---
 
-# Spec — checkout-flow
+# Guest checkout spec
 
-Implementation spec for the single-page checkout. This artifact sits at `in-review`: its
-flow position declares `gate: human`, so it *is* the open gate awaiting the Conductor.
+The guest-checkout spec is ready for review, with two open questions on guest checkout still to settle: whether a returning email must be verified before its saved card is offered, and how a payment should be kept idempotent when there is no account to anchor the order.
 
-- Route `/checkout` renders all four sections server-side; client script only toggles
-  section collapse and revalidates the payment field.
-- Payment submission is idempotent on an order key; a double-submit never double-charges.
-- The order-summary rail is a projection of the cart, recomputed on every render.
+Route `/checkout` renders cart, contact, payment, and confirmation server-side; the client only shifts focus between sections and revalidates the card field. A returning email is matched against a hashed card token and, on a hit, its saved card is offered as the default method.
+
+Payment submission is idempotent on an order key so a double-tap never double-charges, and the order-summary rail is recomputed from the cart on every render. The two open questions above are the only things standing between this and build.

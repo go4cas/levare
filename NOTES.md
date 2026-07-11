@@ -111,6 +111,19 @@ knowable and can be recorded (e.g. in the artifact's frontmatter or a lineage in
 immutability check would then diff the artifact against *that* ref rather than `HEAD`, closing the
 committed-mutation gap.
 
+## A8. Artifact body first-paragraph is the display summary (ratified)
+Ratified rule: the **first paragraph** of an artifact's markdown body is its display summary. The
+board renders that one paragraph in two places — the **gate-card context** (`gate__ctx` in
+`assets/studio.html`) when the artifact sits at a gate, and the **unit-row description**
+(`unit__desc` in `assets/project.html`) for the unit it leads. Authoring consequence: an artifact's
+opening paragraph must stand alone as a single in-world sentence or two — no meta preamble, and the
+leading `#` heading does not count as the paragraph. The golden fixture's artifact bodies are
+written to this rule, each first paragraph aligned to the corresponding CD-template summary string
+(product-brief → the "guest checkout with saved-card fallback" unit description; spec → the "spec
+ready for review; two open questions on guest checkout" gate context). Because the immutability
+check diffs approved artifacts against `HEAD` (see A7), rewriting an *approved* artifact's body is a
+re-commit, not a silent edit — the fixture's approved bodies and their commit move together.
+
 ## Learnings
 Subprocess-calling code inherits a hostile world: pin git config at the spawn site, canonicalize paths before comparing them, and test against dirty environments (symlinked tmpdirs, hostile global config) — not just clean ones.
 Validation must fail closed: every early-exit "valid" state is an escape hatch; make the taken state observable and assert it explicitly in tests.

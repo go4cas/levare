@@ -18,8 +18,8 @@ usage:
   wall_clock_s: 210
 ---
 
-# Design — checkout-flow
+# Checkout design
 
-A folder artifact: this index carries the frontmatter; the wireframe travels alongside in
-`files:`. Single-page flow with four collapsible sections — cart, address, payment,
-confirmation — and a persistent order summary rail.
+A single-page checkout: cart review, contact, payment, and confirmation stacked as one scrolling flow, with a saved-card offer that surfaces the instant a returning email is entered.
+
+Returning shoppers see their masked saved card as the default payment method behind a one-tap "use this card" control; first-time shoppers get a plain card form with no interruption. A persistent order-summary rail keeps the running total and item count in view at every step, and the confirmation state doubles as the receipt. The attached wireframe shows the four sections and the summary rail.
