@@ -443,3 +443,55 @@ and exit; a long-lived listener (`serve`) must be special-cased or the process t
 instant the server starts — caught by manually curling the server rather than by any unit test, a
 reminder to smoke-test any new long-running command end-to-end, not just its route handlers in
 isolation.
+
+## E12. `./levare serve` exited immediately — root cause and the coverage gap that hid it (gate fix-up)
+
+**Root cause.** There are two independent entry points into the CLI: this module's own
+`if (import.meta.main)` block at the bottom of `src/cli.ts`, and the separate `./levare` wrapper
+script (`#!/usr/bin/env bun` → `import { main } from "./src/cli.ts"; process.exit(main(...))`) —
+the actual documented invocation path per NOTES A3. Earlier in phase 4 the `serve` exit-code bug
+(process.exit() tearing down the listener the instant it started) was diagnosed and fixed, but the
+fix was applied only inside `src/cli.ts`'s own entry block, special-casing `argv[0] === "serve"`.
+The `./levare` wrapper is a *different file* with its own unconditional `process.exit(main(argv))`
+and was never touched — so `./levare serve fixtures/golden`, the command actually documented and
+actually run by a Conductor, still printed its bound URL and exited on the spot. `bun run
+src/cli.ts serve` (the form used for manual verification during the original phase-4 pass) worked
+fine, which is exactly how the regression stayed invisible.
+
+**Why a green suite didn't catch it.** Every board test up to this point either called
+`board.fetch(request)` directly, in-process — which exercises the router and every handler, but
+never touches either CLI entry point or a real socket — or, for the one place `serve` itself was
+invoked, called `bun run src/cli.ts serve` by hand rather than `./levare`. No test spawned the actual
+`./levare` binary as a subprocess and made a real HTTP request against it, so the one code path a
+Conductor would actually run was the one path with zero coverage.
+
+**Fix.** Both entry points now delegate to a single exported `runCli(argv)` in `src/cli.ts`, which
+contains the `serve`-is-long-running exception exactly once; `./levare` and `src/cli.ts`'s own
+`import.meta.main` block are now two one-line callers of the same function, so the exception cannot
+be applied to only one of them again. `serve()` (`src/board/serve.ts`) now: binds `0.0.0.0` (not
+loopback-only, so a forwarded/container port reaches it) instead of Bun's default; prints the address
+actually returned by the bound `Server` object, not the requested port (relevant if `--port 0` is
+ever used for an ephemeral port); and installs `SIGINT`/`SIGTERM` handlers that close the fs.watch
+handle and the listener before exiting, rather than relying on default signal disposition. `GET /`
+was changed from a 302 redirect to `/studio` into rendering studio directly (200) — the gate
+demonstration curls `/` with no `-L`, and a redirect there would read as "serves nothing" all over
+again to a plain `curl`.
+
+**New coverage.** `tests/board-serve-e2e.test.ts` spawns the real `./levare serve <scratch-root>
+--port <p>` as a subprocess (`Bun.spawn`, not `board.fetch`), waits for it to actually accept
+connections, then drives it purely over HTTP/SSE: asserts the process is still running after boot
+(`exitCode === null`) — the direct regression assertion — GETs `/` and asserts the studio HTML (not
+a redirect), GETs `/styles.css` and `/app.js` and diffs the response bytes against the files on disk
+(proving the assets are actually served, not merely referenced), POSTs approve on the fixture's open
+gate and confirms both the on-disk frontmatter flip and a live SSE `reload` push, then sends `SIGINT`
+and asserts the subprocess exits 0 and stops accepting connections. Verified as a real regression
+test by temporarily restoring the old wrapper's unconditional `process.exit(main(...))` — the suite
+fails (times out waiting for the server to come up) — then reverting; the fixed wrapper passes.
+
+**Learning.** An in-process `fetch(Request): Response` test (deliberately chosen earlier in phase 4
+for its speed and freedom from port/sandbox flakiness — see the prior Learnings entry) is real
+coverage for routing and rendering, but it can *never* catch "the entry point that starts the
+process is broken," because it never goes through that entry point. A long-running command needs at
+least one test that spawns the real binary/script a user actually runs and talks to it over an
+actual socket — the fast in-process tests and the one slow subprocess test are complementary, not
+substitutes for each other.
