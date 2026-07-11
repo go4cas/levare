@@ -7,6 +7,7 @@ import { loadRepo } from "./repo.ts";
 import { assembleContext } from "./context.ts";
 import { runDoctor } from "./doctor.ts";
 import { CAPABILITIES } from "../fixtures/stubs/member-stub.ts";
+import { serve } from "./board/serve.ts";
 
 // Until the studio repo root is populated, the fixture golden tree stands in as the studio (NOTES
 // A1); context/doctor default their root there. `--root <path>` overrides.
@@ -83,12 +84,22 @@ export function runDoctorCmd(rest: string[]): number {
   }
 }
 
+// `levare serve [root] [--port N]` — the board (§9): four screens, SSE live updates, three write routes.
+export function runServeCmd(rest: string[]): number {
+  const root = rest.find((a) => !a.startsWith("-")) ?? DEFAULT_ROOT;
+  const port = Number(flag(rest, "--port") ?? 4173);
+  const { url } = serve(root, port);
+  console.log(`levare serve · ${root} → ${url}`);
+  return 0;
+}
+
 function usage(): number {
   console.error(
     "usage: levare validate <path>\n" +
       "       levare replay <path> --stubs\n" +
       "       levare context <agent> --unit <unit> [--step <step>] [--root <path>] [--dry-run]\n" +
-      "       levare doctor [root]",
+      "       levare doctor [root]\n" +
+      "       levare serve [root] [--port N]",
   );
   return 2;
 }
@@ -110,6 +121,8 @@ export function main(argv: string[]): number {
       return runContextCmd(rest);
     case "doctor":
       return runDoctorCmd(rest);
+    case "serve":
+      return runServeCmd(rest);
     case undefined:
     case "--help":
     case "-h":
@@ -121,5 +134,11 @@ export function main(argv: string[]): number {
 }
 
 if (import.meta.main) {
-  process.exit(main(process.argv.slice(2)));
+  // `serve` starts a long-lived Bun.serve listener; every other command runs once and exits. Exiting
+  // here unconditionally would tear down the process the instant the listener started.
+  if (process.argv[2] === "serve") {
+    main(process.argv.slice(2));
+  } else {
+    process.exit(main(process.argv.slice(2)));
+  }
 }
