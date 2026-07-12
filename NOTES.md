@@ -1614,3 +1614,136 @@ relied on to make that guarantee.
 to a user or returned from a `serve()`-style function) works by OS/resolver accident on some systems
 and not others; always translate a wildcard bind hostname to `localhost` (or a real interface address)
 before it reaches any caller that might actually connect to it.
+
+# NOTES — uncertainties and assumptions (Phase 7.5)
+
+Phase-7.5 is a polish pass against the Conductor's own design-fidelity review of the running board —
+no new capability, no new state, no new write routes (the write surface stays exactly three, asserted
+unchanged by `tests/board-routes.test.ts`). Six items, all built from the existing component
+vocabulary (`.card`/`.card__h`/`.prow`/`.founding`/`.chip`/`.stamp`/`.deriv`/`.mono`) — zero new CSS
+class names were introduced anywhere in this phase.
+
+## L1. The artifact render view (item 1) is a read-only projection, sibling to run/project, not a
+registry entity
+`src/board/render.ts#renderArtifact` and `#renderIdea`, routed at `GET /artifact/:project/:unit/:id`
+and `GET /idea/:name` (`src/board/serve.ts`). Both reuse the standard rail/main/orch shell so the view
+reads as one more screen in the same product, not a bolt-on. Frontmatter renders as `.prow` key-value
+rows inside a `.card` (kind, id, status chip, producer avatar, created + age, approved_by, files,
+cost); the body is paragraph-split (blank-line-delimited, matching `firstParagraph`'s own split rule —
+ruling A8 — just not truncated to one paragraph) with a leading `#` line rendered as a heading, since
+no markdown-rendering library is available (`deps:check` bans it) and none was needed for this
+fixture's prose. Lineage is a fourth card with four sub-lists — consumes, supersedes, superseded-by,
+cited-by — each rendered with `.founding`/`.cite` (the same "artifact reference + badge" row the
+project view's constitution list already uses). Every artifact id and idea name elsewhere in the
+product (`tokenLink` sites in gate cards, founding artifacts, unit-detail artifact rows, the run-view
+score rail's producer line, and the studio ideas rail) now routes here via two new link helpers,
+`artifactTokenLink`/`ideaHref`, instead of falling back to `/run/:project/:unit`.
+
+**Consumes/supersedes may reference an artifact outside the current unit (founding-artifact model), so
+lineage resolution searches the whole project, not just one unit** (`findArtifactInProject`,
+`supersededByOf`, `citedByOf` in `derive.ts`). An id a consumer references that cannot be resolved
+anywhere in the project renders as an honest "unresolved" row (`lineageUnresolved`) rather than being
+silently dropped or mis-rendered as "nothing consumed" — the golden fixture has no such case, but a
+future project with a broken reference should surface it, not hide it.
+
+**Ideas carry no lineage the schema can express.** No frontmatter field ties an idea back to a project
+it was promoted into (design brief: "promoting it opens an inception unit", but nothing records that
+edge once it happens). The idea view's Lineage card states this honestly ("nothing consumes,
+supersedes, or cites it") rather than fabricating a connection. Revisit if a future phase adds a
+`promoted_to`/`from_idea` field.
+
+**Not-found is a thrown error → the existing generic 500-JSON catch, matching `renderProject`/
+`renderRun`'s precedent.** A true `404` for an unknown artifact/idea id would be more correct HTTP, but
+every other page route in this codebase already uses "throw → the router's catch-all returns 500
+JSON" for an unresolvable id/name; introducing a different convention for just these two new routes
+would be inconsistent with the rest of `serve.ts`, not more correct. Left as a candidate follow-up if
+a future phase gives 404 handling a real design (a proper "not found" HTML page, per `onboarding.ts`'s
+existing precedent for the analogous "not a studio yet" case).
+
+## L2. Project-card anatomy (item 2) — "most relevant unit" needed a recency signal the schema doesn't
+have; the artifact's own `created` date was used, not filesystem mtime
+Ruling A8 ("first paragraph of an artifact's markdown body is its display summary") governs artifact
+summaries; the task's "newest gated, else newest active" selection rule needed a **unit**-level recency
+signal, and `WorkUnit` (`types.ts`) has no `created` field at all. Filesystem mtime was rejected: a
+fresh `git checkout` stamps every file's mtime to checkout time, so relative ordering across files
+carries no real signal in exactly the hermetic/CI environments this project's tests already run in
+(`tests/immutability.test.ts` establishes the same class of hazard for a different reason). **Instead,
+`mostRelevantUnit` (`derive.ts`) sorts by the unit's own leading artifact's `created` field** — real
+authored data, already present on every artifact — with a unit that has no artifact yet (a bare start
+gate, e.g. `loyalty-flow`) sorting last, never first, so it is only ever chosen when nothing richer is
+available. Against the golden fixture this correctly picks `checkout-flow` (newest-gated, via its
+`spec` artifact's `2026-07-11`) over `loyalty-flow` (a start gate with zero artifacts).
+
+**The one-sentence summary is the artifact's full first paragraph (A8), not a first-sentence
+truncation.** The pre-existing code truncated `unitSummary`'s already-correct A8 paragraph down to one
+sentence via a regex split — a second, undocumented truncation rule the task's "one-sentence human
+summary" language does not actually require (A8 says "paragraph", and every golden-fixture paragraph
+already reads as one or two sentences by authoring convention, per A8's own note). Removed; the full
+paragraph now renders verbatim.
+
+**"Latest release" has no dedicated concept in the schema at all** — release/changelog tracking has
+never been modeled (E1/E8's "no releases tracked yet" stamp is the only prior art, and it was always a
+hardcoded string, never a real derivation). **Assumption:** the closest honest proxy is the most
+recently shipped work unit (`latestRelease`, `derive.ts`), using the same artifact-`created` recency
+signal as `mostRelevantUnit`. This is a proxy, not a real release model — a future phase that adds
+actual release/deploy tracking should replace this rather than build on it.
+
+## L3. Project stats strip (item 3) — filled to its declared grid rather than resized, since the
+missing stats were real, derivable numbers
+The project view's `.statstrip` used the shared `.statstrip{grid-template-columns:repeat(4,1fr)}` rule
+with only 3 stat cells rendered, leaving one dark grid track — the defect the task named. The
+alternative option ("size the grid to its content") was available but the task also named two specific
+missing stats (median review rounds, spend) that are both genuinely derivable from data already loaded
+(review-kind artifact counts per unit; `usage.usd` sums) — the same numbers the studio-level stat strip
+already surfaces project-wide (`repoSpend`, `medianGateResponseDays`). Adding the project-scoped twins
+(`projectSpend`, `medianReviewRounds` in `derive.ts`) and rendering all five in an explicit
+`repeat(5,1fr)` (matching the studio strip's own existing `style=` override pattern) was the more
+informative fix and reuses an established pattern rather than introducing a new one.
+
+## L4. Derivation line (item 4) — one span, relocated into the footer stamp, not deleted and
+re-authored
+`derivLine()` (a bare `<span class="deriv">`) rendered once under the page `<h1>` and a second,
+textually-duplicate `<div class="stamp">` rendered the same fact in the sidebar footer on studio,
+project, and registry; the run view's footer showed only a bare path with no "derived from" text at
+all (so it weirdly *wasn't* a duplicate there, but also didn't carry the marker anywhere but `.phead`).
+**Fix:** removed every `.phead`/top-of-`.main` `derivLine()` call; the footer stamp is now the single
+source, built by `derivFooter()`, which nests a `<span class="deriv">` inside the existing
+`<div class="stamp">` so the derivation marker keeps one stable class regardless of which screen's
+footer it renders in (`.deriv`'s own CSS rule was scoped `.phead .deriv{...}` and does not apply
+outside `.phead` — the nested span relies on ordinary CSS inheritance from `.stamp`'s own font/color
+rule, which already matches, rather than needing a new unscoped `.deriv` rule). The run view's footer
+text changed from a bare path to the same "derived from work/…/ on every request" phrasing the other
+three screens use, closing the inconsistency rather than just deleting the duplicate.
+
+## L5. Registry density pass (item 5) — the shared `.card` rule was tightened, which also benefits
+the new artifact view
+"Use only existing CSS custom properties and rules, invent no new visual language" was read literally:
+no new selectors were added anywhere in this phase. The registry's `.entity.card` blocks already used
+`.prow` for every key-value row (already inline, already scannable structurally) — the actual density
+problem was vertical rhythm: `.card{padding:18px 20px;gap:13px}`, `.entity{gap:22px}`,
+`.rendered{gap:16px}` compounded into a lot of whitespace for a card with several rows. Tightened to
+`.card{padding:15px 17px;gap:10px}`, `.entity{gap:14px}`, `.rendered{gap:11px}`, plus a matching trim
+on `.pill`/`.backlink` padding. Because `.card` is also the container the new artifact/idea view (L1)
+uses for its frontmatter/body/lineage blocks, this tightening applies there too — one consistent
+density pass across both, not two divergent ones.
+
+## L6. Ideas link to the artifact render view (item 6)
+The studio rail's idea rows were plain `<div class="idea">` text with no link at all. Changed to
+`<a class="idea" href="/idea/:name">`, deliberately **not** adding the `.link` class other mono tokens
+use — `.link` paints an accent-colored underline on hover, which is exactly the "urgency styling" the
+design brief says the ideas rail must never carry ("the most understated element on the page... no
+counts, no urgency styling, never gate-colored"). `.idea` gained only `display:block`,
+`text-decoration:none`, and a muted-to-dim hover (`color:var(--fg-mute)` → `var(--fg-dim)`) — visually
+identical to before except that it is now, in fact, clickable.
+
+## Learnings
+A git checkout is not a reliable clock: every file's mtime is stamped to checkout time, not authoring
+time, so "sort by filesystem mtime" carries no real signal in a freshly-cloned repo — the same failure
+mode `tests/immutability.test.ts` already guards against for a different check. When a schema has no
+dedicated recency field for the thing being ranked, prefer deriving recency from a *related* entity's
+own real, authored timestamp (here: a unit's leading artifact's `created` field) over any filesystem
+signal.
+A single shared CSS class doing double duty across two features (here: `.card`, used by both the
+registry's density pass and the brand-new artifact view) means a tightening pass for one screen is
+also, for free, a consistency pass across the whole product — worth checking who else consumes a class
+before assuming a change is scoped to the screen that motivated it.
