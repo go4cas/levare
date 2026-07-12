@@ -95,7 +95,7 @@ export const ROUTES: RouteDef[] = [
     pattern: "/project/:name",
     mutating: false,
     page: true,
-    handler: (_req, params, ctx) => html(renderProject(withRepo(ctx.root), params.name)),
+    handler: (_req, params, ctx) => html(renderProject(withRepo(ctx.root), params.name, ctx.root)),
   },
   {
     method: "GET",
@@ -122,7 +122,7 @@ export const ROUTES: RouteDef[] = [
     pattern: "/artifact/:project/:unit/:id",
     mutating: false,
     page: true,
-    handler: (_req, params, ctx) => html(renderArtifact(withRepo(ctx.root), params.project, params.unit, params.id)),
+    handler: (_req, params, ctx) => html(renderArtifact(withRepo(ctx.root), params.project, params.unit, params.id, ctx.root)),
   },
   // Idea render view (item 6) — the same artifact render view, applied to ideas/*.md.
   {
@@ -130,7 +130,7 @@ export const ROUTES: RouteDef[] = [
     pattern: "/idea/:name",
     mutating: false,
     page: true,
-    handler: (_req, params, ctx) => html(renderIdea(ctx.root, params.name)),
+    handler: (_req, params, ctx) => html(renderIdea(withRepo(ctx.root), ctx.root, params.name)),
   },
   { method: "GET", pattern: "/styles.css", mutating: false, handler: () => serveAsset("styles.css") },
   { method: "GET", pattern: "/app.js", mutating: false, handler: () => serveAsset("app.js") },

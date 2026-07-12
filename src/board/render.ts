@@ -31,7 +31,7 @@ import {
   type OpenGate,
   type ScoreNode,
 } from "./derive.ts";
-import { loadExtras } from "./extra.ts";
+import { loadExtras, type RegistryExtras } from "./extra.ts";
 import { buildTimeline } from "./timeline.ts";
 import { diagnose } from "../doctor.ts";
 
@@ -118,6 +118,71 @@ function ideaHref(name: string): string {
 // distinctive marker regardless of which container it renders inside.
 function derivFooter(text: string): string {
   return `<div class="stamp"><span class="deriv">${esc(text)}</span></div>`;
+}
+
+// ---------------------------------------------------------------------------
+// The rail (gate-review item 1, phase 7.5) — ONE thing, persistent navigation, byte-for-byte
+// identical in structure on every screen: the levare mark, Projects, Registry, Connectors, Ideas
+// (the Conductor-approved nav-index), the theme toggle, and a single derivation-line footer. Nothing
+// screen-specific (a project's pointer, a unit's score, the registry's own entity switcher) lives
+// here anymore — that content moved into each screen's own content column. Only two things still vary
+// by scope, deliberately: the registry sub-nav's `is-active` highlight (ordinary "you are here"
+// wayfinding within a static list, not a change to what the list contains) and the footer's
+// derivation-line TEXT (still one line, one place — the design brief's "every screen states its
+// derivation quietly", not page metadata bleeding into the nav).
+// ---------------------------------------------------------------------------
+
+const REGISTRY_KINDS = ["teams", "agents", "skills", "knowledge", "types", "connectors", "evals"] as const;
+type RegistryKind = (typeof REGISTRY_KINDS)[number];
+
+function registryKindCount(repo: Repo, extras: RegistryExtras, k: RegistryKind): number {
+  return k === "teams" ? repo.teams.size
+    : k === "agents" ? repo.agents.size
+    : k === "types" ? repo.types.size
+    : k === "connectors" ? repo.connectors.size
+    : k === "skills" ? extras.skills.length
+    : k === "knowledge" ? extras.knowledge.length
+    : extras.evals.length;
+}
+
+/** The registry entity-kind link list — shared by the rail's Registry section and the registry
+ * page's own in-content tab strip, so the two never drift into two different lists of kinds. */
+function registryNavLinks(repo: Repo, extras: RegistryExtras, active?: RegistryKind): string {
+  return REGISTRY_KINDS.map((k) => {
+    const activeCls = active === k ? " is-active" : "";
+    return `<a href="/registry?entity=${k}" data-goto="${k}" class="${activeCls.trim()}">${k} <span class="ct">${registryKindCount(repo, extras, k)}</span></a>`;
+  }).join("\n");
+}
+
+function railNav(repo: Repo, extras: RegistryExtras, derivText: string, opts: { activeRegistryEntity?: RegistryKind } = {}): string {
+  const projectRail = [...repo.projects.values()]
+    .map((p) => {
+      const units = repo.units.filter((u) => u.project === p.name).length;
+      return `<a class="rel" href="/project/${esc(p.name)}"><span class="nm">${esc(p.name)}</span><span class="ag">${units}</span></a>`;
+    })
+    .join("\n");
+
+  const health = diagnose(
+    [...repo.connectors.values()],
+    { has: (n) => typeof process.env[n] === "string" && process.env[n] !== "" },
+    (cmd) => (Bun.which(cmd) ? "found" : "not-found"),
+  );
+  const connectorRows = health
+    .map((h) => `<div class="crow"><span class="status-dot ${h.status === "ok" ? "is-ok" : "is-idle"}"></span><span class="nm">${esc(h.name)}</span><span class="st">${esc(h.status)}</span></div>`)
+    .join("\n");
+
+  const ideasHtml = extras.ideas.length
+    ? extras.ideas.map((i) => `<a class="idea" href="${ideaHref(i.name)}">${esc(i.name)}</a>`).join("\n")
+    : `<div class="idea" style="color:var(--fg-mute)">no ideas captured yet</div>`;
+
+  return `<aside class="rail">
+    ${logo()}
+    <section class="railsec"><h3 class="railsec__h">Projects</h3>${projectRail}</section>
+    <section class="railsec"><h3 class="railsec__h">Registry</h3><nav class="reg-nav">${registryNavLinks(repo, extras, opts.activeRegistryEntity)}</nav></section>
+    <section class="railsec"><h3 class="railsec__h">Connectors</h3>${connectorRows}</section>
+    <section class="railsec"><h3 class="railsec__h">Ideas</h3>${ideasHtml}</section>
+    <div class="railfoot"><button class="themebtn" data-theme-toggle></button>${derivFooter(derivText)}</div>
+  </aside>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -248,49 +313,7 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date()): 
   const median = medianGateResponseDays(repo);
   const shippedUnits = repo.units.filter((u) => u.status === "shipped").length;
 
-  const projectRail = [...repo.projects.values()]
-    .map((p) => {
-      const units = repo.units.filter((u) => u.project === p.name).length;
-      return `<a class="rel" href="/project/${esc(p.name)}"><span class="nm">${esc(p.name)}</span><span class="ag">${units}</span></a>`;
-    })
-    .join("\n");
-
-  const registryNav = (["teams", "agents", "skills", "knowledge", "types", "connectors", "evals"] as const)
-    .map((k) => {
-      const count =
-        k === "teams" ? repo.teams.size
-        : k === "agents" ? repo.agents.size
-        : k === "types" ? repo.types.size
-        : k === "connectors" ? repo.connectors.size
-        : k === "skills" ? extras.skills.length
-        : k === "knowledge" ? extras.knowledge.length
-        : extras.evals.length;
-      return `<a href="/registry?entity=${k}">${k} <span class="ct">${count}</span></a>`;
-    })
-    .join("\n");
-
-  const health = diagnose(
-    [...repo.connectors.values()],
-    { has: (n) => typeof process.env[n] === "string" && process.env[n] !== "" },
-    (cmd) => (Bun.which(cmd) ? "found" : "not-found"),
-  );
-  const connectorRows = health
-    .map((h) => `<div class="crow"><span class="status-dot ${h.status === "ok" ? "is-ok" : "is-idle"}"></span><span class="nm">${esc(h.name)}</span><span class="st">${esc(h.status)}</span></div>`)
-    .join("\n");
-
-  const ideasHtml = extras.ideas.length
-    ? extras.ideas.map((i) => `<a class="idea" href="${ideaHref(i.name)}">${esc(i.name)}</a>`).join("\n")
-    : `<div class="idea" style="color:var(--fg-mute)">no ideas captured yet</div>`;
-
-  const rail = `<aside class="rail">
-    ${logo()}
-    <section class="railsec"><h3 class="railsec__h">Projects</h3>${projectRail}</section>
-    <section class="railsec"><h3 class="railsec__h">Registry</h3><nav class="reg-nav">${registryNav}</nav></section>
-    <section class="railsec"><h3 class="railsec__h">Connectors</h3>${connectorRows}</section>
-    <section class="railsec"><h3 class="railsec__h">Recent releases</h3><div class="stamp">no releases tracked yet</div></section>
-    <section class="railsec"><h3 class="railsec__h">Ideas</h3>${ideasHtml}</section>
-    <div class="railfoot"><button class="themebtn" data-theme-toggle></button>${derivFooter("derived from work/ on every request")}</div>
-  </aside>`;
+  const rail = railNav(repo, extras, "derived from work/ on every request");
 
   const gateCards = gates.length
     ? gates.map((g) => gateCardHtml(repo, g, now)).join("\n")
@@ -315,9 +338,11 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date()): 
         p.deploy ? esc(p.deploy) : "no deploy target",
         release ? `released ${esc(release.unit)}` : "no releases yet",
       ];
+      // Item 2, gate-review round 2: title and status chip share one line, chip right-aligned —
+      // `.pcard__top{justify-content:space-between}` already does this once both live inside it,
+      // matching the gate-card/unit-row anatomy elsewhere.
       return `<a class="pcard" href="/project/${esc(p.name)}">
-        <div class="pcard__top">${chip}</div>
-        <span class="pcard__name">${esc(p.name)}</span>
+        <div class="pcard__top"><span class="pcard__name">${esc(p.name)}</span>${chip}</div>
         <span class="pcard__desc">${desc}</span>
         <div class="pcard__meta mono">${metaParts.map((m) => `<span>${m}</span>`).join("")}</div>
       </a>`;
@@ -325,7 +350,10 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date()): 
     .join("\n");
 
   const main = `<main class="main">
-    <header class="phead"><h1>Studio</h1></header>
+    <header class="phead">
+      <div class="crumb"><span>studio</span></div>
+      <h1>Studio</h1>
+    </header>
     <div class="statstrip" style="grid-template-columns:repeat(5,1fr)">
       <div class="stat"><div class="n is-gate" data-gatestat="${gates.length}">${gates.length}</div><div class="l">Gates on you</div></div>
       <div class="stat"><div class="n">0</div><div class="l">Members running</div></div>
@@ -363,7 +391,7 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date()): 
 // PROJECT
 // ---------------------------------------------------------------------------
 
-export function renderProject(repo: Repo, projectName: string, now: Date = new Date()): string {
+export function renderProject(repo: Repo, projectName: string, root: string, now: Date = new Date()): string {
   const project = repo.projects.get(projectName);
   if (!project) throw new Error(`unknown project '${projectName}'`);
   const units = repo.units.filter((u) => u.project === projectName);
@@ -379,18 +407,22 @@ export function renderProject(repo: Repo, projectName: string, now: Date = new D
         .join("\n")
     : `<div class="founding" style="color:var(--fg-mute)">no founding artifacts yet</div>`;
 
-  const rail = `<aside class="rail">
-    ${logo()}
-    <section class="railsec">
-      <h3 class="railsec__h">Pointer &middot; ${esc(projectName)}</h3>
-      <div class="prow"><span class="k">repo</span><span class="v mono">${esc(project.repo)}</span></div>
-      <div class="prow"><span class="k">deploy</span><span class="v mono">${project.deploy ? esc(project.deploy) : "&mdash;"}</span></div>
-      <div class="prow"><span class="k">pace</span><span class="v">${esc(project.pace)}</span></div>
-    </section>
-    <section class="railsec"><h3 class="railsec__h">Constitution</h3>${foundingHtml}</section>
-    <section class="railsec"><h3 class="railsec__h">Releases</h3><div class="stamp">no releases tracked yet</div></section>
-    <div class="railfoot"><button class="themebtn" data-theme-toggle></button>${derivFooter(`derived from work/${projectName}/ on every request`)}</div>
-  </aside>`;
+  const rail = railNav(repo, loadExtras(root), `derived from work/${projectName}/ on every request`);
+
+  // Gate-review round 2, item 1: the project pointer + constitution + releases move out of the rail
+  // (which is nav-only now) into a compact content-column panel at the top of the page — the same
+  // `.card`/`.prow`/`.founding` vocabulary the registry already stacks multiple labeled sections
+  // inside one card with.
+  const pointerPanel = `<div class="card">
+    <div class="card__h">Pointer</div>
+    <div class="prow"><span class="k">repo</span><span class="v mono">${esc(project.repo)}</span></div>
+    <div class="prow"><span class="k">deploy</span><span class="v mono">${project.deploy ? esc(project.deploy) : "&mdash;"}</span></div>
+    <div class="prow"><span class="k">pace</span><span class="v">${esc(project.pace)}</span></div>
+    <div class="card__h" style="margin-top:6px">Constitution</div>
+    ${foundingHtml}
+    <div class="card__h" style="margin-top:6px">Releases</div>
+    <div class="stamp">no releases tracked yet</div>
+  </div>`;
 
   const unitRows = units
     .map((u) => {
@@ -443,6 +475,7 @@ export function renderProject(repo: Repo, projectName: string, now: Date = new D
       <div class="crumb"><a href="/studio">studio</a><span>/</span><span>${esc(projectName)}</span></div>
       <h1>${esc(projectName)}</h1>
     </header>
+    ${pointerPanel}
     <div class="statstrip" style="grid-template-columns:repeat(5,1fr)">
       <div class="stat"><div class="n">${units.filter((u) => u.status === "shipped").length}</div><div class="l">Shipped units</div></div>
       <div class="stat"><div class="n">${units.filter((u) => u.status === "active").length}</div><div class="l">Active</div></div>
@@ -498,14 +531,7 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
     })
     .join("\n");
 
-  const rail = `<aside class="rail">
-    ${logo()}
-    <section class="railsec">
-      <h3 class="railsec__h">Score &middot; ${esc(unitId)}</h3>
-      <div class="score2" style="margin-top:14px">${scoreSteps}</div>
-    </section>
-    <div class="railfoot"><button class="themebtn" data-theme-toggle></button>${derivFooter(`${unit.type} · derived from work/${project}/${unitId}/ on every request`)}</div>
-  </aside>`;
+  const rail = railNav(repo, loadExtras(root), `${unit.type} · derived from work/${project}/${unitId}/ on every request`);
 
   const timeline = buildTimeline(root, unit.dir);
   const timelineHtml = timeline.length
@@ -514,14 +540,25 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
         .join("\n")
     : `<p style="color:var(--fg-mute);font-size:13.5px">No recorded events yet.</p>`;
 
+  // Gate-review round 2, item 1: the score is this page's primary content, not navigation — it now
+  // renders as its own content column beside the timeline (a plain inline flex row; no new CSS class,
+  // the same inline-layout-override pattern the stat strips already use for their grid-template).
+  const scoreCol = `<div style="flex:1 1 260px;min-width:220px">
+    <div class="sec__h"><h2>Score</h2></div>
+    <div class="score2" style="margin-top:14px">${scoreSteps}</div>
+  </div>`;
+  const timelineCol = `<div style="flex:2 1 360px;min-width:280px">
+    <div class="sec__h"><h2>Timeline <span class="mono" style="color:var(--fg-mute);font-weight:400">&middot; from git log + runner events</span></h2></div>
+    <div class="timeline">${timelineHtml}</div>
+  </div>`;
+
   const main = `<main class="main">
     <header class="phead">
       <div class="crumb"><a href="/studio">studio</a><span>/</span><a href="/project/${esc(project)}">${esc(project)}</a><span>/</span><span>${esc(unitId)}</span></div>
       <h1><span style="font-family:var(--mono);font-weight:400;margin-right:8px" aria-hidden="true">${type?.glyph ?? ""}</span>${esc(unitId)}</h1>
     </header>
     <section class="sec">
-      <div class="sec__h"><h2>Timeline <span class="mono" style="color:var(--fg-mute);font-weight:400">&middot; from git log + runner events</span></h2></div>
-      <div class="timeline">${timelineHtml}</div>
+      <div style="display:flex;gap:32px;align-items:flex-start;flex-wrap:wrap">${scoreCol}${timelineCol}</div>
     </section>
   </main>`;
 
@@ -536,7 +573,7 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
     ${composer()}
   </aside>`;
 
-  return shell(`levare · run · ${unitId}`, "Open score", `<div class="app app--run">${rail}${main}${orch}</div>`);
+  return shell(`levare · run · ${unitId}`, "Open score", `<div class="app">${rail}${main}${orch}</div>`);
 }
 
 // ---------------------------------------------------------------------------
@@ -580,7 +617,7 @@ function lineageUnresolved(id: string): string {
   return `<div class="founding" style="color:var(--fg-mute)"><span class="mono">${esc(id)}</span><span class="cite">unresolved</span></div>`;
 }
 
-export function renderArtifact(repo: Repo, project: string, unit: string, id: string, now: Date = new Date()): string {
+export function renderArtifact(repo: Repo, project: string, unit: string, id: string, root: string, now: Date = new Date()): string {
   const art = repo.artifacts.get(`${project}/${unit}`)?.get(id);
   if (!art) throw new Error(`unknown artifact '${project}/${unit}/${id}'`);
 
@@ -614,15 +651,9 @@ export function renderArtifact(repo: Repo, project: string, unit: string, id: st
   const citedBy = citedByOf(repo, project, id);
   const citedByHtml = citedBy.length ? citedBy.map((a) => lineageItem(a, a.kind)).join("\n") : lineageEmpty("not cited yet");
 
-  const rail = `<aside class="rail">
-    ${logo()}
-    <section class="railsec">
-      <h3 class="railsec__h">Context</h3>
-      <a class="rel" href="/project/${esc(project)}"><span class="nm">${esc(project)}</span></a>
-      <a class="rel" href="/run/${esc(project)}/${esc(unit)}"><span class="nm">${esc(unit)}</span><span class="ag">run</span></a>
-    </section>
-    <div class="railfoot"><button class="themebtn" data-theme-toggle></button>${derivFooter(`derived from work/${project}/${unit}/${artifactFileName(art)} on every request`)}</div>
-  </aside>`;
+  // Item 1, gate-review round 2: no page-specific "Context" section in the rail anymore — the
+  // breadcrumb below already carries studio → project → unit → artifact as linked segments.
+  const rail = railNav(repo, loadExtras(root), `derived from work/${project}/${unit}/${artifactFileName(art)} on every request`);
 
   const frontmatter = `<div class="card">
     <div class="card__h">Frontmatter</div>
@@ -649,9 +680,10 @@ export function renderArtifact(repo: Repo, project: string, unit: string, id: st
     <h3 class="railsec__h" style="margin-top:8px">Cited by</h3>${citedByHtml}
   </div>`;
 
+  const breadcrumb = `<div class="crumb"><a href="/studio">studio</a><span>/</span><a href="/project/${esc(project)}">${esc(project)}</a><span>/</span><a href="/run/${esc(project)}/${esc(unit)}">${esc(unit)}</a><span>/</span><span class="mono">${esc(art.id)}</span></div>`;
   const main = `<main class="main">
     <header class="phead">
-      <div class="crumb"><a href="/studio">studio</a><span>/</span><a href="/project/${esc(project)}">${esc(project)}</a><span>/</span><a href="/run/${esc(project)}/${esc(unit)}">${esc(unit)}</a><span>/</span><span class="mono">${esc(art.id)}</span></div>
+      ${breadcrumb}
       <h1>${esc(art.kind)} <span class="mono" style="font-weight:400;color:var(--fg-mute);font-size:.6em;margin-left:8px">${esc(art.id)}</span></h1>
     </header>
     ${frontmatter}
@@ -671,7 +703,7 @@ export function renderArtifact(repo: Repo, project: string, unit: string, id: st
   return shell(`levare · ${art.kind} · ${art.id}`, "Open context", `<div class="app">${rail}${main}${orch}</div>`);
 }
 
-export function renderIdea(root: string, name: string): string {
+export function renderIdea(repo: Repo, root: string, name: string): string {
   const extras = loadExtras(root);
   const idea = extras.ideas.find((i) => i.name === name);
   if (!idea) throw new Error(`unknown idea '${name}'`);
@@ -679,11 +711,7 @@ export function renderIdea(root: string, name: string): string {
   const pitch = typeof idea.data.pitch === "string" ? idea.data.pitch : "";
   const tags = Array.isArray(idea.data.tags) ? (idea.data.tags as unknown[]).map((t) => String(t)) : [];
 
-  const rail = `<aside class="rail">
-    ${logo()}
-    <section class="railsec"><h3 class="railsec__h">Context</h3><a class="rel" href="/studio"><span class="nm">studio</span><span class="ag">ideas</span></a></section>
-    <div class="railfoot"><button class="themebtn" data-theme-toggle></button>${derivFooter(`derived from ideas/${name}.md on every request`)}</div>
-  </aside>`;
+  const rail = railNav(repo, extras, `derived from ideas/${name}.md on every request`);
 
   const frontmatter = `<div class="card">
     <div class="card__h">Frontmatter</div>
@@ -730,9 +758,6 @@ export function renderIdea(root: string, name: string): string {
 // REGISTRY
 // ---------------------------------------------------------------------------
 
-const REGISTRY_KINDS = ["teams", "agents", "skills", "knowledge", "types", "connectors", "evals"] as const;
-type RegistryKind = (typeof REGISTRY_KINDS)[number];
-
 // One bordered container per entity — the same `.card` recipe (background, border, radius, padding)
 // every other screen's bordered containers use (gate cards, unit rows, project cards each have their
 // own such class; the registry reuses `.card`, the one already used for a labeled panel, rather than
@@ -758,23 +783,14 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string):
   const extras = loadExtras(root);
   const active: RegistryKind = REGISTRY_KINDS.includes(activeEntity as RegistryKind) ? (activeEntity as RegistryKind) : "teams";
 
-  const nav = REGISTRY_KINDS.map((k) => {
-    const count =
-      k === "teams" ? repo.teams.size
-      : k === "agents" ? repo.agents.size
-      : k === "types" ? repo.types.size
-      : k === "connectors" ? repo.connectors.size
-      : k === "skills" ? extras.skills.length
-      : k === "knowledge" ? extras.knowledge.length
-      : extras.evals.length;
-    return `<a href="/registry?entity=${k}" data-goto="${k}" class="${k === active ? "is-active" : ""}">${k} <span class="ct">${count}</span></a>`;
-  }).join("\n");
+  const rail = railNav(repo, extras, "derived from the repo root on every request", { activeRegistryEntity: active });
 
-  const rail = `<aside class="rail">
-    ${logo()}
-    <section class="railsec"><h3 class="railsec__h">Registry</h3><nav class="reg-nav">${nav}</nav></section>
-    <div class="railfoot"><button class="themebtn" data-theme-toggle></button>${derivFooter("derived from the repo root on every request")}</div>
-  </aside>`;
+  // Item 1, gate-review round 2: the entity switcher moves out of the rail (nav-only now) into an
+  // in-content tab strip at the top of the page — the exact same link list (`registryNavLinks`, so it
+  // can never drift from the rail's own Registry section), just laid out horizontally via an inline
+  // style override on the existing `.reg-nav` rule (the same "reuse the rule, override the one layout
+  // property inline" pattern the stat strips already use for their grid-template-columns).
+  const tabStrip = `<nav class="reg-nav" style="flex-direction:row;flex-wrap:wrap;gap:4px 18px">${registryNavLinks(repo, extras, active)}</nav>`;
 
   const teamBlocks = [...repo.teams.values()]
     .map((t) => {
@@ -848,9 +864,23 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string):
     })
     .join("\n");
 
+  // Item 3, gate-review round 2: grid the cards (same `.pcards` grid component the studio project
+  // cards already use) instead of one-per-row full-width, so agents/skills/types/connectors flow two
+  // or three across. Only the active kind's articles are ever visible (`entityBlock`'s own
+  // `display:none` on the rest), so one shared grid — not seven — is enough; a hidden `display:none`
+  // article occupies no grid track. `minmax(320px,1fr)` per the review (wider than `.pcards`' own
+  // 220px default, since an entity card carries more content than a project card); team/agent cards
+  // may still span visually wider rows when their flow-strip/recipe content needs it — flex-wrap
+  // inside those already handles that without any extra CSS.
   const main = `<main class="main">
-    <div class="crumb"><a href="/studio">studio</a><span>/</span><span>registry</span></div>
-    ${teamBlocks}${agentBlocks}${skillBlocks}${knowledgeBlocks}${typeBlocks}${connectorBlocks}${evalBlocks}
+    <header class="phead">
+      <div class="crumb"><a href="/studio">studio</a><span>/</span><span>registry</span></div>
+      <h1>Registry</h1>
+    </header>
+    ${tabStrip}
+    <div class="pcards" style="grid-template-columns:repeat(auto-fill,minmax(320px,1fr))">
+      ${teamBlocks}${agentBlocks}${skillBlocks}${knowledgeBlocks}${typeBlocks}${connectorBlocks}${evalBlocks}
+    </div>
   </main>`;
 
   const orch = `<aside class="orch">
