@@ -1006,10 +1006,145 @@ one JSON line to stdout. `permissionMode: "bypassPermissions"` +
 (inherits no TTY), so the SDK's ordinary human-approval prompt has nowhere to go; the tool allowlist
 itself (empty for Orchestrator calls, `req.tools` for member calls) is what actually scopes what the
 model can touch, exactly as `guardrails.ts#allowedTools` already documents for the mocked boundary.
-`Options.env` is deliberately left unset in the worker's own `query()` call — the OUTER
-`Bun.spawnSync` (sdk-transport.ts) already scopes the worker subprocess's entire environment via its
-own `env:` option, so the worker simply inherits `process.env` as `query()`'s default, one layer of
-scoping, not two.
+`Options.env` was originally left unset in the worker's own `query()` call, reasoning that the OUTER
+`Bun.spawnSync` (sdk-transport.ts) already scopes the worker subprocess's entire environment, so the
+worker would simply inherit `process.env` as `query()`'s own documented default. The live-gate fix-up
+below (K8) makes this explicit instead — spreading `process.env` into `Options.env` directly — to
+remove any doubt that the credential actually reaches the SDK's own inner subprocess.
+
+## K8. Live-gate fix-up: the worker never reached a model, and failed silently
+
+**Symptom**, from a real run with `ANTHROPIC_API_KEY` exported and `claude` on `PATH`:
+`tests/orchestrator-sdk-live.test.ts` failed in 72ms — far too fast for any real network round trip —
+with `intent.kind === "unknown"` for the plain phrase "what needs me". Two separate defects, both
+fixed here.
+
+**Defect 1 — env forwarding was correct in principle but not defensive enough to trust blind.**
+`createSdkOrchestratorBoundary`'s default (`opts.env ?? process.env`) and `bunSdkTransport`'s spawn
+already passed the FULL launching environment through — not the member allowlist model — so the
+mechanism was structurally right (see the env-trust-boundary note now at the top of
+sdk-transport.ts). Three concrete hardenings were made regardless, since the live symptom (an
+instant, unexplained failure) is exactly what any of these three would produce:
+- `SDK_WORKER_PATH` used raw `URL.pathname` instead of `Bun.fileURLToPath` — the established pattern
+  this repo already uses elsewhere (adapters.test.ts) for turning a `file://` module URL into a path
+  to spawn. `.pathname` can carry percent-encoding a shell-less argv spawn will not decode; swapped.
+- `sdk-worker.ts` now passes `Options.env: { ...process.env }` to `query()` EXPLICITLY rather than
+  relying on the SDK's documented "omitted env inherits process.env" default — removes any doubt
+  that the credential the outer spawn set actually reaches the SDK's own inner `claude` subprocess.
+- `bunSdkTransport`'s spawn now filters any `undefined`-valued entries out of the env record before
+  handing it to `Bun.spawnSync` (`definedEnv`, sdk-transport.ts) — `process.env`'s TS type permits
+  `string | undefined` per key, and a literal `undefined` serialized into a child's environment block
+  is exactly the kind of silent corruption this transport must not risk.
+
+None of these three could be confirmed as *the* root cause without a live key (unavailable in this
+sandbox), so all three were hardened rather than guessed at singly, and (Defect 2, below) the failure
+path was made loud enough that whichever one — or none — was the actual cause is now immediately
+diagnosable from the thrown error's message on the next live run.
+
+**Defect 2 — the failure was silent, `unknown` impersonating a system error.** `interpret()`'s
+`!res.ok` branch previously returned `{kind: "unknown", text}` — a perfectly legal `Intent` a real,
+working model call could also produce — so a transport failure (bad path, missing credential, worker
+crash, timeout, malformed JSON) was structurally indistinguishable from "the model answered and
+genuinely didn't recognize the phrase". This is the same class of bug NOTES A4/A7 already killed
+twice in `validate.ts`'s immutability check (an early-exit "valid" state silently absorbing a real
+error) and `adapters.ts#coerceUsage` deliberately avoids for usage parsing.
+
+**Fix.** `interpret()` now distinguishes the two failure modes explicitly:
+- **Transport failure** (`res.ok === false` — the SDK call itself didn't complete) → `console.error`s
+  the transport's own diagnostic text, then throws `OrchestratorSdkError` with that same text. This
+  propagates as an uncaught exception to whatever called `interpret()`; `board/serve.ts`'s route
+  dispatcher already wraps every handler in a catch-all that turns an uncaught throw into a `500`
+  with the error message, so no change was needed there to make it surface loudly at the HTTP layer.
+- **Structurally invalid model output** (`res.ok === true`, but `structured_output` doesn't parse
+  into a known `Intent` shape) still degrades gracefully to `{kind: "unknown"}` via `coerceIntent` —
+  this is NOT the same failure class: the call genuinely completed, and a schema-conforming-but-odd
+  or borderline answer is a legitimate (if imperfect) classification, not a system error. This mirrors
+  `coerceUsage`'s own "malformed input records a safe default, never a crash" posture — the dividing
+  line is whether the SDK call itself succeeded, not whether its answer was the one hoped for.
+
+`narrate()` deliberately keeps its graceful degrade (return the plain, unformatted computed fact) on
+a transport failure rather than throwing — unlike `interpret()`'s `unknown`, that fallback does not
+impersonate a *different, wrong* answer; it is the same true content, just unphrased. Throwing there
+would turn every voice-layer hiccup into a hard failure of an otherwise-working briefing/reply, which
+is a worse tradeoff than "the Orchestrator sounds a little flatter this once."
+
+**New coverage.** `tests/orchestrator-sdk.test.ts` now asserts `interpret()` throws
+`OrchestratorSdkError` (not `{kind:"unknown"}`) on a fake-transport failure, and — per the acceptance
+criterion's own suggested repro — on a REAL transport (`createAsyncSdkTransport` as of K9 below)
+pointed at a nonexistent worker path: a genuine, deterministic, network-free transport failure that
+needs no `ANTHROPIC_API_KEY` and runs in milliseconds, exercising the exact `existsSync` guard a live
+run would hit if the worker script were ever missing or unresolvable.
+
+## K9. Live-gate fix-up: `Bun.spawnSync` inside the server froze the ENTIRE event loop, not just the
+Orchestrator's own request
+
+**Symptom**, from a real run with `ANTHROPIC_API_KEY` exported and `claude` on `PATH`: `levare serve`
+accepted connections but never responded — `GET /` timed out AND `GET /styles.css` timed out (a plain
+static-file read with no SDK, no repo derivation, no git at all). Nothing was being served, so the
+block could not be inside the studio render path; it had to be the event loop itself.
+
+**Root cause, confirmed.** `sdk-transport.ts`'s `bunSdkTransport` (as built in K1) spawned the SDK
+worker via `Bun.spawnSync` — chosen specifically to keep `OrchestratorBoundary`'s interface
+synchronous (see K1's own reasoning). That reasoning was right for a batch/CLI context (exactly what
+`adapters.ts`'s `CliSpawn`/`bunSpawn` already does for the "cli" agent kind, safely, because nothing
+in that path runs inside `Bun.serve`), and wrong the moment the same synchronous spawn sits on a live
+server's request path: Bun's HTTP server runs on one JS thread, and a blocking `Bun.spawnSync` call
+freezes that thread — and therefore every concurrent connection, not merely the one that triggered
+it — for as long as the child process runs. If the spawned `claude` CLI ever hangs (stuck on auth, a
+wedged subprocess, anything), the server is frozen permanently, not just slow.
+
+**Fix.** `interpret()`/`narrate()` (and therefore the boundary interface itself, and `handle()`,
+which calls them) are now genuinely asynchronous, and the transport underneath them is now
+non-blocking:
+
+- `sdk-transport.ts` now exports TWO transports sharing the same request/response shape and the same
+  worker script: the original `SdkTransport`/`createBunSdkTransport`/`bunSdkTransport`
+  (`Bun.spawnSync`-based) is kept, but scoped to `NativeBoundary` only (adapters.ts) — which is not
+  reachable from any live `levare serve` request path today (K5), so the blocking spawn there is
+  inert until some future phase wires live member invocation into the board. A NEW
+  `AsyncSdkTransport`/`createAsyncSdkTransport`/`asyncSdkTransport` (`Bun.spawn` + `await`, an
+  explicit `setTimeout`-based kill for the timeout — `Bun.spawn`'s own `exitedDueToTimeout` signal
+  was not observed to be populated for async spawn in this Bun version, unlike `spawnSync`) is what
+  `OrchestratorBoundary` now uses exclusively.
+- `OrchestratorBoundary.interpret`/`narrate` (orchestrator.ts) now return `Promise<Intent>` /
+  `Promise<string>`. `deterministicBoundary`'s implementations became trivially `async` (no I/O of
+  their own; wrapping them costs nothing and keeps both boundaries satisfying one interface).
+  `handle()` is now `async function handle(...): Promise<HandleResult>` — **this is the one place the
+  goal's "do not touch the dispatch" constraint had to bend, and only by the minimum needed**: every
+  line of the switch statement, every repo operation it calls, and the order everything happens in is
+  byte-for-byte unchanged from the prior synchronous version; the only diff is `await` in front of
+  each `boundary.interpret(...)`/`boundary.narrate(...)` call. `board/serve.ts`'s
+  `/orchestrator/message` handler (already an `async` route handler) now `await`s `handle(...)`.
+- `createBoard()` gained an optional `orchestratorBoundary` field (mirroring the existing
+  `ResolveOpts.memberRunner` testability pattern in `board/gateops.ts`) so tests can inject a
+  controllable boundary and prove the actual acceptance property end to end — a slow
+  `/orchestrator/message` call must never delay a concurrent, unrelated `board.fetch()`.
+
+**Why `NativeBoundary`/`AdapterRunner`/the Runner engine were NOT touched.** The same argument that
+scoped K5 applies here with more force now that the actual failure mode is understood: the reported
+bug is specifically "a blocking spawn on a live server's request path," and `NativeBoundary` sits on
+no such path (K5) — `board/gateops.ts`'s default `memberRunner` is still `stubAdapterRunner`, which
+does no real subprocess spawn at all. Making `MemberRunner.produce()` async to match would cascade
+through `Runner`, `replay.ts`, `board/gateops.ts`, and every test that calls `.produce(...)`
+synchronously (`adapters.test.ts` alone has ~18 such call sites) for a code path that cannot currently
+freeze anything live. If/when a future phase wires `createSdkNativeBoundary` into a reachable request
+path, that same blocking-spawn class of bug becomes live there too, and the fix is the identical
+pattern already proven here: swap `Bun.spawnSync` for `Bun.spawn` + `await` at that boundary,
+following K9's `AsyncSdkTransport` as the template — not a reason to asyncify the whole engine today.
+
+**New coverage.**
+- `tests/orchestrator-sdk.test.ts`: a real (non-fake) `createAsyncSdkTransport` pointed at a tiny temp
+  worker script that sleeps ~250ms then responds proves an unrelated concurrent timer still fires at
+  ~10ms — the event loop was never blocked waiting on the spawn. A second real-transport test points
+  at a worker that never resolves at all and asserts it is killed and returns an explicit timeout
+  error well inside the configured `timeoutMs`, not left pending indefinitely.
+- `tests/board-serve-nonblocking.test.ts`: the actual acceptance property, end to end, through
+  `board.fetch()` (the same in-process router every other board test drives — NOTES E12 Learnings): a
+  deliberately slow (but real-async, `setTimeout`-backed) `OrchestratorBoundary` is injected via
+  `createBoard`'s new `orchestratorBoundary` option; a `POST /orchestrator/message` with a 300ms delay
+  is fired, and concurrently a `GET /` and `GET /styles.css` are fired — both resolve in well under
+  the 300ms the orchestrator call is still pending, proving the exact regression (a blocked event
+  loop delaying totally unrelated routes) cannot recur.
 
 ## Learnings
 
