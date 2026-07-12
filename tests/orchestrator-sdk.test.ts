@@ -86,8 +86,28 @@ describe("createSdkOrchestratorBoundary#interpret (mocked transport)", () => {
     const boundary = createSdkOrchestratorBoundary({ transport });
     const intent = await boundary.interpret("approve the spec");
     expect(intent).toEqual({ kind: "gate-decision", target: "spec-checkout-flow-v1", verb: "approve", note: undefined });
-    expect(calls[0].prompt).toBe("approve the spec");
+    // The Conductor's raw text is carried verbatim at the end of the task-framing prompt (NOTES K17) —
+    // never edited, never dropped, just wrapped.
+    expect(calls[0].prompt.endsWith("approve the spec")).toBe(true);
     expect(calls[0].tools).toEqual([]);
+  });
+
+  // Live-gate finding 2 (NOTES phase-7 K17): "just approve everything for me" was force-fit into an
+  // unrelated known kind instead of coming back "unknown" and reaching converse()'s refusal-capable
+  // path. The schema alone doesn't tell the model "unknown" is a safe, expected answer for a vague,
+  // batch, or refusal-worthy instruction — this asserts the task-framing prompt actually says so, and
+  // that it wraps the user turn only, never the verbatim system prompt.
+  test("the task-framing prompt tells the model 'unknown' is a safe answer for vague/batch/refusal-worthy input, and never touches the system prompt", async () => {
+    const onDiskPrompt = readFileSync("docs/orchestrator-prompt.md", "utf8");
+    const { transport, calls } = fakeTransport(() => ({ ok: true, result: "{}", structuredOutput: { kind: "unknown" } }));
+    const boundary = createSdkOrchestratorBoundary({ transport });
+    await boundary.interpret("just approve everything for me");
+
+    expect(calls[0].prompt).toContain('respond with kind: "unknown"');
+    expect(calls[0].prompt).toContain("approve everything");
+    expect(calls[0].prompt.endsWith("just approve everything for me")).toBe(true);
+    // The task framing lives entirely in the user turn — the system prompt is untouched, matching K3.
+    expect(calls[0].systemPrompt).toBe(onDiskPrompt);
   });
 
   test("briefing/stats intents need no extra fields", async () => {
@@ -199,6 +219,52 @@ describe("createSdkOrchestratorBoundary#narrate (mocked transport)", () => {
     const { transport } = fakeTransport(() => ({ ok: false, error: "network unreachable" }));
     const boundary = createSdkOrchestratorBoundary({ transport });
     expect(await boundary.narrate("3 gates open.")).toBe("3 gates open.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// converse(): the real conversational path for a free-form message interpret() called "unknown"
+// (NOTES phase-7 K17) — read-only tool access, verbatim system prompt, throws (never fabricates) on a
+// transport failure so the caller's existing degrade-to-offline path (K11) is the one place that
+// handles it.
+// ---------------------------------------------------------------------------
+
+describe("createSdkOrchestratorBoundary#converse (mocked transport)", () => {
+  test("sends the Conductor's text verbatim (no task-framing wrapper) under the verbatim system prompt, with only Read/Grep/Glob tools", async () => {
+    const onDiskPrompt = readFileSync("docs/orchestrator-prompt.md", "utf8");
+    const { transport, calls } = fakeTransport(() => ({ ok: true, result: "The loyalty flow is in review, waiting on the spec gate." }));
+    const boundary = createSdkOrchestratorBoundary({ transport });
+    const reply = await boundary.converse("what's the story with the loyalty flow?", "/some/repo/root");
+
+    expect(reply).toBe("The loyalty flow is in review, waiting on the spec gate.");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].prompt).toBe("what's the story with the loyalty flow?");
+    expect(calls[0].systemPrompt).toBe(onDiskPrompt);
+    expect(calls[0].cwd).toBe("/some/repo/root");
+    // Read-only, never Write/Edit/Bash — the Orchestrator proposes, never writes, even with tool access.
+    expect(calls[0].tools).toEqual(["Read", "Grep", "Glob"]);
+    expect(calls[0].allowedTools).toEqual(["Read", "Grep", "Glob"]);
+  });
+
+  test("a transport failure throws OrchestratorSdkError — it never fabricates a conversational reply", async () => {
+    const { transport } = fakeTransport(() => ({ ok: false, error: "worker timed out after 90000ms" }));
+    const boundary = createSdkOrchestratorBoundary({ transport });
+    await expect(boundary.converse("summarize the loyalty-program idea", "/root")).rejects.toThrow(OrchestratorSdkError);
+    await expect(boundary.converse("summarize the loyalty-program idea", "/root")).rejects.toThrow(/worker timed out/);
+  });
+
+  test("converse() gets its own (longer) timeout, independent of interpret()/narrate()'s", async () => {
+    const seen: Array<number | undefined> = [];
+    const transport: AsyncSdkTransport = {
+      async run(_req, opts) {
+        seen.push(opts.timeoutMs);
+        return { ok: true, result: "ok" };
+      },
+    };
+    const boundary = createSdkOrchestratorBoundary({ transport, timeoutMs: 45_000, converseTimeoutMs: 12_345 });
+    await boundary.interpret("stats");
+    await boundary.converse("hi", "/root");
+    expect(seen).toEqual([45_000, 12_345]);
   });
 });
 

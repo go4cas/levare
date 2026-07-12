@@ -31,6 +31,10 @@ function slowBoundary(delayMs: number): OrchestratorBoundary {
       await new Promise((r) => setTimeout(r, delayMs));
       return prompt;
     },
+    async converse(text) {
+      await new Promise((r) => setTimeout(r, delayMs));
+      return `(slow reply) ${text}`;
+    },
   };
 }
 

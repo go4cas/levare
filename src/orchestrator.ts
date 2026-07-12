@@ -46,6 +46,17 @@ export type Intent =
 export interface OrchestratorBoundary {
   interpret(text: string): Promise<Intent>;
   narrate(prompt: string): Promise<string>;
+  /**
+   * Answer a free-form Conductor message that `interpret()` didn't classify into a structured
+   * operation — genuinely converse, grounded in repo state (§7: "everything it knows is re-derived
+   * from the repo"), NOT a canned acknowledgment (NOTES phase-7 K17 — a live-gate fix-up: the
+   * deterministic boundary's offline fallback line was previously hard-coded into `handle()`'s
+   * dispatch itself, so it appeared even when the real SDK boundary was selected, silently
+   * intercepting every message `interpret()` couldn't force into one of the other six kinds). The
+   * deterministic boundary's own implementation IS that offline fallback line — it is now the only
+   * place that string can come from, and only when the offline boundary is genuinely selected.
+   */
+  converse(text: string, root: string): Promise<string>;
 }
 
 const GATE_VERB_RE = /^(approve|reject|start|notyet|not[- ]yet|rescope)\s+(\S+)(?:\s*:\s*(.*)|\s+(.*))?$/i;
@@ -88,6 +99,11 @@ export const deterministicBoundary: OrchestratorBoundary = {
   },
   async narrate(prompt: string): Promise<string> {
     return prompt;
+  },
+  // The offline fallback line, moved here verbatim from handle()'s old `unknown` case (NOTES K17) —
+  // this is the ONLY boundary that returns it now, and only when genuinely selected (no key/no binary).
+  async converse(text: string): Promise<string> {
+    return text.trim() ? `Noted: "${text.trim()}". Nothing changes state until you act on a gate.` : "Say more and I'll fold it into the next briefing.";
   },
 };
 
@@ -519,10 +535,15 @@ export async function handle(text: string, ctx: OrchestratorContext, boundary: O
     }
     case "unknown":
     default:
-      return {
-        reply: text.trim() ? `Noted: "${text.trim()}". Nothing changes state until you act on a gate.` : "Say more and I'll fold it into the next briefing.",
-        intent,
-        result: null,
-      };
+      // NOTES phase-7 K17 (a live-gate fix-up): this used to be a hard-coded string, appearing
+      // regardless of which boundary was selected — silently intercepting every free-form message the
+      // real SDK boundary correctly classified as "not a structured operation" before the model ever
+      // got a chance to actually answer it. `converse()` is the real boundary's genuine conversational
+      // path (tool-enabled, grounded in repo state); the deterministic boundary's own `converse()`
+      // implementation is the ONLY source of the canned line now, so it can only appear when the
+      // offline boundary is genuinely selected. An empty message never reaches the model at all —
+      // there is nothing to converse about.
+      if (!text.trim()) return { reply: "Say more and I'll fold it into the next briefing.", intent, result: null };
+      return { reply: await boundary.converse(text, ctx.root), intent, result: null };
   }
 }

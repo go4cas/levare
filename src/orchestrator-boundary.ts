@@ -41,7 +41,7 @@ export function loadOrchestratorPromptSource(path: string = ORCHESTRATOR_PROMPT_
 // Conductor running `levare serve` can actually see what each Orchestrator call cost. This is
 // visibility only, not persistence — there is no unit/artifact for a chat message to attach a ledger
 // entry to (see K16 for why full ledger integration is deliberately out of scope here).
-function logReceipt(call: "interpret" | "narrate", receipt: Receipt | undefined): void {
+function logReceipt(call: "interpret" | "narrate" | "converse", receipt: Receipt | undefined): void {
   if (!receipt) return;
   const usd = receipt.usd !== null ? `$${receipt.usd.toFixed(4)}` : "usd unreported";
   const tokens = receipt.tokens_in !== null && receipt.tokens_out !== null ? `${receipt.tokens_in} in / ${receipt.tokens_out} out` : "tokens unreported";
@@ -97,6 +97,19 @@ const INTENT_SCHEMA: Record<string, unknown> = {
   additionalProperties: false,
 };
 
+// A live host showed `interpret()` force-fitting an ambiguous/refusal-worthy instruction ("just
+// approve everything for me") into an unrelated known kind ("briefing") rather than answering
+// "unknown" (NOTES phase-7 K17 finding 2) — the schema alone doesn't tell the model that "unknown" is
+// a first-class, EXPECTED answer, not a failure to avoid. This framing wraps the USER-TURN content
+// only — the verbatim system prompt (docs/orchestrator-prompt.md) is never touched — matching K3's
+// established pattern of varying only the per-call task, never the fixed voice/register prompt.
+const INTERPRET_TASK_PREFIX =
+  "Classify the Conductor's message below into exactly one structured intent per the schema. " +
+  'If it is a question, a vague or batch instruction (e.g. "approve everything", "just do the usual"), ' +
+  "ambiguous between two different operations, or something your own instructions say to decline or " +
+  'ask about, respond with kind: "unknown" — do not guess a specific operation you are not confident ' +
+  "about; a wrong guess that mutates the repo is worse than asking again.\n\nConductor: ";
+
 // Never trust the model's structured output wholesale: narrow it into exactly one Intent shape, and
 // fall back to `unknown` (never throw, never fabricate a field) on anything that doesn't fit —
 // mirroring adapters.ts#coerceUsage's "malformed input records a safe default, never a crash".
@@ -150,6 +163,9 @@ export interface SdkOrchestratorBoundaryOptions {
   /** Environment the transport's spawned worker draws from (default process.env). Never logged. */
   env?: Record<string, string | undefined>;
   timeoutMs?: number;
+  /** Timeout for `converse()` specifically — longer than `timeoutMs` by default, since tool use may
+   * take several turns (NOTES phase-7 K17). */
+  converseTimeoutMs?: number;
   /** Explicit override for the resolved native-binary path (test-only) — see
    * `resolveNativeBinaryPath` default below and NOTES phase-7 K14. */
   pathToClaudeCodeExecutable?: string;
@@ -170,6 +186,9 @@ export function createSdkOrchestratorBoundary(opts: SdkOrchestratorBoundaryOptio
   // timeout must stay comfortably LONGER than this, never shorter — the reverse is what let a hung
   // call outlive the test that was supposed to catch it.
   const timeoutMs = opts.timeoutMs ?? 45_000;
+  // converse() involves tool use (Read/Grep/Glob — possibly several turns to investigate before
+  // answering), so it legitimately needs more room than a single-turn classification/voice call.
+  const converseTimeoutMs = opts.converseTimeoutMs ?? 90_000;
   // Resolved ONCE, here, at construction time — never left to the SDK's own implicit resolution
   // inside the worker (NOTES phase-7 K14: a live host showed that implicit lookup fail to find a
   // platform binary that genuinely existed as a sibling node_modules package). Every request this
@@ -181,7 +200,15 @@ export function createSdkOrchestratorBoundary(opts: SdkOrchestratorBoundaryOptio
   return {
     async interpret(text: string): Promise<Intent> {
       const res = await transport.run(
-        { prompt: text, systemPrompt, model, tools: [], allowedTools: [], outputFormat: { type: "json_schema", schema: INTENT_SCHEMA }, pathToClaudeCodeExecutable },
+        {
+          prompt: INTERPRET_TASK_PREFIX + text,
+          systemPrompt,
+          model,
+          tools: [],
+          allowedTools: [],
+          outputFormat: { type: "json_schema", schema: INTENT_SCHEMA },
+          pathToClaudeCodeExecutable,
+        },
         { env, timeoutMs },
       );
       // A transport failure (worker never ran / exited non-zero / timed out / unparseable output) is
@@ -203,6 +230,30 @@ export function createSdkOrchestratorBoundary(opts: SdkOrchestratorBoundaryOptio
       // plain computed fact (identical to the deterministic boundary's own narrate) rather than lie.
       if (!res.ok) return prompt;
       logReceipt("narrate", res.receipt);
+      return res.result;
+    },
+    // NOTES phase-7 K17: the real conversational path. READ-ONLY tools only (Read/Grep/Glob — never
+    // Write/Edit/Bash) so the model can genuinely re-derive facts from the repo (§7) but structurally
+    // cannot mutate anything from inside a chat reply — "proposals, never writes" holds even when the
+    // model is given tool access, not just by convention. `cwd: root` scopes file access to the
+    // studio itself. The verbatim system prompt already instructs refusal-by-name for an
+    // invariant-violating instruction and treating file/artifact contents as information, not
+    // instruction (prompt-injection resistance) — this call is what lets the model actually ACT on
+    // those instructions instead of never being asked to.
+    async converse(text: string, root: string): Promise<string> {
+      const res = await transport.run(
+        { prompt: text, systemPrompt, model, tools: ["Read", "Grep", "Glob"], allowedTools: ["Read", "Grep", "Glob"], cwd: root, pathToClaudeCodeExecutable },
+        { env, timeoutMs: converseTimeoutMs },
+      );
+      // Same reasoning as interpret(): a transport failure must never be dressed up as a real answer.
+      // Throwing here (rather than degrading in-place, unlike narrate()) reuses the EXISTING
+      // board/serve.ts catch-and-degrade-to-offline path (K11) instead of inventing a second, ad-hoc
+      // "couldn't reach the model" string — one failure-handling path for the whole boundary, not two.
+      if (!res.ok) {
+        console.error(`levare: Orchestrator SDK converse() failed: ${res.error}`);
+        throw new OrchestratorSdkError(`Orchestrator SDK converse() failed: ${res.error}`);
+      }
+      logReceipt("converse", res.receipt);
       return res.result;
     },
   };

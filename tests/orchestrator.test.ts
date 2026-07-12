@@ -177,6 +177,76 @@ describe("(b) one gate-resolution path: chat vs POST /gates", () => {
 });
 
 // ---------------------------------------------------------------------------
+// (b2) unknown intent routes to the boundary's own converse(), never a hard-coded string
+// (NOTES phase-7 K17 — live-gate finding: free-form messages were being silently intercepted by the
+// deterministic offline line even when a real SDK-style boundary was selected, because `handle()`'s
+// "unknown" case used to return a hard-coded string instead of ever calling the boundary.)
+// ---------------------------------------------------------------------------
+
+describe("(b2) unknown-intent dispatch calls the boundary's converse(), per boundary", () => {
+  test("a real-SDK-style boundary's unknown intent is answered by its own converse(), not the deterministic canned line", async () => {
+    const root = seedScratchRepo();
+    try {
+      const calls: Array<{ text: string; root: string }> = [];
+      const realStyleBoundary = {
+        async interpret(text: string) {
+          return { kind: "unknown" as const, text };
+        },
+        async narrate(prompt: string) {
+          return prompt;
+        },
+        async converse(text: string, callRoot: string) {
+          calls.push({ text, root: callRoot });
+          return `model-authored answer to: ${text}`;
+        },
+      };
+      const r = await handle("what's the story with the loyalty flow?", { root, by: CAS_TODAY }, realStyleBoundary);
+      expect(r.reply).toBe("model-authored answer to: what's the story with the loyalty flow?");
+      expect(r.reply).not.toContain("Noted:");
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toEqual({ text: "what's the story with the loyalty flow?", root });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("the deterministic offline boundary still answers unknown intents with its own canned acknowledgment", async () => {
+    const root = seedScratchRepo();
+    try {
+      const r = await handle("what's the story with the loyalty flow?", { root, by: CAS_TODAY });
+      expect(r.intent.kind).toBe("unknown");
+      expect(r.reply).toContain('Noted: "what\'s the story with the loyalty flow?"');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("an empty message never reaches converse() at all, for any boundary", async () => {
+    const root = seedScratchRepo();
+    try {
+      let converseCalled = false;
+      const boundary = {
+        async interpret(text: string) {
+          return { kind: "unknown" as const, text };
+        },
+        async narrate(prompt: string) {
+          return prompt;
+        },
+        async converse(text: string) {
+          converseCalled = true;
+          return `should not be called: ${text}`;
+        },
+      };
+      const r = await handle("   ", { root, by: CAS_TODAY }, boundary);
+      expect(converseCalled).toBe(false);
+      expect(r.reply).toBe("Say more and I'll fold it into the next briefing.");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // (c) retro proposal renders as a gate awaiting the Conductor, never a direct LEARNINGS.md write
 // ---------------------------------------------------------------------------
 
