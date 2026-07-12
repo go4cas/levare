@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRepo } from "../src/repo.ts";
-import { renderStudio, renderProject, renderRun, renderRegistry, scoreNodeClass } from "../src/board/render.ts";
+import { renderStudio, renderProject, renderRun, renderRegistry, scoreNodeClass, projectStatusChip } from "../src/board/render.ts";
 import { scoreNodes, type NodeState } from "../src/board/derive.ts";
 import { resolveGate } from "../src/board/gateops.ts";
 
@@ -43,6 +43,37 @@ describe("studio screen", () => {
 
   test("every gate name is a mono link", () => {
     expect(html).toMatch(/<a class="tok link mono" href="\/run\/storefront\/checkout-flow">spec-checkout-flow-v1\.md<\/a>/);
+  });
+
+  // Phase-6 gate fix-up: a project's status chip is a real derivation (gate count → active → idle),
+  // not a hardcoded "running". `studio` (fixtures/golden/projects/studio.md) has zero units and zero
+  // open gates — the empty-project case that previously mislabeled it "running".
+  test("an empty project (no units, no open gates) shows an idle chip, not a fabricated 'running'", () => {
+    const studioCardMatch = html.match(/<a class="pcard" href="\/project\/studio">[\s\S]*?<\/a>/);
+    expect(studioCardMatch).not.toBeNull();
+    expect(studioCardMatch![0]).toContain('<span class="chip is-blocked">idle</span>');
+    expect(studioCardMatch![0]).not.toContain("running");
+  });
+
+  test("a project with an open gate shows the gate-count chip", () => {
+    const storefrontCardMatch = html.match(/<a class="pcard" href="\/project\/storefront">[\s\S]*?<\/a>/);
+    expect(storefrontCardMatch).not.toBeNull();
+    expect(storefrontCardMatch![0]).toContain('<span class="chip is-gate">2 gates</span>');
+  });
+});
+
+describe("projectStatusChip — gate count wins, then active, else idle", () => {
+  test("an open gate always wins, regardless of activity", () => {
+    expect(projectStatusChip(2, true, 3)).toBe('<span class="chip is-gate">2 gates</span>');
+  });
+  test("no gates but an active unit → active", () => {
+    expect(projectStatusChip(0, true, 0)).toBe('<span class="chip is-progress">active</span>');
+  });
+  test("no gates but a live member → active", () => {
+    expect(projectStatusChip(0, false, 1)).toBe('<span class="chip is-progress">active</span>');
+  });
+  test("no gates, no active unit, no live members → idle", () => {
+    expect(projectStatusChip(0, false, 0)).toBe('<span class="chip is-blocked">idle</span>');
   });
 });
 

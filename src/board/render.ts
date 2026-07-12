@@ -201,6 +201,18 @@ export function scoreNodeClass(n: Pick<ScoreNode, "state">, isGate: boolean): st
   return "snode upcoming"; // waiting/queued (default): hollow neutral, matches .snode.upcoming
 }
 
+// Studio project-card status chip (phase-6 gate fix-up). An open gate always wins (it needs the
+// Conductor now, regardless of what else is happening); with none, "active" means real work is
+// underway — an active unit, or a live member (once E2's process registry exists; today that count
+// is always 0, never fabricated); with neither, the project is honestly "idle" — an empty project
+// with no units and no activity was previously mislabeled "running", which read as fabricated
+// activity for a project that had none.
+export function projectStatusChip(projGates: number, anyUnitActive: boolean, membersRunning: number): string {
+  if (projGates > 0) return `<span class="chip is-gate">${projGates} gate${projGates === 1 ? "" : "s"}</span>`;
+  if (anyUnitActive || membersRunning > 0) return `<span class="chip is-progress">active</span>`;
+  return `<span class="chip is-blocked">idle</span>`;
+}
+
 // ---------------------------------------------------------------------------
 // STUDIO
 // ---------------------------------------------------------------------------
@@ -265,7 +277,9 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date()): 
       const units = repo.units.filter((u) => u.project === p.name);
       const projGates = gates.filter((g) => g.project === p.name).length;
       const desc = units[0] ? esc(unitSummary(repo, units[0]).split(/(?<=[.!?])\s/)[0] ?? "") : "No work units yet.";
-      const chip = projGates > 0 ? `<span class="chip is-gate">${projGates} gate${projGates === 1 ? "" : "s"}</span>` : `<span class="chip is-progress">running</span>`;
+      const anyUnitActive = units.some((u) => u.status === "active");
+      // membersRunning: always 0 until E2's live process registry exists (no fabricated activity).
+      const chip = projectStatusChip(projGates, anyUnitActive, 0);
       return `<a class="pcard" href="/project/${esc(p.name)}">
         <div class="pcard__top">${chip}</div>
         <span class="pcard__name">${esc(p.name)}</span>
