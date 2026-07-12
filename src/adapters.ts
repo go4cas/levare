@@ -17,6 +17,7 @@ import { normalizeReceipt } from "./receipts.ts";
 import { buildMemberEnv } from "./env.ts";
 import { allowedTools } from "./guardrails.ts";
 import { assembleContext } from "./context.ts";
+import { bunSdkTransport, type SdkTransport } from "./sdk-transport.ts";
 import type { Pricing } from "./pricing.ts";
 import type { Repo } from "./repo.ts";
 import type { MemberRunner } from "./runner.ts";
@@ -46,6 +47,46 @@ export interface NativeBoundary {
 /** The remote MCP boundary (mocked this phase). */
 export interface RemoteBoundary {
   call(req: InvokeRequest): { doc: string };
+}
+
+export interface SdkNativeBoundaryOptions {
+  transport?: SdkTransport;
+  env?: Record<string, string | undefined>;
+  timeoutMs?: number;
+}
+
+/**
+ * The real Claude Agent SDK backing for `NativeBoundary` (phase 7) — a synchronous call behind the
+ * exact same `invoke(req): { doc: string }` shape the mocked boundary already implements, via the
+ * shared transport (sdk-transport.ts) rather than threading async through the Runner/AdapterRunner
+ * call chain. The member's own definition (`req.agent.body`) plus the full §6-assembled recipe is
+ * already `req.context` (context.ts item 1 is "agent definition body") — no separate system prompt
+ * is layered on top; the model's only instruction is the assembled context itself, and its final
+ * turn IS the artifact document (never a side-effected file write — levare's own validator re-checks
+ * whatever text comes back, exactly as it already re-checks a CLI/mocked member's output).
+ *
+ * Env scoping (invariant 11, D5): the worker subprocess runs with exactly `req.env` (the member's
+ * allowlisted grants) plus `ANTHROPIC_API_KEY` forwarded from the calling process — the platform
+ * credential is not a connector grant, but every native call needs it to authenticate regardless of
+ * what the member was granted. The key's value is read only to forward it into the spawn's env; it
+ * is never logged, written to a file, or included in any commit.
+ */
+export function createSdkNativeBoundary(opts: SdkNativeBoundaryOptions = {}): NativeBoundary {
+  const transport = opts.transport ?? bunSdkTransport;
+  const baseEnv = opts.env ?? process.env;
+  const timeoutMs = opts.timeoutMs ?? 600_000;
+  return {
+    invoke(req: InvokeRequest): { doc: string } {
+      const env: Record<string, string | undefined> = { ...req.env };
+      if (typeof baseEnv.ANTHROPIC_API_KEY === "string") env.ANTHROPIC_API_KEY = baseEnv.ANTHROPIC_API_KEY;
+      const res = transport.run(
+        { prompt: req.context, model: req.agent.model, tools: req.tools, allowedTools: req.tools, cwd: req.agent.cwd },
+        { env, timeoutMs },
+      );
+      if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`);
+      return { doc: res.result };
+    },
+  };
 }
 
 export interface SpawnResult {
