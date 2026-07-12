@@ -1980,3 +1980,30 @@ A category label used as a breadcrumb segment ("ideas") is a natural thing to re
 what kind of page you're on, but a breadcrumb's job is navigation, not classification — if a segment
 has nowhere real to send a click, it doesn't belong in the trail at all, and the fix is usually to
 delete the segment, not to find something for it to link to.
+
+## N1. Known open issue: intermittent multi-second stall in the browser during navigation,
+self-recovering — cause not yet isolated, likely NOT levare
+Reported after P1's SSE/fs.watch subscriber-leak fix landed. Live diagnosis at the moment of a stall
+showed the **server** healthy throughout: 19 fds, one `anon_inode:inotify` handle, no growth, 1.4% CPU,
+static-asset response ~1ms, page response ~10ms, the SSE connection holding correctly. The browser
+showed exactly one `EventSource` (no duplicate/leaked connections) and no console errors. A hard
+refresh does not clear it; it resolves on its own after a few seconds with no further action. **P1's
+leak is confirmed not the cause** — fd counts are flat both at rest and during the stall, and the
+leak's own symptom (climbing fds, eventual hard failure requiring a restart) doesn't match a transient,
+self-recovering stall with a healthy process throughout.
+
+**Leading hypotheses, neither tested yet:**
+- (a) The VS Code devcontainer's port-forward proxy stalling long-lived SSE traffic — the harness, not
+  levare. An earlier symptom in this project was also eventually traced to a stale forward, so this has
+  precedent here.
+- (b) A brief render/reload burst when `fs.watch`'s debounce (`serve.ts`, 80ms) fires multiple times in
+  quick succession for one git operation (a commit touches several files near-simultaneously), each
+  triggering a full page reload via the SSE `reload` message — several overlapping reloads racing in
+  the browser could plausibly present as a multi-second stall that then self-resolves once they settle.
+
+**Required before code review: re-test OUTSIDE the container** — run `levare serve` and browse it on
+the host directly, with no port forward in the path. If the stall disappears on the host, it is a
+devcontainer/port-forward artifact (hypothesis a) and levare itself is innocent; if it persists on the
+host, the debounce/reload-burst hypothesis (b) becomes the next thing to instrument and fix. Not
+investigated further this round — recorded here as an open issue per instruction, not fixed or
+worked around.
