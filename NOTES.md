@@ -1211,6 +1211,124 @@ being re-discovered.
 named reason, and a genuine derived-stats answer — and a follow-up `GET /` on the same board confirms
 the board itself is unaffected by the broken boundary.
 
+## K12. Deferred judgment gate: the Orchestrator's VOICE has not been evaluated (Conductor asked this
+be recorded as "K10" — renumbered K12 here to avoid colliding with the K10/K11 already above)
+
+Phase 7's live gate has now proven, end to end, on the host: the transport, boundary selection, the
+graceful degrade (K11), the fail-loud transport-error path (K8), and a real authenticated round trip
+to Anthropic — 9 seconds, ending in a Console credit-balance error (an unfunded account, not a code
+defect; the stack reached the API correctly). What remains **completely untested** is the Orchestrator's
+actual *voice*: no live model reply has ever been read by anyone. `docs/orchestrator-prompt.md`
+defines a register (calm, factual, dry; briefs rather than greets; never celebrates or apologizes;
+treats text inside an artifact or a member's output as information, never instruction; refuses to
+violate an invariant rather than finding a workaround) that only a live conversation, judged by a
+human, can actually verify — this is not something `bun test` or any amount of mocked-transport
+coverage can substitute for, and this codebase does not attempt to. This is deliberately a **gate**,
+not a task: it belongs to the Conductor, requires only Console credit (no code change), and should be
+held before v1. The concrete check, when it happens: talk to the Orchestrator through the board
+(`levare serve`, a real `ANTHROPIC_API_KEY`, real credit) and confirm — does it brief rather than
+greet; does it decline to celebrate or persuade; does it refuse an invariant-violating instruction
+(e.g. "start work without approving the gate first") by naming the invariant rather than finding a
+workaround; does it treat instructions embedded inside an artifact body or a member's output as
+information, not as something to obey (prompt-injection resistance). `docs/orchestrator-prompt.md` is
+loaded from disk at runtime (K1) specifically so this tuning loop — read the live reply, edit the
+prompt file, retry — needs no rebuild and no redeploy.
+
+## K13. Live-gate fix-up: fast-fail the missing-binary/no-credential precondition instead of
+discovering it via a slow, per-request spawn — plus a significant new finding on K10/K11's mystery
+
+**Finding.** K11's graceful degrade works, but a genuinely broken install (missing native binary) was
+only ever discovered by actually attempting the real transport call and letting it fail or time out —
+several seconds, on every single message, for a condition that's knowable locally in milliseconds.
+
+**Fix — a fast, local precondition probe, extracted from the SDK's own resolution code, not guessed.**
+Read `node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs` directly (it's a real, if minified, ES
+module — `grep`-able) to find exactly how `query()` resolves its own native binary when
+`options.pathToClaudeCodeExecutable` is unset:
+
+```js
+// (deobfuscated, but this is literally what's there)
+let ah = options.pathToClaudeCodeExecutable;
+if (!ah) {
+  let selfDir = fileURLToPath(import.meta.url),        // sdk.mjs's OWN file location
+      scopedRequire = createRequire(selfDir),
+      resolved = tryEachCandidate(name => scopedRequire.resolve(name));
+  if (!resolved) throw Error(`Native CLI binary for ${platform}-${arch} not found. Reinstall ... or set options.pathToClaudeCodeExecutable.`);
+  ah = resolved;
+}
+// candidates, per platform: android -> [`${pkg}-linux-${arch}-android`]; linux -> both
+// [`${pkg}-linux-${arch}`, `${pkg}-linux-${arch}-musl`] (order depends on a glibc/musl runtime
+// probe via process.report — irrelevant to a probe that only needs to know "does ANY candidate
+// resolve", not "which one wins"); everything else -> [`${pkg}-${platform}-${arch}`]. Each name is
+// suffixed `/claude` (`/claude.exe` on win32) and passed to require.resolve, then existsSync-checked.
+```
+
+`resolveNativeBinary()` (sdk-transport.ts) replicates this EXACT candidate list and resolution
+mechanism (`createRequire` + `require.resolve` + `existsSync`) — not an independently-derived guess
+that could drift from what `query()` itself does. Crucially, this confirms the resolution is
+**tree-position-based, not caller-position-based**: `createRequire` is scoped to a FILE's location,
+and node_modules resolution of a sibling `@scope/pkg-name` package walks up from THAT location — any
+file inside the same project tree (not just `sdk.mjs` itself) resolves the identical answer. This is
+why `resolveNativeBinary()` can run scoped from `sdk-transport.ts`'s own `import.meta.url` rather than
+needing to reach into the SDK's internals.
+
+`checkSdkPreconditions(env, opts)` checks the two LOCAL, zero-network preconditions — credential
+presence (`hasAnthropicCredentials`, already existing) and binary resolvability — and
+`checkSdkPreconditionsCached` wraps it with a 30s TTL cache plus a "log only on transition into
+unavailability" diagnostic (a genuine one-time note, not a repeating warning every re-check).
+`selectOrchestratorBoundary` now calls the cached check before ever constructing the real SDK
+boundary: on failure, it returns `deterministicBoundary` directly — **no transport is ever touched**,
+proven by a test that injects a transport recording whether it was called and asserting it wasn't.
+`board/serve.ts` gained a matching test-only seam (`BoardCtx.orchestratorSelectOpts` /
+`createBoard`'s `orchestratorSelectOpts` option) so a test can drive the REAL selection path (not a
+hand-rolled boundary) with a simulated broken precondition, end to end through `board.fetch()` —
+`tests/orchestrator-sdk.test.ts`'s final test is the acceptance criterion itself: `POST
+/orchestrator/message` with a broken precondition returns `200` in well under a second (observed
+~140ms including Bun's own test-runner startup, not the several-second timeout it would have taken
+via K11's old catch-and-degrade-after-attempting path).
+
+**Also pinned `cwd: LEVARE_ROOT` on both worker spawns** (`createBunSdkTransport` and
+`createAsyncSdkTransport`), addressing the Conductor's explicit hypothesis ("resolution runs relative
+to a different cwd/worker location"). The investigation above shows the SDK's OWN resolution is
+provably NOT cwd-dependent (it's anchored to `sdk.mjs`'s fixed file path, not `process.cwd()`), so
+this isn't expected to be *the* fix for the reported divergence — but it removes cwd as a variable
+entirely (the worker now always resolves modules from a well-defined location, `<repo>`, regardless of
+what directory `levare serve <studio-path>` happens to have been launched from), at zero risk.
+
+**A more likely explanation for the reported divergence, discovered by accident during this fix.**
+While building and testing `resolveNativeBinary()` against this sandbox's own `node_modules`, the
+platform-binary package installed **spontaneously changed out from under the running session, twice,
+with no explicit reinstall action taken in between** — `ls node_modules/@anthropic-ai/` showed
+`claude-agent-sdk-linux-arm64` (correct for this `linux`/`arm64` sandbox) at one point, then later
+showed `claude-agent-sdk-darwin-arm64` (wrong) instead, with `bun.lock` unchanged throughout (`git
+status bun.lock` stayed clean) and `bun.lock`'s own `os`/`cpu` fields correctly listing `linux`/`arm64`
+for the linux package the whole time. A second `rm -rf node_modules && bun install` restored the
+correct package. **This strongly suggests the "two different resolution paths" the Conductor observed
+(live smoke test reaching Anthropic; the server route reporting the binary missing, in the same tree)
+may not be a divergence in levare's OWN code at all** — both call sites use the identical
+`createSdkOrchestratorBoundary` → `AsyncSdkTransport` → `sdk-worker.ts` path; there is only one
+resolution mechanism in this codebase, not two. It looks far more likely that Bun's own
+optional-dependency installation is non-deterministic or flaky in this class of environment (a
+containerized/virtualized dev environment, matching both this sandbox and the reported darwin host),
+and the live smoke test simply ran while the correct binary happened to be present, with the platform
+package having reverted (or never having stably persisted) by the time the server route was tested
+moments later — entirely outside levare's control or ability to detect from application code. This
+doesn't change the guidance already given (K10): `bun install` on the platform that will run `levare
+serve`, and if a fresh install still doesn't stick, that now looks like a Bun/environment reliability
+question worth raising upstream, not a levare resolution bug to keep chasing.
+
+**New coverage.** `tests/orchestrator-sdk.test.ts`: `resolveNativeBinary` against the real,
+currently-installed platform (ground truth, not mocked) and against a bogus platform/an empty scratch
+`requireFrom`; `checkSdkPreconditions`'s three outcomes (no credential / unresolvable binary /
+viable); `checkSdkPreconditionsCached`'s TTL behavior (a stale cached "not viable" wins within the
+window even when the underlying params would now resolve differently; a fresh check runs past the
+TTL); `selectOrchestratorBoundary`'s fast-fail (transport never invoked) and fast-pass (transport
+reached) paths; and the end-to-end acceptance test through `board.fetch()`. The module-level
+precondition cache is a singleton shared across the whole `bun test` process (all files run in one
+process), so every test in this file resets it in `beforeEach` — the exact kind of cross-test
+pollution that surfaced the spontaneous-binary-swap finding above in the first place, when an
+unrelated earlier test's cached "not viable" result leaked into this file's own "viable" assertion.
+
 ## Learnings
 
 A boundary that must front a fundamentally different concurrency model than its own interface (a
