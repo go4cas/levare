@@ -217,7 +217,18 @@ function doStart(root: string, repo: Repo, unit: WorkUnit, memberRunner: MemberR
     };
   }
   const { member, kind } = resolveStep(team, first.step, memberRunner.capabilities());
-  const { doc } = memberRunner.produce(member, kind, unit.unit, unit.project);
+  const { doc: baseDoc } = memberRunner.produce(member, kind, unit.unit, unit.project);
+
+  // The member boundary's produced id is not unit-scoped — a mocked/stub member (the only kind this
+  // phase can invoke, invariant 10) emits the same fixed id regardless of which unit asked, so a
+  // second unit in the same project starting the same kind of step would collide under the
+  // validator's project-scoped DUPLICATE_ID check. Re-id to the kind-unit-vN convention every other
+  // multi-round-safe artifact in the repo already follows (e.g. spec-checkout-flow-v1) — round 1,
+  // since `start` only ever produces the flow's very first artifact for this unit — rather than trust
+  // whatever id the boundary happened to emit.
+  const newId = `${kind}-${unit.unit}-v1`;
+  const doc = patchFrontmatter(baseDoc, { id: newId });
+
   const errs = validateArtifactSource(doc, `${member}:${kind}`, unit.dir);
   if (errs.length > 0) return { ok: false, status: 422, error: `${errs[0].code}: ${errs[0].message}` };
   const art = parseArtifactDoc(doc);

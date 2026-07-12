@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { createBoard } from "../src/board/serve.ts";
 import { resolveGate } from "../src/board/gateops.ts";
 import { runNewProjectSkill } from "../src/orchestrator.ts";
+import { validatePath } from "../src/validate.ts";
 
 // (e) new-project skill end-to-end, (f) `start` invokes the flow instead of 501, and the C2/C7 loop
 // companion-approval rule applied through the board's single gate-resolution path.
@@ -58,13 +59,49 @@ describe("(f) POST /gates/:project/:unit/start invokes the flow", () => {
       const unitDir = join(root, "work/storefront/loyalty-flow");
       const files = readdirSync(unitDir).filter((f) => f !== "unit.md");
       expect(files.length).toBeGreaterThan(0);
+
+      // Unit-scoped id (matching the spec-checkout-flow-v1 convention), NOT the stub boundary's raw
+      // fixed id ("product-brief-v1") — that raw id already belongs to checkout-flow's own artifact
+      // in the same project, and this test would otherwise collide with it under DUPLICATE_ID.
+      expect(files).toEqual(["product-brief-loyalty-flow-v1.md"]);
       const produced = readFileSync(join(unitDir, files[0]), "utf8");
       expect(produced).toContain("kind: product-brief");
+      expect(produced).toContain("id: product-brief-loyalty-flow-v1");
       expect(produced).toContain("status: in-review");
       expect(produced).toContain("unit: loyalty-flow");
 
       const log = spawnSync("git", ["-C", root, "log", "-1", "--format=%an|%ae|%s"], { encoding: "utf8" }).stdout.trim();
       expect(log).toContain("cas|cas@levare.local|start loyalty-flow");
+
+      // The whole repo — including checkout-flow's own, separately-created product-brief-v1 — still
+      // validates: no DUPLICATE_ID between the two units' product-brief artifacts in "storefront".
+      expect(validatePath(root).ok).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("starting a second unit in the same project never collides on id with the first (DUPLICATE_ID regression)", async () => {
+    const root = seedScratchRepo();
+    try {
+      // checkout-flow already has its own product-brief-v1 on disk (the static golden fixture).
+      // loyalty-flow's `start` produces a SECOND product-brief artifact in the SAME project
+      // ("storefront") via the same (member, kind) — wren:product-brief — the exact shape that
+      // collided before this fix (both would-be ids were the stub's fixed "product-brief-v1").
+      const board = createBoard(root);
+      const res = await board.fetch(req("/gates/storefront/loyalty-flow/start", { method: "POST" }));
+      board.close();
+      expect(res.status).toBe(200);
+
+      const checkoutBrief = readFileSync(join(root, "work/storefront/checkout-flow/product-brief-v1.md"), "utf8");
+      const loyaltyBrief = readFileSync(join(root, "work/storefront/loyalty-flow/product-brief-loyalty-flow-v1.md"), "utf8");
+      expect(checkoutBrief).toContain("id: product-brief-v1");
+      expect(loyaltyBrief).toContain("id: product-brief-loyalty-flow-v1");
+
+      // Both units' artifacts validate together, with no duplicate ids anywhere in the project.
+      const result = validatePath(root);
+      expect(result.errors.filter((e) => e.code === "DUPLICATE_ID")).toEqual([]);
+      expect(result.ok).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

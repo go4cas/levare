@@ -48,7 +48,11 @@ function seedScratchRepo(): string {
   return root;
 }
 
-const CAS_TODAY = "cas 2026-07-11";
+// Computed from the real clock, not hardcoded: the POST /gates route (board.fetch, no `today`
+// override) always stamps the real wall-clock date, and the (b) chat-vs-route parity test below
+// asserts byte-for-byte equality against it — a fixed past date would silently drift out of sync
+// the next time this suite runs on a later day.
+const CAS_TODAY = `cas ${new Date().toISOString().slice(0, 10)}`;
 const env: EnvProbe = { has: (n) => n === "GITHUB_TOKEN" };
 const noGh: CliProbe = () => "not-found";
 
