@@ -42,9 +42,11 @@
 // `ANTHROPIC_API_KEY` back on top of that scoped set for the same reason: the platform credential is
 // not a connector grant, but the SDK call still needs it regardless of what the member was granted.
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import type { Receipt } from "./types.ts";
 
 export interface SdkWorkerRequest {
   /** The user-turn content sent to the model this call. */
@@ -66,7 +68,9 @@ export interface SdkWorkerRequest {
   pathToClaudeCodeExecutable?: string;
 }
 
-export type SdkWorkerResponse = { ok: true; result: string; structuredOutput?: unknown } | { ok: false; error: string };
+export type SdkWorkerResponse =
+  | { ok: true; result: string; structuredOutput?: unknown; receipt?: Receipt }
+  | { ok: false; error: string };
 
 /** The synchronous transport boundary (adapters.ts's NativeBoundary only — see the module note above
  * for why this must never be called from a `levare serve` request path). */
@@ -101,7 +105,12 @@ export function hasAnthropicCredentials(env: Record<string, string | undefined> 
 // from whatever process spawns it. `SDK_WORKER_PATH` is `<root>/src/sdk-worker.ts`; two `dirname`s up.
 export const LEVARE_ROOT = dirname(dirname(SDK_WORKER_PATH));
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+// Deliberately well under a minute (NOTES phase-7 K15): a live host's own outer test timeout (60s)
+// was SHORTER than this transport's prior default (120s), so the transport's own timeout-kill never
+// got a chance to fire before the outer caller gave up first — "killed 1 dangling process" was Bun's
+// own cleanup catching what this transport should have caught itself. Every caller in this repo must
+// keep its own timeout comfortably LONGER than this value, not the other way around.
+const DEFAULT_TIMEOUT_MS = 60_000;
 
 // ---------------------------------------------------------------------------
 // Fast, local SDK-viability precondition check (NOTES phase-7 K13)
@@ -232,6 +241,68 @@ function definedEnv(env: Record<string, string | undefined>): Record<string, str
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Hermetic CLI spawn (NOTES phase-7 K15, a live-gate fix-up)
+// ---------------------------------------------------------------------------
+//
+// A live host hung indefinitely on every real call, even though the `claude` CLI itself worked fine
+// standalone (`claude -p "..." --output-format json` returned in ~2s). Root cause: the spawned worker
+// inherited the OPERATOR's personal Claude Code configuration — specifically a user-installed
+// SessionEnd hook (a "claude-mem" plugin spawning `node`) that, in a TTY-less spawned subprocess,
+// never actually completed, so the CLI's own process never exited even though the model had already
+// answered and been billed. This is the identical lesson NOTES A4/E12 already recorded for git
+// subprocesses: anything spawned inherits the host's ambient configuration unless it is EXPLICITLY
+// pinned to a hermetic one — apply it here exactly as it was applied there.
+//
+// Two SDK options close this off completely (both confirmed in the shipped sdk.d.ts, not guessed):
+//   `settingSources: []`  — "SDK isolation mode": loads NO filesystem settings (`~/.claude/settings.json`
+//                            user settings, `.claude/settings.json` project settings, or
+//                            `.claude/settings.local.json` local settings) — the operator's hooks and
+//                            plugins are never even registered, so a SessionEnd hook has nothing to fire.
+//                            Passed in sdk-worker.ts's `query()` call.
+//   `CLAUDE_CONFIG_DIR`    — redirects the CLI's own on-disk config/session directory away from the
+//                            operator's real `~/.claude` entirely, so nothing this spawn does (session
+//                            transcripts, auth cache) can read from or write into the operator's real
+//                            profile, and vice versa. Belt-and-suspenders on top of `settingSources: []`
+//                            and `persistSession: false` (also set in sdk-worker.ts).
+export const LEVARE_CLAUDE_CONFIG_DIR = join(tmpdir(), "levare-sdk-config");
+
+// A caller (a test) that has ALREADY set CLAUDE_CONFIG_DIR explicitly wins — this only fills in a
+// hermetic default, it never overrides an intentional override.
+export function hermeticSpawnEnv(env: Record<string, string | undefined>): Record<string, string | undefined> {
+  if (env.CLAUDE_CONFIG_DIR) return env;
+  try {
+    mkdirSync(LEVARE_CLAUDE_CONFIG_DIR, { recursive: true });
+  } catch {
+    /* best-effort — if this fails, the SDK will fail loudly on its own rather than silently inheriting ~/.claude */
+  }
+  return { ...env, CLAUDE_CONFIG_DIR: LEVARE_CLAUDE_CONFIG_DIR };
+}
+
+// ---------------------------------------------------------------------------
+// Kill the WHOLE process tree, not just the direct child (NOTES phase-7 K15)
+// ---------------------------------------------------------------------------
+//
+// A live host's timeout-kill did not fire, and Bun reported "killed 1 dangling process" — because
+// `proc.kill()` (both the sync and async Subprocess method, and Bun.spawnSync's own `timeout` +
+// `killSignal` handling) only ever signals the DIRECT child (the worker). The worker's own
+// grandchildren — the `claude` CLI process the SDK spawns internally, and in turn the CLI's own child
+// processes (a hook, in the confirmed live case) — are never touched, and if the worker's own process
+// never gets to exit cleanly (exactly the hang this fix-up is for), those grandchildren simply outlive
+// it. Verified empirically (not assumed) against a real hanging-grandchild reproduction: spawning with
+// `detached: true` puts the worker in its OWN new process group (its PID becomes the group ID);
+// `process.kill(-pid, "SIGKILL")` (the NEGATIVE pid) signals the ENTIRE group at once. Confirmed this
+// reaps both the worker and a grandchild that ignores plain SIGTERM, with zero dangling processes
+// afterward — the `spawnSync`-with-`detached`-and-`timeout` combination alone does NOT do this (its
+// own internal timeout kill only reaches the direct child); the explicit group-kill below is required.
+function killProcessTree(pid: number): void {
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    /* already exited, or never got its own process group — nothing left to kill */
+  }
+}
+
 /** A transport that spawns `workerPath` synchronously and blocks on it — the default (`bunSdkTransport`)
  * points at the real `sdk-worker.ts`; tests can point another instance at a bogus path to exercise a
  * genuine, network-free, deterministic transport failure (see tests/orchestrator-sdk.test.ts). */
@@ -244,13 +315,20 @@ export function createBunSdkTransport(workerPath: string = SDK_WORKER_PATH): Sdk
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       const proc = Bun.spawnSync([process.execPath, workerPath], {
         cwd: LEVARE_ROOT,
-        env: definedEnv(opts.env),
+        env: definedEnv(hermeticSpawnEnv(opts.env)),
         stdin: Buffer.from(JSON.stringify(req)),
         stdout: "pipe",
         stderr: "pipe",
         timeout: timeoutMs,
+        killSignal: "SIGKILL",
+        detached: true,
       });
-      if (proc.exitedDueToTimeout) return { ok: false, error: `sdk worker timed out after ${timeoutMs}ms` };
+      if (proc.exitedDueToTimeout) {
+        // spawnSync's own timeout+killSignal only reached the direct child (confirmed empirically —
+        // see killProcessTree's own comment); reap any surviving grandchildren explicitly.
+        if (proc.pid) killProcessTree(proc.pid);
+        return { ok: false, error: `sdk worker timed out after ${timeoutMs}ms` };
+      }
       const stdout = proc.stdout ? new TextDecoder().decode(proc.stdout).trim() : "";
       if (proc.exitCode !== 0) {
         const stderr = proc.stderr ? new TextDecoder().decode(proc.stderr).trim() : "";
@@ -285,15 +363,18 @@ export function createAsyncSdkTransport(workerPath: string = SDK_WORKER_PATH): A
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       const proc = Bun.spawn([process.execPath, workerPath], {
         cwd: LEVARE_ROOT,
-        env: definedEnv(opts.env),
+        env: definedEnv(hermeticSpawnEnv(opts.env)),
         stdin: Buffer.from(JSON.stringify(req)),
         stdout: "pipe",
         stderr: "pipe",
+        // Own process GROUP, so a timeout can kill the whole tree (worker + the CLI it spawns + any
+        // of the CLI's own children), not just this direct child — see killProcessTree above.
+        detached: true,
       });
       let timedOut = false;
       const timer = setTimeout(() => {
         timedOut = true;
-        proc.kill();
+        killProcessTree(proc.pid);
       }, timeoutMs);
       try {
         const [stdout, stderr] = await Promise.all([
