@@ -1146,6 +1146,71 @@ following K9's `AsyncSdkTransport` as the template — not a reason to asyncify 
   the 300ms the orchestrator call is still pending, proving the exact regression (a blocked event
   loop delaying totally unrelated routes) cannot recur.
 
+## K10. Live-gate note (not a bug): the native CLI binary is a per-platform optional dependency
+
+Host live-gate testing hit `Native CLI binary for darwin-arm64 not found` — the SDK's actual `claude`
+executable ships as one of several platform-specific optional packages
+(`@anthropic-ai/claude-agent-sdk-{linux,darwin,win32}-{x64,arm64}[-musl]`), and only the one matching
+the machine running `bun install` gets pulled into `node_modules`. If `node_modules` was populated on
+a different machine/platform than the one running `levare serve` (a copied or stale install), the SDK
+correctly reports the binary missing for the *running* platform — reinstalling on the actual host
+resolves it. **Reproduced directly in this dev sandbox during this same fix-up**: an early `bun add`
+earlier in phase 7 left `node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64` installed despite
+`process.platform`/`process.arch` reporting `linux`/`arm64` the whole time — a `rm -rf node_modules &&
+bun install` on THIS sandbox self-corrected to `claude-agent-sdk-linux-arm64`(`-musl`), with zero
+`bun.lock` diff (the checked-in lockfile lists every optional platform package; only install time
+decides which one lands on disk, so the lockfile itself was never wrong). Not a levare bug and not
+something the code can detect or work around — documented in README.md's new Phase 7 section as an
+operational note: install on the platform that will actually run `levare serve`.
+
+## K11. Live-gate fix-up: `/orchestrator/message` must degrade to offline mode, never 500
+
+**Finding.** K8 made `interpret()` throw loudly (`OrchestratorSdkError`) rather than silently
+returning `{kind:"unknown"}` on a transport failure — correct, and still true. But nothing downstream
+of `interpret()` caught that throw: it propagated out of `handle()`, out of the route handler, into
+`board/serve.ts`'s router-level catch-all, which turns any uncaught exception into a `500`. A real run
+with a broken SDK boundary (missing binary — see K10 — or any other transport failure) made
+`POST /orchestrator/message` return `500` instead of degrading, and `tests/board-serve.test.ts`'s
+existing orchestrator test (which never pins `ANTHROPIC_API_KEY` and so is only hermetic against an
+environment where the var happens to be absent) failed the moment it ran with a real key exported in
+the host's shell.
+
+**The distinction that resolves this.** Loud failure belongs *inside* `interpret()` — a transport
+error must never impersonate a real intent (K8's own reasoning stands). But the board itself is a
+projection of files (invariant 2); the Orchestrator's SDK voice is an enhancement layered on top of
+that projection, not a dependency the WRITE SURFACE can fail on. The right place to catch the SDK's
+loud failure is therefore one layer up, at the one route that calls the boundary — not by softening
+`interpret()` back toward silence.
+
+**Fix.** `board/serve.ts`'s `/orchestrator/message` handler now wraps its `await orchestratorHandle(...)`
+call in a `try`/`catch`. This is safe to catch broadly (not narrowed to `OrchestratorSdkError`
+specifically) because every OTHER operation `handle()`'s dispatch can call
+(`resolveGate`/`openUnit`/`captureIdea`/`promoteIdea`) already reports its own failures as a
+`GateOpResult` value, never a throw (an established pattern since phase 4) — the *only* thing that can
+escape `handle()` as an exception is a boundary call, so a catch at this one seam is precise, not a
+speculative safety net. On catch: `console.error`s the reason (the transport's own diagnostic text,
+never a credential value), re-runs `handle()` against `deterministicBoundary` (the same offline
+boundary phase 7 already uses when no key is present at all) to get a genuine answer, and returns
+`200` with a reply prefixed `"SDK unavailable (<reason>); answering in offline mode. "` — visible,
+honest, and still functionally useful (a `stats`/`briefing` question still gets its real derived
+answer, just unvoiced).
+
+**Page-render briefing.** The studio page's own "briefing" panel
+(`board/render.ts#renderStudio`) does not call the Orchestrator boundary at all today — it is a plain
+derived string from `gates.length`, computed directly with no SDK involvement and therefore nothing
+to degrade. The same discipline (never let an SDK unavailability turn a GET into an error page) would
+apply the moment any GET route starts consulting the real boundary for its content; noted here so
+that principle travels with whichever future phase wires the SDK into a page render, rather than
+being re-discovered.
+
+**New coverage.** `tests/board-serve.test.ts` adds a regression test: a real
+`createSdkOrchestratorBoundary` driven by a deliberately failing `AsyncSdkTransport` (returning
+`Native CLI binary for darwin-arm64 not found`, echoing K10's exact finding) is injected via
+`createBoard`'s `orchestratorBoundary` option; `POST /orchestrator/message` is asserted to return
+`200` (never `500`) with a reply containing `"SDK unavailable"`, `"answering in offline mode"`, the
+named reason, and a genuine derived-stats answer — and a follow-up `GET /` on the same board confirms
+the board itself is unaffected by the broken boundary.
+
 ## Learnings
 
 A boundary that must front a fundamentally different concurrency model than its own interface (a

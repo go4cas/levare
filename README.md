@@ -126,5 +126,38 @@ levare validate /path/to/new-studio           # prints "valid", exits 0
 levare serve /path/to/new-studio              # the board, non-empty from the first request
 ```
 
+## Phase 7 — the SDK and the voice
+
+`@anthropic-ai/claude-agent-sdk` is now the sole runtime dependency (`bun run deps:check` still
+enforces exactly this). Both boundary interfaces phase 3/5 mocked are now real:
+
+- **`OrchestratorBoundary`** ([src/orchestrator-boundary.ts](src/orchestrator-boundary.ts)) —
+  `interpret()`/`narrate()` drive the real SDK, with `docs/orchestrator-prompt.md` loaded from disk
+  and handed to the model verbatim as the system prompt. `selectOrchestratorBoundary()` picks it when
+  `ANTHROPIC_API_KEY` is present in the environment, else falls back to the phase-5 deterministic
+  regex boundary (the explicit offline mode).
+- **`NativeBoundary`** ([src/adapters.ts](src/adapters.ts)#createSdkNativeBoundary) — real member
+  invocation using the agent's model, tool allowlist, and assembled §6 context. Not yet wired as the
+  Runner's default (NOTES K5) — exported and tested, not load-bearing on any live path today.
+- Both are synchronous-or-async exactly to the degree their callers need: `NativeBoundary` stays
+  synchronous (nothing calls it from a live server request); `OrchestratorBoundary` is genuinely
+  async and non-blocking, because it *is* on `levare serve`'s request path — an earlier revision used
+  a blocking spawn there and froze the entire server on every concurrent connection (NOTES K9).
+- `/orchestrator/message` never hard-fails on an unavailable SDK (missing binary, no credential,
+  timeout, transport error): it degrades to the offline deterministic boundary and answers `200` with
+  a visible note naming the reason, never a `500` and never a silent downgrade.
+
+**Native binary is a per-platform optional dependency.** `@anthropic-ai/claude-agent-sdk` ships its
+actual `claude` CLI binary as one of several platform-specific optional packages
+(`@anthropic-ai/claude-agent-sdk-{linux,darwin,win32}-{x64,arm64}[-musl]`) — only the one matching the
+machine running `bun install` gets pulled in. If a studio's `node_modules` was installed on a
+*different* machine/platform than the one running `levare serve` (a container image built elsewhere,
+a copied `node_modules`, or a stale one left over from an earlier `bun install` in a different
+environment), the SDK will report the native binary as missing for the running platform. This is not
+a levare bug and there's nothing to configure — `rm -rf node_modules && bun install` **on the
+machine that will actually run levare** resolves it; the checked-in `bun.lock` itself is
+platform-agnostic (it lists every optional platform package; only install time decides which one
+lands on disk).
+
 Uncertainties and assumptions are recorded in [NOTES.md](NOTES.md) (phase-1 A1–A8, phase-2 B1–B7,
-phase-3 D1–D9, phase-4 E1–E14, phase-5 F1–F7, phase-6 G1/H1–H7).
+phase-3 D1–D9, phase-4 E1–E14, phase-5 F1–F7, phase-6 G1/H1–H7, phase-7 K1–K9).
