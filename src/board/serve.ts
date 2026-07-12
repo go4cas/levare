@@ -208,6 +208,17 @@ export const ROUTES: RouteDef[] = [
     handler: async (req, params, ctx) => {
       const verb = params.verb as Verb;
       const allowed: Verb[] = ["approve", "request", "reject", "start", "notyet", "rescope"];
+      // Ruling C3 (extended): budget-gate verbs target a UNIT and are resolved against the daemon's
+      // in-memory C3 state, not the on-disk artifact gate machinery — so they route separately.
+      const budgetVerbs: Verb[] = ["continue", "raise", "stop"];
+      if (budgetVerbs.includes(verb)) {
+        if (!ctx.daemon) return json({ ok: false, error: "no daemon: budget gates are only resolvable on a live serve" }, 409);
+        const r = ctx.daemon.resolveBudget(params.project, params.artifact, verb as "continue" | "raise" | "stop");
+        if (!r.ok) return json({ ok: false, error: r.error }, 404);
+        ctx.broadcast("reload");
+        ctx.daemon.notify(); // a continue/raise may have just un-halted the unit — let the walk resume now.
+        return json({ ok: true });
+      }
       if (!allowed.includes(verb)) return json({ ok: false, error: `unknown verb '${verb}'` }, 400);
       let note: string | undefined;
       try {

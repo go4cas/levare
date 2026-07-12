@@ -349,8 +349,130 @@ describe("(f) budget halts stop the walk without crashing or silently dropping t
     const result = daemon.tick();
     expect(calls).toEqual([]); // never invoked — the budget check runs before production.
     const entry = result.entries.find((e) => e.unit === "loyalty-flow")!;
-    expect(entry.outcome.outcome).toBe("halted");
+    expect(entry.outcome.outcome).toBe("budget-gate");
     expect((entry.outcome as { reason: string }).reason).toContain("budget");
-    expect(daemon.recentActivity().some((e) => e.outcome.outcome === "halted" && (e.outcome as { reason: string }).reason.includes("budget"))).toBe(true);
+    expect(daemon.recentActivity().some((e) => e.outcome.outcome === "budget-gate" && (e.outcome as { reason: string }).reason.includes("budget"))).toBe(true);
+    // The gate is raised and awaiting the Conductor — not silently swallowed.
+    expect(daemon.budgetGates().some((g) => g.unit === "loyalty-flow")).toBe(true);
+  });
+});
+
+// Ruling C3 (extended, PRD v1.1 §5): a budget gate HALTS the unit that crossed it until the Conductor
+// resolves it — per-unit, never global — and the resolution verbs continue/raise/stop govern whether
+// and how the walk resumes. The stub member's canned spend is $0.06 for product-brief, $0.10 for
+// design (fixtures/stubs/member-stub.ts) — so spend accrues 0.06 → 0.16 as a feature unit walks.
+
+// Create a fresh storefront feature unit with a given budget, get it past its start gate, and approve
+// its product-brief — leaving the unit walkable and $0.06 already spent (one brief). Returns its dir.
+function seedFeatureUnit(root: string, name: string, budget: number): string {
+  const unitDir = join(root, "work/storefront", name);
+  mkdirSync(unitDir, { recursive: true });
+  writeFileSync(
+    join(unitDir, "unit.md"),
+    `---\ntype: feature\nstatus: active\nproject: storefront\nunit: ${name}\nbudget: ${budget.toFixed(2)}\n---\n\n# ${name}\n\nBudget-gate test fixture unit.\n`,
+  );
+  const started = resolveGate(root, "storefront", name, "start" as Verb, { today: "2026-07-12" });
+  if (!started.ok) throw new Error(`seed start failed: ${(started as { error: string }).error}`);
+  const approved = resolveGate(root, "storefront", `product-brief-${name}-v1`, "approve" as Verb, { today: "2026-07-12" });
+  if (!approved.ok) throw new Error(`seed approve failed: ${(approved as { error: string }).error}`);
+  return unitDir;
+}
+
+describe("(h) C3 extended: a budget gate halts ONLY its own unit; other units in the project keep advancing", () => {
+  test("the over-budget unit sits at its gate and never advances until resolved; a sibling unit advances normally throughout", () => {
+    // over-budget: $0.06 already spent (its approved brief) against a $0.01 budget → next walk is a gate.
+    const overDir = seedFeatureUnit(root, "over-unit", 0.01);
+    // solvent: same project, a budget far above its spend → nothing stops it advancing.
+    const solventDir = seedFeatureUnit(root, "solvent-unit", 15.0);
+
+    const daemon = new Daemon(root);
+
+    // First tick: the over-budget unit halts AT its budget gate (produces nothing); the solvent unit
+    // advances one step (design) — a per-unit halt, never a global stop.
+    const r1 = daemon.tick();
+    expect(r1.entries.find((e) => e.unit === "over-unit")!.outcome.outcome).toBe("budget-gate");
+    expect(r1.entries.find((e) => e.unit === "solvent-unit")!.outcome.outcome).toBe("produced");
+    expect(existsSync(join(overDir, "design-over-unit-v1.md"))).toBe(false);
+    expect(existsSync(join(solventDir, "design-solvent-unit-v1.md"))).toBe(true);
+    expect(daemon.budgetGates().map((g) => g.unit)).toEqual(["over-unit"]);
+
+    // Many more ticks: the over-budget unit STILL never advances (no design file ever appears) — the
+    // daemon does not cross its budget gate on its own, no matter how many times it ticks (the exact
+    // shape of the start-gate invariant, applied to the budget gate).
+    for (let i = 0; i < 5; i++) daemon.tick();
+    expect(existsSync(join(overDir, "design-over-unit-v1.md"))).toBe(false);
+    // The solvent unit, meanwhile, reached and halted at its own (flow) gate — it advanced freely.
+    expect(existsSync(join(solventDir, "design-solvent-unit-v1.md"))).toBe(true);
+
+    // Only when the Conductor resolves the over-unit's budget gate does it advance — proving the halt
+    // was the budget gate, not some unrelated block.
+    const resolved = daemon.resolveBudget("storefront", "over-unit", "continue");
+    expect(resolved.ok).toBe(true);
+    daemon.tick();
+    expect(existsSync(join(overDir, "design-over-unit-v1.md"))).toBe(true);
+  });
+});
+
+describe("(i) C3 extended: `continue` suppresses re-raising until a new threshold; `raise` lifts the effective budget", () => {
+  test("continue lets the walk resume and the gate re-raises only when spend crosses a NEW threshold; raise updates the effective budget for the run", () => {
+    // --- continue path ---
+    // brief spent $0.06 against a $0.05 budget → over budget immediately.
+    const contDir = seedFeatureUnit(root, "cont-unit", 0.05);
+    const daemon = new Daemon(root);
+
+    const c1 = daemon.tick();
+    expect(c1.entries.find((e) => e.unit === "cont-unit")!.outcome.outcome).toBe("budget-gate");
+    const gate1 = daemon.budgetGates().find((g) => g.unit === "cont-unit")!;
+    expect(gate1.spent).toBeCloseTo(0.06, 5);
+
+    // continue acknowledges $0.06 — the next tick is NOT re-raised at the same spend; the unit advances
+    // one step (design), pushing spend to $0.16.
+    expect(daemon.resolveBudget("storefront", "cont-unit", "continue").ok).toBe(true);
+    const c2 = daemon.tick();
+    expect(c2.entries.find((e) => e.unit === "cont-unit")!.outcome.outcome).toBe("produced");
+    expect(existsSync(join(contDir, "design-cont-unit-v1.md"))).toBe(true);
+    expect(daemon.budgetGates().some((g) => g.unit === "cont-unit")).toBe(false);
+
+    // The NEW spend level ($0.16) crosses beyond the acknowledged $0.06 → the gate re-raises. So
+    // `continue` suppressed re-raising ONLY until a new threshold, exactly as C3's memory rule requires.
+    const c3 = daemon.tick();
+    expect(c3.entries.find((e) => e.unit === "cont-unit")!.outcome.outcome).toBe("budget-gate");
+    expect(daemon.budgetGates().find((g) => g.unit === "cont-unit")!.spent).toBeCloseTo(0.16, 5);
+
+    // --- raise path ---
+    const raiseDir = seedFeatureUnit(root, "raise-unit", 0.05);
+    const r1 = daemon.tick();
+    expect(r1.entries.find((e) => e.unit === "raise-unit")!.outcome.outcome).toBe("budget-gate");
+    // No effective budget lifted yet — the unit is over its declared $0.05.
+    expect(daemon.effectiveBudget("storefront", "raise-unit")).toBeUndefined();
+
+    // raise lifts the effective budget to the current spend ($0.06) for the rest of the run.
+    expect(daemon.resolveBudget("storefront", "raise-unit", "raise").ok).toBe(true);
+    const eff = daemon.effectiveBudget("storefront", "raise-unit");
+    expect(eff).toBeCloseTo(0.06, 5);
+    expect(eff!).toBeGreaterThan(0.05); // strictly above the original declared budget — it moved.
+
+    // With the effective budget lifted to $0.06, the unit is no longer over budget and advances.
+    const r2 = daemon.tick();
+    expect(r2.entries.find((e) => e.unit === "raise-unit")!.outcome.outcome).toBe("produced");
+    expect(existsSync(join(raiseDir, "design-raise-unit-v1.md"))).toBe(true);
+  });
+});
+
+describe("(j) C3 extended: `stop` pauses the unit so the daemon skips it thereafter", () => {
+  test("resolving a budget gate with stop pauses the unit on disk; the daemon no longer walks it", () => {
+    const dir = seedFeatureUnit(root, "stop-unit", 0.05);
+    const daemon = new Daemon(root);
+
+    expect(daemon.tick().entries.find((e) => e.unit === "stop-unit")!.outcome.outcome).toBe("budget-gate");
+    expect(daemon.resolveBudget("storefront", "stop-unit", "stop").ok).toBe(true);
+
+    // Persisted to disk (files are the truth): the unit is paused, and a paused unit is invisible to
+    // the walk — no design is ever produced.
+    expect(readFileSync(join(dir, "unit.md"), "utf8")).toContain("status: paused");
+    for (let i = 0; i < 3; i++) daemon.tick();
+    expect(existsSync(join(dir, "design-stop-unit-v1.md"))).toBe(false);
+    // The gate is cleared — a stopped unit is not still "awaiting the Conductor".
+    expect(daemon.budgetGates().some((g) => g.unit === "stop-unit")).toBe(false);
   });
 });

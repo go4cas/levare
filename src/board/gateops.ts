@@ -244,7 +244,7 @@ function doStart(root: string, repo: Repo, unit: WorkUnit, memberRunner: MemberR
   if (result.outcome === "nothing") {
     return { ok: false, status: 409, error: `unit '${unit.unit}' has nothing left for team '${team.name}' to produce` };
   }
-  if (result.outcome === "halted") {
+  if (result.outcome === "halted" || result.outcome === "budget-gate") {
     return { ok: false, status: 409, error: result.reason };
   }
   if (result.outcome === "blocked") {

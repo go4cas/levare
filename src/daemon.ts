@@ -16,10 +16,12 @@
 // burst of rapid repo changes while a tick is already running coalesces into exactly one follow-up
 // tick, not one per change (tested directly — see tests/daemon.test.ts's concurrency case).
 
-import { watch, type FSWatcher } from "node:fs";
+import { watch, readFileSync, writeFileSync, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import { loadRepo, type Repo } from "./repo.ts";
 import { advanceUnit, type AdvanceResult } from "./dagwalk.ts";
+import { patchFrontmatter } from "./gates.ts";
+import { conductorCommit } from "./git.ts";
 import { stubAdapterRunner } from "./replay.ts";
 import type { MemberRunner } from "./runner.ts";
 
@@ -40,6 +42,25 @@ export interface DaemonTickEntry {
 
 export interface DaemonTickResult {
   entries: DaemonTickEntry[];
+}
+
+/** Ruling C3 (extended): the three verbs a Conductor may resolve a raised budget gate with. */
+export type BudgetVerb = "continue" | "raise" | "stop";
+
+/** A currently-open budget gate: a unit whose ledger crossed its (effective) budget on the last walk
+ * and is halted, per-unit, awaiting the Conductor (never global — other units keep advancing). */
+export interface BudgetGate {
+  project: string;
+  unit: string;
+  /** The ledger sum that crossed the budget. */
+  spent: number;
+  /** The effective budget it crossed (the unit's declared budget, or a prior `raise`-lifted one). */
+  budget: number;
+}
+
+export interface ResolveBudgetResult {
+  ok: boolean;
+  error?: string;
 }
 
 export interface DaemonOptions {
@@ -72,6 +93,16 @@ export class Daemon {
   private tickCounter = 0;
   private readonly inFlight: DaemonInvocation[] = [];
   private readonly log: DaemonTickEntry[] = [];
+
+  // Ruling C3 (extended) — per-unit budget-gate resolution memory, keyed by `${project}/${unit}`, held
+  // in memory across ticks (the mirror of runner.ts's own `effBudget`/`budgetAck`; the daemon is the
+  // one long-lived process, so this is the run). `budgetEff`: a `raise`-lifted effective budget.
+  // `budgetAck`: the spend level a `continue`/`raise` acknowledged, below which the gate never
+  // re-raises. `openBudgetGates`: the gates currently raised and awaiting the Conductor — a per-unit
+  // halt, never global; a second unit in the same project is untouched by any of this.
+  private readonly budgetEff = new Map<string, number>();
+  private readonly budgetAck = new Map<string, number>();
+  private readonly openBudgetGates = new Map<string, BudgetGate>();
 
   constructor(root: string, opts: DaemonOptions = {}) {
     this.root = root;
@@ -171,9 +202,11 @@ export class Daemon {
     const units = [...repo.units].sort((a, b) => `${a.project}/${a.unit}`.localeCompare(`${b.project}/${b.unit}`));
     for (const unit of units) {
       const before = this.inFlight.length;
+      const key = `${unit.project}/${unit.unit}`;
       let outcome: AdvanceResult;
       try {
         outcome = advanceUnit(this.root, repo, unit, memberRunner, {
+          budget: { eff: this.budgetEff.get(key), ack: this.budgetAck.get(key) },
           onBeforeProduce: (member, kind) => {
             this.inFlight.push({ project: unit.project, unit: unit.unit, member, kind, startedAt: this.now() });
           },
@@ -187,6 +220,16 @@ export class Daemon {
         outcome = { outcome: "halted", reason: e instanceof Error ? e.message : String(e) };
       } finally {
         this.inFlight.length = before; // only this unit's own pass could have grown it (single-flight).
+      }
+      // Ruling C3 (extended): track the open budget gate for this unit. A `budget-gate` outcome means
+      // the daemon halted the unit AT its budget gate (it produced nothing) — record it so the
+      // Conductor can resolve it. Any other outcome means the unit is not sitting at a budget gate
+      // right now (a `continue`/`raise` let it advance again, or it was never over budget), so clear
+      // any stale open gate. This is strictly per-unit — a different unit's gate is never touched.
+      if (outcome.outcome === "budget-gate") {
+        this.openBudgetGates.set(key, { project: unit.project, unit: unit.unit, spent: outcome.spent, budget: outcome.budget });
+      } else {
+        this.openBudgetGates.delete(key);
       }
       const entry: DaemonTickEntry = { project: unit.project, unit: unit.unit, outcome };
       entries.push(entry);
@@ -215,5 +258,65 @@ export class Daemon {
 
   ticks(): number {
     return this.tickCounter;
+  }
+
+  /** Ruling C3 (extended): every budget gate currently raised and awaiting the Conductor. */
+  budgetGates(): BudgetGate[] {
+    return [...this.openBudgetGates.values()];
+  }
+
+  /** The effective budget in force for a unit right now — its declared budget, or a `raise`-lifted
+   * one. Lets the board (and tests) observe that a `raise` actually moved the ceiling for the run. */
+  effectiveBudget(project: string, unit: string): number | undefined {
+    return this.budgetEff.get(`${project}/${unit}`);
+  }
+
+  /**
+   * Ruling C3 (extended, PRD v1.1 §5): the Conductor resolves a raised budget gate. Per-unit, never
+   * global. `continue` acknowledges the current spend so the gate does not re-raise until spend
+   * crosses a NEW threshold beyond it (C3's original memory rule) — the unit resumes walking on the
+   * next tick. `raise` additionally lifts the effective budget for the rest of the run. `stop` pauses
+   * the unit on disk (status → paused), so the daemon's disk-truth re-derivation skips it thereafter.
+   * The daemon holds this resolution memory in-process, exactly as runner.ts holds its own; the only
+   * difference is the resolution arrives out-of-band (the board's gate route) rather than from an
+   * interactive DecisionSource.
+   */
+  resolveBudget(project: string, unit: string, verb: BudgetVerb): ResolveBudgetResult {
+    const key = `${project}/${unit}`;
+    const gate = this.openBudgetGates.get(key);
+    if (!gate) return { ok: false, error: `no open budget gate for '${key}'` };
+
+    if (verb === "continue") {
+      this.budgetAck.set(key, gate.spent);
+    } else if (verb === "raise") {
+      // Lift the effective budget to the current spend for the rest of the run AND acknowledge that
+      // level, so the gate re-raises only on a further crossing — mirrors runner.ts#overBudget.
+      this.budgetEff.set(key, gate.spent);
+      this.budgetAck.set(key, gate.spent);
+    } else {
+      // stop: pause the unit. Persisted to disk (files are the truth, invariant 2) so it survives a
+      // daemon restart and the board's disk-derived view agrees.
+      this.pauseUnit(project, unit);
+    }
+    this.openBudgetGates.delete(key);
+    // The caller (the board's gate route, like every other verb) nudges the daemon with `notify()` so
+    // a `continue`/`raise` visibly advances the unit in the same interaction — kept here as a pure
+    // state transition, no self-scheduling, so it is safe to drive synchronously from a test too.
+    return { ok: true };
+  }
+
+  private pauseUnit(project: string, unit: string): void {
+    let repo: Repo;
+    try {
+      repo = loadRepo(this.root);
+    } catch {
+      return; // an off-contract repo can't be paused mid-edit; the gate stays cleared, the walk halts anyway.
+    }
+    const u = repo.units.find((x) => x.project === project && x.unit === unit);
+    if (!u) return;
+    const file = join(u.dir, "unit.md");
+    const patched = patchFrontmatter(readFileSync(file, "utf8"), { status: "paused" });
+    writeFileSync(file, patched);
+    conductorCommit(this.root, [file], `stop ${unit}: budget gate → paused`);
   }
 }

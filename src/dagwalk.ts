@@ -132,6 +132,11 @@ export type AdvanceResult =
   | { outcome: "produced"; member: string; kind: string; artifactId: string; file: string; commit: string }
   | { outcome: "blocked"; member: string; kind: string; artifactId: string; file: string; commit: string; error: string }
   | { outcome: "halted"; reason: string }
+  // Ruling C3 (extended, PRD v1.1 §5): the unit's ledger crossed its (effective) budget and no prior
+  // `continue`/`raise` has acknowledged this spend level. A distinct outcome — not a plain `halt` — so
+  // the daemon knows a *budget gate* was raised, halts this unit's walk, and can un-halt it on a
+  // Conductor `continue`/`raise`/`stop`. `spent`/`budget` carry the crossing so the gate can be shown.
+  | { outcome: "budget-gate"; spent: number; budget: number; reason: string }
   | { outcome: "nothing" };
 
 export interface AdvanceOptions {
@@ -147,6 +152,13 @@ export interface AdvanceOptions {
    * preventing an autostart.
    */
   startAuthorized?: boolean;
+  /**
+   * Ruling C3 (extended): per-unit budget-gate resolution state, owned by the daemon in memory across
+   * ticks (the runner keeps the mirror-image `effBudget`/`budgetAck` maps). `eff` is a `raise`-lifted
+   * effective budget for the run; `ack` is the spend level a `continue`/`raise` acknowledged, below
+   * which the budget gate does not re-raise. Absent for a unit whose gate has never been touched.
+   */
+  budget?: { eff?: number | null; ack?: number };
   today?: string;
   /**
    * Commit identity + verb label for the write this call may make. Defaults to the daemon's own
@@ -187,14 +199,26 @@ export function advanceUnit(root: string, repo: Repo, unit: WorkUnit, memberRunn
     return { outcome: "halted", reason: "start gate open; awaiting Conductor" };
   }
 
-  // Declared limits (§6, §10), checked before producing anything — never after, since there is no
-  // interactive continue/raise/stop decision source here (unlike runner.ts's own overBudget/
-  // overTimebox): the daemon's only lever is to STOP inviting more spend, deterministically, and say
-  // why (deliverable f — never a silent stall). A human raising the budget/timebox (editing the
-  // unit's frontmatter, itself a repo change) is what un-halts this on a later tick.
-  if (typeof unit.budget === "number") {
+  // Declared limits (§6, §10), checked before producing anything — never after. Budget is ruling C3
+  // (extended, PRD v1.1): crossing the (effective) budget RAISES a budget gate and halts THIS unit's
+  // walk until the Conductor resolves it — never a global stop, never a silent overspend (deliverable
+  // f). The daemon carries the C3 resolution memory in `opts.budget`: an effective budget lifted by a
+  // prior `raise`, and the spend level a prior `continue`/`raise` acknowledged (below which the gate
+  // does not re-raise — it informs, it never spams). This mirrors runner.ts#overBudget exactly; the
+  // difference is only where the resolution comes from (the daemon's out-of-band `resolveBudget`
+  // rather than an interactive DecisionSource).
+  const effBudget = opts.budget?.eff ?? unit.budget;
+  if (typeof effBudget === "number") {
     const spent = spentUsd(repo, unit);
-    if (spent > unit.budget) return { outcome: "halted", reason: `budget $${unit.budget.toFixed(2)} exceeded (spent $${spent.toFixed(2)}); awaiting Conductor` };
+    const ack = opts.budget?.ack;
+    if (spent > effBudget && (ack === undefined || spent > ack)) {
+      return {
+        outcome: "budget-gate",
+        spent,
+        budget: effBudget,
+        reason: `budget $${effBudget.toFixed(2)} crossed (spent $${spent.toFixed(2)}); awaiting Conductor`,
+      };
+    }
   }
   const limitS = timeboxSeconds(unit.timebox ?? repo.types.get(unit.type)?.timebox ?? null);
   if (limitS !== null) {
