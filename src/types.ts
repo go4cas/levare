@@ -136,6 +136,13 @@ export interface WorkUnit {
   timebox?: string | null;
   /** USD; crossing the ledger sum raises a budget gate (§10). */
   budget?: number | null;
+  /**
+   * Why this unit is blocked, when its status is `blocked` (NOTES F1). Written by the walk when it
+   * cannot bind a flow step to a member — the failure that used to be swallowed, leaving the unit
+   * silently doing nothing forever. Files are the truth (invariant 2), so the reason lives on disk
+   * with the status it explains, and the board renders it as a gate.
+   */
+  blocked_reason?: string | null;
   /** Directory holding the unit and its artifacts. */
   dir: string;
 }

@@ -129,6 +129,7 @@ button{ font-family:inherit; }
 .gate__badge{ font-family:var(--mono); font-size:9.5px; letter-spacing:.09em; text-transform:uppercase; color:var(--gate);
   background:color-mix(in oklab, var(--gate) 12%, transparent); padding:3px 7px; border-radius:5px; flex:none; }
 .gate__badge.is-start{ background:none; border:1px dashed color-mix(in oklab, var(--gate) 55%, transparent); }
+.gate__badge.is-blocked{ color:var(--danger); background:color-mix(in oklab, var(--danger) 12%, transparent); }
 .gate__verbs{ display:flex; gap:8px; flex-wrap:wrap; }
 .verb{ background:transparent; color:var(--fg-mute); border:1px solid var(--border-strong); padding:7px 14px;
   border-radius:7px; font-size:12.5px; font-weight:500; cursor:pointer; transition:.12s; }

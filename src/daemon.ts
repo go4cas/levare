@@ -194,8 +194,14 @@ export class Daemon {
       repo = loadRepo(this.root);
     } catch (e) {
       // An off-contract repo (e.g. mid-edit) is not a daemon crash — skip this tick; the next repo
-      // change (including the edit that fixes it) will trigger another.
-      this.pushLog({ project: "", unit: "", outcome: { outcome: "halted", reason: `repo does not validate: ${e instanceof Error ? e.message : String(e)}` } });
+      // change (including the edit that fixes it) will trigger another. It is not SILENT either
+      // (NOTES F1): a studio that stops validating is a studio in which nothing will advance, and the
+      // one thing worse than a stopped daemon is a stopped daemon that says nothing. Since F1 this
+      // path also catches a structurally unbindable studio (UNPRODUCIBLE_KIND/UNBINDABLE_STEP), which
+      // is precisely the state that used to reach the walk and stall it in silence.
+      const reason = `repo does not validate: ${e instanceof Error ? e.message : String(e)}`;
+      console.error(`levare: daemon tick skipped — ${reason}`);
+      this.pushLog({ project: "", unit: "", outcome: { outcome: "halted", reason } });
       return { entries: [] };
     }
     const memberRunner = this.memberRunnerFor(repo);
@@ -230,6 +236,13 @@ export class Daemon {
         this.openBudgetGates.set(key, { project: unit.project, unit: unit.unit, spent: outcome.spent, budget: outcome.budget });
       } else {
         this.openBudgetGates.delete(key);
+      }
+      // NOTES F1: the daemon never swallows a resolution failure. `advanceUnit` has already blocked
+      // the unit on disk (status + reason, committed) and the board renders it as a gate; this line
+      // makes it audible to whoever is watching `levare serve`'s own output too. The pre-F1 code
+      // caught the RunnerError, called it a `halt`, and left it in a ring buffer nobody reads.
+      if (outcome.outcome === "unbindable") {
+        console.error(`levare: unit ${key} BLOCKED — ${outcome.reason}`);
       }
       const entry: DaemonTickEntry = { project: unit.project, unit: unit.unit, outcome };
       entries.push(entry);

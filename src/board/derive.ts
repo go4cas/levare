@@ -49,15 +49,17 @@ export function ageLabel(fromIso: string, now: Date): string {
 // ---------------------------------------------------------------------------
 
 export interface OpenGate {
-  type: "artifact" | "start";
+  type: "artifact" | "start" | "blocked";
   project: string;
   unit: string;
-  /** The artifact id for an artifact-shaped gate; the unit id for a start gate. */
+  /** The artifact id for an artifact-shaped gate; the unit id for a start or blocked gate. */
   target: string;
   artifact?: Artifact;
   team?: Team;
   member?: string;
   label: string;
+  /** Why a blocked unit is blocked (its `blocked_reason`) — NOTES F1. */
+  reason?: string;
 }
 
 /**
@@ -93,6 +95,20 @@ export function openGates(repo: Repo): OpenGate[] {
       if (unmet.length === 0 && !hasAnyArtifact) {
         gates.push({ type: "start", project: unit.project, unit: unit.unit, target: unit.unit, label: "start" });
       }
+    }
+    // NOTES F1: a unit the walk BLOCKED (it could not bind a flow step to any member) carries its
+    // reason on disk. It is on the Conductor — the studio needs fixing before this unit can move —
+    // so it belongs in the same inbox as every other thing that is on them. A block the Conductor is
+    // never shown is exactly the silent stall F1 was.
+    if (unit.status === "blocked" && unit.blocked_reason) {
+      gates.push({
+        type: "blocked",
+        project: unit.project,
+        unit: unit.unit,
+        target: unit.unit,
+        label: "blocked",
+        reason: unit.blocked_reason,
+      });
     }
   }
   return gates;

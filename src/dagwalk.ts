@@ -27,13 +27,13 @@
 //      this module's own halt rule ("a live artifact of this kind already exists and is in-review →
 //      halt") already handles correctly with no extra logic.
 
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { validateArtifactSource } from "./validate.ts";
 import { parseArtifactDoc } from "./repo.ts";
 import type { Repo } from "./repo.ts";
 import { RunnerError, timeboxSeconds, bumpVersion, type MemberRunner } from "./runner.ts";
-import { responsibleTeamsFor, resolveStep, unmetAfter, patchFrontmatter } from "./gates.ts";
+import { responsibleTeamsFor, resolveStep, unmetAfter, patchFrontmatter, upsertFrontmatterField } from "./gates.ts";
 import { runnerCommit } from "./git.ts";
 import type { Artifact, FlowLoop, Team, WorkUnit } from "./types.ts";
 
@@ -44,6 +44,12 @@ import type { Artifact, FlowLoop, Team, WorkUnit } from "./types.ts";
 export type NextAction =
   | { type: "produce"; member: string; kind: string; stepLabel: string }
   | { type: "halt"; reason: string }
+  // NOTES F1: the flow step cannot be resolved to a member at all (none produces a matching kind, or
+  // two do). This is NOT an ordinary halt — a halt means "something is legitimately in the way right
+  // now, look again later", and a resolution failure never resolves itself: the studio is
+  // misconfigured, and every later tick would re-derive the same failure and do nothing, forever.
+  // Kept distinct so `advanceUnit` can block the unit LOUDLY and put the reason where a human sees it.
+  | { type: "unbindable"; reason: string; stepLabel: string }
   | { type: "nothing" };
 
 /** The latest non-superseded artifact of `kind` for this unit, if any (§6: the DAG is recomputed
@@ -84,7 +90,7 @@ export function nextAction(repo: Repo, unit: WorkUnit, team: Team, capabilities:
       try {
         ({ member, kind } = resolveStep(team, node.step, capabilities));
       } catch (e) {
-        return { type: "halt", reason: e instanceof RunnerError ? e.message : String(e) };
+        return { type: "unbindable", reason: e instanceof RunnerError ? e.message : String(e), stepLabel: node.step };
       }
       const current = latestLiveArtifact(repo, unit, kind);
       if (!current) return { type: "produce", member, kind, stepLabel: node.step };
@@ -109,7 +115,7 @@ export function nextAction(repo: Repo, unit: WorkUnit, team: Team, capabilities:
       try {
         first = resolveStep(team, firstLabel, capabilities);
       } catch (e) {
-        return { type: "halt", reason: e instanceof RunnerError ? e.message : String(e) };
+        return { type: "unbindable", reason: e instanceof RunnerError ? e.message : String(e), stepLabel: firstLabel };
       }
       const firstArt = latestLiveArtifact(repo, unit, first.kind);
       if (!firstArt) return { type: "produce", member: first.member, kind: first.kind, stepLabel: firstLabel };
@@ -137,6 +143,11 @@ export type AdvanceResult =
   // the daemon knows a *budget gate* was raised, halts this unit's walk, and can un-halt it on a
   // Conductor `continue`/`raise`/`stop`. `spent`/`budget` carry the crossing so the gate can be shown.
   | { outcome: "budget-gate"; spent: number; budget: number; reason: string }
+  // NOTES F1: a flow step could not be bound to any member. The unit is BLOCKED on disk (status
+  // `blocked` + `blocked_reason`, committed) and surfaced as a gate on the board — never a silent
+  // no-op. Distinct from `blocked` (an artifact-slot failure: a member ran and failed) because
+  // nothing ran and there is no kind to write an artifact for — the studio itself is misconfigured.
+  | { outcome: "unbindable"; reason: string; stepLabel: string; file: string; commit: string }
   | { outcome: "nothing" };
 
 export interface AdvanceOptions {
@@ -237,6 +248,10 @@ export function advanceUnit(root: string, repo: Repo, unit: WorkUnit, memberRunn
   for (const team of teams) {
     const action = nextAction(repo, unit, team, caps);
     if (action.type === "halt") return { outcome: "halted", reason: action.reason };
+    // NOTES F1: a step that binds to no member is a permanent, self-repeating failure — every later
+    // tick would re-derive it and do nothing. Block the unit on disk with the reason attached, so it
+    // is impossible for the walk to keep quietly skipping a unit no one is told about.
+    if (action.type === "unbindable") return blockUnit(root, unit, team, action.reason, action.stepLabel, opts);
     if (action.type === "produce") {
       opts.onBeforeProduce?.(action.member, action.kind);
       return produceOne(root, unit, team, action.member, action.kind, memberRunner, opts);
@@ -244,6 +259,36 @@ export function advanceUnit(root: string, repo: Repo, unit: WorkUnit, memberRunn
     // action.type === "nothing": this team's flow is fully satisfied — hand off to the next team.
   }
   return { outcome: "nothing" };
+}
+
+/**
+ * NOTES F1: block a unit whose flow step binds to no member, LOUDLY. The unit's own `unit.md` gets
+ * `status: blocked` and a `blocked_reason` carrying the resolution error verbatim, committed like any
+ * other walk-driven write (files are the truth, invariant 2) — so the block survives a restart, the
+ * board renders it as a gate the Conductor can see (board/derive.ts#openGates), and the daemon's
+ * disk-truth re-derivation stops walking the unit instead of re-failing silently on every tick.
+ *
+ * The pre-F1 behaviour was the whole defect: the RunnerError was caught, converted to a `halt`, and
+ * the daemon logged it to an in-memory ring buffer nobody reads. The unit sat "active" forever with
+ * nothing happening and nothing to see. A failure that a human is never shown is a failure the system
+ * pretends it doesn't have.
+ */
+function blockUnit(
+  root: string,
+  unit: WorkUnit,
+  team: Team,
+  reason: string,
+  stepLabel: string,
+  opts: AdvanceOptions,
+): AdvanceResult {
+  const commitFn = opts.commit ?? runnerCommit;
+  const file = join(unit.dir, "unit.md");
+  const src = readFileSync(file, "utf8");
+  let patched = patchFrontmatter(src, { status: "blocked" });
+  patched = upsertFrontmatterField(patched, "blocked_reason", reason);
+  writeFileSync(file, patched);
+  const commit = commitFn(root, [file], `block ${unit.unit}: team ${team.name} cannot bind flow step '${stepLabel}': ${reason.slice(0, 120)}`);
+  return { outcome: "unbindable", reason, stepLabel, file, commit };
 }
 
 function spentUsd(repo: Repo, unit: WorkUnit): number {

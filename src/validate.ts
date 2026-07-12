@@ -106,6 +106,9 @@ const WORK_UNIT_SCHEMA: Schema = {
     after: { type: "str[]", required: false },
     timebox: { type: "str", required: false, nullable: true },
     budget: { type: "num", required: false, nullable: true },
+    // Why a `blocked` unit is blocked (NOTES F1) — e.g. an unbindable flow step. Recorded on disk so
+    // the block is visible and explains itself, never a unit that silently does nothing.
+    blocked_reason: { type: "str", required: false, nullable: true },
   },
 };
 

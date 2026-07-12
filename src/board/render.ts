@@ -216,6 +216,24 @@ function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: boole
     </article>`;
   }
 
+  // NOTES F1: a blocked unit — the walk could not bind one of its team's flow steps to any member.
+  // No artifact exists (nothing ran), so this card carries the reason itself. There are no verbs: the
+  // Conductor cannot approve their way out of a misconfigured studio; they fix the team/agent
+  // definitions (`levare validate` now names exactly what to fix) and the block clears.
+  if (gate.type === "blocked") {
+    return `<article class="gate gate--blocked" data-gate-project="${esc(gate.project)}" data-gate-target="${esc(gate.unit)}">
+      <div class="gate__top">
+        <span class="gate__marker" aria-hidden="true">${glyph}</span>
+        <div class="gate__body">
+          <div class="gate__name-row">${tokenLink(gate.project, gate.unit, gate.unit)}<span class="gate__producer">${esc(type?.name ?? "")}</span></div>
+          <p class="gate__ctx">Blocked: ${esc(gate.reason ?? "")}</p>
+          <div class="gate__meta"><span>&#8592; ${esc(gate.project)}/${esc(gate.unit)}</span></div>
+        </div>
+        <span class="gate__badge is-blocked">blocked</span>
+      </div>
+    </article>`;
+  }
+
   const art = gate.artifact!;
   const ctx = esc(firstParagraph(art.body ?? ""));
   const consumesHtml = art.consumes.length

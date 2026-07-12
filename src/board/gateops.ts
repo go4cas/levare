@@ -247,6 +247,12 @@ function doStart(root: string, repo: Repo, unit: WorkUnit, memberRunner: MemberR
   if (result.outcome === "halted" || result.outcome === "budget-gate") {
     return { ok: false, status: 409, error: result.reason };
   }
+  if (result.outcome === "unbindable") {
+    // NOTES F1: the team cannot bind this flow step to any member — the studio is misconfigured, not
+    // merely busy. advanceUnit has already blocked the unit on disk with the reason; the Conductor is
+    // told exactly that here (409, the reason verbatim) rather than getting a 200 over a no-op.
+    return { ok: false, status: 409, error: result.reason };
+  }
   if (result.outcome === "blocked") {
     // A start attempt that fails at the member boundary still writes something real to the repo
     // (deliverable f) — surfaced to the caller as a 502 (upstream/member failure), not a silent 200.
