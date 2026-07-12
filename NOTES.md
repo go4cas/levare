@@ -99,6 +99,12 @@ contradicting) that derivation, violating the files-are-truth invariant. When th
 Phase 2 this enum should be reconciled against how the walk actually reports unit state.
 
 ## A7. Immutability check detects uncommitted drift only (known limitation)
+**UPDATE (architecture & code review, 2026-07-12): CLOSED — see the review section at the end of this
+file.** Gate resolution now records the approval baseline commit in the artifact's `approved_commit`
+frontmatter and `validate` diffs the content against that ref (excluding the approval-stamp fields);
+committed post-approval mutation is state S2c → `MODIFIED_AFTER_APPROVAL`. The former `test.failing` is
+a real prevention test. The rest of this entry is the original deferral record.
+
 The current `MODIFIED_AFTER_APPROVAL` check compares the working tree against `HEAD`, so it catches
 an approved artifact edited **but not yet committed** (state S2b). It does **not** implement the true
 §4 rule — "an approved artifact's file content may not change in a *later commit*", i.e. unchanged
@@ -175,6 +181,12 @@ un-converged spec; reject/rescope pauses). These are gate-decision verbs, not ne
 table stays at three (asserted in phase 4).
 
 ## B7. Responsible-team selection
+**UPDATE (architecture & code review, 2026-07-12): CLOSED per ruling C4 — see the review section at the
+end of this file.** The per-unit heuristic is superseded by `gates.ts#responsibleTeamsFor`, a per-kind
+walk that hands a unit from a shaping team to a build team; a multi-team fixture (`tests/multiteam.test.ts`,
+verified to fail under the old single-team walk) covers the divergence. The rest of this entry is the
+original deferral record.
+
 A unit's flow is run by the team whose `produces` overlaps the unit type's `expects` most (ties broken by
 name). For the golden fixture this is unambiguously `kestrel`. When multiple shaping/build teams exist per
 type, this heuristic will need revisiting against how the walk hands a unit between teams (e.g. shaping →
@@ -2333,3 +2345,49 @@ gone from sync to async once (K9) with a real, live-discovered bug when a blocki
 request path, and (c) the lock catches a genuinely different, real hazard (synchronous reentrancy) that
 has nothing to do with the async case it's also future-proofing against — "this can't happen today" and
 "this guarantee has no value" are not the same claim.
+# NOTES — architecture & code review (branch `review/architecture`, 2026-07-12)
+
+Deliverable: `docs/code-review.md` (the full invariant enforcement map, test-quality verdict, and
+debt disposition). This section records the mechanical closures for the ledger; cite them, don't
+re-derive them.
+
+## R1. A7 closed — approval-baseline immutability (invariant 3, §4 "may not change in a later commit")
+New optional artifact frontmatter field **`approved_commit`** (validate.ts ARTIFACT_SCHEMA, nullable
+str). Board gate resolution (`gateops.ts#stampApproval`, applied by `doApprove` and
+`applyLoopCompanionApproval`) records it = the repo's `HEAD` *before* the approval commit — the commit
+holding the exact content approved. Recording the pre-approval HEAD (not the approval commit's own SHA)
+is deliberate: a commit cannot contain its own hash, so a faithful "approval commit ref" would need a
+second commit or a dangling amend; the pre-approval HEAD is a permanent ancestor, needs one commit, and
+is equivalent for detecting post-approval content change. `validate.ts#gitImmutabilityCheck`: when
+`approved_commit` is set, it diffs the working file against that ref via `git show`, excluding the
+approval-stamp lines (`status`, `approved_by`, `approved_commit`) with `stripApprovalStamp`; any other
+change is state **S2c** → `MODIFIED_AFTER_APPROVAL`. No `approved_commit` → the original HEAD-diff path
+(S1/S2a/S2b/S2e), so pre-A7 artifacts (the golden fixture) are backward compatible. Residual (out of
+scope, inherent to the no-auth model — Surface 10): an attacker who also rewrites `approved_commit` in
+the same edit can still launder; that is the cryptographic-binding gap PRD §12 rules a non-goal.
+
+## R2. C4 closed — the per-kind walk (supersedes the B7 per-unit shortcut)
+`gates.ts#responsibleTeamsFor(repo, unit)` returns every team producing ≥1 of the unit type's `expects`
+kinds, ordered by the earliest expected kind each team produces (dependency order — shaping before
+build), ties by name. `dagwalk.ts#advanceUnit` and `runner.ts#walkUnit` iterate that list: a satisfied
+team yields to the next, the first with a producible action produces, an open gate halts the walk.
+`responsibleTeamFor` (kept for the start gate / `doStart`) is now the head of that list. Single-team
+fixtures are unchanged (golden replay byte-for-byte). `tests/multiteam.test.ts` is the divergence
+catcher — **verified to fail under the old single-team walk** (advanceUnit returns nothing; `code`
+never produced) and pass under the per-kind walk (a build team produces `code`, authored as itself).
+
+## R3. Deferred, requiring a Conductor ruling (written up, not guessed — see docs/code-review.md §4)
+- **Invariant 6** (merge gate / spike-never-merges): no merge surface exists; `checkGuardrails` is a
+  ready but unwired deliverable. Needs the build-team/merge phase (entangled with C4 build teams + K5).
+- **Invariant 7** (`mode: led`): parsed but inert (nothing branches on it). Needs a decision on what
+  `led` changes before it can be wired.
+- **C3 on the daemon**: the daemon re-halts every tick while `spent > budget` (no C3 acknowledgment
+  memory, unlike the Runner engine). Ruling needed: does "informs, never spams" bind the autonomous
+  daemon, or is a hard re-halt the intended posture?
+- **C5 on the board surface**: `doApprove`/`applyLoopCompanionApproval` bypass `applyApproval`'s
+  name+ISO format guard (validate presence only; safe because the string is hard-constructed).
+  Recommended follow-up: route both through `applyApproval`.
+- **N1**: still host-vs-container; untestable from inside the devcontainer. Needs a bare-host `serve`.
+- **Runner⇄dagwalk/gates duplication** (resolveStep, untilSatisfied, the C8/after: computation): the
+  recommended end state is a leaf module both engines import, breaking the gates→runner import cycle
+  that motivates the hand-synced copies (C7's own lesson, applied to the one place it was not).

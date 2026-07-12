@@ -212,7 +212,7 @@ client-JS interaction layer remains delete-proof, which is exactly the shape of 
 | 1 | `serve` printed a URL and exited | **CAUGHT (outcome)** | `board-serve-e2e.test.ts` spawns the real `./levare` binary over a real socket, asserts `exitCode===null`/`!killed` after boot, POSTs approve over HTTP, asserts the file flipped on disk + an SSE `reload` arrived. Root cause fixed in `cli.ts` (serve special-cased). |
 | 2 | CLI argv from splitting a substituted string | **CAUGHT (outcome)** | `adapters.test.ts` runs six hostile task strings through the real substitution (each lands in exactly one argv slot) **and** executes a real `Bun.spawn` asserting a MARKER file survives — a filesystem outcome, not an argv shape. |
 | 3 | Validator failed open three ways | **CAUGHT (state-explicit)** | `immutability.test.ts` asserts the exact state for each: hostile git config → S2b; symlinked path → S2b "not masked as S1"; corrupt `.git/index` → S2e "not S2a". Caveat: macOS `/var` is a container symlink *reproduction*, not real Darwin. |
-| 4 | Score node with an undefined CSS class | **CAUGHT for score nodes; the class of bug is NOT closed** | `board-render.test.ts` cross-checks `scoreNodeClass` against `styles.css` and asserts the old broken `snode is-wait` has no rule. **But** `hasCssRuleFor` passed on an *empty* rule and no other emitted class was cross-checked. **Hardened in §3.** |
+| 4 | Score node with an undefined CSS class | **CAUGHT for score nodes; class-of-bug hardened — and it found a live second instance** | `board-render.test.ts` cross-checks `scoreNodeClass` against `styles.css`. **But** `hasCssRuleFor` passed on an *empty* rule and only score nodes were checked. **Hardened in §3** to require a non-empty rule and generalized to the mini-score classes — which immediately **found a real, shipping instance of exactly this bug**: `miniScoreHtml` emitted `.dot.is-danger` for a rejected artifact, a class the stylesheet never defined (an invisible mini-score dot). Fixed by defining the rule. |
 | 5 | SSE handler discarded its unsubscribe | **CAUGHT (descriptor-level)** | `board-serve-sse-leak.test.ts`: 50 connect/cancel cycles must return the subscriber Set to empty; backstopped by a real-subprocess `/proc/<pid>/fd` growth check. It explicitly rejects the weaker "broadcast still works" assertion. |
 | 6 | Daemon authored commits as the Conductor | **CAUGHT (asserts `git log`)** | `daemon.test.ts` asserts via `git log --format=%an\|%ae` that member commits are `levare-runner` and Conductor decisions are `cas`, including the subtle `start`-verb case. The real author field, not an internal flag. |
 | 7 | A phase's work sat uncommitted while reported committed | **STILL HUMAN-GATED** | No test can catch "an agent claims it committed when it didn't." Closest analogs (`orchestrator.test.ts`/`init.test.ts` assert `git status --porcelain` empty after one op) catch a *single* uncommitted operation, not a false report about a whole phase. |
@@ -328,8 +328,12 @@ against *that ref* rather than `HEAD`.
 
 **(3) Worst test-quality offenders.**
 - **CSS-class outcome (catch #4's class-of-bug).** `board-render.test.ts`: `hasCssRuleFor` hardened to require a
-  **non-empty** rule body, and a new assertion cross-checks *every* emitted score/status state class against a
-  defined non-empty `styles.css` rule — not only score nodes. An empty or missing rule now fails.
+  **non-empty** rule body, and a new assertion cross-checks the mini-score marker classes against a defined
+  non-empty `styles.css` rule — not only score nodes. **This immediately found a live instance of catch #4:**
+  `miniScoreHtml` emitted `.dot.is-danger` for a rejected artifact, a class `styles.css` never defined — an
+  invisible mini-score dot. Fixed by defining `.dot.is-danger` (the same `is-danger`/`var(--danger)` convention
+  already used for `.snode`/`.verb`/`.status-dot`, precedent: gap G1's `.snode.is-danger`). This is the review's
+  "good looks like" in action — a rule that would have failed on a no-op, catching a bug a green suite shipped.
 - **notify intent → outcome.** `board-serve-daemon.test.ts`: the "resolving a gate nudges the daemon" test now
   asserts the **effect** — after the gate resolves, the daemon actually advances the unit (produces the next
   artifact on disk) — instead of counting `notify` invocations.
@@ -345,9 +349,10 @@ the loop runs once.
 - **Test:** `tests/multiteam.test.ts` — a scratch repo with a `feature` unit, a shaping team (produces
   product-brief/design/spec/review) and a **separate build team** (produces `code`, consumes `spec`). After the
   shaping flow completes and `spec` is approved, the daemon walk produces `code` **via the build team**. The
-  test asserts the produced `code` artifact's `produced_by` names the build team — which fails under the old
-  per-unit `responsibleTeamFor` (it always selected the shaping team and never produced `code`). This is the
-  multi-team fixture that would have caught the divergence.
+  test asserts the produced `code` artifact's `produced_by` names the build team. It was **verified to fail
+  under the old single-team walk** (temporarily reverted mid-review: `advanceUnit` returned `nothing`, no
+  `code`) and pass under the per-kind walk. This is the multi-team fixture that would have caught the
+  divergence — proven against the old code, not assumed (the review's own rule 8).
 
 **(5) E8 — the registry editor (preview-only → editable).** The write route (`POST /registry/*path`: validate
 → write → commit as the Conductor) already existed and is confined (`isRegistryEditablePath`). What was missing
