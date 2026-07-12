@@ -697,3 +697,20 @@ copy" — sometimes the two callers have genuinely different execution shapes (a
 walk vs. a single on-disk mutation) and the honest convergence is extracting the *rule* they must both
 obey (here, `loopMembershipFor`) into one place both call, while leaving each caller's own control flow
 intact.
+
+## Known gaps
+
+**G1 — no `.snode` rule for the failed/rejected score-node state.** `assets/styles.css` defines
+`.snode.done`, `.snode.active`, `.snode.blocked`, `.snode.upcoming`, and `.snode.is-gate-open` — every
+canonical-palette state (design brief: done/active/waiting/blocked/needs-you) except **failed**. A
+rejected artifact's score node (`render.ts#scoreNodeClass` still emits `"snode is-danger"`, its
+pre-existing value) therefore renders invisible on screen — the same class of bug just fixed for the
+waiting/queued state, left unfixed here because the fix is a stylesheet rule, and the stylesheet is
+frozen/design-approved; the renderer cannot paper over a missing CSS rule by picking a different
+existing class the way it could for "waiting" (which mapped to `.snode.upcoming`, an *existing*
+correct-but-unused rule). **Fix in the phase-6 design pass**: add the missing `.snode` red/failed rule
+to `assets/styles.css` (design decision — exact value should read `--danger`, matching every other
+failed-state usage in the stylesheet). Once that rule exists, extend
+`tests/board-render.test.ts`'s renderer↔stylesheet class-parity suite (currently five cases, done/
+active/waiting/blocked/needs-you) with a sixth `{ label: "failed", state: "rejected", isGate: false }`
+case, so the same test that would have caught G1's sibling bug catches this one closing too.
