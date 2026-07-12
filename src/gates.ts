@@ -41,23 +41,43 @@ export function loopMembershipFor(
 }
 
 /**
- * The team responsible for a unit's flow (§6): the team whose `produces` overlaps the unit type's
- * `expects` the most, ties broken by name (ruling C4 — a fixture-scale shortcut shared verbatim by
- * the Runner's walk and the board's `start` verb, rather than re-derived in each place).
+ * The teams responsible for a unit's flow, in the order the walk should run them (ruling C4 — the
+ * per-KIND semantics, not the old per-unit shortcut). PRD §6: "find producible kinds ... and invoke
+ * the team that produces each" — this is how a unit hands from a shaping team to a build team. We
+ * return every team that produces at least one of the unit type's `expects` kinds, ordered by the
+ * EARLIEST expected kind each team produces (the type's `expects` list is dependency-ordered, so the
+ * shaping team — which produces the first kinds — sorts ahead of a build team that produces later
+ * ones), ties broken by name. The walk advances each team's flow in turn: a team whose flow is fully
+ * satisfied yields nothing and the walk moves to the next; a team with an open gate halts the walk
+ * (a later team's inputs depend on an earlier team's approved output, so the ordering + halt-
+ * propagation is what enforces the cross-team `consumes` dependency).
+ *
+ * While a unit's type is served by a single team (every fixture until a multi-team one lands), this
+ * returns that one team and the walk behaves exactly as the old per-unit heuristic did — the
+ * divergence only appears the moment two teams produce different kinds for one unit.
  */
-export function responsibleTeamFor(repo: Repo, unit: WorkUnit): Team | null {
+export function responsibleTeamsFor(repo: Repo, unit: WorkUnit): Team[] {
   const type = repo.types.get(unit.type);
   const expects = type?.expects ?? [];
-  let best: Team | null = null;
-  let bestScore = 0;
-  for (const team of [...repo.teams.values()].sort((a, b) => a.name.localeCompare(b.name))) {
-    const score = team.produces.filter((k) => expects.includes(k)).length;
-    if (score > bestScore) {
-      best = team;
-      bestScore = score;
-    }
+  const scored: Array<{ team: Team; earliest: number }> = [];
+  for (const team of repo.teams.values()) {
+    const producedHere = team.produces.filter((k) => expects.includes(k));
+    if (producedHere.length === 0) continue;
+    const earliest = Math.min(...producedHere.map((k) => expects.indexOf(k)));
+    scored.push({ team, earliest });
   }
-  return best;
+  scored.sort((a, b) => a.earliest - b.earliest || a.team.name.localeCompare(b.team.name));
+  return scored.map((s) => s.team);
+}
+
+/**
+ * The single team that owns a unit's FIRST production (§6) — the head of the dependency-ordered
+ * `responsibleTeamsFor` list. This is what the start gate / board `start` verb needs (the team whose
+ * first flow step the Conductor is authorizing); the full walk uses `responsibleTeamsFor` to hand a
+ * unit across teams. Null when no team produces any of the unit type's kinds.
+ */
+export function responsibleTeamFor(repo: Repo, unit: WorkUnit): Team | null {
+  return responsibleTeamsFor(repo, unit)[0] ?? null;
 }
 
 /**

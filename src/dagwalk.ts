@@ -33,7 +33,7 @@ import { validateArtifactSource } from "./validate.ts";
 import { parseArtifactDoc } from "./repo.ts";
 import type { Repo } from "./repo.ts";
 import { RunnerError, timeboxSeconds, type MemberRunner } from "./runner.ts";
-import { responsibleTeamFor, resolveStep, unmetAfter, patchFrontmatter } from "./gates.ts";
+import { responsibleTeamsFor, resolveStep, unmetAfter, patchFrontmatter } from "./gates.ts";
 import { runnerCommit } from "./git.ts";
 import type { Artifact, FlowLoop, Team, WorkUnit } from "./types.ts";
 
@@ -202,15 +202,24 @@ export function advanceUnit(root: string, repo: Repo, unit: WorkUnit, memberRunn
     if (spentS > limitS) return { outcome: "halted", reason: `timebox ${limitS}s exceeded (spent ${spentS}s); awaiting Conductor` };
   }
 
-  const team = responsibleTeamFor(repo, unit);
-  if (!team) return { outcome: "nothing" };
+  // Ruling C4 (per-KIND walk): advance the responsible teams in dependency order. A team whose flow is
+  // already satisfied yields `nothing` and we move to the next (this is the shaping-team → build-team
+  // handoff §6 describes); the first team with a producible action produces it; an open gate in any
+  // team halts the whole walk (a later team's inputs depend on an earlier team's approved output).
+  const teams = responsibleTeamsFor(repo, unit);
+  if (teams.length === 0) return { outcome: "nothing" };
 
-  const action = nextAction(repo, unit, team, memberRunner.capabilities());
-  if (action.type === "nothing") return { outcome: "nothing" };
-  if (action.type === "halt") return { outcome: "halted", reason: action.reason };
-
-  opts.onBeforeProduce?.(action.member, action.kind);
-  return produceOne(root, unit, team, action.member, action.kind, memberRunner, opts);
+  const caps = memberRunner.capabilities();
+  for (const team of teams) {
+    const action = nextAction(repo, unit, team, caps);
+    if (action.type === "halt") return { outcome: "halted", reason: action.reason };
+    if (action.type === "produce") {
+      opts.onBeforeProduce?.(action.member, action.kind);
+      return produceOne(root, unit, team, action.member, action.kind, memberRunner, opts);
+    }
+    // action.type === "nothing": this team's flow is fully satisfied — hand off to the next team.
+  }
+  return { outcome: "nothing" };
 }
 
 function spentUsd(repo: Repo, unit: WorkUnit): number {

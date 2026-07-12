@@ -201,31 +201,39 @@ export class Runner {
       return;
     }
 
-    const team = this.responsibleTeam(unit);
-    if (!team) {
+    // Ruling C4 (per-KIND walk): run each responsible team's flow in dependency order, so a unit hands
+    // from a shaping team to a build team as its kinds are produced (§6). A team whose flow completes
+    // yields to the next; a pause at any team's gate pauses the unit's walk. While one team serves a
+    // type (every current fixture) this runs exactly the one flow the old per-unit heuristic ran.
+    const teams = this.responsibleTeams(unit);
+    if (teams.length === 0) {
       this.emit({ t: "walk", unit: unit.unit, project: unit.project, note: "no team produces this unit's kinds; nothing to do" });
       return;
     }
-    this.emit({ t: "walk", unit: unit.unit, project: unit.project, note: `team ${team.name} responsible → executing flow` });
-    const outcome = this.executeFlow(unit, team);
-    if (outcome === "paused" && this.unitStatus.get(key) === "active") {
-      this.setUnitStatus(key, "paused", "flow paused at a gate");
+    for (const team of teams) {
+      this.emit({ t: "walk", unit: unit.unit, project: unit.project, note: `team ${team.name} responsible → executing flow` });
+      const outcome = this.executeFlow(unit, team);
+      if (outcome === "paused") {
+        if (this.unitStatus.get(key) === "active") this.setUnitStatus(key, "paused", "flow paused at a gate");
+        return;
+      }
+      // complete → this team's flow is done; hand the unit to the next responsible team, if any.
     }
   }
 
-  private responsibleTeam(unit: WorkUnit): Team | null {
+  // Mirrors gates.ts#responsibleTeamsFor (kept as an independent copy to avoid a runner.ts ⇄ gates.ts
+  // circular import, matching the F1 precedent for responsibleTeamFor/resolveStep). Ruling C4.
+  private responsibleTeams(unit: WorkUnit): Team[] {
     const type = this.repo.types.get(unit.type);
     const expects = type?.expects ?? [];
-    let best: Team | null = null;
-    let bestScore = 0;
-    for (const team of [...this.repo.teams.values()].sort((a, b) => a.name.localeCompare(b.name))) {
-      const score = team.produces.filter((k) => expects.includes(k)).length;
-      if (score > bestScore) {
-        best = team;
-        bestScore = score;
-      }
+    const scored: Array<{ team: Team; earliest: number }> = [];
+    for (const team of this.repo.teams.values()) {
+      const producedHere = team.produces.filter((k) => expects.includes(k));
+      if (producedHere.length === 0) continue;
+      scored.push({ team, earliest: Math.min(...producedHere.map((k) => expects.indexOf(k))) });
     }
-    return best;
+    scored.sort((a, b) => a.earliest - b.earliest || a.team.name.localeCompare(b.team.name));
+    return scored.map((s) => s.team);
   }
 
   private unitShipped(project: string, unitId: string): boolean {
