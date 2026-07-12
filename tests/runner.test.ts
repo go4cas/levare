@@ -88,7 +88,6 @@ function doc(o: {
 function team(over: Partial<Team> & { name: string; flow: FlowNode[]; produces: string[]; members: string[] }): Team {
   return {
     consumes: [],
-    mode: "declarative",
     style: { color: "#000" },
     charter: "",
     learnings: "",

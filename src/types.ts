@@ -44,7 +44,6 @@ export interface Team {
   produces: string[];
   members: string[];
   flow: FlowNode[];
-  mode: "declarative" | "led";
   style: { color: string };
   // Guardrails split branches from file paths (ruling C6): `protected_branches` match a branch ref,
   // `protected_paths` match file paths in a diff — different namespaces, never cross-matched.

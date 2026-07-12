@@ -93,7 +93,6 @@ function toTeam(d: Record<string, YamlValue>, body: string, file: string): Team 
     produces: strArr(d.produces),
     members: strArr(d.members),
     flow: parseFlow(d.flow, name),
-    mode: (d.mode as "declarative" | "led") ?? "declarative",
     style: { color: String((d.style as Record<string, YamlValue> | undefined)?.color ?? "") },
     guardrails: d.guardrails as Team["guardrails"],
     knowledge: d.knowledge ? strArr(d.knowledge) : undefined,

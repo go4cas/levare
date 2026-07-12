@@ -35,7 +35,6 @@ members: [smith]
 flow:
   - step: code
   - gate: human
-mode: declarative
 style:
   color: "#8A8F98"
 ---

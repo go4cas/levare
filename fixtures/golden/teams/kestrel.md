@@ -13,7 +13,6 @@ flow:
       until: spec.approved
       max_rounds: 3
       on_exhaust: gate
-mode: declarative
 style:
   color: "#2E6FB0"
 guardrails:

@@ -49,7 +49,7 @@ const REJECTIONS: Array<[string, string]> = [
   ["index-count", "INDEX_COUNT"],
   ["approver-without-approval", "APPROVER_WITHOUT_APPROVAL"],
   ["agent-missing-model", "MISSING_FIELD"],
-  ["team-bad-mode", "BAD_ENUM"],
+  ["team-bad-mode", "REMOVED_FIELD"],
 ];
 
 describe("rejection fixtures", () => {
@@ -61,4 +61,18 @@ describe("rejection fixtures", () => {
       expect(codes).toContain(code);
     });
   }
+});
+
+describe("PRD v1.1: `mode:` was removed from the team schema (invariant 7)", () => {
+  test("a team definition declaring `mode:` fails validation with a REMOVED_FIELD error naming it and v1.1", () => {
+    const r = validatePath("fixtures/rejections/team-bad-mode");
+    expect(r.ok).toBe(false);
+    const removed = r.errors.find((e) => e.code === "REMOVED_FIELD");
+    // The diagnosis must name the field and the version — an old studio is told, not silently ignored.
+    expect(removed).toBeDefined();
+    expect(removed!.message).toContain("mode");
+    expect(removed!.message).toContain("v1.1");
+    // And it is NOT swallowed as a generic unknown key (which would give no explanation).
+    expect(r.errors.some((e) => e.code === "UNKNOWN_KEY" && e.message.includes("mode"))).toBe(false);
+  });
 });

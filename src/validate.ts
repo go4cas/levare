@@ -55,6 +55,10 @@ interface FieldSpec {
 interface Schema {
   name: string;
   fields: Record<string, FieldSpec>;
+  /** Fields that a prior PRD version accepted and this one rejects: name → the diagnosis message
+   * (e.g. why it was cut, in which version). A document still declaring one fails with a specific
+   * REMOVED_FIELD error naming it — an old studio gets told, not silently ignored (PRD v1.1). */
+  removed?: Record<string, string>;
 }
 
 const STATUS_ENUM = ["draft", "in-review", "approved", "rejected", "superseded", "blocked"];
@@ -113,7 +117,6 @@ const TEAM_SCHEMA: Schema = {
     produces: { type: "str[]", required: true },
     members: { type: "str[]", required: true },
     flow: { type: "flow", required: true },
-    mode: { type: "enum", required: false, enum: ["declarative", "led"] },
     style: { type: "map", required: true, fields: { color: { type: "str", required: true } } },
     guardrails: {
       type: "map",
@@ -126,6 +129,12 @@ const TEAM_SCHEMA: Schema = {
     },
     knowledge: { type: "str[]", required: false },
     connectors: { type: "str[]", required: false },
+  },
+  // `mode:` (the `mode: led` escape hatch) was cut in PRD v1.1 (invariant 7 restated: exactly one LLM
+  // orchestrator, declarative `flow` executed by the Runner, no escape hatch). A team still declaring
+  // it is diagnosed, never silently ignored.
+  removed: {
+    mode: "the `mode` field was removed in PRD v1.1 (invariant 7: exactly one LLM orchestrator, no `mode: led` escape hatch)",
   },
 };
 
@@ -427,9 +436,16 @@ function validateAgainstSchema(
   file: string,
   errors: ValidationError[],
 ): void {
-  // Unknown keys are errors (PRD §4: "unknown keys are errors, not warnings").
+  // Unknown keys are errors (PRD §4: "unknown keys are errors, not warnings"). A key that a prior PRD
+  // version accepted and this one removed (schema.removed) is diagnosed specifically — REMOVED_FIELD
+  // names the field and why it is gone — rather than lumped in as a generic unknown key, so an old
+  // studio carrying it gets a real explanation (PRD v1.1).
   for (const key of Object.keys(data)) {
-    if (!(key in schema.fields)) {
+    if (key in schema.fields) continue;
+    const removedWhy = schema.removed?.[key];
+    if (removedWhy !== undefined) {
+      errors.push({ code: "REMOVED_FIELD", message: `${removedWhy}; remove it from this ${schema.name}`, file });
+    } else {
       errors.push({ code: "UNKNOWN_KEY", message: `unknown key '${key}' in ${schema.name}`, file });
     }
   }

@@ -76,7 +76,7 @@ function art(over: Partial<Artifact> & { id: string; kind: string; created: stri
 
 function syntheticRepoWithGates(): Repo {
   const teams = new Map<string, Team>([
-    ["kestrel", { name: "kestrel", consumes: [], produces: ["spec"], members: ["lyra"], flow: [], mode: "declarative", style: { color: "#000" }, charter: "", learnings: "" }],
+    ["kestrel", { name: "kestrel", consumes: [], produces: ["spec"], members: ["lyra"], flow: [], style: { color: "#000" }, charter: "", learnings: "" }],
   ]);
   const artifacts = new Map<string, Map<string, Artifact>>([
     [
