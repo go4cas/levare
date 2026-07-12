@@ -14,7 +14,7 @@ import { validatePath } from "../validate.ts";
 import type { Verb } from "../runner.ts";
 import { conductorCommit, CONDUCTOR_NAME } from "../git.ts";
 import { handle as orchestratorHandle, deterministicBoundary, type HandleResult, type OrchestratorBoundary } from "../orchestrator.ts";
-import { selectOrchestratorBoundary } from "../orchestrator-boundary.ts";
+import { selectOrchestratorBoundary, type SelectOrchestratorBoundaryOptions } from "../orchestrator-boundary.ts";
 import { isStudioInitialized, renderOnboarding } from "./onboarding.ts";
 
 export interface RouteDef {
@@ -36,6 +36,11 @@ export interface BoardCtx {
    * tests use it to inject a controllable (e.g. deliberately slow) boundary to prove a concurrent,
    * unrelated request is never blocked by an in-flight `/orchestrator/message` call (NOTES phase-7 K9). */
   orchestratorBoundary?: OrchestratorBoundary;
+  /** Test-only options threaded into `selectOrchestratorBoundary` when `orchestratorBoundary` above is
+   * NOT set — lets a test drive the REAL selection path (fast-precondition probe included) with a
+   * simulated platform/arch or an empty scratch require-root, rather than bypassing selection
+   * entirely with a hand-rolled boundary (NOTES phase-7 K13). */
+  orchestratorSelectOpts?: SelectOrchestratorBoundaryOptions;
 }
 
 // A demo/screenshot server pointed at a fixtures/ tree must not be able to mutate it, structurally —
@@ -196,7 +201,7 @@ export const ROUTES: RouteDef[] = [
       // ONLY thing that changed here — the route's own dispatch is untouched. `ctx.orchestratorBoundary`
       // is a test-only override (unset in production, where `selectOrchestratorBoundary()` always runs).
       const today = new Date().toISOString().slice(0, 10);
-      const boundary = ctx.orchestratorBoundary ?? selectOrchestratorBoundary();
+      const boundary = ctx.orchestratorBoundary ?? selectOrchestratorBoundary(process.env, ctx.orchestratorSelectOpts);
       const orchestratorCtx = { root: ctx.root, by: `${CONDUCTOR_NAME} ${today}` };
       // The board is a projection of files; the Orchestrator's SDK voice is an enhancement on top of
       // it (§7), never a dependency the write surface can fail on. `interpret()` is right to throw
@@ -317,12 +322,16 @@ export interface Board {
   ctx: BoardCtx;
 }
 
-export function createBoard(root: string, opts: { readOnly?: boolean; orchestratorBoundary?: OrchestratorBoundary } = {}): Board {
+export function createBoard(
+  root: string,
+  opts: { readOnly?: boolean; orchestratorBoundary?: OrchestratorBoundary; orchestratorSelectOpts?: SelectOrchestratorBoundaryOptions } = {},
+): Board {
   const readOnly = opts.readOnly ?? isUnderFixtures(root);
   const ctx: BoardCtx = {
     root,
     readOnly,
     orchestratorBoundary: opts.orchestratorBoundary,
+    orchestratorSelectOpts: opts.orchestratorSelectOpts,
     broadcast: (msg) => {
       for (const send of subscribersOf(ctx)) send(msg);
     },

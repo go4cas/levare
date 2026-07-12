@@ -1,5 +1,7 @@
-import { test, expect, describe } from "bun:test";
-import { readFileSync } from "node:fs";
+import { test, expect, describe, beforeEach } from "bun:test";
+import { readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { deterministicBoundary } from "../src/orchestrator.ts";
 import {
   createSdkOrchestratorBoundary,
@@ -9,8 +11,24 @@ import {
   ORCHESTRATOR_PROMPT_PATH,
   OrchestratorSdkError,
 } from "../src/orchestrator-boundary.ts";
-import { createAsyncSdkTransport, hasAnthropicCredentials } from "../src/sdk-transport.ts";
+import {
+  createAsyncSdkTransport,
+  hasAnthropicCredentials,
+  resolveNativeBinary,
+  checkSdkPreconditions,
+  checkSdkPreconditionsCached,
+  resetSdkPreconditionCache,
+} from "../src/sdk-transport.ts";
 import type { AsyncSdkTransport, SdkWorkerRequest, SdkWorkerResponse } from "../src/sdk-transport.ts";
+
+// The precondition cache (sdk-transport.ts) is a module-level singleton shared across every test file
+// in this `bun test` process — reset it before each test in this file so no test's result depends on
+// what ran before it (this is also what surfaced a real, reproducible finding during development: see
+// NOTES phase-7 K13 for a spontaneous, un-caused recurrence of the wrong platform-binary package being
+// installed in this very sandbox, unrelated to any code here).
+beforeEach(() => {
+  resetSdkPreconditionCache();
+});
 
 // Phase 7 acceptance: the real OrchestratorBoundary is driven by the Claude Agent SDK, but every
 // test here mocks the SDK at the TRANSPORT level (a fake `AsyncSdkTransport`, exactly like
@@ -265,6 +283,160 @@ describe("the async transport does not block the event loop while a call is in f
       expect(res).toEqual({ ok: false, error: "sdk worker timed out after 200ms" });
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fast, local SDK-viability precondition check (NOTES phase-7 K13): a missing binary or absent
+// credential is knowable in milliseconds, without ever attempting (and timing out on) a real spawn.
+// ---------------------------------------------------------------------------
+
+describe("resolveNativeBinary — mirrors the SDK's own require.resolve-based check exactly", () => {
+  test("resolves the real, currently-installed platform binary for this sandbox", () => {
+    // Ground truth: this sandbox's own node_modules genuinely has the platform package installed
+    // (verified independently — see NOTES K13) — this is not a mock, it exercises the real filesystem.
+    const resolved = resolveNativeBinary();
+    expect(resolved).not.toBeNull();
+    expect(resolved).toContain(`claude-agent-sdk-${process.platform}-${process.arch}`);
+  });
+
+  test("returns null for a platform/arch combination with no published optional package", () => {
+    expect(resolveNativeBinary("nonexistent-platform", "nonexistent-arch")).toBeNull();
+  });
+
+  test("returns null when scoped to an empty scratch directory, even for the real platform/arch", () => {
+    // requireFrom lets a test simulate 'genuinely missing' without touching the real installed
+    // packages — createRequire scoped to a location with no node_modules ancestry finds nothing.
+    const dir = mkdtempSync(join(tmpdir(), "levare-empty-require-root-"));
+    try {
+      expect(resolveNativeBinary(process.platform, process.arch, join(dir, "scratch.ts"))).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("checkSdkPreconditions — credential presence + binary resolvability, no network", () => {
+  test("no ANTHROPIC_API_KEY → not viable, reason names the credential", () => {
+    const check = checkSdkPreconditions({});
+    expect(check.viable).toBe(false);
+    expect(check.reason).toContain("ANTHROPIC_API_KEY");
+  });
+
+  test("credential present but binary unresolvable → not viable, reason names the platform and the fix", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-empty-require-root-"));
+    try {
+      const check = checkSdkPreconditions({ ANTHROPIC_API_KEY: "sk-ant-test" }, { requireFrom: join(dir, "scratch.ts") });
+      expect(check.viable).toBe(false);
+      expect(check.reason).toContain(`${process.platform}-${process.arch}`);
+      expect(check.reason).toContain("reinstall");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("credential present and binary resolvable → viable", () => {
+    const check = checkSdkPreconditions({ ANTHROPIC_API_KEY: "sk-ant-test" });
+    expect(check).toEqual({ viable: true });
+  });
+});
+
+describe("checkSdkPreconditionsCached — probed once, not on every call", () => {
+  test("a cached result is returned verbatim within the TTL, even if the underlying params would now differ", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-empty-require-root-"));
+    try {
+      const t0 = 1_000_000;
+      const first = checkSdkPreconditionsCached({ ANTHROPIC_API_KEY: "sk-ant-test" }, { requireFrom: join(dir, "scratch.ts") }, t0);
+      expect(first.viable).toBe(false);
+      // Called again 5s later (well inside the 30s TTL) with params that WOULD now resolve — the
+      // cached (stale) result must win, proving this genuinely skips recomputation, not just
+      // coincidentally agrees.
+      const second = checkSdkPreconditionsCached({ ANTHROPIC_API_KEY: "sk-ant-test" }, {}, t0 + 5_000);
+      expect(second).toEqual(first);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("past the TTL, the check re-runs with the new params", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-empty-require-root-"));
+    try {
+      const t0 = 2_000_000;
+      const first = checkSdkPreconditionsCached({ ANTHROPIC_API_KEY: "sk-ant-test" }, { requireFrom: join(dir, "scratch.ts") }, t0);
+      expect(first.viable).toBe(false);
+      const second = checkSdkPreconditionsCached({ ANTHROPIC_API_KEY: "sk-ant-test" }, {}, t0 + 30_001);
+      expect(second).toEqual({ viable: true });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("selectOrchestratorBoundary — the fast-fail precondition, end to end", () => {
+  test("credential present but the binary is unresolvable → deterministicBoundary, WITHOUT ever touching the injected transport", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-empty-require-root-"));
+    try {
+      let transportCalled = false;
+      const neverCalledTransport: AsyncSdkTransport = {
+        async run() {
+          transportCalled = true;
+          return { ok: true, result: "should never happen" };
+        },
+      };
+      const boundary = selectOrchestratorBoundary(
+        { ANTHROPIC_API_KEY: "sk-ant-test" },
+        { transport: neverCalledTransport, precondition: { requireFrom: join(dir, "scratch.ts") } },
+      );
+      expect(boundary).toBe(deterministicBoundary);
+      expect(transportCalled).toBe(false); // proves this short-circuited before any spawn attempt
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("credential present and binary resolvable → the real SDK boundary, transport reachable", async () => {
+    const { transport, calls } = fakeTransport(() => ({ ok: true, result: "{}", structuredOutput: { kind: "stats" } }));
+    const boundary = selectOrchestratorBoundary({ ANTHROPIC_API_KEY: "sk-ant-test" }, { transport });
+    expect(boundary).not.toBe(deterministicBoundary);
+    await boundary.interpret("stats");
+    expect(calls).toHaveLength(1);
+  });
+});
+
+describe("the missing-binary case is fast end to end (the acceptance criterion itself)", () => {
+  test("POST /orchestrator/message returns 200 in well under a second, not at the timeout boundary", async () => {
+    const { createBoard } = await import("../src/board/serve.ts");
+    const dir = mkdtempSync(join(tmpdir(), "levare-fast-fail-board-"));
+    const scratchDir = mkdtempSync(join(tmpdir(), "levare-empty-require-root-"));
+    try {
+      const { cpSync } = await import("node:fs");
+      cpSync("fixtures/golden", dir, { recursive: true });
+      const board = createBoard(dir, {
+        orchestratorSelectOpts: { precondition: { requireFrom: join(scratchDir, "scratch.ts") } },
+      });
+      try {
+        const start = Date.now();
+        const res = await board.fetch(
+          new Request("http://localhost/orchestrator/message", {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-fake-key": "1" },
+            body: JSON.stringify({ text: "stats" }),
+          }),
+        );
+        // Note: the route reads process.env for the real key check, not the request — this test's
+        // point is the SELECTION path's speed once credentials + a broken precondition combine, which
+        // is exercised directly above; this end-to-end pass additionally confirms the route itself
+        // never introduces its own slow path (e.g. an accidental extra spawn) on top of selection.
+        const elapsed = Date.now() - start;
+        expect(res.status).toBe(200);
+        expect(elapsed).toBeLessThan(1000);
+      } finally {
+        board.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(scratchDir, { recursive: true, force: true });
     }
   });
 });

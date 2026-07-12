@@ -20,7 +20,13 @@ import { readFileSync } from "node:fs";
 import type { Intent, OrchestratorBoundary } from "./orchestrator.ts";
 import { deterministicBoundary } from "./orchestrator.ts";
 import type { Verb } from "./runner.ts";
-import { asyncSdkTransport, hasAnthropicCredentials, type AsyncSdkTransport } from "./sdk-transport.ts";
+import {
+  asyncSdkTransport,
+  hasAnthropicCredentials,
+  checkSdkPreconditionsCached,
+  type AsyncSdkTransport,
+  type SdkPreconditionOptions,
+} from "./sdk-transport.ts";
 
 export const ORCHESTRATOR_PROMPT_PATH = new URL("../docs/orchestrator-prompt.md", import.meta.url).pathname;
 
@@ -162,15 +168,29 @@ export function createSdkOrchestratorBoundary(opts: SdkOrchestratorBoundaryOptio
   };
 }
 
+export type SelectOrchestratorBoundaryOptions = Omit<SdkOrchestratorBoundaryOptions, "env"> & {
+  /** Test-only: threaded into `checkSdkPreconditionsCached` — see sdk-transport.ts. */
+  precondition?: SdkPreconditionOptions;
+};
+
 /**
- * Select the real SDK-driven boundary when the environment carries API credentials, else the
- * deterministic regex boundary — the explicit offline fallback (goal: "selected automatically when
- * no API key is present in the environment"). This is the one seam `levare serve`/the CLI call; it
- * never inspects the key's value, only its presence (invariant 11).
+ * Select the real SDK-driven boundary when the environment carries API credentials AND the SDK's own
+ * local preconditions (credential + a resolvable native binary — NOTES phase-7 K13) are met, else the
+ * deterministic regex boundary — the explicit offline fallback (goal: "selected automatically when no
+ * API key is present in the environment"). The precondition check is fast and local (no network, no
+ * subprocess): a genuinely broken install (missing binary) is detected and falls back to offline mode
+ * WITHOUT ever attempting — and timing out on — a real spawn. A credential that resolves but is
+ * invalid, or any other genuine runtime failure (network, credit, model error), is NOT something this
+ * local check can know; those still degrade per-request exactly as they already did (K11). This is
+ * the one seam `levare serve`/the CLI call; it never inspects the key's value, only its presence
+ * (invariant 11).
  */
 export function selectOrchestratorBoundary(
   env: Record<string, string | undefined> = process.env,
-  opts: Omit<SdkOrchestratorBoundaryOptions, "env"> = {},
+  opts: SelectOrchestratorBoundaryOptions = {},
 ): OrchestratorBoundary {
-  return hasAnthropicCredentials(env) ? createSdkOrchestratorBoundary({ ...opts, env }) : deterministicBoundary;
+  if (!hasAnthropicCredentials(env)) return deterministicBoundary;
+  const { precondition, ...boundaryOpts } = opts;
+  if (!checkSdkPreconditionsCached(env, precondition).viable) return deterministicBoundary;
+  return createSdkOrchestratorBoundary({ ...boundaryOpts, env });
 }
