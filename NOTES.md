@@ -1747,3 +1747,119 @@ A single shared CSS class doing double duty across two features (here: `.card`, 
 registry's density pass and the brand-new artifact view) means a tightening pass for one screen is
 also, for free, a consistency pass across the whole product — worth checking who else consumes a class
 before assuming a change is scoped to the screen that motivated it.
+
+# NOTES — uncertainties and assumptions (Phase 7.5, gate-review round 2)
+
+A follow-up gate review on the phase-7.5 board polish, structural this time: the rail was serving two
+masters (navigation and page metadata) and had to become ONE thing. Items 1/2/4/5 from the original
+phase-7.5 goal are approved-as-shipped and untouched here; this round is items 1 (structural rail +
+breadcrumbs), 2 (project-card layout), and 3 (registry grid) from the review itself.
+
+## M1. The rail (`railNav`, `src/board/render.ts`) — one function, six call sites, nothing
+screen-specific
+`railNav(repo, extras, derivText, opts?)` now renders the SAME four sections (Projects, Registry,
+Connectors, Ideas) plus the theme toggle and one derivation-footer line, called identically from
+`renderStudio`, `renderProject`, `renderRun`, `renderRegistry`, `renderArtifact`, and `renderIdea`. A
+new test (`describe("the rail is identical navigation on every screen")`) asserts this two ways: every
+screen's rail has exactly those four `railsec__h` headings in that order and nothing page-specific
+leaks in (no "Pointer", "Constitution", `.score2`, `.founding`); and, more strongly, the six rails are
+byte-identical after normalizing the two things that legitimately still vary (the derivation-footer
+TEXT, and the registry sub-nav's `is-active` highlight — both addressed below).
+
+**"Recent releases" was dropped from the rail entirely, not relocated.** The design brief's original
+studio-rail spec listed it, but the review's own enumeration of the approved nav-index — "Projects,
+Registry, Connectors, Ideas... Nothing else, ever" — is the more specific, later ruling and does not
+include it. It was always a hardcoded "no releases tracked yet" stub (E1) with no real data source
+behind it; the project page's new pointer panel (M2) already carries a project-scoped Releases stamp
+in the same honest-empty form, and the project card's meta line (phase-7.5 round 1, item 2) already
+surfaces "released `<unit>`" per project. Nothing was lost, just de-duplicated out of the nav.
+
+**The derivation-footer TEXT still varies per screen; its PRESENCE and LOCATION do not.** Read "the
+rail identical... plus... the single derivation line in its footer" as fixing the line's existence and
+place, not freezing it to one global string — the line's entire purpose (design brief: "every screen
+states its derivation quietly") is to say what THAT screen derives from, and phase-7.5 round 1's own
+item 4 ("keep exactly one, in the sidebar footer") already established scope-specific text as the
+norm. Treated as a lightweight, universal piece of chrome (like a status-bar line), not "page metadata"
+in the sense the structural ruling is actually policing (a project's pointer, a unit's score — rich,
+entity-specific content that used to change what the rail's identity WAS, not one line of provenance
+text in a fixed slot every screen already has).
+
+**The registry sub-nav's `is-active` highlight is ordinary wayfinding, not a structural exception.**
+`railNav` takes an optional `activeRegistryEntity` (only ever passed by `renderRegistry`) that adds
+`is-active` to the current entity kind's link — the rail's CONTENTS (which kinds exist, their counts,
+their order) never change; only which one is visually "you are here" does, exactly like a normal
+persistent-nav current-page indicator. Every other screen renders the same links with no highlight.
+
+## M2. Project pointer/constitution/releases relocate into a content-column panel, not a new rail
+`renderProject` now takes a `root` parameter (needed to build `railNav`'s extras) and builds a
+`pointerPanel` — one `.card` stacking three `.card__h`-labeled sections (Pointer, Constitution,
+Releases) — reusing the exact multi-section-inside-one-card pattern the registry's own entity blocks
+already established (`teamBlocks` etc. stack "Declared flow" + "Definition" inside one `.card`), rather
+than inventing a new "compact panel" component. It renders at the top of `.main`, directly under the
+`.phead`, before the stat strip.
+
+## M3. The run view's score becomes a content column beside the timeline
+`renderRun` drops the `app--run` grid modifier (the rail is the standard width on every screen now,
+per M1) and renders the score (`scoreCol`) and timeline (`timelineCol`) as two flex children of one
+row (`display:flex;gap:32px;flex-wrap:wrap`, inline — the same "reuse the rule, override one layout
+property inline" pattern the stat strips already use for their `grid-template-columns`, not a new CSS
+class). `scoreCol` gets `flex:1 1 260px`, `timelineCol` `flex:2 1 360px` — the timeline is expected to
+carry more rows over a unit's lifetime, so it claims the larger share; both wrap to full width under
+the existing `@media (max-width:1080px)` breakpoint's own `.main{flex-direction:column}`-equivalent
+behavior (flex-wrap handles it without a dedicated media-query rule). `assets/run.html` (the untouched
+CD prototype file, never served) still references `.app--run` in `assets/styles.css` — the rule itself
+was left in place rather than deleted, since it isn't wrong, just no longer reachable from the live
+board.
+
+## M4. Registry: in-content tab strip + card grid (item 3)
+`registryNavLinks(repo, extras, active?)` is factored out of the old registry-only nav builder so the
+rail's Registry section (M1) and the registry page's own in-content tab strip render from the exact
+same list — they can never drift into two different sets of kinds. The tab strip is the same
+`.reg-nav` list, laid out horizontally via an inline `style="flex-direction:row"` override (again: an
+existing rule, one property overridden inline, not a new visual component). **The entity-card grid
+reuses `.pcards`** (the exact grid mechanism the studio project cards already use) with an inline
+`minmax(320px,1fr)` override (the review's own number, wider than `.pcards`' default 220px since an
+entity card carries materially more content than a project card) — zero new CSS was needed for this
+item. Only ONE grid wrapper surrounds all seven kinds' blocks, not seven separate ones: since
+`entityBlock` already sets `style="display:none"` on every non-active kind's `<article>`, a hidden
+article contributes no grid track regardless of how many share the wrapper, so one shared grid
+container is sufficient and simpler than kind-scoped ones. Team/agent cards were NOT given a wider
+`minmax` floor of their own ("may be wider if their content genuinely needs it" is permissive, not a
+requirement) — `.flowstrip`'s and `.recipe`'s own pre-existing `flex-wrap:wrap` already lets a
+content-heavy card grow taller instead of needing a different grid track width.
+
+## M5. Project cards: title+chip same line, two-line-clamped summary (item 2)
+Markup fix: `.pcard__top` now wraps BOTH `.pcard__name` and the status chip (previously the chip alone
+sat in `.pcard__top` with the name rendered as a separate sibling below it) — `.pcard__top`'s own
+pre-existing `justify-content:space-between` does the rest, matching the gate-card/unit-row anatomy's
+established "label left, status right" convention with zero new CSS. **The two-line clamp
+(`-webkit-line-clamp:2` + `min-height:36px` added to the existing `.pcard__desc` rule) is the one
+genuinely new CSS declaration in this whole round** — no rule in the stylesheet already does
+text-truncation, so "use existing rules" was read as "extend an existing rule's existing selector to
+fix its existing overflow behavior" rather than "introduce a new selector"; the alternative (a fixed
+pixel height on `.pcard`) would have clipped genuinely short cards' bottom padding unevenly instead of
+normalizing the one field (the summary) whose length is actually unbounded. `min-height:36px`
+(≈ 2 × 12.5px × 1.45 line-height) ensures a one-line summary (e.g. `studio`'s empty-project text)
+still reserves the same two-line slot as a long one, so card height is uniform regardless of which
+branch produced the description.
+
+## M6. Breadcrumb: studio now carries one too (`<span>studio</span>`, no link — it IS home)
+Studio's `.phead` previously had no `.crumb` at all — added for uniformity ("always in the same
+place": every screen's crumb sits inside `.phead`, immediately before the `<h1>`, asserted directly by
+a new test). `registry` gained a proper `.phead`/`<h1>Registry</h1>` wrapper too — it previously
+rendered a bare `.crumb` directly in `.main` with no header block or heading at all, the one screen
+whose breadcrumb genuinely wasn't "in the same place" as the others.
+
+## Learnings
+A component "serving two masters" (here: the rail as both navigation and per-page metadata) is hard to
+spot from any single screen's markup — it only becomes obvious diffing across screens, which is
+exactly why "make N screens share one literal function" is a stronger fix than "make each screen's
+rail look similar": a shared function makes the two masters structurally impossible to reintroduce,
+where "looks similar" left room for the next edit to quietly bring page metadata back in on just one
+screen.
+When constrained to "no new visual language, reuse existing rules," the sharpest test is not "did I
+add a new class name" but "did I add a new CSS mechanism the stylesheet has never needed before" —
+reusing an existing selector's box model in a new way (line-clamping `.pcard__desc`) is a smaller,
+more honest exception to log than inventing a same-purpose sibling rule would have been, and is worth
+calling out explicitly rather than letting it blend into "no changes needed" claims elsewhere in the
+same round.
