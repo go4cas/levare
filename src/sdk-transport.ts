@@ -58,6 +58,12 @@ export interface SdkWorkerRequest {
   allowedTools?: string[];
   outputFormat?: { type: "json_schema"; schema: Record<string, unknown> };
   cwd?: string;
+  /** Explicit override for the SDK's own native-binary resolution (NOTES phase-7 K14) — resolved
+   * ONCE by `resolveNativeBinary` at boundary-construction time and passed through unchanged on every
+   * request, so the worker's real `query()` call never relies on the SDK's own implicit resolution
+   * (which showed a resolution mismatch on at least one host — see K14). Unset only when resolution
+   * itself failed, in which case the SDK falls back to its own (equally unresolvable) attempt. */
+  pathToClaudeCodeExecutable?: string;
 }
 
 export type SdkWorkerResponse = { ok: true; result: string; structuredOutput?: unknown } | { ok: false; error: string };
@@ -154,6 +160,9 @@ export function resolveNativeBinary(platform: string = process.platform, arch: s
 export interface SdkPreconditionCheck {
   viable: boolean;
   reason?: string;
+  /** The resolved binary path, when viable — the SAME value `createSdkOrchestratorBoundary` will
+   * itself resolve and pass explicitly as `pathToClaudeCodeExecutable` (NOTES K14). */
+  binaryPath?: string;
 }
 
 export interface SdkPreconditionOptions {
@@ -169,13 +178,14 @@ export function checkSdkPreconditions(env: Record<string, string | undefined> = 
   if (!hasAnthropicCredentials(env)) return { viable: false, reason: "ANTHROPIC_API_KEY is not set" };
   const platform = opts.platform ?? process.platform;
   const arch = opts.arch ?? process.arch;
-  if (!resolveNativeBinary(platform, arch, opts.requireFrom)) {
+  const binaryPath = resolveNativeBinary(platform, arch, opts.requireFrom);
+  if (!binaryPath) {
     return {
       viable: false,
       reason: `native CLI binary for ${platform}-${arch} not found — reinstall @anthropic-ai/claude-agent-sdk on this platform (README.md's Phase 7 section)`,
     };
   }
-  return { viable: true };
+  return { viable: true, binaryPath };
 }
 
 const PRECONDITION_CACHE_TTL_MS = 30_000;

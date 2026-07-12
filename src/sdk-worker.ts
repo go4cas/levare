@@ -40,6 +40,13 @@ async function main(): Promise<void> {
         allowedTools: req.allowedTools ?? [],
         outputFormat: req.outputFormat,
         cwd: req.cwd,
+        // Explicit, never left to the SDK's own implicit resolution (NOTES phase-7 K14): a live host
+        // showed the SDK's internal require.resolve-based lookup fail to find a platform binary that
+        // genuinely existed as a sibling node_modules package. sdk-transport.ts resolves the exact
+        // same binary itself (once, at boundary-construction time) and hands the resolved path here;
+        // when resolution failed there too, this stays undefined and the SDK attempts its own lookup
+        // as a last resort (which will report the same failure either way, never a silent mismatch).
+        pathToClaudeCodeExecutable: req.pathToClaudeCodeExecutable,
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
         // Explicit, not omitted: spread this process's own env (already scoped by the parent spawn,
