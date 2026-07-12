@@ -49,6 +49,7 @@ handoff ruling C4 is about — one unit, two teams, different kinds.
 const SMITH_AGENT = `---
 name: smith
 kind: cli
+produces: [code]
 command: ["stub-build", "{task}"]
 result: "produces a code artifact"
 style:

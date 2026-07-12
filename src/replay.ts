@@ -46,10 +46,14 @@ const stubRemote: RemoteBoundary = { call: (r: InvokeRequest) => ({ doc: render(
  * stub CLI with its allowlisted env — exercising the real CLI adapter path. Every invocation yields
  * a normalized receipt, including the deliberately `unreported` one from the silent CLI member.
  */
+// The capability map is NOT injected here (NOTES F1): the AdapterRunner derives it from the repo's
+// own agent definitions (`produces:`), exactly as it does for a real studio. What the stubs still
+// mock is the member INVOCATION (the native/remote boundaries and the CLI subprocess) — never the
+// studio's own declarations. The golden fixture's agents declare the same (member, kind) pairs the
+// stub can render, so replay reproduces the oracle byte-for-byte off repo-derived capabilities.
 export function stubAdapterRunner(repo: Repo): AdapterRunner {
   return new AdapterRunner(repo, {
     pricing: loadPricing(repo.root),
-    capabilities: CAPABILITIES,
     native: stubNative,
     remote: stubRemote,
     spawn: bunSpawn,

@@ -1,6 +1,7 @@
 ---
 name: finch
 kind: cli
+produces: [review]
 command: [codex, review, --input, "{task}", --repo, "{feature_repo}"]
 cwd: "{feature_repo}"
 timeout: 600

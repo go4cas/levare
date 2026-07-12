@@ -143,6 +143,7 @@ review loop and a merge gate.
 const AGENT_WREN = `---
 name: wren
 kind: native
+produces: [product-brief]
 model: claude-sonnet
 skills: [product-brief]
 tools: [read, write]
@@ -159,6 +160,7 @@ Write in the calm, factual register of the studio. Produce a single \`brief\` ar
 const AGENT_LYRA = `---
 name: lyra
 kind: native
+produces: [design, spec]
 model: claude-sonnet
 skills: [flow-design, spec-writing]
 tools: [read, write]
@@ -176,6 +178,7 @@ question in the body; never guess laterally. Produce \`design\` then \`spec\` ar
 const AGENT_FINCH = `---
 name: finch
 kind: cli
+produces: [review]
 command: [codex, review, --input, "{task}", --repo, "{feature_repo}"]
 cwd: "{feature_repo}"
 timeout: 600

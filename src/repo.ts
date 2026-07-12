@@ -59,6 +59,21 @@ export function loadRepo(root: string, { validate = true }: { validate?: boolean
   return { root, teams, agents, types, projects, connectors, units, artifacts };
 }
 
+/**
+ * The studio's capability map, derived from the repo itself (NOTES F1): every agent's declared
+ * `produces:` kinds, as the {member, kind}[] shape the Runner resolves a flow step against
+ * (runner.ts#resolveStep, gates.ts#resolveStep). Files are the truth (invariant 2) — a capability is
+ * a fact an agent DECLARES on disk, never one injected at construction. Deterministic order: agents
+ * by name, then each agent's kinds in declared order.
+ */
+export function repoCapabilities(repo: Repo): Array<{ member: string; kind: string }> {
+  const caps: Array<{ member: string; kind: string }> = [];
+  for (const agent of [...repo.agents.values()].sort((a, b) => a.name.localeCompare(b.name))) {
+    for (const kind of agent.produces) caps.push({ member: agent.name, kind });
+  }
+  return caps;
+}
+
 // ---------------------------------------------------------------------------
 // Entity directories (teams/ agents/ types/ projects/)
 // ---------------------------------------------------------------------------
@@ -117,6 +132,7 @@ function toAgent(d: Record<string, YamlValue>, body: string): Agent {
   return {
     name: reqStr(d, "name"),
     kind: d.kind as Agent["kind"],
+    produces: strArr(d.produces),
     model: optStr(d.model),
     command: d.command !== undefined ? strArr(d.command) : undefined,
     cwd: optStr(d.cwd),

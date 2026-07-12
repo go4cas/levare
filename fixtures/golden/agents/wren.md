@@ -1,6 +1,7 @@
 ---
 name: wren
 kind: native
+produces: [product-brief]
 model: claude-sonnet
 skills: [product-brief]
 tools: [read, write]

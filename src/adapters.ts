@@ -18,6 +18,7 @@ import { buildMemberEnv } from "./env.ts";
 import { allowedTools } from "./guardrails.ts";
 import { assembleContext } from "./context.ts";
 import { bunSdkTransport, resolveNativeBinary, type SdkTransport } from "./sdk-transport.ts";
+import { repoCapabilities } from "./repo.ts";
 import type { Pricing } from "./pricing.ts";
 import type { Repo } from "./repo.ts";
 import type { MemberRunner } from "./runner.ts";
@@ -130,7 +131,14 @@ export const bunSpawn: CliSpawn = {
 
 export interface AdapterRunnerOptions {
   pricing: Pricing;
-  capabilities: Array<{ member: string; kind: string }>;
+  /**
+   * Test-only override of the studio's capability map. The DEFAULT — and the only thing any real
+   * studio ever uses — is the repo's own: every agent's declared `produces:` kinds, read from disk
+   * (repo.ts#repoCapabilities). Injecting the map at construction was a fixture-era seam the stubs
+   * filled with a `CAPABILITIES` export while real agent definitions had no way to declare one, so a
+   * real studio's map came out empty and every flow step failed to bind (NOTES F1).
+   */
+  capabilities?: Array<{ member: string; kind: string }>;
   native: NativeBoundary;
   remote: RemoteBoundary;
   spawn?: CliSpawn;
@@ -171,8 +179,9 @@ export class AdapterRunner implements MemberRunner {
     this.spawn = opts.spawn ?? bunSpawn;
   }
 
+  /** Derived from the agent definitions on disk (invariant 2); `opts.capabilities` overrides only in tests. */
   capabilities() {
-    return this.opts.capabilities;
+    return this.opts.capabilities ?? repoCapabilities(this.repo);
   }
 
   produce(member: string, kind: string, unit: string, project: string): { doc: string; receipt: Receipt } {
@@ -220,7 +229,7 @@ export class AdapterRunner implements MemberRunner {
   // swallowed as if it were an empty context.
   private assemble(member: string, unit: string, project: string): string {
     try {
-      return assembleContext(this.repo, { root: this.repo.root, agent: member, unit, capabilities: this.opts.capabilities });
+      return assembleContext(this.repo, { root: this.repo.root, agent: member, unit, capabilities: this.capabilities() });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`levare: context assembly error for member '${member}' (${project}/${unit}): ${msg}`);

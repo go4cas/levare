@@ -60,6 +60,14 @@ export interface Team {
 export interface Agent {
   name: string;
   kind: "native" | "cli" | "remote";
+  /**
+   * The artifact kinds this member can produce (§5, NOTES F1). This is the studio's capability
+   * declaration: `repoCapabilities` (repo.ts) reads every agent's `produces` to build the
+   * {member, kind}[] map the Runner resolves flow steps against. Before F1 the map existed only in
+   * the fixture stubs (`CAPABILITIES`), so a real agent had no way to declare a capability at all
+   * and no real studio could bind a flow step to a member.
+   */
+  produces: string[];
   model?: string;
   /**
    * CLI argv template as a structured array (§5), e.g. ["codex", "review", "--input", "{task}"].

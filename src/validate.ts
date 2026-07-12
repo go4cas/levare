@@ -143,6 +143,10 @@ const AGENT_SCHEMA: Schema = {
   fields: {
     name: { type: "str", required: true },
     kind: { type: "enum", required: true, enum: ["native", "cli", "remote"] },
+    // The kinds this member can produce — the studio's capability declaration (NOTES F1). Required:
+    // a member that declares nothing it produces can bind to no flow step, so no team it belongs to
+    // can run. This is the field whose absence made every real studio structurally unrunnable.
+    produces: { type: "str[]", required: true },
     // native
     model: { type: "str", required: false },
     skills: { type: "str[]", required: false },
@@ -588,6 +592,15 @@ function validateArtifactSemantics(data: Record<string, YamlValue>, file: string
 }
 
 function validateAgentVariant(data: Record<string, YamlValue>, file: string, errors: ValidationError[]): void {
+  // An empty `produces:` list passes the str[] type check but declares no capability at all — the
+  // member can satisfy no flow step. Rejected here rather than left to fail at runtime (NOTES F1).
+  if (Array.isArray(data.produces) && data.produces.length === 0) {
+    errors.push({
+      code: "EMPTY_PRODUCES",
+      message: `agent '${String(data.name)}' declares no kinds in 'produces'; a member that produces nothing can bind to no flow step`,
+      file,
+    });
+  }
   const need = (field: string) => {
     if (!(field in data) || data[field] === null) {
       errors.push({ code: "MISSING_FIELD", message: `agent kind '${String(data.kind)}' requires '${field}'`, file });

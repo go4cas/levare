@@ -3,10 +3,9 @@
 
 import { validatePath, type ValidationResult } from "./validate.ts";
 import { formatReport, runReplay } from "./replay.ts";
-import { loadRepo } from "./repo.ts";
+import { loadRepo, repoCapabilities } from "./repo.ts";
 import { assembleContext } from "./context.ts";
 import { runDoctor } from "./doctor.ts";
-import { CAPABILITIES } from "../fixtures/stubs/member-stub.ts";
 import { serve } from "./board/serve.ts";
 import { initStudio, GIT_IDENTITY_NOTE } from "./init.ts";
 
@@ -62,7 +61,10 @@ export function runContextCmd(rest: string[]): number {
   const step = flag(rest, "--step");
   try {
     const repo = loadRepo(root);
-    process.stdout.write(assembleContext(repo, { root, agent, unit, step, capabilities: CAPABILITIES }));
+    // Capabilities come from the studio's own agent definitions (`produces:`), never from the
+    // fixture stubs — `levare context` on a real studio must print what that studio would actually
+    // send its member (NOTES F1).
+    process.stdout.write(assembleContext(repo, { root, agent, unit, step, capabilities: repoCapabilities(repo) }));
     return 0;
   } catch (e) {
     console.error(String(e instanceof Error ? e.message : e));
