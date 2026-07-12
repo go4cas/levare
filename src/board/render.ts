@@ -182,6 +182,23 @@ function miniScoreHtml(nodes: ScoreNode[]): string {
     .join("")}</div>`;
 }
 
+// The run-view score rail's node marker class (design brief: "status is the canonical state palette
+// ... done/active/waiting/blocked/needs-you/failed"). Exported and pure so a test can assert, for
+// every reachable state, that the class emitted here has a matching rule in the frozen
+// assets/styles.css — a mismatched class renders a real DOM node with zero visible size, not a
+// missing one, which is exactly the defect this guards (a "waiting" node emitting "snode is-wait",
+// a class assets/styles.css has never defined; the stylesheet's actual hollow/queued rule is
+// `.snode.upcoming`). "rejected" (the palette's "failed" state) has no dedicated `.snode` rule yet in
+// the frozen stylesheet — a known, separately-scoped gap, not fixed here.
+export function scoreNodeClass(n: Pick<ScoreNode, "state">, isGate: boolean): string {
+  if (n.state === "done") return "snode done";
+  if (isGate) return "snode is-gate-open";
+  if (n.state === "active") return "snode active";
+  if (n.state === "blocked") return "snode blocked";
+  if (n.state === "rejected") return "snode is-danger"; // known gap — see comment above
+  return "snode upcoming"; // waiting/queued (default): hollow neutral, matches .snode.upcoming
+}
+
 // ---------------------------------------------------------------------------
 // STUDIO
 // ---------------------------------------------------------------------------
@@ -410,7 +427,7 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
     .map((n) => {
       const isGate = n.shape === "diamond";
       const nodeCls = n.state === "done" ? "done" : isGate ? "" : "";
-      const snodeCls = n.state === "done" ? "snode done" : isGate ? "snode is-gate-open" : n.state === "rejected" ? "snode is-danger" : "snode is-wait";
+      const snodeCls = scoreNodeClass(n, isGate);
       const av = n.producedBy ? `<div class="sstep__av">${memberAvatar(repo, n.producedBy)}</div>` : `<div class="sstep__av"></div>`;
       const chip =
         n.state === "done" ? `<span class="chip is-approved sstep__chip">approved</span>`

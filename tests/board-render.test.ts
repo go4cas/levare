@@ -1,11 +1,11 @@
 import { test, expect, describe, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, cpSync } from "node:fs";
+import { mkdtempSync, rmSync, cpSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRepo } from "../src/repo.ts";
-import { renderStudio, renderProject, renderRun, renderRegistry } from "../src/board/render.ts";
-import { scoreNodes } from "../src/board/derive.ts";
+import { renderStudio, renderProject, renderRun, renderRegistry, scoreNodeClass } from "../src/board/render.ts";
+import { scoreNodes, type NodeState } from "../src/board/derive.ts";
 import { resolveGate } from "../src/board/gateops.ts";
 
 // PRD §9 / phase-4 acceptance: snapshot tests assert each screen's rendered HTML contains the
@@ -213,7 +213,7 @@ describe("run screen — score rail node markers survive a real gate resolution"
 
     expect(stepCount(beforeScore)).toBe(5);
     expect(snodeClassesOf(beforeScore).length).toBe(5); // one marker per step — no gaps before the approve
-    expect(snodeClassesOf(beforeScore)).toEqual(["snode done", "snode done", "snode is-gate-open", "snode is-wait", "snode is-wait"]);
+    expect(snodeClassesOf(beforeScore)).toEqual(["snode done", "snode done", "snode is-gate-open", "snode upcoming", "snode upcoming"]);
 
     // The actual failing path: a real gate resolution against the real repo (not a hand-built one),
     // then a fresh re-derive from disk — exactly what the board's GET handler does on the next request.
@@ -225,8 +225,55 @@ describe("run screen — score rail node markers survive a real gate resolution"
 
     expect(stepCount(afterScore)).toBe(5);
     // Every step still carries its node marker post-resolution — code and review (still artifact-less)
-    // must still render their hollow "is-wait" marker, not a missing one.
+    // must still render their hollow "upcoming" marker, not a missing/mismatched one.
     expect(snodeClassesOf(afterScore).length).toBe(5);
-    expect(snodeClassesOf(afterScore)).toEqual(["snode done", "snode done", "snode done", "snode is-wait", "snode is-wait"]);
+    expect(snodeClassesOf(afterScore)).toEqual(["snode done", "snode done", "snode done", "snode upcoming", "snode upcoming"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scoreNodeClass ↔ assets/styles.css: a renderer/stylesheet class mismatch must never render an
+// invisible element again. assets/styles.css is frozen (design-approved) — this test doesn't add or
+// change any CSS, it only proves every class the renderer can emit for a canonical-palette state has
+// an existing compound selector (`.snode.<state>`) defined for it.
+// ---------------------------------------------------------------------------
+
+const STYLES = readFileSync("assets/styles.css", "utf8");
+
+/** Does the frozen stylesheet define a rule for this exact compound class list (e.g. "snode upcoming"
+ * → `.snode.upcoming{`)? Order-sensitive to how assets/styles.css actually writes these selectors. */
+function hasCssRuleFor(classAttr: string): boolean {
+  const selector = "." + classAttr.trim().split(/\s+/).join(".");
+  const re = new RegExp(escapeRegExp(selector) + "(?=[,{\\s])");
+  return re.test(STYLES);
+}
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+describe("scoreNodeClass — every canonical-palette state maps to a class assets/styles.css defines", () => {
+  // done/active/waiting/blocked/needs-you (design-brief §"canonical state palette"); "failed"
+  // (rejected) is a known, separately-tracked gap — assets/styles.css has no dedicated `.snode` rule
+  // for it yet, so it is deliberately not asserted here.
+  const cases: Array<{ label: string; state: NodeState; isGate: boolean }> = [
+    { label: "done", state: "done", isGate: false },
+    { label: "active", state: "active", isGate: false },
+    { label: "waiting", state: "wait", isGate: false },
+    { label: "blocked", state: "blocked", isGate: false },
+    { label: "needs-you (open gate)", state: "gate", isGate: true },
+  ];
+
+  for (const c of cases) {
+    test(`${c.label} → a class with a matching assets/styles.css rule (never an invisible element)`, () => {
+      const cls = scoreNodeClass({ state: c.state }, c.isGate);
+      expect(hasCssRuleFor(cls)).toBe(true);
+    });
+  }
+
+  test("the previously-broken case: a queued/artifact-less step no longer emits an undefined class", () => {
+    const cls = scoreNodeClass({ state: "wait" }, false);
+    expect(cls).toBe("snode upcoming");
+    expect(hasCssRuleFor("snode is-wait")).toBe(false); // the old, invisible class — confirms this is a real fix, not a coincidence
+    expect(hasCssRuleFor(cls)).toBe(true);
   });
 });
