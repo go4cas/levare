@@ -6,5 +6,8 @@
     "test": "bun test",
     "validate": "bun run src/cli.ts validate",
     "deps:check": "bun -e \"const d=Object.keys(require('./package.json').dependencies||{});const bad=d.filter(x=>x!=='@anthropic-ai/claude-agent-sdk');if(bad.length){console.error('forbidden deps: '+bad);process.exit(1)}console.log('deps ok')\""
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.207"
   }
 }
