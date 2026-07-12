@@ -86,3 +86,42 @@ export function unmetAfter(repo: Repo, unit: WorkUnit): string[] {
   if (!unit.after || unit.after.length === 0) return [];
   return unit.after.filter((id) => !repo.units.some((u) => u.project === unit.project && u.unit === id && u.status === "shipped"));
 }
+
+// ---------------------------------------------------------------------------
+// Frontmatter patching — moved here (phase 8) from board/gateops.ts so both the board's direct gate
+// operations and the phase-8 daemon's autonomous productions (dagwalk.ts) can patch a produced
+// document's scalar fields without a circular import between gateops.ts and dagwalk.ts.
+// ---------------------------------------------------------------------------
+
+/** Patch top-level frontmatter scalar fields in place, preserving everything else byte-for-byte. */
+export function patchFrontmatter(src: string, patches: Record<string, string | null>): string {
+  const lines = src.split("\n");
+  if (lines[0]?.trim() !== "---") throw new Error("document has no frontmatter fence");
+  let end = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === "---") {
+      end = i;
+      break;
+    }
+  }
+  if (end === -1) throw new Error("frontmatter is not terminated");
+  for (const [key, value] of Object.entries(patches)) {
+    let found = false;
+    for (let i = 1; i < end; i++) {
+      const m = /^([A-Za-z_][A-Za-z0-9_]*):/.exec(lines[i]);
+      if (m && m[1] === key) {
+        lines[i] = formatScalarLine(key, value);
+        found = true;
+        break;
+      }
+    }
+    if (!found) throw new Error(`frontmatter key '${key}' not found to patch`);
+  }
+  return lines.join("\n");
+}
+
+function formatScalarLine(key: string, value: string | null): string {
+  if (value === null) return `${key}: null`;
+  if (/^[A-Za-z0-9._/-]+$/.test(value)) return `${key}: ${value}`;
+  return `${key}: ${JSON.stringify(value)}`;
+}

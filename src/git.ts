@@ -11,14 +11,23 @@ import { join } from "node:path";
 export const CONDUCTOR_NAME = "cas";
 export const CONDUCTOR_EMAIL = "cas@levare.local";
 
-export function conductorCommit(root: string, files: string[], message: string): string {
+// Phase 8: the daemon commits artifacts it produces autonomously, between gates, with no Conductor
+// click in that specific commit's causal chain (the click that satisfied invariant 1 happened
+// earlier — approving the gate that unblocked this kind). Attributing those commits to "cas" would
+// misrepresent `git log` as a record of human decisions; a distinct identity keeps the audit log
+// (invariant 2) honest about who/what made each commit, mirroring how `makeFoundingCommit` (below)
+// already deliberately avoids reusing CONDUCTOR_NAME for a commit the Conductor didn't make.
+export const RUNNER_NAME = "levare-runner";
+export const RUNNER_EMAIL = "runner@levare.local";
+
+function commitAs(root: string, files: string[], message: string, identity: { name: string; email: string }): string {
   const gitArgs = (args: string[]) => [
     "-C",
     root,
     "-c",
-    `user.name=${CONDUCTOR_NAME}`,
+    `user.name=${identity.name}`,
     "-c",
-    `user.email=${CONDUCTOR_EMAIL}`,
+    `user.email=${identity.email}`,
     "-c",
     "commit.gpgsign=false",
     "-c",
@@ -31,6 +40,15 @@ export function conductorCommit(root: string, files: string[], message: string):
   if (commit.status !== 0) throw new Error(`git commit failed: ${commit.stderr}${commit.stdout}`);
   const rev = spawnSync("git", gitArgs(["rev-parse", "HEAD"]), { encoding: "utf8" });
   return rev.stdout.trim();
+}
+
+export function conductorCommit(root: string, files: string[], message: string): string {
+  return commitAs(root, files, message, { name: CONDUCTOR_NAME, email: CONDUCTOR_EMAIL });
+}
+
+/** The daemon's own commit identity (phase 8) — see RUNNER_NAME's own doc comment above. */
+export function runnerCommit(root: string, files: string[], message: string): string {
+  return commitAs(root, files, message, { name: RUNNER_NAME, email: RUNNER_EMAIL });
 }
 
 // ---------------------------------------------------------------------------
