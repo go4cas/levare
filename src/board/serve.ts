@@ -397,11 +397,41 @@ export interface ServeHandle {
 // just from inside the same network namespace the process runs in. Returns the ServeHandle instead
 // of exiting; the caller (the CLI's `serve` command, which is the long-running exception to
 // process.exit — see runCli in cli.ts) is what keeps the process alive by simply never exiting.
-export function serve(root: string, port = 4173, opts: { keepProcessAlive?: boolean; readOnly?: boolean } = {}): ServeHandle {
+export function serve(
+  root: string,
+  port = 4173,
+  opts: {
+    keepProcessAlive?: boolean;
+    readOnly?: boolean;
+    orchestratorBoundary?: OrchestratorBoundary;
+    orchestratorSelectOpts?: SelectOrchestratorBoundaryOptions;
+    /** Test-only override — see the default's own rationale below. */
+    idleTimeoutSeconds?: number;
+  } = {},
+): ServeHandle {
   const keepAlive = opts.keepProcessAlive ?? true;
-  const board = createBoard(root, { readOnly: opts.readOnly });
-  const server = Bun.serve({ port, hostname: "0.0.0.0", fetch: (req) => board.fetch(req) });
-  const url = `http://${server.hostname}:${server.port}`;
+  const board = createBoard(root, { readOnly: opts.readOnly, orchestratorBoundary: opts.orchestratorBoundary, orchestratorSelectOpts: opts.orchestratorSelectOpts });
+  // idleTimeout (NOTES phase-7 K17, a live-gate fix-up — "a request must always produce a reply"):
+  // Bun.serve's own default is 10 SECONDS — after that, Bun resets the connection with no HTTP
+  // response at all if the handler hasn't sent anything yet. A real /orchestrator/message call can
+  // routinely take longer than that, so this is set well past every internal SDK timeout (90s, see
+  // orchestrator-boundary.ts's converseTimeoutMs) — Bun's idleTimeout should be a backstop of last
+  // resort, never the thing that actually fires. It is NOT, on its own, what guarantees "a request
+  // must always produce a reply": while investigating this, a POST carrying a body (the shape of
+  // every real /orchestrator/message call) was observed to bypass Bun's own idle-timeout enforcement
+  // entirely in this Bun version, even past this value — see tests/board-serve-idletimeout.test.ts.
+  // The actual guarantee is the SDK transport's own setTimeout-based kill (sdk-transport.ts, proven in
+  // tests/sdk-transport-hermetic.test.ts's hung-worker tests) plus this route's degrade-to-offline
+  // catch below, both method/body-agnostic. This idleTimeout is defense in depth for the HTTP layer.
+  const server = Bun.serve({ port, hostname: "0.0.0.0", idleTimeout: opts.idleTimeoutSeconds ?? 180, fetch: (req) => board.fetch(req) });
+  // Bind 0.0.0.0 (above) so the port is reachable from outside the container, but never hand back
+  // "0.0.0.0" as the connect address: "0.0.0.0" is a bind wildcard, not a real destination, and
+  // connecting to it literally is OS/resolver-dependent — observed, while chasing the phase-7 K17
+  // idleTimeout live-gate fix, to sometimes silently bypass Bun's own idle-timeout enforcement
+  // entirely (a request that should have been reset instead hung open indefinitely). "localhost"
+  // is what every caller — the printed CLI message, a browser, this file's own tests — should
+  // actually use to reach the server that was just bound.
+  const url = `http://localhost:${server.port}`;
 
   let stopped = false;
   const stop = () => {
