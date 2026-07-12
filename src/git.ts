@@ -5,6 +5,8 @@
 // overrides: a Conductor action must never hang on a host signing prompt or a stray commit hook.
 
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 export const CONDUCTOR_NAME = "cas";
 export const CONDUCTOR_EMAIL = "cas@levare.local";
@@ -29,4 +31,82 @@ export function conductorCommit(root: string, files: string[], message: string):
   if (commit.status !== 0) throw new Error(`git commit failed: ${commit.stderr}${commit.stdout}`);
   const rev = spawnSync("git", gitArgs(["rev-parse", "HEAD"]), { encoding: "utf8" });
   return rev.stdout.trim();
+}
+
+// ---------------------------------------------------------------------------
+// `levare init`'s founding commit (phase-6 gate fix-up).
+// ---------------------------------------------------------------------------
+//
+// Without git, `validate.ts`'s approved-artifact immutability check silently fail-opens (state S0:
+// "not a git repo → cannot verify → treated as valid") and every commit-as-Conductor write path
+// (gates, registry edits, the Orchestrator) is inert — a freshly-scaffolded studio must not ship with
+// those guarantees off by default. This commit predates any Conductor action (there is no running
+// studio yet, no gate has ever been decided), so it is attributed to the *user's own* resolved git
+// identity — `git config user.name`/`user.email` — never the fictional `CONDUCTOR_NAME` above, which
+// is this dev repo's own fixture convention (NOTES E6), not a stand-in for every levare user.
+
+export interface FoundingCommitResult {
+  gitAvailable: boolean;
+  repoInitialized: boolean;
+  identity: { name: string; email: string } | null;
+  committed: boolean;
+  commit: string | null;
+}
+
+function resolveGitIdentity(root: string, env: NodeJS.ProcessEnv): { name: string; email: string } | null {
+  const get = (key: string) => spawnSync("git", ["-C", root, "config", "--get", key], { encoding: "utf8", env });
+  const name = get("user.name");
+  const email = get("user.email");
+  const n = name.status === 0 ? name.stdout.trim() : "";
+  const e = email.status === 0 ? email.stdout.trim() : "";
+  if (!n || !e) return null;
+  return { name: n, email: e };
+}
+
+/**
+ * `git init` (idempotent — a no-op if `root` is already a repo) plus, only if a usable git identity
+ * resolves, one commit of everything under `root`. If no identity resolves, the repo still exists
+ * (so a later `git config` + manual commit works) but nothing is committed — the caller must surface
+ * that prominently rather than let a disabled guarantee pass silently (see `runInitCmd`, cli.ts).
+ * `env` is injectable so tests can point `GIT_CONFIG_GLOBAL`/`HOME` at an isolated identity (or none)
+ * without depending on whatever git identity happens to be configured on the host running the suite.
+ */
+export function makeFoundingCommit(root: string, message: string, env: NodeJS.ProcessEnv = process.env): FoundingCommitResult {
+  if (!Bun.which("git")) return { gitAvailable: false, repoInitialized: false, identity: null, committed: false, commit: null };
+
+  let repoInitialized = existsSync(join(root, ".git"));
+  if (!repoInitialized) {
+    const init = spawnSync("git", ["-C", root, "-c", "init.defaultBranch=main", "init", "-q"], { encoding: "utf8", env });
+    repoInitialized = init.status === 0;
+    if (!repoInitialized) return { gitAvailable: true, repoInitialized: false, identity: null, committed: false, commit: null };
+  }
+
+  const identity = resolveGitIdentity(root, env);
+  if (!identity) return { gitAvailable: true, repoInitialized: true, identity: null, committed: false, commit: null };
+
+  const gitArgs = (args: string[]) => [
+    "-C",
+    root,
+    "-c",
+    `user.name=${identity.name}`,
+    "-c",
+    `user.email=${identity.email}`,
+    "-c",
+    "commit.gpgsign=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+    ...args,
+  ];
+  const add = spawnSync("git", gitArgs(["add", "-A"]), { encoding: "utf8", env });
+  if (add.status !== 0) return { gitAvailable: true, repoInitialized: true, identity, committed: false, commit: null };
+
+  // Nothing staged (e.g. `init` re-run against an already-committed studio with no new files) is not
+  // an error — there's simply no founding commit left to make.
+  const staged = spawnSync("git", gitArgs(["diff", "--cached", "--quiet"]), { encoding: "utf8", env });
+  if (staged.status === 0) return { gitAvailable: true, repoInitialized: true, identity, committed: false, commit: null };
+
+  const commit = spawnSync("git", gitArgs(["commit", "-q", "-m", message]), { encoding: "utf8", env });
+  if (commit.status !== 0) return { gitAvailable: true, repoInitialized: true, identity, committed: false, commit: null };
+  const rev = spawnSync("git", gitArgs(["rev-parse", "HEAD"]), { encoding: "utf8", env });
+  return { gitAvailable: true, repoInitialized: true, identity, committed: true, commit: rev.stdout.trim() };
 }

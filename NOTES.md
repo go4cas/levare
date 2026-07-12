@@ -833,3 +833,54 @@ already fully generic — only its work/ tree and one project pointer were ever 
 Deleting the actual demo-specific parts and reusing the rest verbatim is both less work and a more
 faithful reading of "genericized" than inventing parallel content that says the same thing in
 different words.
+
+## Two phase-6 gate fix-ups
+
+### I1. Project status chip: a real derivation, not a hardcoded "running"
+`projectStatusChip` (`src/board/render.ts`) replaces the old `projGates > 0 ? gate-chip : "running"`
+with the three-way rule the gate asked for: an open-gate count always wins (needs the Conductor
+regardless of anything else); with none, "active" when any unit is `status: active` **or**
+`membersRunning > 0`; with neither, "idle". `membersRunning` is threaded as a parameter rather than
+hardcoded 0 inline, so the call site (`renderStudio`) is the one place documenting *why* it's 0 today
+(NOTES E2 — no live process registry yet) and the only place that will need to change once a real
+one exists — the derivation itself doesn't. Reused the frozen stylesheet's existing-but-previously-
+unused `.chip.is-blocked` rule for "idle" rather than adding new CSS (the goal's one permitted CSS
+addition was G1's `.snode.is-danger`, already spent). `fixtures/golden/projects/studio.md` (zero
+units, zero gates) is the empty-project case in the golden fixture itself — no synthetic repo needed
+for the new render test.
+
+### I2. `levare init`'s founding commit: the user's identity, not the Conductor's
+`makeFoundingCommit` (`src/git.ts`) is deliberately a sibling of `conductorCommit`, not a reuse of
+it: `conductorCommit`'s hardcoded `cas <cas@levare.local>` is *this dev repo's* fixture convention for
+Conductor actions once a studio is running (ruling E6) — attributing a studio's very first commit,
+made before any Conductor action has ever happened, to that fictional identity would misattribute
+authorship for every real levare user. Instead it resolves `git config user.name`/`user.email` *at
+the target* (so a per-repo override, if any, wins over global/system, exactly matching git's own
+resolution order) and only commits if both resolve to non-empty strings — deliberately not falling
+back to environment variables like `GIT_AUTHOR_NAME`, which `git config --get` doesn't consult
+anyway, keeping "identity resolved" synonymous with "a human configured git on this machine," not an
+artifact of how the calling process happened to be invoked.
+
+**Idempotent by construction, not by a special case.** `git init` on an already-a-repo target is
+itself a safe no-op (git's own behavior, not something `makeFoundingCommit` special-cases), and a
+second call stages everything (`git add -A`) but checks `git diff --cached --quiet` before
+committing — if a prior `init` already committed everything and nothing changed since, there's
+nothing staged and the function reports `committed: false` without erroring. This is what makes
+re-running `levare init` against an already-initialized studio safe: the scaffold step already never
+overwrites (H6), and now the git step never manufactures a spurious empty commit either.
+
+**No identity → loud, not silent.** If no identity resolves, `repoInitialized` is still `true` (the
+repo exists, ready for a human to configure identity and commit into) but `committed` is `false`.
+`runInitCmd` (cli.ts) checks this explicitly and prints `GIT_IDENTITY_NOTE` — one string, exported
+from `src/init.ts` and interpolated into both the scaffolded `README.md`'s "Git" section and this
+console fallback, so there is exactly one place explaining *why* this matters (immutability
+fail-open + inert Conductor commits) rather than two texts that can drift apart. The note reads
+correctly in both places because it's phrased conditionally ("if this studio has no commit yet...")
+rather than assuming either outcome.
+
+**Hermetic test env, once again.** `makeFoundingCommit(root, message, env)` takes an injectable `env`
+(default `process.env`) precisely so tests can pin a resolvable identity (`GIT_CONFIG_GLOBAL` pointed
+at a throwaway file with a `[user]` block) or an unresolvable one (`GIT_CONFIG_GLOBAL`/
+`GIT_CONFIG_SYSTEM` at `/dev/null`, `HOME` redirected) without depending on whatever git identity
+happens to be configured on the host running the suite — the same lesson NOTES A4/E12 already
+recorded for the immutability and e2e-serve tests, applied here a third time.

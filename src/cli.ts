@@ -8,7 +8,7 @@ import { assembleContext } from "./context.ts";
 import { runDoctor } from "./doctor.ts";
 import { CAPABILITIES } from "../fixtures/stubs/member-stub.ts";
 import { serve } from "./board/serve.ts";
-import { scaffoldStudio } from "./init.ts";
+import { initStudio, GIT_IDENTITY_NOTE } from "./init.ts";
 
 // Until the studio repo root is populated, the fixture golden tree stands in as the studio (NOTES
 // A1); context/doctor default their root there. `--root <path>` overrides.
@@ -87,18 +87,46 @@ export function runDoctorCmd(rest: string[]): number {
 
 // `levare init [path]` — scaffold an empty (or not-yet-a-studio) directory into a working studio:
 // the skeleton, the five type templates, one example team with its agents, a sample skill, a
-// .devcontainer/, and a starter README (§3, phase 6). Never overwrites an existing file.
+// .devcontainer/, and a starter README (§3, phase 6). Never overwrites an existing file. Also
+// `git init`s the target and makes the founding commit under the user's own resolved git identity —
+// without that, the approved-artifact immutability check fail-opens and every commit-as-Conductor
+// write path is inert by default (see src/init.ts#initStudio, src/git.ts#makeFoundingCommit).
 export function runInitCmd(rest: string[]): number {
   const target = rest.find((a) => !a.startsWith("-")) ?? ".";
-  const result = scaffoldStudio(target);
+  const result = initStudio(target);
   console.log(`levare init · ${target}`);
-  console.log(`  ${result.created.length} file(s)/dir(s) created`);
-  if (result.skipped.length > 0) {
-    console.log(`  ${result.skipped.length} file(s) already existed and were left untouched:`);
-    for (const s of result.skipped) console.log(`    ${s}`);
+  console.log(`  ${result.scaffold.created.length} file(s)/dir(s) created`);
+  if (result.scaffold.skipped.length > 0) {
+    console.log(`  ${result.scaffold.skipped.length} file(s) already existed and were left untouched:`);
+    for (const s of result.scaffold.skipped) console.log(`    ${s}`);
+  }
+  if (result.git.committed) {
+    console.log(`  git: founding commit ${result.git.commit?.slice(0, 12)} as ${result.git.identity?.name} <${result.git.identity?.email}>`);
+  } else {
+    console.log("");
+    console.log("  ⚠ no founding commit was made — " + (result.git.gitAvailable ? "no git identity resolved" : "git is not available"));
+    console.log("");
+    for (const line of wrap(GIT_IDENTITY_NOTE, 78)) console.log(`  ${line}`);
+    console.log("");
   }
   console.log(`Next: levare validate ${target}    ·    levare serve ${target}`);
   return 0;
+}
+
+function wrap(text: string, width: number): string[] {
+  const words = text.split(/\s+/);
+  const lines: string[] = [];
+  let line = "";
+  for (const w of words) {
+    if (line.length > 0 && line.length + 1 + w.length > width) {
+      lines.push(line);
+      line = w;
+    } else {
+      line = line.length ? `${line} ${w}` : w;
+    }
+  }
+  if (line.length) lines.push(line);
+  return lines;
 }
 
 // `levare serve [root] [--port N] [--read-only]` — the board (§9): four screens, SSE live

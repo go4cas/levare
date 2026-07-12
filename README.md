@@ -102,13 +102,20 @@ here — see [src/gates.ts](src/gates.ts), [src/git.ts](src/git.ts), [src/orches
   team (`kestrel`, whose flow demonstrates a `step`, a `gate`, and a `loop`) with its native and cli
   agents, a sample skill in the Agent Skills folder format (`skills/new-project/SKILL.md`), a
   `.devcontainer/`, and a starter `README.md` — with no demo work units. Never overwrites an
-  existing file, so it's safe to re-run.
+  existing file, so it's safe to re-run. Also `git init`s the target and makes the founding commit
+  under the *user's own* resolved git identity ([src/git.ts](src/git.ts)#makeFoundingCommit) — without
+  git, the approved-artifact immutability check fail-opens and every commit-as-Conductor write path
+  is inert, so `init` must not ship a studio with those guarantees off by default. If no git identity
+  resolves, the repo still exists but nothing is committed, and `init` prints why prominently.
 - **First-run experience** — [src/board/onboarding.ts](src/board/onboarding.ts): `levare serve`
   pointed at a directory with none of the skeleton dirs renders an explanatory page suggesting
   `levare init`, instead of a blank or crashing screen.
 - **Gap G1 closed** — `assets/styles.css` now defines `.snode.is-danger` for the failed/rejected
   score-node state, completing the six-state canonical palette; the renderer↔stylesheet class-parity
   test in `tests/board-render.test.ts` covers all six.
+- **Project status chip fixed** — `projectStatusChip` ([src/board/render.ts](src/board/render.ts))
+  derives gate-count → active → idle instead of a hardcoded "running", so an empty project (no units,
+  no members running) reads honestly as idle.
 
 ### Run it
 

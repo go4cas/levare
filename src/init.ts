@@ -18,12 +18,18 @@
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { makeFoundingCommit, type FoundingCommitResult } from "./git.ts";
 
 export interface ScaffoldResult {
   /** Paths written (files) or created (directories, suffixed "/"), relative to the target. */
   created: string[];
   /** Files that already existed and were left untouched — `init` never overwrites. */
   skipped: string[];
+}
+
+export interface InitResult {
+  scaffold: ScaffoldResult;
+  git: FoundingCommitResult;
 }
 
 interface Template {
@@ -33,6 +39,16 @@ interface Template {
 
 // Directories that must exist even though the fresh studio has no files in them yet.
 const EMPTY_DIRS = ["work", "ideas"];
+
+// Shared verbatim between the scaffolded README and `runInitCmd`'s (cli.ts) fallback output when no
+// git identity resolves — one sentence of rationale, one place it's written (phase-6 gate fix-up).
+export const GIT_IDENTITY_NOTE =
+  "This studio's approved-artifact immutability check and every commit-as-Conductor write path " +
+  "(gate approvals, registry edits) depend on git history existing. `levare init` sets this up " +
+  "automatically: it runs `git init` and makes a founding commit using your resolved git identity " +
+  '(`git config user.name` / `user.email`). If this studio has no commit yet, no identity could be ' +
+  "resolved when `init` ran — configure one (`git config --global user.name \"…\"` and " +
+  '`user.email "…"`) and commit this studio yourself before relying on those guarantees.';
 
 const README = `# your levare studio
 
@@ -75,8 +91,11 @@ levare doctor .       # connector env-presence + CLI/MCP reachability report
 
 Open a work unit by creating \`work/<project>/<unit>/unit.md\` (see \`types/\` for what each unit
 type expects and which artifacts its flow gates on), or capture a pitch as a new file under
-\`ideas/\`. This directory isn't yet a git repository — run \`git init\` if you want the audit-log
-history (and the approved-artifact immutability check) that a real studio relies on.
+\`ideas/\`.
+
+## Git
+
+${GIT_IDENTITY_NOTE}
 `;
 
 const DEVCONTAINER = `{
@@ -420,4 +439,19 @@ export function scaffoldStudio(target: string): ScaffoldResult {
   }
 
   return { created, skipped };
+}
+
+/**
+ * `levare init`'s full behavior: scaffold the studio, then `git init` it and make the founding
+ * commit — using the user's own resolved git identity, not the Conductor's (that identity is for
+ * later Conductor actions; this commit predates all of them). Without this, a scaffolded studio
+ * would ship with its own guarantees off by default: `validate.ts`'s approved-artifact immutability
+ * check fail-opens with no git history to check against, and every commit-as-Conductor write path
+ * has nothing to commit onto. `env` is injectable so tests can pin a git identity (or its absence)
+ * hermetically rather than depending on the host running the suite (see `makeFoundingCommit`).
+ */
+export function initStudio(target: string, env?: NodeJS.ProcessEnv): InitResult {
+  const scaffold = scaffoldStudio(target);
+  const git = makeFoundingCommit(target, "levare init", env);
+  return { scaffold, git };
 }
