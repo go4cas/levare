@@ -1863,3 +1863,120 @@ reusing an existing selector's box model in a new way (line-clamping `.pcard__de
 more honest exception to log than inventing a same-purpose sibling rule would have been, and is worth
 calling out explicitly rather than letting it blend into "no changes needed" claims elsewhere in the
 same round.
+
+# NOTES — uncertainties and assumptions (Phase 7.5, gate-review round 3)
+
+A third gate review: one BLOCKING stability bug (an SSE/fs.watch handle leak reported from live use)
+plus two cosmetic items from the same pass — breadcrumb consistency and registry card alignment. Items
+1/2/4/5 from the original phase-7.5 goal, and the structural rail/project-card/registry-grid work from
+round 2, are approved-as-shipped and untouched here.
+
+## P1. The SSE handle leak — diagnosed, fixed, and the fix empirically verified to actually
+discriminate (not just "look right")
+**The real defect, found by reading the code, not by reproducing the reported symptom.**
+`sseResponse()` (`src/board/serve.ts`) called `subscribe(ctx, send)`, captured the returned
+`unsubscribe`, and then discarded it — `void unsubscribe;` — so a disconnected client's `Sender`
+closure was NEVER removed from the board's subscriber `Set`. The fs.watch side of the report was
+already correct in the code as found: `createBoard()` calls `watch()` exactly ONCE, at board startup,
+shared by every subscriber via `ctx.broadcast` — there was no per-connection watcher to fix.
+
+**The reported mechanism (inotify fd growth) did not reproduce under direct investigation, and the
+test suite says so honestly rather than asserting an OS-level number it can't actually prove.** Before
+writing the fix, the exact scenario described — real subprocess, `readlink`ing every fd in
+`/proc/<pid>/fd`, 20/50/120-cycle open-then-abort loops against real sockets — was run against the
+**unfixed** code on this environment (Bun 1.3.14, linux/aarch64) and the process's fd count, including
+its one `anon_inode:inotify` entry, stayed completely flat throughout. The `subscribers` Set leak is
+real and unambiguously wrong regardless (verified by mutation: surgically re-disabling the cleanup
+call reproduces `debugSubscriberCount` growing to exactly N after N cycles — see below), but on this
+Bun version a disconnected client's underlying socket/stream appears to be reclaimed by the runtime's
+native layer independent of whether the JS side ever reacts to the disconnect. Two honest
+possibilities, neither resolved further here: the live environment where this was diagnosed differs
+(older Bun, different OS/kernel, a longer-running process where slow deferred GC of the retained
+closures eventually does hold real resources), or the reported "inotify" characterization was an
+inference from `lsof`'s generic `a_inode` TYPE column rather than a confirmed `readlink` of the NAME.
+Either way, the code-level defect (leaked Set entries, and by extension whatever retains anything
+those closures hold onto) is real and is what got fixed; the exact production mechanism is recorded
+as unconfirmed rather than claimed as proven.
+
+**The fix, and why it doesn't just move the leak.** `sseResponse(ctx, req)` now: builds one
+`SseSubscriber { send, close }` per connection; registers it via the same `subscribe()`/`Set` (adds a
+`close()` so the board can force-end a stream, not just stop tracking it); wires cleanup to BOTH
+`req.signal`'s `abort` event (Bun's own "this connection's underlying socket closed" signal — the
+reliable path for a real dropped connection) AND the `ReadableStream`'s own `cancel()` callback (fires
+when the stream's consumer — Bun itself, or a test calling `reader.cancel()` — cancels it; the only
+path that fires for an in-process `board.fetch()` call, since a hand-constructed `Request`'s `.signal`
+is never actually driven by anything). `cleanup()` is idempotent (a `cleaned` flag) since both paths
+can fire for the same disconnect. `board.close()` now also calls the new `closeAllSubscribers()` —
+closes every still-open stream and clears the Set — so a server shutdown never leaves a connected
+client hanging on a socket nobody will ever write to again (previously `close()` only stopped the
+watcher and the debounce timer).
+
+**Why the test is two different kinds of check, not one.** `debugSubscriberCount(ctx)` is a new,
+deliberately test-only export — the actual proof the leak is gone is that the subscriber Set returns
+to exactly 0 after N connect/cancel cycles, not merely that "a broadcast still reaches a fresh client"
+(that check would pass even against the ORIGINAL bug, since a dead subscriber's `send` just
+throws-and-is-caught silently whether or not it was ever removed — verified: the "broadcast still
+works" property alone cannot distinguish the two implementations). `tests/board-serve-sse-leak.test.ts`
+therefore leads with three in-process, deterministic tests against `debugSubscriberCount` (50-cycle
+connect/cancel; `req.signal` abort path; `board.close()` force-closing an open stream) — each one
+was run against the pre-fix code with a surgical one-line mutation (disable the `cleanup()` call
+inside `sseResponse`, keeping everything else identical) and confirmed to fail, then confirmed to pass
+once restored, so they're proven to actually discriminate, not just assert a number that happens to be
+true either way. A fourth test spawns the real `./levare serve` subprocess and reads its own
+`/proc/<pid>/fd` count across 50 real-socket connect/abort cycles as a real-environment sanity check
+with generous slack (it does not, and per the above cannot, prove the fd-level claim on its own in
+this environment) — kept because the review specifically asked for it and because it's still a real,
+valid regression guard against a future change that reintroduces a per-connection resource.
+
+**Live verification beyond the test suite.** `./levare serve` was run for real against a scratch repo;
+160 simulated navigations (a page GET + an SSE open-then-abort each, in both sequential and concurrent
+bursts) were driven against it while polling `/proc/<pid>/fd`. Baseline 13 fds → 16 after 160
+navigations, `anon_inode:inotify` count staying at exactly 1 throughout; the server remained fully
+responsive (`GET /` → 200) and shut down cleanly on `SIGTERM`.
+
+## P2. The breadcrumb rule (stated once, applied everywhere)
+**Rule:** a breadcrumb renders one segment per real, linkable page between studio and the current
+page. Every segment is a link EXCEPT the last (the current page — plain text, or `mono` for a
+filesystem-truth token like an artifact id or idea name — never a link to itself). No synthetic or
+non-navigable category label is ever inserted as a segment just to describe what kind of thing the
+current page is.
+
+**The idea route's crumb was the one violation.** It rendered `studio / ideas / <name>` — but there is
+no `/ideas` route (the studio page has an *Ideas* rail section, not a standalone listing page), so
+"ideas" pointed at nothing; a click would have 404'd. Per the rule, an idea's crumb is now `studio /
+<name>` — two segments, the exact same shape as a project's `studio / <project>` (an idea, like a
+project, nests directly under studio; it just has no children of its own to extend the chain further).
+`tests/board-render.test.ts` gained a rule-level test (`"every breadcrumb segment is either a link or
+the final...segment"`) that parses each screen's `.crumb` and asserts every segment but the last is an
+`<a>`, so a future screen can't reintroduce a bare non-navigable middle segment the way `ideas` was.
+
+## P3. Registry card header/actions alignment
+Two independent misalignments, both pre-existing structural gaps rather than anything introduced in
+round 2's grid change (they were just easier to see once cards sat side by side in a grid instead of
+stacked full-width): `.entity__head`'s kind badge (`.entity__kind` — "team"/"agent · kestrel"/"skill"
+etc.) sat immediately after the title with no right-alignment, unlike every other card's
+label-left/status-right anatomy (gate cards, unit rows, project cards); and `.editbar` (the Edit-source
+action row) sat wherever an entity's own content happened to end, so cards of different natural
+heights sharing a grid row (`.pcards`' default `align-items:stretch` already stretches each `.entity
+.card` article to the row's full height) had their action rows land at visibly different vertical
+positions. Both are one-line CSS fixes to already-existing rules, no new selectors: `.entity__kind`
+gets `margin-left:auto` (same right-alignment technique `.pcard__rt`/`.reg-nav a .ct` already use
+elsewhere in this stylesheet); `.rendered` gets `flex:1` (so it — not just the outer `.card` — actually
+absorbs a grid-stretched card's extra height) and `.editbar` gets `margin-top:auto` (pinning it to the
+bottom of that now-taller box). Net effect: every entity kind's actions row sits flush against its
+card's bottom edge, regardless of how much or little content that kind's card renders above it.
+
+## Learnings
+Reproducing a reported bug's EXACT mechanism before fixing it is worth attempting even when the fix
+itself is obviously correct on inspection — the attempt here (real subprocess, real sockets, `/proc`
+fd inspection, escalating cycle counts) didn't reproduce the specific inotify-growth claim on this
+Bun version, and that's a genuinely useful thing to know and record, not a wasted step: it means the
+regression test built afterward had to be independently checked for whether it actually discriminates
+fixed-from-broken, rather than trusted just because it "looks like" a leak test. A test that passes
+identically against known-buggy and known-fixed code is not a regression test, whatever its name says
+— it happened here (the first fd-based draft passed both ways) and was only caught by deliberately
+running it against the pre-fix code and a surgically-reintroduced version of the bug before trusting it.
+A category label used as a breadcrumb segment ("ideas") is a natural thing to reach for when describing
+what kind of page you're on, but a breadcrumb's job is navigation, not classification — if a segment
+has nowhere real to send a click, it doesn't belong in the trail at all, and the fix is usually to
+delete the segment, not to find something for it to link to.
