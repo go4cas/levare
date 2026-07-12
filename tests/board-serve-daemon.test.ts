@@ -1,5 +1,5 @@
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, cpSync } from "node:fs";
+import { mkdtempSync, rmSync, cpSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -95,18 +95,28 @@ describe("board with a daemon attached projects its real in-flight/completed sta
     board.close();
   });
 
-  test("resolving a gate over HTTP nudges the daemon (ctx.daemon.notify) instead of waiting out its debounce", async () => {
+  test("resolving a gate over HTTP lets the daemon advance the unit — asserted by the artifact it then writes, not by counting notify() calls", async () => {
+    // The point of ctx.daemon.notify() is an EFFECT: a gate resolution unblocks the walk, so the
+    // daemon should be able to advance the unit rather than sit idle. Assert that effect against the
+    // filesystem (a real member-produced artifact, authored by the runner), not the invocation of a
+    // method — a no-op notify() would pass an invocation-counter but fail this.
     const daemon = new Daemon(root);
-    let notified = 0;
-    const origNotify = daemon.notify.bind(daemon);
-    daemon.notify = () => {
-      notified++;
-      origNotify();
-    };
     const board = createBoard(root, { daemon });
-    const res = await board.fetch(req("/gates/storefront/loyalty-flow/start", { method: "POST" }));
-    expect(res.status).toBe(200);
-    expect(notified).toBe(1);
+
+    // Start over HTTP (doStart produces the brief in-review), then approve the brief over HTTP — the
+    // route handler calls ctx.daemon.notify() on each. Both are the board's own write surface.
+    expect((await board.fetch(req("/gates/storefront/loyalty-flow/start", { method: "POST" }))).status).toBe(200);
+    expect((await board.fetch(req("/gates/storefront/product-brief-loyalty-flow-v1/approve", { method: "POST" }))).status).toBe(200);
+
+    // With the brief approved, the daemon's next look advances the unit and writes the next kind
+    // (design) to disk — the observable outcome a working notify() exists to bring forward.
+    const designFile = join(root, "work", "storefront", "loyalty-flow", "design-loyalty-flow-v1.md");
+    expect(existsSync(designFile)).toBe(false);
+    daemon.tick();
+    expect(existsSync(designFile)).toBe(true);
+    // And the daemon — not the Conductor — authored it (invariant-2 audit trail; see daemon.test.ts).
+    const author = spawnSync("git", ["-C", root, "log", "-1", "--format=%an|%ae", "--", designFile], { encoding: "utf8" }).stdout.trim();
+    expect(author).toBe("levare-runner|runner@levare.local");
     board.close();
   });
 });

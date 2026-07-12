@@ -214,6 +214,7 @@ button{ font-family:inherit; }
 .dot.is-active{ background:var(--active); --pulse-c:var(--active); animation:lv-pulse 1.9s infinite; }
 .dot.is-blocked{ border:1.5px solid var(--border-strong); }
 .dot.is-wait{ border:1.5px solid var(--border-strong); }
+.dot.is-danger{ background:var(--danger); }
 .diamond{ width:8px; height:8px; transform:rotate(45deg); flex:none; }
 .diamond.is-gate{ background:var(--gate); }
 .diamond.is-cleared{ background:var(--fg-mute); }

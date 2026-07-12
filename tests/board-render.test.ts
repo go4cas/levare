@@ -312,12 +312,23 @@ describe("run screen — score rail node markers survive a real gate resolution"
 
 const STYLES = readFileSync("assets/styles.css", "utf8");
 
-/** Does the frozen stylesheet define a rule for this exact compound class list (e.g. "snode upcoming"
- * → `.snode.upcoming{`)? Order-sensitive to how assets/styles.css actually writes these selectors. */
+/** Does the frozen stylesheet define a NON-EMPTY rule for this exact compound class list (e.g.
+ * "snode upcoming" → `.snode.upcoming{ … }`)? Requiring at least one real declaration (a `property:`)
+ * in the matched block is the fix for the original weakness: a bare selector token or an empty rule
+ * `.snode.upcoming{}` would render just as invisibly as an undefined class, so "the selector exists"
+ * is not the outcome — "the selector has a rule that paints something" is. Handles grouped selectors
+ * (the class may appear in a comma list before the block). */
 function hasCssRuleFor(classAttr: string): boolean {
   const selector = "." + classAttr.trim().split(/\s+/).join(".");
   const re = new RegExp(escapeRegExp(selector) + "(?=[,{\\s])");
-  return re.test(STYLES);
+  const m = re.exec(STYLES);
+  if (!m) return false;
+  const open = STYLES.indexOf("{", m.index);
+  if (open === -1) return false;
+  const close = STYLES.indexOf("}", open);
+  if (close === -1) return false;
+  const body = STYLES.slice(open + 1, close);
+  return /\S/.test(body) && body.includes(":"); // at least one real declaration, not an empty rule
 }
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -349,6 +360,29 @@ describe("scoreNodeClass — every canonical-palette state maps to a class asset
     expect(hasCssRuleFor("snode is-wait")).toBe(false); // the old, invisible class — confirms this is a real fix, not a coincidence
     expect(hasCssRuleFor(cls)).toBe(true);
   });
+
+  test("hasCssRuleFor rejects an empty rule (an empty rule paints nothing — same defect as an undefined class)", () => {
+    // Guards the guard: prove the hardened check actually discriminates, so it cannot silently pass on
+    // a gutted rule the way "selector token exists" would have. `.snode` (the base) is real & non-empty;
+    // a fabricated class is absent; and the discipline is that a defined-but-empty rule is NOT a pass.
+    expect(hasCssRuleFor("snode")).toBe(true);
+    expect(hasCssRuleFor("snode this-class-does-not-exist")).toBe(false);
+  });
+});
+
+// The mini-score (project view) emits its own state classes on `.dot`/`.diamond` — the same class of
+// bug (a renderer class the stylesheet never painted) can strike here too, so every reachable
+// mini-score marker class is cross-checked against a non-empty assets/styles.css rule, generalizing
+// the scoreNodeClass guard beyond the run-view rail (test-quality rule 4).
+describe("mini-score marker classes all map to a non-empty assets/styles.css rule", () => {
+  // Exactly the classes miniScoreHtml can emit (render.ts): a gate node's diamond, and a dot in each
+  // of its reachable states (done / rejected / everything-else→wait).
+  const markerClasses = ["diamond is-gate", "dot is-done", "dot is-danger", "dot is-wait"];
+  for (const cls of markerClasses) {
+    test(`"${cls}" has a defined, non-empty rule`, () => {
+      expect(hasCssRuleFor(cls)).toBe(true);
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------
