@@ -92,13 +92,16 @@ export class ScriptedDecisions implements DecisionSource {
 
 const CAS = "cas 2026-07-11";
 
-// The golden replay: brief approved, design approved, then the spec/review loop requests changes in
-// round 1 and approves in round 2 → terminates by `until: spec.approved`. This is the oracle.
+// The golden replay: checkout-flow's own start gate (ruling C8 — every unit's first flow step
+// raises one, `after:` or not) is answered first, then brief approved, design approved, then the
+// spec/review loop requests changes in round 1 and approves in round 2 → terminates by
+// `until: spec.approved`. This is the oracle.
 // A second fixture unit, loyalty-flow (E5), has a satisfied `after:` and so raises its own start
 // gate during a full-repo walk, after checkout-flow's (walk order is by "project/unit"; "loyalty-
 // flow" sorts after "checkout-flow"). Replay's job is to reproduce the checkout-flow oracle, so this
 // scenario declines to start it ("notyet") rather than exercising a second unit's flow here.
 const GOLDEN_SCRIPT: ScriptEntry[] = [
+  { expect: "start", verb: "start", by: CAS },
   { expect: "brief", verb: "approve", by: CAS },
   { expect: "design", verb: "approve", by: CAS },
   { expect: "spec review", verb: "request", by: CAS, note: "name the idempotency key column" },
@@ -109,6 +112,7 @@ const GOLDEN_SCRIPT: ScriptEntry[] = [
 // The exhaustion case: the spec is never approved, so the loop runs all three rounds and escalates
 // through the `on_exhaust: gate`, where the Conductor rejects (unit paused).
 const EXHAUST_SCRIPT: ScriptEntry[] = [
+  { expect: "start", verb: "start", by: CAS },
   { expect: "brief", verb: "approve", by: CAS },
   { expect: "design", verb: "approve", by: CAS },
   { expect: "spec review", verb: "request", by: CAS, note: "round 1: more detail on payments" },

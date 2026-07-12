@@ -60,7 +60,12 @@ export interface OpenGate {
   label: string;
 }
 
-/** Every open gate in the repo: artifacts at in-review, plus start gates whose `after:` is met. */
+/**
+ * Every open gate in the repo: artifacts at in-review, plus start gates. Ruling C8: EVERY active
+ * unit that hasn't produced anything yet carries an open start gate, regardless of `after:` — a
+ * unit with `after:` is additionally invisible (no gate at all) until every dependency has shipped;
+ * `after:` only ever governs WHEN the gate may be raised, never whether it exists.
+ */
 export function openGates(repo: Repo): OpenGate[] {
   const gates: OpenGate[] = [];
   for (const unit of repo.units) {
@@ -82,9 +87,10 @@ export function openGates(repo: Repo): OpenGate[] {
         });
       }
     }
-    if (unit.after && unit.after.length > 0 && unit.status === "active") {
-      const unmet = unit.after.filter((id) => !unitShipped(repo, unit.project, id));
-      if (unmet.length === 0) {
+    if (unit.status === "active") {
+      const unmet = (unit.after ?? []).filter((id) => !unitShipped(repo, unit.project, id));
+      const hasAnyArtifact = (artifacts?.size ?? 0) > 0;
+      if (unmet.length === 0 && !hasAnyArtifact) {
         gates.push({ type: "start", project: unit.project, unit: unit.unit, target: unit.unit, label: "start" });
       }
     }

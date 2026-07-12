@@ -139,11 +139,12 @@ export interface AdvanceOptions {
    * Only ever true for the ONE call board/gateops.ts#doStart makes, at the exact moment the
    * Conductor resolves a unit's start gate with the `start` verb — that HTTP call IS the Conductor
    * approval this production's causal chain rests on (invariant 1). The daemon's own autonomous
-   * background walk (daemon.ts) NEVER sets this: a unit with a satisfied-but-never-started `after:`
-   * is a standing open start gate the daemon must render inert to, forever, until a Conductor clicks
-   * it — there is no persisted "queued"/"started" status to distinguish "not yet decided" from
-   * "decided" any other way (NOTES A6), so the boolean itself, passed only from that one call site,
-   * IS the entire mechanism preventing an autostart.
+   * background walk (daemon.ts) NEVER sets this: EVERY unit — `after:` or not — is a standing open
+   * start gate the daemon must render inert to, forever, until a Conductor clicks it (ruling C8; a
+   * unit's own existence, hand-written or injected, is not consent). There is no persisted
+   * "queued"/"started" status to distinguish "not yet decided" from "decided" any other way (NOTES
+   * A6), so the boolean itself, passed only from that one call site, IS the entire mechanism
+   * preventing an autostart.
    */
   startAuthorized?: boolean;
   today?: string;
@@ -176,9 +177,13 @@ export function advanceUnit(root: string, repo: Repo, unit: WorkUnit, memberRunn
   if (unmet.length > 0) return { outcome: "nothing" }; // invisible to the walk (§6) until satisfied.
 
   const hasAnyArtifact = (repo.artifacts.get(`${unit.project}/${unit.unit}`)?.size ?? 0) > 0;
-  if (unit.after && unit.after.length > 0 && !hasAnyArtifact && !opts.startAuthorized) {
-    // The start gate is open (after: just became satisfied) but no Conductor decision authorized
-    // this unit to begin — the daemon must never cross this line on its own (invariant 1).
+  if (!hasAnyArtifact && !opts.startAuthorized) {
+    // Ruling C8: EVERY unit's first flow step raises a start gate, regardless of `after:` — a plain
+    // unit with no `after:` is not exempt. `after:` is only ever a precondition on when the gate may
+    // be RAISED (unmetAfter above already returned "nothing" — invisible — until it's satisfied); it
+    // is never a licence to skip the gate once satisfied or absent. The daemon must never cross this
+    // line on its own (invariant 1) — only a Conductor's explicit `start` click
+    // (board/gateops.ts#doStart) sets startAuthorized.
     return { outcome: "halted", reason: "start gate open; awaiting Conductor" };
   }
 

@@ -55,12 +55,14 @@ describe("board without a daemon (createBoard's default) keeps the honest empty 
 
 describe("board with a daemon attached projects its real in-flight/completed state", () => {
   test("GET /studio's stat + Running-now section render a real in-flight invocation while one is in progress", async () => {
-    // A fresh unit with no after: is immediately walkable (see tests/daemon.test.ts case b) — the
-    // simplest way to force a real in-flight production without a separate authorization step.
-    const { mkdirSync, writeFileSync } = await import("node:fs");
-    const unitDir = join(root, "work/storefront/widget-tweak");
-    mkdirSync(unitDir, { recursive: true });
-    writeFileSync(unitDir + "/unit.md", "---\ntype: feature\nstatus: active\n---\n\n# widget-tweak\n\nBoard-daemon test fixture.\n");
+    // loyalty-flow's after: [cart-icon-fix] is already satisfied in the golden fixture (E5). Ruling
+    // C8: every unit's first production still needs an explicit Conductor start regardless of
+    // `after:` — get it past that start gate and its brief approved first (over HTTP, the board's own
+    // write surface), then the daemon can advance it on its own for the step under observation here.
+    const preBoard = createBoard(root);
+    await preBoard.fetch(req("/gates/storefront/loyalty-flow/start", { method: "POST" }));
+    await preBoard.fetch(req("/gates/storefront/product-brief-loyalty-flow-v1/approve", { method: "POST" }));
+    preBoard.close();
 
     let mid: string | null = null;
     const daemon = new Daemon(root, {
@@ -82,9 +84,9 @@ describe("board with a daemon attached projects its real in-flight/completed sta
     daemon.tick();
     expect(mid).not.toBeNull();
     expect(mid!).toContain('data-runningstat="1"');
-    expect(mid!).toContain("wren");
+    expect(mid!).toContain("lyra");
     expect(mid!).toContain("producing");
-    expect(mid!).toContain("product-brief");
+    expect(mid!).toContain("design");
 
     // After the tick completes, the board's own live GET reflects the cleared state.
     const res = await board.fetch(req("/studio"));

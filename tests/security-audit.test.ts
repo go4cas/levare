@@ -194,19 +194,21 @@ describe("[surface 4/6 · CRITICAL · FIXED] registry edit route escaping the re
 });
 
 // ---------------------------------------------------------------------------
-// Surface 5 + 1 — the daemon's blast radius / invariant 1 (HIGH, DEFERRED — Conductor ruling required).
-// The daemon auto-advances any `active` unit that has no `after:` and no artifacts yet — invoking its
-// first member (real money, the real SDK) with NO gate and NO click. The only thing standing between
-// "a unit.md appears on disk" and "a member runs unattended" is that the file is `active` and lacks
+// Surface 5 + 1 — the daemon's blast radius / invariant 1 (HIGH, FIXED — ruling C8). Was: the daemon
+// auto-advanced any `active` unit that had no `after:` and no artifacts yet — invoking its first
+// member (real money, the real SDK) with NO gate and NO click. The only thing standing between "a
+// unit.md appears on disk" and "a member runs unattended" was that the file was `active` and lacked
 // `after:`. Any non-Conductor write into work/ (a member escaping its unit dir, a prompt-injected
-// Orchestrator, a merged PR, a vendored skill's file write) therefore autostarts a member. NOTES O3
-// records this as "the single most debatable call in this phase" and deliberately took the loose
-// reading — so the structural fix (require explicit start authorization for EVERY unit's first
-// production, not only `after:` ones) is a PRD-level policy change that needs a Conductor ruling, not
-// a unilateral audit fix. Left as an xfail asserting the secure behavior.
+// Orchestrator, a merged PR, a vendored skill's file write) could therefore autostart a member.
+// NOTES O3 recorded this as "the single most debatable call in this phase" and deliberately took the
+// loose reading; ruling C8 (NOTES.md) supersedes it: EVERY unit's first flow step raises a start
+// gate, regardless of `after:` — there is no auto-start path. `after:` remains only a precondition on
+// when the gate may be raised, never a licence to begin work. Fixed in src/dagwalk.ts (the daemon's
+// single-step advance), src/runner.ts (the in-memory walk), and src/board/derive.ts (the board's own
+// gate projection).
 // ---------------------------------------------------------------------------
 
-describe("[surface 5/1 · HIGH · DEFERRED — CONDUCTOR RULING REQUIRED] daemon autostart without approval", () => {
+describe("[surface 5/1 · HIGH · FIXED — ruling C8] daemon autostart without approval", () => {
   let root: string;
   beforeEach(() => {
     root = seedScratchRepo();
@@ -215,8 +217,10 @@ describe("[surface 5/1 · HIGH · DEFERRED — CONDUCTOR RULING REQUIRED] daemon
     rmSync(root, { recursive: true, force: true });
   });
 
-  test.failing("EXPECTED-TO-FAIL: daemon must NOT invoke a member for an injected active/no-after unit with no Conductor approval", () => {
+  test("PREVENTED: daemon must NOT invoke a member for an injected active/no-after unit with no Conductor approval", () => {
     // A non-Conductor path drops a brand-new active unit — no after:, no artifacts, no gate, no click.
+    // This is exactly the "foreign or hand-written unit.md" scenario: it must cause NO member
+    // invocation, only a start gate.
     const unitDir = join(root, "work/storefront/injected-unit");
     mkdirSync(unitDir, { recursive: true });
     writeFileSync(join(unitDir, "unit.md"), ["---", "type: feature", "status: active", "---", "", "# injected", ""].join("\n"));
@@ -238,12 +242,15 @@ describe("[surface 5/1 · HIGH · DEFERRED — CONDUCTOR RULING REQUIRED] daemon
       },
     });
     try {
-      daemon.tick();
+      // Multiple ticks: the start gate must never be crossed by the autonomous walk, ever.
+      for (let i = 0; i < 3; i++) daemon.tick();
     } finally {
       daemon.stop();
     }
-    // SECURE behavior (currently violated): no member should have run for a unit no Conductor started.
     expect(invoked.filter((i) => i.endsWith(":injected-unit"))).toEqual([]);
+    // The unit directory holds nothing but the unit.md an adversary planted — no artifact was
+    // produced, only an (invisible-from-disk) start gate.
+    expect(readFileSync(join(unitDir, "unit.md"), "utf8")).toContain("status: active");
   });
 });
 

@@ -154,20 +154,23 @@ describe("golden walk against stub members", () => {
   test("halts at each declared gate and matches expected.json", () => {
     const repo = loadRepo("fixtures/golden");
     const script = new Script([
+      // Ruling C8: checkout-flow's own start gate is raised first, `after:` or not.
+      { expect: "start", verb: "start", by: CAS },
       { expect: "brief", verb: "approve", by: CAS },
       { expect: "design", verb: "approve", by: CAS },
       { expect: "spec review", verb: "request", by: CAS },
       { expect: "spec review", verb: "approve", by: CAS },
       // loyalty-flow's after: is satisfied (E5 fixture), so its own start gate is raised too —
-      // walk order is by "project/unit", so it comes after checkout-flow's four gates.
+      // walk order is by "project/unit", so it comes after checkout-flow's gates.
       { expect: "start", verb: "notyet", by: CAS },
     ]);
     const runner = new Runner(repo, { members: new StubRunner(), decisions: script });
     const result = runner.run();
 
-    // Five gates were raised (brief, design, two loop rounds, and loyalty-flow's start gate).
+    // Six gates were raised (checkout-flow's own start gate, brief, design, two loop rounds, and
+    // loyalty-flow's start gate).
     const gates = result.events.filter((e) => e.t === "gate-raised");
-    expect(gates.length).toBe(5);
+    expect(gates.length).toBe(6);
 
     // Loop terminated by condition in round 2.
     const end = result.events.find((e) => e.t === "loop-end");
@@ -190,6 +193,7 @@ describe("golden walk against stub members", () => {
   test("only the Conductor's approval sets approved_by, always name + ISO date", () => {
     const repo = loadRepo("fixtures/golden");
     const script = new Script([
+      { expect: "start", verb: "start", by: CAS },
       { expect: "brief", verb: "approve", by: CAS },
       { expect: "design", verb: "approve", by: CAS },
       { expect: "spec review", verb: "request", by: CAS },
@@ -203,7 +207,10 @@ describe("golden walk against stub members", () => {
 
   test("an approval without a name + ISO date is a hard error (C5)", () => {
     const repo = loadRepo("fixtures/golden");
-    const script = new Script([{ expect: "brief", verb: "approve" }]); // no `by`
+    const script = new Script([
+      { expect: "start", verb: "start" }, // the start gate itself carries no approved_by
+      { expect: "brief", verb: "approve" }, // no `by`
+    ]);
     expect(() => new Runner(repo, { members: new StubRunner(), decisions: script }).run()).toThrow(
       /name \+ ISO date/,
     );
@@ -218,6 +225,7 @@ describe("loop exhaustion", () => {
   test("three rounds without approval escalate via on_exhaust gate and pause the unit", () => {
     const repo = loadRepo("fixtures/golden");
     const script = new Script([
+      { expect: "start", verb: "start", by: CAS },
       { expect: "brief", verb: "approve", by: CAS },
       { expect: "design", verb: "approve", by: CAS },
       { expect: "spec review", verb: "request", by: CAS },
@@ -324,7 +332,7 @@ describe("declared limits", () => {
     });
     const result = new Runner(repo, {
       members,
-      decisions: new Script([{ expect: "budget", verb: "stop" }]),
+      decisions: new Script([{ expect: "start", verb: "start" }, { expect: "budget", verb: "stop" }]),
     }).run();
     expect(result.events.some((e) => e.t === "budget")).toBe(true);
     expect(result.unitStatus.get("p/u")).toBe("paused");
@@ -342,7 +350,7 @@ describe("declared limits", () => {
     });
     const result = new Runner(repo, {
       members,
-      decisions: new Script([{ expect: "budget", verb: "continue" }]),
+      decisions: new Script([{ expect: "start", verb: "start" }, { expect: "budget", verb: "continue" }]),
     }).run();
     expect(result.unitStatus.get("p/u")).toBe("active");
     expect(result.events.filter((e) => e.t === "produce").length).toBe(2);
@@ -380,7 +388,7 @@ describe("declared limits", () => {
     });
     const result = new Runner(repo, {
       members,
-      decisions: new Script([{ expect: "budget", verb: "continue" }]),
+      decisions: new Script([{ expect: "start", verb: "start" }, { expect: "budget", verb: "continue" }]),
     }).run();
     // Exactly one budget gate despite two further producing steps after the acknowledgment.
     expect(result.events.filter((e) => e.t === "budget").length).toBe(1);
@@ -401,7 +409,7 @@ describe("declared limits", () => {
     });
     const result = new Runner(repo, {
       members,
-      decisions: new Script([{ expect: "timebox", verb: "stop" }]),
+      decisions: new Script([{ expect: "start", verb: "start" }, { expect: "timebox", verb: "stop" }]),
     }).run();
     expect(result.events.some((e) => e.t === "timebox")).toBe(true);
     expect(result.unitStatus.get("p/u")).toBe("paused");
@@ -434,7 +442,7 @@ describe("pace: step", () => {
     });
     const result = new Runner(repo, {
       members,
-      decisions: new Script([{ expect: "pace: alpha", verb: "approve" }]),
+      decisions: new Script([{ expect: "start", verb: "start" }, { expect: "pace: alpha", verb: "approve" }]),
     }).run();
     expect(result.events.some((e) => e.t === "pace" && e.step === "alpha")).toBe(true);
     expect(result.events.some((e) => e.t === "produce")).toBe(true);
@@ -454,7 +462,7 @@ describe("boundary contract enforcement", () => {
       projects: [project("p")],
       units: [unit({ unit: "u", project: "p", type: "t" })],
     });
-    expect(() => new Runner(repo, { members, decisions: new Script([]) }).run()).toThrow(/off-contract/);
+    expect(() => new Runner(repo, { members, decisions: new Script([{ expect: "start", verb: "start" }]) }).run()).toThrow(/off-contract/);
   });
 
   test("an ambiguous flow step fails loudly", () => {
@@ -471,6 +479,6 @@ describe("boundary contract enforcement", () => {
       projects: [project("p")],
       units: [unit({ unit: "u", project: "p", type: "t" })],
     });
-    expect(() => new Runner(repo, { members, decisions: new Script([]) }).run()).toThrow(/ambiguous/);
+    expect(() => new Runner(repo, { members, decisions: new Script([{ expect: "start", verb: "start" }]) }).run()).toThrow(/ambiguous/);
   });
 });

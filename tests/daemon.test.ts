@@ -179,8 +179,8 @@ function commitAuthor(root: string, sha: string): { name: string; email: string 
   return { name, email };
 }
 
-describe("(b) a plain unit with no after: is walkable from the moment it's declared (PRD §6's literal DAG walk)", () => {
-  test("a freshly-declared active unit gets its first kind produced without any further Conductor click", () => {
+describe("(b) EVERY unit's first flow step raises a start gate — no auto-start path (ruling C8)", () => {
+  test("a freshly-declared active unit with no after: raises a start gate; the daemon never crosses it on its own", () => {
     const unitDir = join(root, "work/storefront/widget-tweak");
     mkdirSync(unitDir, { recursive: true });
     writeFileSync(
@@ -189,10 +189,35 @@ describe("(b) a plain unit with no after: is walkable from the moment it's decla
     );
     const { runner, calls } = countingRunner(root);
     const daemon = new Daemon(root, { memberRunner: () => runner });
-    daemon.tick();
-    expect(calls).toEqual([{ member: "wren", kind: "product-brief" }]);
+    // No `after:` at all — still a start gate, not a licence to begin (invariant 1): a hand-written
+    // or injected unit.md causes NO member invocation, only a start gate, no matter how many ticks.
+    for (let i = 0; i < 3; i++) daemon.tick();
+    expect(calls).toEqual([]);
+    expect(readdirSync(unitDir)).toEqual(["unit.md"]);
+  });
+
+  test("once the Conductor resolves the start gate, the daemon advances the unit normally on later ticks", () => {
+    const unitDir = join(root, "work/storefront/widget-tweak");
+    mkdirSync(unitDir, { recursive: true });
+    writeFileSync(
+      join(unitDir, "unit.md"),
+      "---\ntype: feature\nstatus: active\n---\n\n# widget-tweak\n\nA small storefront affordance change, for daemon test coverage.\n",
+    );
+
+    // The Conductor's own explicit click is the only thing allowed to cross the start gate.
+    const started = resolveGate(root, "storefront", "widget-tweak", "start" as Verb, { today: "2026-07-12" });
+    expect(started.ok).toBe(true);
     expect(existsSync(join(unitDir, "product-brief-widget-tweak-v1.md"))).toBe(true);
-    // Halts immediately — a second tick does not chase further without an approval.
+    resolveGate(root, "storefront", "product-brief-widget-tweak-v1", "approve" as Verb, { today: "2026-07-12" });
+
+    // Past the start gate, the daemon advances the unit exactly like any other flow step, with no
+    // further authorization required.
+    const { runner, calls } = countingRunner(root);
+    const daemon = new Daemon(root, { memberRunner: () => runner });
+    daemon.tick();
+    expect(calls).toEqual([{ member: "lyra", kind: "design" }]);
+    expect(existsSync(join(unitDir, "design-widget-tweak-v1.md"))).toBe(true);
+    // Halts at design's gate — a second tick does not chase further without an approval.
     daemon.tick();
     expect(calls.length).toBe(1);
   });
@@ -277,16 +302,23 @@ describe("(e) concurrency safety: a single-threaded work queue", () => {
     // A member call that itself (synchronously) tries to trigger another tick — the one genuine
     // reentrancy hazard possible with today's fully-synchronous MemberRunner boundary — must be
     // refused by the same single-flight guard the watcher-driven loop relies on, not silently allowed
-    // to interleave two unit-walks against the same on-disk state. A fresh, immediately-walkable unit
-    // (case b) guarantees `produce` genuinely fires within this tick.
+    // to interleave two unit-walks against the same on-disk state. Past its start gate and with its
+    // brief already approved (ruling C8 — every unit's first production needs an explicit Conductor
+    // start), a unit is immediately walkable again, guaranteeing `produce` genuinely fires within
+    // this tick.
     const unitDir = join(root, "work/storefront/widget-tweak");
     mkdirSync(unitDir, { recursive: true });
     writeFileSync(join(unitDir, "unit.md"), "---\ntype: feature\nstatus: active\n---\n\n# widget-tweak\n\nReentrancy test fixture unit.\n");
+    resolveGate(root, "storefront", "widget-tweak", "start" as Verb, { today: "2026-07-12" });
+    resolveGate(root, "storefront", "product-brief-widget-tweak-v1", "approve" as Verb, { today: "2026-07-12" });
 
     let sawReentrantThrow = false;
     const inner = new Daemon(root, {
       memberRunner: () => ({
-        capabilities: () => [{ member: "wren", kind: "product-brief" }],
+        // "product-brief" is included so `brief`'s own step resolution still succeeds (it's already
+        // approved on disk, so it's never re-produced) — otherwise resolveStep would fail to resolve
+        // that earlier step at all and mask the case under test (mirrors test (d)'s own note).
+        capabilities: () => [{ member: "wren", kind: "product-brief" }, { member: "lyra", kind: "design" }],
         produce: (member, kind, unit, project) => {
           try {
             inner.tick();

@@ -175,26 +175,30 @@ export class Runner {
       return;
     }
 
-    // Start gate (§6): a unit with `after:` is invisible until every dependency has shipped; when
-    // satisfied, the walk raises a start gate at flow position zero rather than autostarting.
-    if (unit.after && unit.after.length > 0) {
-      const unmet = unit.after.filter((id) => !this.unitShipped(unit.project, id));
-      if (unmet.length > 0) {
-        this.emit({ t: "walk", unit: unit.unit, project: unit.project, note: `after: unmet [${unmet.join(", ")}]; invisible` });
-        return;
-      }
-      const d = this.raiseGate({
-        type: "start",
-        unit: unit.unit,
-        project: unit.project,
-        label: "start",
-        verbs: ["start", "notyet", "rescope"],
-        note: `after: [${unit.after.join(", ")}] satisfied`,
-      });
-      if (d.verb !== "start") {
-        this.setUnitStatus(key, d.verb === "rescope" ? "blocked" : "active", "start gate: not started");
-        return;
-      }
+    // Start gate (§6, ruling C8): EVERY unit's first flow step raises a start gate at flow position
+    // zero, regardless of `after:` — a plain unit with no `after:` is not exempt; its own existence
+    // is not consent. A unit with `after:` is additionally invisible until every dependency has
+    // shipped; `after:` only ever governs WHEN the gate may be raised, never whether it exists.
+    const unmet = (unit.after ?? []).filter((id) => !this.unitShipped(unit.project, id));
+    if (unmet.length > 0) {
+      this.emit({ t: "walk", unit: unit.unit, project: unit.project, note: `after: unmet [${unmet.join(", ")}]; invisible` });
+      return;
+    }
+    const startNote =
+      unit.after && unit.after.length > 0
+        ? `after: [${unit.after.join(", ")}] satisfied`
+        : "no after: condition; first production requires an explicit start (invariant 1)";
+    const d = this.raiseGate({
+      type: "start",
+      unit: unit.unit,
+      project: unit.project,
+      label: "start",
+      verbs: ["start", "notyet", "rescope"],
+      note: startNote,
+    });
+    if (d.verb !== "start") {
+      this.setUnitStatus(key, d.verb === "rescope" ? "blocked" : "active", "start gate: not started");
+      return;
     }
 
     const team = this.responsibleTeam(unit);
