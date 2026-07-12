@@ -251,12 +251,45 @@
       var save = ent.querySelector('[data-save]');
       if (save) save.style.display = editing ? '' : 'none';
     });
+    /* E8: "Save and commit" POSTs the edited raw markdown to the existing POST /registry/*path route
+       (validate -> write -> commit as the Conductor, server-side, with the SAME validator the whole
+       repo is checked against). The client only relays the raw text and renders the verdict \u2014 no form
+       fields, no client-side authoring. On success the page reloads to re-derive from the committed
+       file (invariant 2); on a validation failure the server rolls the file back and returns the
+       error, which is shown inline without leaving edit mode so the Conductor can fix and retry. */
     document.addEventListener('click', function (e) {
       var sv = e.target.closest('[data-save]');
       if (!sv) return;
-      sv.textContent = 'Committed \u2713';
+      var ent = sv.closest('.entity');
+      if (!ent) return;
+      var ta = ent.querySelector('.rawmd-edit');
+      var path = ta && ta.getAttribute('data-path');
+      var validity = ent.querySelector('.validity');
+      if (!ta || !path) return;
       sv.disabled = true;
-      setTimeout(function () { sv.textContent = 'Save and commit'; sv.disabled = false; }, 1600);
+      sv.textContent = 'Saving\u2026';
+      fetch('/registry/' + path, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content: ta.value })
+      }).then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, body: j }; });
+      }).then(function (res) {
+        if (res.ok && res.body && res.body.ok) {
+          sv.textContent = 'Committed \u2713';
+          if (validity) { validity.classList.remove('is-invalid'); validity.innerHTML = '<span class="status-dot is-ok"></span>valid'; }
+          setTimeout(function () { location.reload(); }, 500);
+        } else {
+          sv.disabled = false;
+          sv.textContent = 'Save and commit';
+          var msg = (res.body && res.body.error) ? res.body.error : 'save failed';
+          if (validity) { validity.classList.add('is-invalid'); validity.innerHTML = '<span class="status-dot is-danger"></span>' + msg; }
+        }
+      }).catch(function () {
+        sv.disabled = false;
+        sv.textContent = 'Save and commit';
+        if (validity) { validity.classList.add('is-invalid'); validity.innerHTML = '<span class="status-dot is-danger"></span>save failed'; }
+      });
     });
   });
 })();

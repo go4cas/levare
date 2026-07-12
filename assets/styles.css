@@ -367,6 +367,12 @@ button{ font-family:inherit; }
   background:var(--panel-2); border:1px solid var(--border); border-radius:12px; padding:18px 20px; white-space:pre-wrap; margin:0; }
 .entity.is-editing .rendered{ display:none; }
 .entity.is-editing .rawmd{ display:block; }
+/* E8: the raw-markdown surface is an editable textarea in edit mode — same mono/panel treatment as
+   the read-only <pre>, plus the box-model a textarea needs (full width, vertical resize, a usable
+   editing height). Still raw markdown, never form fields (no form-based authoring). */
+textarea.rawmd{ width:100%; box-sizing:border-box; resize:vertical; min-height:240px; tab-size:2; outline:none; }
+textarea.rawmd:focus{ border-color:var(--border-strong); }
+.validity.is-invalid{ color:var(--danger); }
 .validity{ display:inline-flex; align-items:center; gap:7px; font-family:var(--mono); font-size:11px; color:var(--ok); }
 
 /* ---------- theme toggle ---------- */

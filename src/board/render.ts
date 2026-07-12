@@ -784,18 +784,26 @@ export function renderIdea(repo: Repo, root: string, name: string): string {
 // inventing a new one). `.entity` stays alongside it purely for the kind-switch/is-editing JS hooks
 // in app.js — it contributes no visual styling of its own beyond the flex layout `.card` already sets.
 // Header, body, and the edit-source actions all live inside this one element; nothing floats beside it.
-function entityBlock(kind: RegistryKind, title: string, kindLabel: string, inner: string, raw: string, active: boolean): string {
-  return `<article class="entity card" data-entity="${kind}"${active ? "" : ' style="display:none"'}>
+// E8: the registry's one write is "Edit source" — raw markdown, the same validator, "Save and commit"
+// as the Conductor (design brief; PRD §9). The prototype only ever revealed a read-only <pre>; the
+// editbar (with its Save button) lived INSIDE `.rendered`, which is hidden in edit mode — so editing
+// was preview-only. Here the raw surface is an editable <textarea class="rawmd"> (still just raw
+// markdown — no form fields, honoring "no form-based authoring, ever"), the editbar is a sibling of
+// `.rendered` so its Save button is reachable while editing, and `data-path` carries the entity's
+// repo-relative file so app.js can POST it to the existing `POST /registry/*path` route (validate →
+// write → commit as the Conductor). The server runs the SAME validator the whole repo is checked
+// against; the client only relays the raw text and shows the verdict.
+function entityBlock(kind: RegistryKind, title: string, kindLabel: string, inner: string, raw: string, name: string, active: boolean): string {
+  const relPath = `${kind}/${name}.md`;
+  return `<article class="entity card" data-entity="${kind}" data-path="${esc(relPath)}"${active ? "" : ' style="display:none"'}>
     <div class="entity__head"><span class="entity__title">${title}</span><span class="entity__kind">${esc(kindLabel)}</span></div>
-    <div class="rendered">
-      ${inner}
-      <div class="editbar">
-        <button class="togglebtn" data-edit-toggle>Edit source</button>
-        <span class="validity"><span class="status-dot is-ok"></span>valid</span>
-        <button class="togglebtn" data-save style="display:none;background:var(--fg);color:var(--bg);border-color:var(--fg)">Save and commit</button>
-      </div>
+    <div class="rendered">${inner}</div>
+    <textarea class="rawmd rawmd-edit" data-path="${esc(relPath)}" spellcheck="false">${esc(raw)}</textarea>
+    <div class="editbar">
+      <button class="togglebtn" data-edit-toggle>Edit source</button>
+      <span class="validity"><span class="status-dot is-ok"></span>valid</span>
+      <button class="togglebtn" data-save style="display:none;background:var(--fg);color:var(--bg);border-color:var(--fg)">Save and commit</button>
     </div>
-    <pre class="rawmd">${esc(raw)}</pre>
   </article>`;
 }
 
@@ -821,7 +829,7 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string):
       <div class="prow"><span class="k">color</span><span class="v mono" style="color:${esc(t.style.color)}">${esc(t.style.color)}</span></div>
       <div class="prow"><span class="k">members</span><span class="v">${t.members.length} &middot; ${t.members.map(esc).join(", ")}</span></div>
       <div class="prow"><span class="k">produces</span><span class="v mono">${t.produces.map(esc).join(", ")}</span></div>`;
-      return entityBlock("teams", `<span class="sq" style="width:16px;height:16px;border-radius:4px;background:${esc(t.style.color)}"></span> ${esc(t.name)}`, "team", inner, rawFor(root, "teams", t.name), active === "teams");
+      return entityBlock("teams", `<span class="sq" style="width:16px;height:16px;border-radius:4px;background:${esc(t.style.color)}"></span> ${esc(t.name)}`, "team", inner, rawFor(root, "teams", t.name), t.name, active === "teams");
     })
     .join("\n");
 
@@ -834,14 +842,14 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string):
       <div class="prow"><span class="k">kind</span><span class="v mono">${esc(a.kind)}</span></div>
       ${a.model ? `<div class="prow"><span class="k">model</span><span class="v mono">${esc(a.model)}</span></div>` : ""}
       ${team ? `<div class="prow"><span class="k">wears</span><span class="v"><span class="sq" style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${esc(team.style.color)};vertical-align:middle"></span> ${esc(team.name)}</span></div>` : ""}`;
-      return entityBlock("agents", `${avatar(a.style.avatar || a.name.slice(0, 2), team?.style.color, { size: "lg" })} ${esc(a.name)}`, `agent${team ? ` · ${team.name}` : ""}`, inner, rawFor(root, "agents", a.name), active === "agents");
+      return entityBlock("agents", `${avatar(a.style.avatar || a.name.slice(0, 2), team?.style.color, { size: "lg" })} ${esc(a.name)}`, `agent${team ? ` · ${team.name}` : ""}`, inner, rawFor(root, "agents", a.name), a.name, active === "agents");
     })
     .join("\n");
 
   const skillBlocks = extras.skills
     .map((s) => {
       const inner = `<div class="card__h">SKILL.md</div><p style="margin:0;font-size:13.5px;line-height:1.6;color:var(--fg-dim)">${esc(String(s.data.description ?? firstParagraph(s.body)))}</p>`;
-      return entityBlock("skills", esc(s.name), "skill", inner, rawFor(root, "skills", s.name), active === "skills");
+      return entityBlock("skills", esc(s.name), "skill", inner, rawFor(root, "skills", s.name), s.name, active === "skills");
     })
     .join("\n");
 
@@ -853,7 +861,7 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string):
       const inner = `<div class="card__h">Injected into</div>${
         referencedBy.length ? referencedBy.map((r) => `<div class="backlink">${esc(r)}</div>`).join("\n") : '<span style="color:var(--fg-mute)">not referenced yet</span>'
       }`;
-      return entityBlock("knowledge", esc(k.name), "knowledge", inner, rawFor(root, "knowledge", k.name), active === "knowledge");
+      return entityBlock("knowledge", esc(k.name), "knowledge", inner, rawFor(root, "knowledge", k.name), k.name, active === "knowledge");
     })
     .join("\n");
 
@@ -863,7 +871,7 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string):
       <div class="prow"><span class="k">glyph</span><span class="v mono">${t.glyph}</span></div>
       <div class="prow"><span class="k">expects</span><span class="v mono">${t.expects.map(esc).join(" &rarr; ")}</span></div>
       <div class="prow"><span class="k">gates</span><span class="v">${t.gates.map(esc).join(", ")}</span></div>`;
-      return entityBlock("types", `<span style="font-family:var(--mono)">${t.glyph} ${esc(t.name)}</span>`, "type", inner, rawFor(root, "types", t.name), active === "types");
+      return entityBlock("types", `<span style="font-family:var(--mono)">${t.glyph} ${esc(t.name)}</span>`, "type", inner, rawFor(root, "types", t.name), t.name, active === "types");
     })
     .join("\n");
 
@@ -872,7 +880,7 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string):
       const inner = `<div class="card__h">Definition</div>
       <div class="prow"><span class="k">kind</span><span class="v mono">${esc(c.kind)}</span></div>
       <div class="prow"><span class="k">env</span><span class="v mono">${c.env.map(esc).join(", ")}</span></div>`;
-      return entityBlock("connectors", esc(c.name), "connector", inner, rawFor(root, "connectors", c.name), active === "connectors");
+      return entityBlock("connectors", esc(c.name), "connector", inner, rawFor(root, "connectors", c.name), c.name, active === "connectors");
     })
     .join("\n");
 
@@ -880,7 +888,7 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string):
     .map((e) => {
       const rubric = Array.isArray(e.data.rubric) ? (e.data.rubric as string[]) : [];
       const inner = `<div class="card__h">Rubric</div>${rubric.map((r) => `<div class="prow"><span class="v">${esc(String(r))}</span></div>`).join("\n")}`;
-      return entityBlock("evals", esc(e.name), "eval", inner, rawFor(root, "evals", e.name), active === "evals");
+      return entityBlock("evals", esc(e.name), "eval", inner, rawFor(root, "evals", e.name), e.name, active === "evals");
     })
     .join("\n");
 

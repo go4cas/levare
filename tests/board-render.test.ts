@@ -211,11 +211,31 @@ describe("registry screen", () => {
 
     // Sanity: for a specific entity (kestrel), the header, the flow-strip body, and the edit actions
     // all sit between the same opening <article> and its closing </article> — genuinely one container.
-    const kestrelCard = /<article class="entity card" data-entity="teams">[\s\S]*?<\/article>/.exec(html)![0];
+    const kestrelCard = /<article class="entity card" data-entity="teams"[^>]*>[\s\S]*?<\/article>/.exec(html)![0];
     expect(kestrelCard).toContain('class="entity__head"');
     expect(kestrelCard).toContain('class="flowstrip"');
     expect(kestrelCard).toContain('class="editbar"');
     expect(kestrelCard).toContain("data-edit-toggle");
+  });
+
+  // E8: the registry editor is no longer preview-only. Each entity card now carries an editable raw-
+  // markdown control wired to the write route: an actual <textarea> (raw markdown, not form fields),
+  // a data-path naming the entity's repo-relative file, and a Save button — the pieces that were
+  // missing when "Edit source" only ever revealed a read-only <pre>. (The server route that consumes
+  // this — validate → write → commit as the Conductor — is exercised in board-serve.test.ts.)
+  test("each entity exposes an editable raw-markdown control wired to POST /registry/*path (E8)", () => {
+    const cardOpens = (html.match(/<article class="entity card"/g) || []).length;
+    // One editable textarea per card, and each is the raw-markdown editor (not a preview <pre>).
+    const textareas = (html.match(/<textarea class="rawmd rawmd-edit"[^>]*>/g) || []);
+    expect(textareas.length).toBe(cardOpens);
+    // A Save button per card, and every card names the file the editor will POST to.
+    expect((html.match(/data-save/g) || []).length).toBe(cardOpens);
+    // The kestrel card's editor targets teams/kestrel.md — the exact path the write route confines to.
+    const kestrelCard = /<article class="entity card" data-entity="teams"[^>]*>[\s\S]*?<\/article>/.exec(html)![0];
+    expect(kestrelCard).toContain('data-path="teams/kestrel.md"');
+    expect(kestrelCard).toMatch(/<textarea class="rawmd rawmd-edit" data-path="teams\/kestrel\.md"/);
+    // The raw markdown source is inside the textarea (the entity's own frontmatter is editable).
+    expect(kestrelCard).toContain("name: kestrel");
   });
 });
 
