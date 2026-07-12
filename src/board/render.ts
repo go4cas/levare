@@ -34,6 +34,7 @@ import {
 import { loadExtras, type RegistryExtras } from "./extra.ts";
 import { buildTimeline } from "./timeline.ts";
 import { diagnose } from "../doctor.ts";
+import type { DaemonInvocation } from "../daemon.ts";
 
 const ASSETS = `<link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
@@ -302,11 +303,27 @@ export function projectStatusChip(projGates: number, anyUnitActive: boolean, mem
   return `<span class="chip is-blocked">idle</span>`;
 }
 
+// Phase 8, deliverable c: retires NOTES E2. Reuses `.tlrow` (the timeline's own row anatomy) and
+// `.avatar--runner` — a class already declared in the frozen stylesheet for exactly this identity but
+// never emitted by any renderer until now (the same "dormant, already-designed rule" shape as G1's
+// `.snode.is-danger` before it was wired up) — so this needed zero new CSS.
+function runningNowHtml(running: DaemonInvocation[], now: Date): string {
+  if (running.length === 0) {
+    return `<p style="color:var(--fg-mute);font-size:13.5px">Nothing running right now.</p>`;
+  }
+  return running
+    .map((r) => {
+      const age = ageLabel(r.startedAt, now);
+      return `<div class="tlrow"><span class="avatar avatar--runner sm">R</span><span class="tlrow__text">${esc(r.member)} producing <b>${esc(r.kind)}</b> for ${esc(r.project)}/${esc(r.unit)} <span class="mono">${age}</span></span></div>`;
+    })
+    .join("\n");
+}
+
 // ---------------------------------------------------------------------------
 // STUDIO
 // ---------------------------------------------------------------------------
 
-export function renderStudio(repo: Repo, root: string, now: Date = new Date()): string {
+export function renderStudio(repo: Repo, root: string, now: Date = new Date(), running: DaemonInvocation[] = []): string {
   const extras = loadExtras(root);
   const gates = openGates(repo);
   const spend = repoSpend(repo);
@@ -330,8 +347,11 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date()): 
         ? units.length ? "No unit currently gated or active." : "No work units yet."
         : esc(unitSummary(repo, summaryUnit) || "Awaiting its first artifact.");
       const anyUnitActive = units.some((u) => u.status === "active");
-      // membersRunning: always 0 until E2's live process registry exists (no fabricated activity).
-      const chip = projectStatusChip(projGates, anyUnitActive, 0);
+      // Phase 8, deliverable c: a real projection of the daemon's in-flight invocations, retiring
+      // NOTES E2 — `running` is [] whenever no daemon is attached (createBoard's default; see
+      // board/serve.ts), so this stays the same honest zero it always was in that case.
+      const membersRunning = running.filter((r) => r.project === p.name).length;
+      const chip = projectStatusChip(projGates, anyUnitActive, membersRunning);
       const release = latestRelease(repo, p.name);
       const metaParts = [
         `${units.length} unit${units.length === 1 ? "" : "s"}`,
@@ -356,7 +376,7 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date()): 
     </header>
     <div class="statstrip" style="grid-template-columns:repeat(5,1fr)">
       <div class="stat"><div class="n is-gate" data-gatestat="${gates.length}">${gates.length}</div><div class="l">Gates on you</div></div>
-      <div class="stat"><div class="n">0</div><div class="l">Members running</div></div>
+      <div class="stat"><div class="n" data-runningstat="${running.length}">${running.length}</div><div class="l">Members running</div></div>
       <div class="stat"><div class="n">${shippedUnits}</div><div class="l">Units shipped &middot; 30d</div></div>
       <div class="stat"><div class="n">${median === null ? "&mdash;" : `${median.toFixed(median % 1 === 0 ? 0 : 1)}d`}</div><div class="l">Median gate response</div></div>
       <div class="stat"><div class="n">$${spend.toFixed(2)}</div><div class="l">Spend &middot; 30d</div></div>
@@ -367,7 +387,7 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date()): 
     </section>
     <section class="sec">
       <div class="sec__h"><h2>Running now</h2></div>
-      <p style="color:var(--fg-mute);font-size:13.5px">No live process registry yet &mdash; member activity here awaits a running Runner (see NOTES.md).</p>
+      ${runningNowHtml(running, now)}
     </section>
     <section class="sec">
       <div class="sec__h"><h2>Projects</h2></div>

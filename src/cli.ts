@@ -129,9 +129,10 @@ function wrap(text: string, width: number): string[] {
   return lines;
 }
 
-// `levare serve [root] [--port N] [--read-only]` — the board (§9): four screens, SSE live
-// updates, three write routes. Read-only when --read-only is passed, or by default when root sits
-// under a fixtures/ tree (NOTES E14).
+// `levare serve [root] [--port N] [--read-only] [--no-daemon]` — the board (§9) plus, by default, the
+// phase-8 daemon in the same process (deliverable a). Read-only when --read-only is passed, or by
+// default when root sits under a fixtures/ tree (NOTES E14); a read-only board never gets a daemon
+// (nothing for it to legitimately write). `--no-daemon` disables it on an otherwise-writable root too.
 export function runServeCmd(rest: string[]): number {
   const root = rest.find((a) => !a.startsWith("-")) ?? DEFAULT_ROOT;
   const port = Number(flag(rest, "--port") ?? 4173);
@@ -139,8 +140,9 @@ export function runServeCmd(rest: string[]): number {
   // read-only by default (structural, not a rule to remember — see NOTES E14) and any other path
   // stays read-write.
   const readOnly = rest.includes("--read-only") ? true : undefined;
-  const { url, board } = serve(root, port, { readOnly });
-  console.log(`levare serve · ${root} → ${url}${board.ctx.readOnly ? " (read-only)" : ""}`);
+  const noDaemon = rest.includes("--no-daemon");
+  const { url, board, daemon } = serve(root, port, { readOnly, noDaemon });
+  console.log(`levare serve · ${root} → ${url}${board.ctx.readOnly ? " (read-only)" : ""}${daemon ? " · daemon: on" : " · daemon: off"}`);
   return 0;
 }
 
@@ -151,7 +153,7 @@ function usage(): number {
       "       levare replay <path> --stubs\n" +
       "       levare context <agent> --unit <unit> [--step <step>] [--root <path>] [--dry-run]\n" +
       "       levare doctor [root]\n" +
-      "       levare serve [root] [--port N] [--read-only]",
+      "       levare serve [root] [--port N] [--read-only] [--no-daemon]",
   );
   return 2;
 }

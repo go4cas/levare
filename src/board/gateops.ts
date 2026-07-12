@@ -14,13 +14,14 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { loadRepo, parseArtifactDoc, type Repo } from "../repo.ts";
+import { loadRepo, type Repo } from "../repo.ts";
 import { validateArtifactSource } from "../validate.ts";
-import { applyApproval, bumpVersion, type MemberRunner, type Verb } from "../runner.ts";
+import { bumpVersion, type MemberRunner, type Verb } from "../runner.ts";
 import { stubAdapterRunner } from "../replay.ts";
-import { loopMembershipFor, responsibleTeamFor, resolveStep, unmetAfter } from "../gates.ts";
+import { loopMembershipFor, responsibleTeamFor, unmetAfter, patchFrontmatter } from "../gates.ts";
 import { locateArtifactFile } from "./locate.ts";
 import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL } from "../git.ts";
+import { advanceUnit } from "../dagwalk.ts";
 import type { Artifact, WorkUnit } from "../types.ts";
 
 export { CONDUCTOR_NAME, CONDUCTOR_EMAIL };
@@ -196,46 +197,43 @@ function resolveStartGate(
   return { ok: true, commit: "", changedFiles: [] };
 }
 
-// E5: `start` invokes the unit's flow instead of returning 501. A start gate only ever sits at flow
-// position zero (§6), so starting means: find the responsible team (ruling C4/C7 — the same
-// heuristic the Runner's walk uses, gates.ts#responsibleTeamFor), resolve and run its FIRST flow node
-// as one member invocation, write the produced artifact to disk, and stop — that new artifact sits
-// at in-review, which `openGates` already renders as an ordinary gate. No bespoke "start-produced
-// gate" bookkeeping is needed: files are the truth (invariant 2), so the walk's next declared gate
-// (§6: "gate: human halts the walk") falls straight out of the artifact the step just wrote.
+// Phase 8 (deliverable d, closing E5/F3): `start` no longer runs its own bespoke "resolve the first
+// flow node, invoke, write" logic — it hands the unit to the shared dagwalk#advanceUnit the daemon
+// itself drives, passing `startAuthorized: true` because THIS call — the Conductor's own resolution
+// of the start gate — is the invariant-1 approval that makes the very first invocation legitimate.
+// A flow that opens with a loop (not a plain step) is no longer a 501: advanceUnit's `nextAction`
+// walks step/gate/loop nodes uniformly, so "the flow's first gate" (whatever shape it is) is reached
+// either way — the old F3 scope boundary (only step-opening flows supported) is closed as a side
+// effect of sharing the real walk instead of a start-only special case.
+//
+// Gate-review fix: `startAuthorized: true` is what makes this call LEGAL (the Conductor's click is
+// the invariant-1 approval in the causal chain) — it says nothing about who WROTE the resulting
+// artifact. The write itself is a member's output (kestrel/wren, here), never the Conductor's own
+// content, exactly like any other daemon-driven production later in the same unit's flow. Passing
+// `commit: conductorCommit` here (an earlier version of this function did) attributed that member's
+// work to the Conductor in git history — authorship must reflect who ACTED, not who TRIGGERED (see
+// NOTES.md's phase-8 section). `verb: "start"` is kept so the commit MESSAGE still records that this
+// production followed an explicit start click, distinguishing it from a later autonomous advance —
+// only the identity was ever wrong.
 function doStart(root: string, repo: Repo, unit: WorkUnit, memberRunner: MemberRunner): GateOpResult {
   const unmet = unmetAfter(repo, unit);
   if (unmet.length > 0) return { ok: false, status: 409, error: `unit '${unit.unit}' still has unmet after: [${unmet.join(", ")}]` };
   const team = responsibleTeamFor(repo, unit);
   if (!team) return { ok: false, status: 409, error: `no team produces kinds for unit type '${unit.type}'` };
-  const first = team.flow[0];
-  if (!first || first.kind !== "step") {
-    return {
-      ok: false,
-      status: 501,
-      error: `team '${team.name}''s flow does not open with a step (starts with '${first?.kind ?? "nothing"}'); starting mid-flow shapes is not supported yet`,
-    };
+
+  const result = advanceUnit(root, repo, unit, memberRunner, { startAuthorized: true, verb: "start" });
+  if (result.outcome === "nothing") {
+    return { ok: false, status: 409, error: `unit '${unit.unit}' has nothing left for team '${team.name}' to produce` };
   }
-  const { member, kind } = resolveStep(team, first.step, memberRunner.capabilities());
-  const { doc: baseDoc } = memberRunner.produce(member, kind, unit.unit, unit.project);
-
-  // The member boundary's produced id is not unit-scoped — a mocked/stub member (the only kind this
-  // phase can invoke, invariant 10) emits the same fixed id regardless of which unit asked, so a
-  // second unit in the same project starting the same kind of step would collide under the
-  // validator's project-scoped DUPLICATE_ID check. Re-id to the kind-unit-vN convention every other
-  // multi-round-safe artifact in the repo already follows (e.g. spec-checkout-flow-v1) — round 1,
-  // since `start` only ever produces the flow's very first artifact for this unit — rather than trust
-  // whatever id the boundary happened to emit.
-  const newId = `${kind}-${unit.unit}-v1`;
-  const doc = patchFrontmatter(baseDoc, { id: newId });
-
-  const errs = validateArtifactSource(doc, `${member}:${kind}`, unit.dir);
-  if (errs.length > 0) return { ok: false, status: 422, error: `${errs[0].code}: ${errs[0].message}` };
-  const art = parseArtifactDoc(doc);
-  const file = join(unit.dir, `${art.id}.md`);
-  writeFileSync(file, doc);
-  const commit = conductorCommit(root, [file], `start ${unit.unit} → ${team.name}/${member} produced ${art.kind} ${art.id}`);
-  return { ok: true, commit, changedFiles: [file] };
+  if (result.outcome === "halted") {
+    return { ok: false, status: 409, error: result.reason };
+  }
+  if (result.outcome === "blocked") {
+    // A start attempt that fails at the member boundary still writes something real to the repo
+    // (deliverable f) — surfaced to the caller as a 502 (upstream/member failure), not a silent 200.
+    return { ok: false, status: 502, error: `start failed: ${result.error}` };
+  }
+  return { ok: true, commit: result.commit, changedFiles: [result.file] };
 }
 
 // ---------------------------------------------------------------------------
@@ -246,37 +244,4 @@ function idOfDoc(doc: string): string {
   const m = /^id:\s*(.+)$/m.exec(doc);
   if (!m) throw new Error("stub-produced document has no id");
   return m[1].trim();
-}
-
-/** Patch top-level frontmatter scalar fields in place, preserving everything else byte-for-byte. */
-export function patchFrontmatter(src: string, patches: Record<string, string | null>): string {
-  const lines = src.split("\n");
-  if (lines[0]?.trim() !== "---") throw new Error("document has no frontmatter fence");
-  let end = -1;
-  for (let i = 1; i < lines.length; i++) {
-    if (lines[i].trim() === "---") {
-      end = i;
-      break;
-    }
-  }
-  if (end === -1) throw new Error("frontmatter is not terminated");
-  for (const [key, value] of Object.entries(patches)) {
-    let found = false;
-    for (let i = 1; i < end; i++) {
-      const m = /^([A-Za-z_][A-Za-z0-9_]*):/.exec(lines[i]);
-      if (m && m[1] === key) {
-        lines[i] = formatScalarLine(key, value);
-        found = true;
-        break;
-      }
-    }
-    if (!found) throw new Error(`frontmatter key '${key}' not found to patch`);
-  }
-  return lines.join("\n");
-}
-
-function formatScalarLine(key: string, value: string | null): string {
-  if (value === null) return `${key}: null`;
-  if (/^[A-Za-z0-9._/-]+$/.test(value)) return `${key}: ${value}`;
-  return `${key}: ${JSON.stringify(value)}`;
 }

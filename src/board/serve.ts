@@ -16,6 +16,7 @@ import { conductorCommit, CONDUCTOR_NAME } from "../git.ts";
 import { handle as orchestratorHandle, deterministicBoundary, type HandleResult, type OrchestratorBoundary } from "../orchestrator.ts";
 import { selectOrchestratorBoundary, type SelectOrchestratorBoundaryOptions } from "../orchestrator-boundary.ts";
 import { isStudioInitialized, renderOnboarding } from "./onboarding.ts";
+import { Daemon } from "../daemon.ts";
 
 export interface RouteDef {
   method: "GET" | "POST";
@@ -41,6 +42,13 @@ export interface BoardCtx {
    * simulated platform/arch or an empty scratch require-root, rather than bypassing selection
    * entirely with a hand-rolled boundary (NOTES phase-7 K13). */
   orchestratorSelectOpts?: SelectOrchestratorBoundaryOptions;
+  /** Phase 8, deliverable c: when set, "Members running" / "Running now" (render.ts#renderStudio)
+   * become a true projection of this daemon's in-flight invocations. Absent in every pre-phase-8 test
+   * that constructs a board directly (createBoard's default), which is why those screens keep
+   * rendering their honest "nothing running" empty state unchanged — only `serve()` (the CLI's actual
+   * `levare serve` entry point) attaches a real one, so no existing test gains a background daemon,
+   * a second fs.watch handle, or any other side effect it didn't already have. */
+  daemon?: Daemon;
 }
 
 // A demo/screenshot server pointed at a fixtures/ tree must not be able to mutate it, structurally —
@@ -81,14 +89,14 @@ export const ROUTES: RouteDef[] = [
     page: true,
     // Renders studio directly (200), not a redirect: a plain `curl /` with no `-L` must see real
     // content, not a bounce (NOTES E12 — the phase-4 gate demonstration curls `/` directly).
-    handler: (_req, _params, ctx) => html(renderStudio(withRepo(ctx.root), ctx.root)),
+    handler: (_req, _params, ctx) => html(renderStudio(withRepo(ctx.root), ctx.root, undefined, ctx.daemon?.running() ?? [])),
   },
   {
     method: "GET",
     pattern: "/studio",
     mutating: false,
     page: true,
-    handler: (_req, _params, ctx) => html(renderStudio(withRepo(ctx.root), ctx.root)),
+    handler: (_req, _params, ctx) => html(renderStudio(withRepo(ctx.root), ctx.root, undefined, ctx.daemon?.running() ?? [])),
   },
   {
     method: "GET",
@@ -158,6 +166,10 @@ export const ROUTES: RouteDef[] = [
       const result = resolveGate(ctx.root, params.project, params.artifact, verb, { note });
       if (!result.ok) return json({ ok: false, error: result.error }, result.status);
       ctx.broadcast("reload");
+      // Deliverable (d): an approval (or any other resolution) may have just satisfied a producible
+      // kind's dependencies — nudge the daemon to look now rather than wait out its own debounce, so
+      // the walk visibly continues in the same interaction the Conductor just made.
+      ctx.daemon?.notify();
       return json({ ok: true, commit: result.commit, changedFiles: result.changedFiles });
     },
   },
@@ -241,7 +253,10 @@ export const ROUTES: RouteDef[] = [
         reply = `SDK unavailable (${reason}); answering in offline mode. ${offline.reply}`;
         result = offline.result;
       }
-      if (result && "ok" in result && result.ok && result.commit) ctx.broadcast("reload");
+      if (result && "ok" in result && result.ok && result.commit) {
+        ctx.broadcast("reload");
+        ctx.daemon?.notify(); // an Orchestrator-driven gate resolution can unblock the walk too.
+      }
       ctx.broadcast(`orchestrator:${JSON.stringify({ text: reply })}`);
       return json({ ok: true, reply });
     },
@@ -397,7 +412,12 @@ export interface Board {
 
 export function createBoard(
   root: string,
-  opts: { readOnly?: boolean; orchestratorBoundary?: OrchestratorBoundary; orchestratorSelectOpts?: SelectOrchestratorBoundaryOptions } = {},
+  opts: {
+    readOnly?: boolean;
+    orchestratorBoundary?: OrchestratorBoundary;
+    orchestratorSelectOpts?: SelectOrchestratorBoundaryOptions;
+    daemon?: Daemon;
+  } = {},
 ): Board {
   const readOnly = opts.readOnly ?? isUnderFixtures(root);
   const ctx: BoardCtx = {
@@ -405,6 +425,7 @@ export function createBoard(
     readOnly,
     orchestratorBoundary: opts.orchestratorBoundary,
     orchestratorSelectOpts: opts.orchestratorSelectOpts,
+    daemon: opts.daemon,
     broadcast: (msg) => {
       for (const sub of subscribersOf(ctx)) sub.send(msg);
     },
@@ -471,6 +492,8 @@ export interface ServeHandle {
   url: string;
   /** Stop listening, close the fs.watch handle, and (unless `keepProcessAlive`) exit the process. */
   stop(): void;
+  /** null when `--no-daemon`/read-only — see `serve()`'s own opts doc. */
+  daemon: Daemon | null;
 }
 
 // Binds 0.0.0.0 (not loopback-only) so the port is reachable from a forwarded/container port, not
@@ -487,10 +510,26 @@ export function serve(
     orchestratorSelectOpts?: SelectOrchestratorBoundaryOptions;
     /** Test-only override — see the default's own rationale below. */
     idleTimeoutSeconds?: number;
+    /** Deliverable (a): `--no-daemon` disables the daemon; `levare serve` boots one by default,
+     * alongside the board, in the same process. A read-only board (NOTES E14 — a path under
+     * fixtures/, or --read-only) never gets a daemon regardless of this flag: the daemon's whole job
+     * is to write artifacts, which a read-only board must never do (the same structural guarantee
+     * that already gates the three write routes applies here, not a second rule to remember). */
+    noDaemon?: boolean;
+    /** Test-only: inject a daemon directly instead of letting `serve()` construct + own one. */
+    daemon?: Daemon;
   } = {},
 ): ServeHandle {
   const keepAlive = opts.keepProcessAlive ?? true;
-  const board = createBoard(root, { readOnly: opts.readOnly, orchestratorBoundary: opts.orchestratorBoundary, orchestratorSelectOpts: opts.orchestratorSelectOpts });
+  const readOnly = opts.readOnly ?? isUnderFixtures(root);
+  const daemon = opts.daemon ?? (opts.noDaemon || readOnly ? null : new Daemon(root));
+  daemon?.start();
+  const board = createBoard(root, {
+    readOnly: opts.readOnly,
+    orchestratorBoundary: opts.orchestratorBoundary,
+    orchestratorSelectOpts: opts.orchestratorSelectOpts,
+    daemon: daemon ?? undefined,
+  });
   // idleTimeout (NOTES phase-7 K17, a live-gate fix-up — "a request must always produce a reply"):
   // Bun.serve's own default is 10 SECONDS — after that, Bun resets the connection with no HTTP
   // response at all if the handler hasn't sent anything yet. A real /orchestrator/message call can
@@ -517,6 +556,7 @@ export function serve(
   const stop = () => {
     if (stopped) return;
     stopped = true;
+    daemon?.stop();
     board.close();
     server.stop(true);
   };
@@ -532,5 +572,5 @@ export function serve(
     process.on("SIGTERM", onSignal);
   }
 
-  return { board, url, stop };
+  return { board, url, stop, daemon };
 }
