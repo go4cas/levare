@@ -4,6 +4,8 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBoard } from "../src/board/serve.ts";
+import { createSdkOrchestratorBoundary } from "../src/orchestrator-boundary.ts";
+import type { AsyncSdkTransport } from "../src/sdk-transport.ts";
 
 // Phase-4 acceptance (PRD §11): "an integration test POSTs approve on the fixture's open gate and
 // asserts the artifact file shows approved_by and `git log -1` shows the commit." Exercised against
@@ -255,6 +257,52 @@ describe("levare serve — POST /orchestrator/message", () => {
       expect(typeof body.reply).toBe("string");
       const after = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
       expect(after).toBe(before);
+    } finally {
+      board.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // The board is a projection of files; the Orchestrator's SDK voice is an enhancement on top of it
+  // (§7), never a dependency the write surface can fail on. A live run showed this route returning
+  // 500 the moment the SDK boundary was unavailable (missing native binary, no credential, timeout,
+  // transport error) — this is the regression test: the route must degrade to the offline
+  // deterministic boundary and answer 200 with a visible, honest note, never a hard failure and never
+  // a silent downgrade with no explanation.
+  test("a broken SDK boundary degrades to 200 offline-mode, never a 500 — and the board still renders", async () => {
+    const root = seedScratchRepo();
+    // The real createSdkOrchestratorBoundary, driven by a deliberately broken transport (a stand-in
+    // for the live-gate finding: "Native CLI binary for darwin-arm64 not found") — exercises the
+    // actual OrchestratorSdkError interpret() throws, not a hand-rolled stand-in error type.
+    const brokenTransport: AsyncSdkTransport = {
+      async run() {
+        return { ok: false, error: "Native CLI binary for darwin-arm64 not found" };
+      },
+    };
+    const brokenBoundary = createSdkOrchestratorBoundary({ transport: brokenTransport, env: { ANTHROPIC_API_KEY: "sk-ant-test-not-real" } });
+    const board = createBoard(root, { orchestratorBoundary: brokenBoundary });
+    try {
+      const res = await board.fetch(
+        req("/orchestrator/message", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text: "stats" }),
+        }),
+      );
+      expect(res.status).toBe(200); // never a 500 — the board must degrade, not hard-fail
+      const body = await res.json();
+      expect(body.ok).toBe(true);
+      expect(body.reply).toContain("SDK unavailable");
+      expect(body.reply).toContain("answering in offline mode");
+      expect(body.reply).toContain("Native CLI binary for darwin-arm64 not found"); // names the reason
+      // Offline mode still genuinely answers via the deterministic boundary — "stats" round-trips to
+      // the real derived metrics line, not just an apology.
+      expect(body.reply).toMatch(/gate\(s\) open/);
+
+      // The board itself must still be fully functional — a broken Orchestrator boundary is not a
+      // broken board.
+      const studio = await board.fetch(req("/"));
+      expect(studio.status).toBe(200);
     } finally {
       board.close();
       rmSync(root, { recursive: true, force: true });

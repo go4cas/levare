@@ -13,7 +13,7 @@ import { resolveGate } from "./gateops.ts";
 import { validatePath } from "../validate.ts";
 import type { Verb } from "../runner.ts";
 import { conductorCommit, CONDUCTOR_NAME } from "../git.ts";
-import { handle as orchestratorHandle, type OrchestratorBoundary } from "../orchestrator.ts";
+import { handle as orchestratorHandle, deterministicBoundary, type HandleResult, type OrchestratorBoundary } from "../orchestrator.ts";
 import { selectOrchestratorBoundary } from "../orchestrator-boundary.ts";
 import { isStudioInitialized, renderOnboarding } from "./onboarding.ts";
 
@@ -197,7 +197,27 @@ export const ROUTES: RouteDef[] = [
       // is a test-only override (unset in production, where `selectOrchestratorBoundary()` always runs).
       const today = new Date().toISOString().slice(0, 10);
       const boundary = ctx.orchestratorBoundary ?? selectOrchestratorBoundary();
-      const { reply, result } = await orchestratorHandle(text, { root: ctx.root, by: `${CONDUCTOR_NAME} ${today}` }, boundary);
+      const orchestratorCtx = { root: ctx.root, by: `${CONDUCTOR_NAME} ${today}` };
+      // The board is a projection of files; the Orchestrator's SDK voice is an enhancement on top of
+      // it (§7), never a dependency the write surface can fail on. `interpret()` is right to throw
+      // loudly when the SDK transport itself is unavailable (missing binary, no credential, timeout,
+      // transport error — orchestrator-boundary.ts's OrchestratorSdkError, NOTES phase-7 K8) — a
+      // transport error must never impersonate an intent. But that loudness belongs at the boundary,
+      // not at this route: a Conductor asking the board a question must never see a 500 because an
+      // unrelated credential/binary problem exists. On any boundary failure, degrade to the same
+      // deterministic offline boundary phase 7 already uses when no key is present at all, and say so
+      // plainly in the reply — an honest, visible note, never a silent downgrade.
+      let reply: string;
+      let result: HandleResult["result"];
+      try {
+        ({ reply, result } = await orchestratorHandle(text, orchestratorCtx, boundary));
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        console.error(`levare: Orchestrator SDK unavailable for this request, answering in offline mode: ${reason}`);
+        const offline = await orchestratorHandle(text, orchestratorCtx, deterministicBoundary);
+        reply = `SDK unavailable (${reason}); answering in offline mode. ${offline.reply}`;
+        result = offline.result;
+      }
       if (result && "ok" in result && result.ok && result.commit) ctx.broadcast("reload");
       ctx.broadcast(`orchestrator:${JSON.stringify({ text: reply })}`);
       return json({ ok: true, reply });
