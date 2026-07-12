@@ -1385,6 +1385,114 @@ resolution. Also added the acceptance criterion's own explicit ask: a `test.skip
 that resolves the real, currently-installed platform binary on whatever host runs the suite, skipping
 cleanly (not failing) when the optional platform package is absent.
 
+## K15. Live-gate fix-up: the CLI hung on the operator's own config, and the timeout-kill didn't reach
+the resulting dangling process
+
+**Finding.** With K14's binary resolution fixed, a real call no longer failed fast — it hung for the
+full 60s of the live test's own outer timeout, and Bun reported "killed 1 dangling process" on exit.
+Standalone (`claude -p "say ok" --output-format json`), the CLI itself returned in 2.2s — the hang was
+specific to our spawned worker.
+
+**Root cause, confirmed on the host.** The worker's spawned CLI inherited the OPERATOR's personal
+Claude Code configuration, including a user-installed SessionEnd hook (a "claude-mem" plugin spawning
+`node`). In a TTY-less spawned subprocess that hook never actually completed, so the CLI's own process
+never exited — even though the model had already answered and been billed. This is the identical
+lesson NOTES A4/E12 already recorded for git subprocesses (pin config explicitly, never inherit the
+host's ambient state) — the same discipline just hadn't yet been applied to the CLI subprocess.
+
+**Fix — hermetic spawn.** Two SDK options close this off, both confirmed directly in the shipped
+`sdk.d.ts` (not guessed):
+- `settingSources: []` — the SDK's own documented "SDK isolation mode": loads NO filesystem settings
+  (`~/.claude/settings.json` user, `.claude/settings.json` project, `.claude/settings.local.json`
+  local) at all. A hook defined in any of those has nothing to fire from — it's never even registered,
+  not merely disabled after the fact.
+- `persistSession: false` — no session transcript is written to `~/.claude/projects/` either.
+- `CLAUDE_CONFIG_DIR` (an env var, not an SDK option) — `sdk-transport.ts`'s `hermeticSpawnEnv()`
+  redirects it to a levare-controlled scratch directory (`join(tmpdir(), "levare-sdk-config")`)
+  whenever the caller hasn't already set one explicitly, so nothing this spawn does can read from or
+  write into the operator's real `~/.claude` profile, belt-and-suspenders on top of the two options
+  above. `sdk-worker.ts`'s `query()`-options construction is now factored into an exported, pure
+  `buildQueryOptions()` function specifically so a test can assert the exact hermetic configuration
+  without spawning a real subprocess.
+
+**Fix — kill the whole process tree, not just the direct child.** `proc.kill()` (both the async
+`Subprocess.kill()` method and `Bun.spawnSync`'s own `timeout`+`killSignal` handling) only ever signals
+the DIRECT child — the worker. It was empirically verified (not assumed) that neither reaches
+grandchildren: a reproduction spawning a worker that itself spawns a grandchild which ignores plain
+SIGTERM showed the grandchild surviving `Bun.spawnSync`'s own `timeout`+`killSignal: "SIGKILL"`+
+`detached: true` combination — Bun's internal timeout-kill still only reached the immediate child. The
+fix that DID work, verified the same way: spawn with `detached: true` (the worker becomes the leader
+of its OWN new process group — its PID becomes the group ID), then on timeout call
+`process.kill(-pid, "SIGKILL")` — the NEGATIVE pid, which signals the ENTIRE group at once. Confirmed
+zero dangling processes afterward, for both the async transport (via the existing `setTimeout`
+timer, now calling `killProcessTree()` instead of `proc.kill()`) and the sync transport (via a
+post-hoc group-kill after `Bun.spawnSync` reports `exitedDueToTimeout`, since a blocking synchronous
+call cannot run an independent timer of its own to react mid-flight).
+
+**Fix — the transport's own timeout must be shorter than any caller's.** The prior defaults inverted
+this: the transport's internal timeout (120s) was LONGER than the live test's own outer timeout (60s),
+so the test's own limit fired first and the transport's timeout-kill never got a chance to run at all —
+"killed 1 dangling process" was Bun's OWN cleanup catching what the transport should have caught
+itself. Reduced `sdk-transport.ts`'s `DEFAULT_TIMEOUT_MS` to 60s and `createSdkOrchestratorBoundary`'s
+own default to 45s (a chat reply is conversational, not a long-running task — a real successful call
+took ~9s), and correspondingly RAISED the live smoke test's own outer timeout to 90s, so the internal
+45s timeout has room to fire (and be observed) well before any outer limit would.
+
+**New coverage.** `tests/sdk-transport-hermetic.test.ts`: `buildQueryOptions()` is asserted to set
+`settingSources: []` and `persistSession: false` (and to still pass every other request field through
+unchanged); `hermeticSpawnEnv()` is asserted to fill in the isolated `CLAUDE_CONFIG_DIR` by default and
+to never override one the caller already set. The literal acceptance test: a worker script that spawns
+a grandchild which ignores SIGTERM (reproducing the confirmed live shape) and then itself also hangs
+forever — `createAsyncSdkTransport.run()` against it returns the timeout error within its own
+`timeoutMs` (not the caller's much longer one), and polling `process.kill(pid, 0)` (an existence-only
+check) confirms the grandchild — captured by its own self-written PID file — is genuinely gone
+afterward, not merely orphaned.
+
+## K16. Live-gate fix-up: default to a cheap model, and record the SDK's own real usage/cost
+
+**Finding.** A live, successful call (once K14/K15 were fixed) spent $0.055 on a two-word "stats"
+reply. `createSdkOrchestratorBoundary`'s default model was `claude-opus-4-8` for EVERY call, including
+`interpret()`'s trivial structured-output intent classification — Opus, on every message, is far more
+than that job needs.
+
+**Fix — cheaper default, configurable.** `DEFAULT_MODEL` is now `claude-sonnet-5` — dramatically
+cheaper and faster than Opus, while still producing prose quality appropriate for `narrate()`'s
+user-facing voice (K12's deferred voice-judgment gate is about REGISTER, not raw model tier — Sonnet
+is a reasonable balance the Conductor can override). `LEVARE_ORCHESTRATOR_MODEL` (an environment
+variable) overrides it. **This is a deliberate, scoped interim mechanism, not the final design**: the
+goal's own language ("a studio-level setting") points at a REGISTRY field — something living in the
+repo's own files (`projects/studio.md` or a dedicated studio-settings entity), consistent with
+invariant 2 ("the binary holds no state that cannot be reconstructed by re-reading the repo"). Building
+that properly means a new schema field, validator support, and deciding where in the registry it
+belongs — real design work, not a live-gate fix. The env var is the fastest way to make the cost
+problem immediately fixable and testable today; migrating it to a real registry field is a natural,
+explicitly-deferred follow-up (same discipline as K5's NativeBoundary-wiring deferral).
+
+**The native member boundary already did this correctly — verified, not assumed.** `createSdkNativeBoundary`
+(adapters.ts) has passed `model: req.agent.model` since K1 — the model an `agents/*.md` file declares
+in its own frontmatter, never a hardcoded default. `fixtures/golden/agents/{wren,lyra}.md` and
+`src/init.ts`'s scaffold templates both already declare `model: claude-sonnet`, not Opus. No code
+change was needed here; this is recorded so the verification itself — not just the fix elsewhere — is
+on the record.
+
+**Fix — record the SDK's own reported usage/cost, never estimate (§10).** `SdkWorkerResponse` gained
+an optional `receipt?: Receipt` field, reusing the EXISTING `Receipt` type (`types.ts`) rather than
+inventing a parallel shape. `sdk-worker.ts` builds it directly from the `SDKResultSuccess` message's
+own `modelUsage` (a per-model breakdown of `inputTokens`/`outputTokens`), `total_cost_usd`, and
+`duration_ms` — the SDK's own ground truth, never a guess. `createSdkOrchestratorBoundary` logs it
+(`levare: Orchestrator {interpret|narrate}() usage — <model> · <tokens> · <usd>`) after every
+successful call, so a Conductor running `levare serve` can see real per-message cost directly.
+
+**Deliberately NOT wired into the §10 ledger in this fix-up.** `AdapterRunner.produce()`'s existing
+cost-tracking is scoped around MEMBER production — an artifact with a `usage:` frontmatter block, or a
+`ledger.ndjson` entry keyed to a unit. An Orchestrator chat message has no natural unit/artifact home
+to attach a ledger entry to (a "stats" question may not reference any unit at all), and `NativeBoundary
+.invoke(req): {doc: string}`'s interface has no `receipt` field to extend without touching every
+existing mocked test that implements it. Given `createSdkNativeBoundary` is still not wired into any
+live path (K5), full ledger integration for both boundaries is left as a documented, deliberate
+follow-up rather than a partial, silently-incomplete one — visibility (the log line) ships now; full
+persistence is a design decision for whichever phase actually wires live member invocation in.
+
 ## Learnings
 
 A boundary that must front a fundamentally different concurrency model than its own interface (a
