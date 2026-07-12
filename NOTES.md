@@ -884,3 +884,143 @@ at a throwaway file with a `[user]` block) or an unresolvable one (`GIT_CONFIG_G
 `GIT_CONFIG_SYSTEM` at `/dev/null`, `HOME` redirected) without depending on whatever git identity
 happens to be configured on the host running the suite — the same lesson NOTES A4/E12 already
 recorded for the immutability and e2e-serve tests, applied here a third time.
+
+# NOTES — uncertainties and assumptions (Phase 7)
+
+Phase-7 delivers the SDK and the voice: `@anthropic-ai/claude-agent-sdk` as the sole runtime
+dependency, a real SDK-driven `OrchestratorBoundary` whose system prompt is loaded from
+`docs/orchestrator-prompt.md` verbatim, and a real SDK-driven `NativeBoundary`, with the phase-5
+deterministic regex boundary demoted to the explicit offline fallback. These entries record the
+mechanical choices the goal's prose left open, and the highest-confidence reading taken for each.
+
+## K1. The SDK is inherently async; the boundary interfaces stay synchronous by a subprocess bridge,
+not by threading async through the Runner
+
+The goal's own steering message was explicit: "the SDK backs the two boundaries behind their
+existing interfaces — the dispatch logic, gate resolution, and repo operations do not change; if you
+find yourself editing orchestrator.ts's dispatch to accommodate the SDK, stop and reconsider the
+boundary instead." `OrchestratorBoundary.interpret`/`narrate` (orchestrator.ts) and
+`NativeBoundary.invoke` (adapters.ts) are both synchronous — and `handle()`, `AdapterRunner`, and the
+entire Runner/board/gateops call chain that consumes them are written throughout as synchronous,
+deterministic control flow (NOTES Phase-2 Learnings: "no clocks or randomness in the pass that
+produces the oracle"). The real `@anthropic-ai/claude-agent-sdk`, confirmed from its own shipped
+README (the `bun build --compile` section), is fundamentally asynchronous: `query()` is an async
+generator that spawns and streams from a `claude` CLI subprocess over stdio — there is no synchronous
+variant in the package.
+
+**Resolution:** rather than make the boundary interfaces (and therefore `handle()`, `AdapterRunner`,
+and every caller up through `Runner`, `replay.ts`, `board/gateops.ts`) asynchronous — a change with a
+blast radius across the whole engine, touched by zero acceptance criteria, and squarely the kind of
+"editing the dispatch to accommodate the SDK" the goal warned against — the real async `query()` call
+is isolated inside its own standalone subprocess (`src/sdk-worker.ts`), spawned SYNCHRONOUSLY via
+`Bun.spawnSync` from `src/sdk-transport.ts`. This is exactly the pattern `adapters.ts`'s
+`CliSpawn`/`bunSpawn` already uses for the "cli" agent kind (itself synchronous over a real
+subprocess) — phase 7 extends the same shape to the "native" (SDK) kind instead of inventing a new
+one. Both boundary interfaces keep their exact phase-3/phase-5 shapes; only their real implementation
+changed.
+
+**This is also the literal "transport level" the goal's tests mock at.** `SdkTransport` (the
+worker-spawning seam) is injectable exactly like `CliSpawn` — `tests/orchestrator-sdk.test.ts`,
+`tests/native-sdk-boundary.test.ts`, and the boundary-selection tests all inject a fake `SdkTransport`
+that never spawns the worker, so `bun test` never touches the network or needs `ANTHROPIC_API_KEY`.
+The one test that does spawn the real worker (`tests/orchestrator-sdk-live.test.ts`) is gated by
+`test.skipIf(!hasAnthropicCredentials())` and is the phase's required live smoke test.
+
+## K2. `interpret()` uses the SDK's native `outputFormat: {type: "json_schema"}`, not prompt-engineered JSON
+
+The shipped `sdk.d.ts` documents `Options.outputFormat: {type: 'json_schema', schema}`, which
+constrains the model's structured output the same way the Messages API's `output_config.format`
+does. `interpret()` passes a flat JSON Schema covering every field across all seven `Intent` kinds
+(required: `kind` only) and reads `SDKResultSuccess.structured_output` — never asks the model to
+hand-format JSON in prose, and never parses fenced code blocks. `coerceIntent`
+(orchestrator-boundary.ts) then narrows the loosely-typed blob into exactly one `Intent` shape,
+falling back to `{kind:"unknown", text}` on any structural mismatch (missing field, invalid verb
+enum, non-object) — mirroring `adapters.ts#coerceUsage`'s "malformed input records a safe default,
+never a crash or a fabricated field" posture. `narrate()` does not use structured output at all — it
+sends the already-computed factual line as plain user-turn text under the verbatim system prompt and
+returns the model's final text unmodified.
+
+## K3. "Verbatim" system prompt applies to the string handed to the SDK, not to how the two behaviors split
+
+`docs/orchestrator-prompt.md`'s own §"Intent to operations" already says the Orchestrator "translate[s]"
+free text into operations "through your tools" — so using the SDK's tool/structured-output machinery
+for `interpret()` is the mechanical realization of what the prompt already describes, not a
+deviation from it. Both `interpret()` and `narrate()` load the file with the identical
+`loadOrchestratorPromptSource()` and hand the resulting string to `Options.systemPrompt` completely
+unedited — no prefix, no suffix, no per-call templating. What differs between the two calls is only
+the *user-turn* content and `outputFormat` (a request-shape variance every conversation already has,
+independent of the fixed system prompt) — never the prompt itself. A test
+(`tests/orchestrator-sdk.test.ts`) asserts the transport receives the byte-identical file contents as
+`systemPrompt` on both `interpret()` and `narrate()` calls.
+
+## K4. Selection is presence-only, computed fresh per call, never logged
+
+`selectOrchestratorBoundary(env)` (orchestrator-boundary.ts) mirrors `doctor.ts`'s `EnvProbe`
+posture exactly: it reads only whether `ANTHROPIC_API_KEY` is a non-empty string, never the value.
+`board/serve.ts`'s `/orchestrator/message` route calls it once per request (not once at server
+startup) so that exporting a key mid-session takes effect on the very next message without a
+restart — consistent with "the API key is read from the environment only, never written to any file,
+never logged" from the goal's own constraint. `createSdkNativeBoundary`'s only read of the key's
+*value* is to forward it into the spawned worker's environment (`sdk-transport.ts`'s `run(req, {env})`
+call) so the SDK subprocess itself can authenticate; that value is never captured in a variable that
+outlives the single `invoke()` call, never printed, and never appears in any commit this repo makes.
+
+## K5. `NativeBoundary`'s real implementation is delivered but NOT wired as `AdapterRunner`'s/board's
+default — a documented scope boundary, not a silent gap
+
+The goal's acceptance ("Achieved when...") bullets are all about the Orchestrator boundary
+(interpret round trip, boundary selection, prompt-from-disk) — none of them name `NativeBoundary`,
+`AdapterRunner`, or the Runner engine. `createSdkNativeBoundary` (adapters.ts) is real, exported, and
+covered by `tests/native-sdk-boundary.test.ts` (mocked transport) — it genuinely calls the model via
+the same `sdk-transport.ts` seam, using `req.agent.model`, `req.tools` (the allowlist projection
+`guardrails.ts#allowedTools` already computes), and `req.context` (the full §6-assembled recipe) as
+the user-turn content. What it is deliberately **not** wired into is `replay.ts#stubAdapterRunner`
+(the default `memberRunner` `board/gateops.ts#resolveGate` falls back to) or any other call site —
+doing so would require branching every one of those call sites on API-key presence the same way
+`selectOrchestratorBoundary` does for the Orchestrator, a change with its own test surface that no
+acceptance criterion asks for and that risks a live `levare serve` silently making real, billed model
+calls from existing phase-4/5/6 tests that assumed a deterministic stub. Wiring
+`createSdkNativeBoundary` behind the same key-presence selection as the Orchestrator boundary is the
+natural next step whenever a phase actually exercises live member invocation end to end.
+
+## K6. Member tool-name vocabulary is passed through as-is; no SDK built-in tool-name mapping is invented
+
+The golden fixture's own agent definitions declare `tools: [read, write]` (lowercase, levare's own
+domain vocabulary — guardrails.ts's own doc comment calls `allowedTools()` "the pure projection of an
+agent's declared `tools:`"), which does not match the SDK's actual built-in tool names (`Read`,
+`Write`, `Edit`, `Bash`, `Glob`, `Grep`, ...). `createSdkNativeBoundary` passes `req.tools` straight
+through to `Options.tools`/`Options.allowedTools` without attempting to invent a name-mapping shim —
+this is the first phase to wire the SDK for real, so there is no established mapping convention to
+follow, and levare's whole registry vocabulary is a fictional studio's own tool names, not literally
+Claude Code's. Inventing a mapping is realistically a per-agent registry concern (a `sdkTool:` field
+on `Agent`, or a fixed lowercase→PascalCase table) for whichever future phase actually drives a real
+member invocation end to end (see K5) — noted here rather than silently guessed at.
+
+## K7. The worker script's request/response contract, and its `env` handling
+
+`sdk-worker.ts` reads one JSON request from stdin, makes exactly one `query()` call to completion
+(collecting only `SDKResultMessage` — every intermediate `assistant`/`tool_use` message is ignored,
+since neither `interpret()`/`narrate()` nor member production need mid-turn visibility), and prints
+one JSON line to stdout. `permissionMode: "bypassPermissions"` +
+`allowDangerouslySkipPermissions: true` are always set — the worker is spawned non-interactively
+(inherits no TTY), so the SDK's ordinary human-approval prompt has nowhere to go; the tool allowlist
+itself (empty for Orchestrator calls, `req.tools` for member calls) is what actually scopes what the
+model can touch, exactly as `guardrails.ts#allowedTools` already documents for the mocked boundary.
+`Options.env` is deliberately left unset in the worker's own `query()` call — the OUTER
+`Bun.spawnSync` (sdk-transport.ts) already scopes the worker subprocess's entire environment via its
+own `env:` option, so the worker simply inherits `process.env` as `query()`'s default, one layer of
+scoping, not two.
+
+## Learnings
+
+A boundary that must front a fundamentally different concurrency model than its own interface (a
+synchronous call standing in for an inherently async subprocess-and-stream SDK) doesn't have to force
+that model up through every caller — isolating the async work in its own subprocess and blocking on
+it with the same `Bun.spawnSync` primitive the codebase already uses for CLI members keeps the
+existing engine's synchronous-and-deterministic invariant intact, and keeps the new real
+implementation's own test surface exactly as small (inject a fake transport) as the mocked
+implementation's was.
+Reading a package's own shipped `.d.ts`/README before writing against it beats trusting a general
+knowledge prior of a similarly-named API — the Agent SDK's `query()` shape, its subprocess
+architecture, and its `outputFormat: json_schema` structured-output support were all confirmed from
+`node_modules/@anthropic-ai/claude-agent-sdk/{sdk.d.ts,README.md}` directly, not assumed.
