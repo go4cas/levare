@@ -330,7 +330,7 @@ adapts to it"), the board renders honest empty/derived states instead of fabrica
 start-gate card (none exists to render). `src/board/render.ts` is a pure function of repo state —
 the demo's decorative numbers were never load-bearing to begin with.
 
-## E2. No live process registry — "Members running" is always 0
+## E2 (retired in phase 8 — see O7). No live process registry — "Members running" is always 0
 PRD invariant 2 ("the binary holds no state that cannot be reconstructed by re-reading the repo")
 and §3 ("all state is markdown files with YAML frontmatter... no database") mean the board has no
 channel to observe an in-flight member process — that requires a running Runner instance reporting
@@ -615,7 +615,7 @@ holds — no SDK dependency was added). `doRequest`'s capability check now reads
 boundary. The board's `ResolveOpts.memberRunner` is injectable, matching the rest of the codebase's
 "deterministic core is injectable" pattern (NOTES Phase-2 Learnings).
 
-## F3. Ruling E5 closed, scoped narrowly: `start` runs the flow's first step, not the whole walk
+## F3 (retired in phase 8 — see O1/O9). Ruling E5 closed, scoped narrowly: `start` runs the flow's first step, not the whole walk
 "Kicking off a team's flow" from a synchronous HTTP handler cannot mean "run the Runner's full
 in-memory walk to completion" — that would silently fast-forward through every later `gate: human`
 without a Conductor decision, violating invariant 1 more than a 501 ever did. Read literally, §6's
@@ -2007,3 +2007,290 @@ devcontainer/port-forward artifact (hypothesis a) and levare itself is innocent;
 host, the debounce/reload-burst hypothesis (b) becomes the next thing to instrument and fix. Not
 investigated further this round — recorded here as an open issue per instruction, not fixed or
 worked around.
+
+# NOTES — uncertainties and assumptions (Phase 8: the daemon)
+
+Phase 8 turns levare from "responds to clicks" into "runs" (the goal's own framing): a Runner process
+that walks the DAG continuously, invoking members through the existing AdapterRunner boundary, halting
+at every gate and never resolving one. These entries record the mechanical and design choices the
+goal's prose left open, in the same spirit as every prior phase's notes — cite them, don't re-derive
+them.
+
+## O1. `dagwalk.ts` is a new, narrow "single-step advance" — not a second copy of the Runner's walk
+The goal's steering message was explicit: "reuse... do not reimplement... the daemon is the process
+that DRIVES them continuously — it is not a second engine." Two shapes were considered:
+(a) make `runner.ts`'s `Runner.run()` genuinely resumable (its `seed` option already exists but is
+never actually consulted by `runStep` to skip a kind that's already been produced — confirmed by
+reading the code, not assumed) and drive it repeatedly with a `DecisionSource` that reads on-disk
+approvals and signals "no decision yet" as a pause; or (b) a new, small, purely-derived "what's the
+single next producible kind, if any" function that both the daemon and the board's `start` verb share.
+(a) was rejected: making `seed` actually skip already-produced steps requires per-round bookkeeping
+(loop round counters, `max_rounds` tracking) to stay correct across a walk that's re-simulated from
+scratch on every tick — the Runner's in-memory round counter has no way to know "this is really round 2
+on disk" without new state, and getting that wrong risks silently exceeding `max_rounds` or
+misattributing round labels. (b) is what shipped, as `src/dagwalk.ts`: `nextAction()` (pure, unit
+tested directly) walks a team's `flow` nodes against the unit's current on-disk artifacts and returns
+at most one thing to do; `advanceUnit()` performs it through the real `MemberRunner`/`AdapterRunner`
+boundary (invariant 10 untouched — no new adapter, no new SDK surface) and commits. This is genuinely
+"reuse, not reimplement" in the sense that matters for this codebase: it reuses `gates.ts`'s existing
+shared primitives (`responsibleTeamFor`, `resolveStep`, `unmetAfter`) — the same ones ruling C7 already
+established as the one shared implementation between the Runner and the board — and the exact same
+`MemberRunner`/validator/git boundary every other write path uses. What it does NOT reuse is
+`runner.ts`'s `executeFlow`/`runLoop` control flow, because that engine's job (drive a full script of
+decisions to completion in one pass, phase 2's `replay.ts`) is a different shape of problem than the
+daemon's (repeatedly answer "what's next" against whatever's on disk right now, one step at a time,
+with no decision script at all). `board/gateops.ts#doStart` (E5/F3's old bespoke "resolve the first
+flow node, invoke, write" logic) now delegates to `advanceUnit` too — so there is exactly ONE piece of
+code, in the whole codebase, that decides "given this team's flow and what's approved on disk, what
+gets produced next."
+
+## O2. Scope boundary: the daemon auto-advances a loop's FIRST member only, never its companion
+Read literally, ruling B3 (phase 2) says a loop raises one gate per round "on the first member's
+artifact" and that "the review artifact is the input the Conductor reads at that gate" — implying the
+companion (`review`) should exist too. An early design auto-produced BOTH loop members together the
+moment neither existed yet. This was reverted after discovering it would retroactively "fill in" a
+missing companion the very first time the daemon looks at `fixtures/golden`'s own **existing** static
+demo gate (`spec-checkout-flow-v1`, in-review, with no companion review file — NOTES E3 already
+establishes this is the fixture's actual, deliberate shape) — on-disk state alone gives no way to tell
+"a first-member artifact that predates the daemon and was never meant to get an auto-produced
+companion" apart from "a first-member artifact the daemon just created a moment ago and should
+immediately pair." Rather than invent a marker to distinguish the two (a new frontmatter field, or
+inferring intent from git-log authorship), the daemon now treats a loop's first member exactly like a
+plain step for automation purposes and never auto-produces the second at all. `until` (a Conductor
+approval, invariant 4) is what actually ends the loop; a missing companion review never blocks that —
+matching the golden fixture's own long-standing shape, where the Conductor has always resolved the spec
+gate with no live review artifact to read alongside it. Also closes a broader compatibility hazard: had
+this shipped, EVERY scratch/test repo copied from `fixtures/golden` (the overwhelming majority of this
+suite's fixtures) would have gotten an unprompted new review artifact the instant a live daemon touched
+it, silently invalidating file-count/content assertions across dozens of pre-existing tests.
+
+A loop round AFTER the first (following a Conductor's request-changes) needs no daemon logic at all:
+`board/gateops.ts#doRequest` already produces that round's artifact synchronously, in the same HTTP
+request that resolved the gate — by the time any walker looks again, it's already on disk, and
+`nextAction`'s own halt rule ("a live artifact of this kind exists and is in-review → halt") handles it
+correctly with zero extra code.
+
+## O3. A plain unit with no `after:` is walkable from the moment it's declared — no separate "start" nod
+PRD §6's DAG-walk rule has no carve-out for "the very first kind" — only `after:` makes a unit
+"invisible to the walk." Read literally, a freshly-declared active unit with `product-brief`'s
+`consumes: []` (trivially satisfied) is producible the instant the unit exists. Read against invariant 1
+("no member process ever starts without a Conductor approval in its causal chain... start gates let
+that approval be prompted rather than remembered, but never replaced"), the causal chain for THIS first
+invocation is the Conductor authoring and committing the unit.md file itself — an explicit act of
+intent, not a state that merely arose. This is the single most debatable call in this phase, recorded
+explicitly rather than silently baked in: a stricter reading would require every unit, `after:` or not,
+to sit behind an explicit start gate. The literal-§6 reading was taken because (a) the PRD's own prose
+draws the `after:`/no-`after:` distinction deliberately and only gates the former, and (b) `after:` is
+described as a "start-gate condition" specifically — implying units WITHOUT one have no start gate to
+speak of, by design, not by oversight. Tested directly (`tests/daemon.test.ts`, case b): a
+freshly-declared unit gets its first kind produced on the very next tick, no further click.
+
+## O4. Concurrency safety: a single-threaded work queue (deliverable e), and what it actually guards
+against
+`Daemon` (`src/daemon.ts`) serializes every tick behind `tickRunning`/`tickQueued`: at most one tick's
+unit-walk runs at a time, units within a tick are walked strictly sequentially (no per-unit
+concurrency), and a repo-change signal that arrives while a tick is already running coalesces into
+exactly one follow-up tick, not one per signal. Worth being honest about what this mechanism is FOR:
+`MemberRunner.produce()` is fully synchronous today (every adapter — native, cli, remote — invariant 10
++ K1's own established pattern), so JS's run-to-completion semantics already make a literal
+data-race-style double-invocation impossible within a single process even without a lock — two
+`setTimeout`-scheduled ticks can never truly execute concurrently in one Bun process. The lock exists
+for two real reasons anyway: (1) it is the explicit, testable guarantee the goal asked for, and a
+guarantee that "happens to hold because nothing sits between two operations that could interleave" is
+exactly the kind of implicit correctness that breaks silently the moment someone makes a boundary
+async — and (K5/K9's own history in this repo is a live example: `NativeBoundary`'s real SDK backing is
+already synchronous-via-subprocess for the same reason the Runner's engine had to stay synchronous, and
+K9 shows what happens when an async boundary gets threaded through carelessly; and (2) it genuinely
+guards a real, testable reentrancy hazard: a `MemberRunner.produce()` implementation that itself
+(synchronously) tries to trigger another tick — plausible the moment any hook, log line, or future
+instrumentation calls back into the daemon — is refused outright (`tests/daemon.test.ts`, "tick()
+refuses to run re-entrantly") rather than silently interleaving two unit-walks against the same on-disk
+state. The per-unit safety property the goal actually cares about most — "a member is never invoked
+twice for the same producible kind" — is enforced by a second, independent mechanism layered underneath
+the queue: every tick re-derives "does a live artifact of this kind already exist?" fresh from disk
+(`loadRepo`, invariant 2) immediately before producing, so even a hypothetical future world where two
+ticks somehow did interleave, the SECOND one would see the first one's just-written artifact and halt
+instead of re-producing — files are the truth, so the truth cannot go stale between two ticks that could
+never actually run at the same instant regardless.
+
+## O5. Failures surface as a `blocked` artifact, occupying that kind's slot — never a crash, never a
+silent stall (deliverable f)
+A member throw (timeout, guardrail rejection inside a real adapter, an off-contract doc that fails the
+same `validateArtifactSource` boundary every other write path uses) is caught at the exact call site
+(`dagwalk.ts#produceOne`) and turned into a real, committed artifact at `status: blocked` for that kind
+— visible on disk (files are the truth), and self-limiting: the next tick's `nextAction` sees a live
+artifact at `blocked` and halts, exactly the same rule that already governs a `rejected` step, so a
+persistently-failing member is never retried in a tight loop. A second, independent layer
+(`daemon.ts#tickOnce`) wraps EACH unit's `advanceUnit` call in its own try/catch too — not redundant:
+`dagwalk.ts`'s own catch only covers the member-boundary call itself, while a genuinely unexpected
+failure elsewhere (a filesystem error, a git failure — reproduced live during this phase when a scratch
+test repo had no `.git` at all) must still never crash the daemon's watcher callback, which nothing else
+guards; an uncaught exception there would silently kill the whole `levare serve` process. Budget/timebox
+are handled as pre-flight halts, not post-hoc gates: unlike `runner.ts`'s own interactive
+continue/raise/stop verbs (which need a `DecisionSource` the daemon has none of), the daemon simply
+never invites more spend once a unit's ledger sum already exceeds its declared `budget`/`timebox` —
+checked BEFORE producing, with a reason recorded in `daemon.recentActivity()` (bounded, in-memory;
+deliberately not a new persisted schema field — see O7) so "never silent" is testable without inventing
+a UI for a verb (`continue`/`raise`/`stop`) the board's own `/gates` route doesn't even accept today
+(confirmed: `serve.ts`'s POST /gates verb allowlist is `approve|request|reject|start|notyet|rescope`
+only — budget verbs were never wired into the board, a pre-existing gap this phase does not close).
+Guardrail-violation surfacing needed no bespoke code at all: it's just one more shape of thrown error
+the same generic catch already handles identically to a timeout.
+
+## O6. Two distinct git identities — the rule is WHO ACTED, not who triggered (gate-review fix)
+Every write path before this phase committed as `cas <cas@levare.local>` (`CONDUCTOR_NAME`/
+`CONDUCTOR_EMAIL`, `git.ts`) because every one of them WAS a direct Conductor action with no member
+invocation in it. `RUNNER_NAME`/`RUNNER_EMAIL` (`levare-runner <runner@levare.local>`,
+`git.ts#runnerCommit`) exists so a commit whose CONTENT was written by a member is never laundered as
+human-authored — the two identities let `git log` distinguish what the Conductor *decided* from what the
+machine *did* on their behalf, which is worthless the moment a machine-authored commit gets attributed to
+the human anyway.
+
+**The rule, stated precisely:** a commit's author reflects whose words/output ended up in the file, not
+whose click caused the commit to happen. Two categories:
+- **Conductor-authored** (`conductorCommit`): `approve`, `reject`, a frontmatter flip with no member
+  content (nothing is invoked); `request-changes` — even though it DOES re-invoke a member, the commit is
+  anchored by the Conductor's own written note (the change request itself, e.g. "name the idempotency key
+  column") and the regeneration is a narrow, directed consequence of that specific piece of Conductor
+  content, not an open-ended autonomous step; a registry edit — the file content IS what the Conductor
+  typed.
+- **Runner-authored** (`runnerCommit`): ANY commit whose file content is a member's own output with no
+  Conductor-authored text driving what it says — this includes every `advanceUnit` production, full stop,
+  regardless of which caller triggered it.
+
+**Gate-review finding, fixed here.** `board/gateops.ts#doStart` originally passed
+`commit: conductorCommit` to `advanceUnit` reasoning "the Conductor clicked start, so the commit is
+theirs" — this was the bug: it attributed to `conductorCommit`. Live evidence:
+`f31036f cas <cas@levare.local> — start loyalty-flow → kestrel/wren produced product-brief
+product-brief-loyalty-flow-v1`. That commit's entire file content is wren's own generated brief — no
+Conductor text is in it anywhere; "the Conductor clicked start" only explains why the invocation was
+*legal* (invariant 1's approval-in-the-causal-chain), not who wrote the result. This is structurally
+identical to every OTHER `advanceUnit` production (the daemon's own autonomous DAG-advance) — the only
+difference is timing (synchronous, in the same HTTP request, vs. a later tick) — so it must get the same
+identity. **Fix:** `doStart` now passes only `verb: "start"` (kept so the commit MESSAGE still records
+"this production followed an explicit start click", a genuinely useful distinction from a later
+autonomous advance) and lets `commit` default to `runnerCommit`. The corrected log line reads
+`... levare-runner <runner@levare.local> — start loyalty-flow → kestrel/wren produced product-brief ...`.
+`startAuthorized: true` is unchanged and still does its real job (makes the call legal); it was never
+supposed to also decide authorship, and no longer does. Verified directly against the real commit author
+(not an internal flag) in `tests/daemon.test.ts`.
+
+## O7. "Members running" / "Running now" (deliverable c): in-memory only, never a new persisted field
+`Daemon.running()` reflects the daemon's own live `inFlight` array, populated by a hook
+(`AdvanceOptions.onBeforeProduce`) fired synchronously immediately before `MemberRunner.produce()` and
+cleared right after (success, blocked, or halted — a `finally` in `daemon.ts#tickOnce`). This is
+consistent with invariant 2 ("the binary holds no state that cannot be reconstructed by re-reading the
+repo") precisely BECAUSE it is never persisted: an in-flight invocation is, by definition, not yet a
+fact about the repo — the moment it becomes one (the artifact lands on disk), it's gone from `running()`
+and the studio's stat/gate/openGates derivations already pick it up from the file itself on the very
+next request. `render.ts#renderStudio` gained a 4th, optional, default-`[]` parameter (`running`) rather
+than a new required one — every pre-phase-8 call site (all of `tests/board-render.test.ts`, and
+`board/serve.ts`'s own route handlers before this phase's edit) keeps working unchanged, and a board
+with no daemon attached (`createBoard`'s own default, unchanged — see O8) renders the exact same honest
+"Nothing running right now" empty state E2 always rendered, just reworded slightly (E2's old copy
+implied NO live registry could ever exist; that's no longer true, so the copy no longer claims it).
+Reused `.avatar--runner` and `.tlrow` — both already declared in the frozen `assets/styles.css` but,
+confirmed by grep, never emitted by any renderer before this phase (the same "dormant, already-designed
+rule" shape phase 6's G1 closed for `.snode.is-danger`) — so this needed zero new CSS, consistent with
+this codebase's standing discipline.
+
+## O8. `createBoard()`'s default stays daemon-less; only `serve()` (the CLI's actual entry point)
+attaches a real one
+`BoardCtx` gained an optional `daemon?: Daemon` field and `createBoard(root, opts)` accepts one, but
+NEVER constructs one itself — every one of the ~25 existing test files that call `createBoard(root)`
+directly keeps getting exactly the board they always did, with zero new background process, fs.watch
+handle, or side effect they didn't opt into. This was not a stylistic preference: an early version
+attached a live daemon inside `createBoard()`'s own default and immediately broke an existing test
+(`tests/board-serve-idletimeout.test.ts`) that seeds a scratch copy of `fixtures/golden` with NO `.git`
+directory at all — the daemon's very first tick tried to advance a unit and crashed on `git add` failing
+against a non-repo (before O5's crash-hardening existed to catch it). Only `serve()` — the function
+`levare serve`'s CLI command and `./levare serve` both actually go through — constructs a real `Daemon`,
+starts it, and passes it into `createBoard`; `--no-daemon` (deliverable a) short-circuits this, and a
+read-only board (NOTES E14 — a `fixtures/` path, or `--read-only`) never gets one regardless of the
+flag, structurally: the daemon's whole purpose is to write, which a read-only board must never do (the
+same "structural, not a rule to remember" posture E14 already established for the three write routes).
+
+## O9. `dagwalk.ts` also closes E5/F3's old scope boundary as a side effect, not a separate fix
+The retired `doStart` used to 501 on a team whose flow opens with a `loop` rather than a `step` ("mid-
+flow shapes... not supported yet" — ruling F3). `advanceUnit`'s shared `nextAction` walks step/gate/loop
+nodes uniformly with no special-casing of flow position zero, so that restriction is simply gone — a
+flow opening with a loop reaches its first gate exactly the same way a step-opening flow does. No
+fixture exercises this shape yet (kestrel's flow opens `step: brief`), so it's untested territory closed
+by generalization rather than by a dedicated fixture; noted here rather than silently claimed as
+"tested."
+
+## O10. Gate-review fix: the SSE-leak subprocess sanity check was Linux-only (a test bug, not a leak)
+**Finding, reported from a real darwin (macOS) host:** `tests/board-serve-sse-leak.test.ts`'s subprocess
+sanity check — "50 SSE connect/disconnect cycles over real sockets leave the process's fd count flat" —
+failed on darwin while passing in the Linux container.
+
+**Diagnosis, confirmed rather than assumed.** The test's `fdCount()` was `readdirSync('/proc/<pid>/fd')
+.length`, hardcoded — macOS has no `/proc` filesystem at all, so on darwin this doesn't fail the leak
+assertion, it throws `ENOENT` before ever reaching it. That crash is itself proof the reported failure
+was a test-portability defect, not evidence of a real leak. Confirmed independently on the reporting
+host: the three IN-PROCESS tests in the same file — the subscriber Set returning to exactly 0 after 50
+connect/cancel cycles, an abandoned (aborted, never explicitly cancelled) connection still being cleaned
+up, and `board.close()` closing every still-open stream — are pure JS with zero OS branching (they
+exercise `debugSubscriberCount` against an in-memory `Set`, never a real socket or `/proc`) and all PASS
+identically on darwin. Those three are the actual proof P1's fix works; the subprocess check is a
+real-environment sanity check layered on top, not a substitute for it, and per NOTES P1 itself the
+reported *mechanism* (inotify/fd growth) was already never fully confirmed even on Linux — only the
+code-level defect (the leaked `Set` entry) was.
+
+**Fix.** `countOpenHandles`/`detectHandleMechanism` (top of the file) pick a platform-appropriate
+measurement — `readdirSync('/proc/<pid>/fd')` on linux, `lsof -p <pid>` (counting non-header lines) on
+darwin/anywhere else `lsof` is on `PATH` — and the test is `test.skipIf`'d, with the skip reason baked
+directly into the test's own name, on a platform with neither (never crashes, never silently reports a
+false pass). `lsof`'s output-line-counting logic was smoke-tested directly against this dev sandbox's own
+process (a Linux machine, so this only proves the parsing code runs and returns a sane positive count,
+not that darwin's actual socket-close timing behaves as expected — that part could only be confirmed on
+the real darwin host that reported and then re-confirmed the fix, per the exchange this NOTES entry
+records).
+
+**The assertion itself changed from "flat" to "not leak-shaped growth."** A closed socket can
+legitimately still be visible to `lsof`/`/proc` for a short window after both peers have moved on
+(TIME_WAIT and platform-specific equivalents) — an immediate single reading can overstate "still open"
+with no actual leak behind it, more visibly so via `lsof` on darwin than via `/proc` on linux.
+`settledHandleCount` takes the MINIMUM of several readings spaced a short settle interval apart (a
+minimum can only ever under-report a real leak, never manufacture a false negative by hiding one) and
+the test runs multiple ROUNDS of cycles, sampling after each, rather than one single before/after pair.
+The actual assertion: the sample sequence must not be BOTH monotonically non-decreasing AND drift by a
+leak-scale amount (≥ one round's worth of cycles) — the literal shape of the original bug (a retained Set
+entry per connection) is unbounded, per-connection, monotonic growth; a settled, bounded wobble from
+transient socket linger is neither monotonic across every round nor anywhere near that magnitude. A
+looser absolute-drift backstop (well under "~1 handle leaked per cycle" across the whole run) catches a
+leak that happens to wobble but still trends strongly upward, without pinning an exact number the way the
+original "flat" assertion did.
+
+**Result — which case it was.** A test-portability bug, not a real leak — this codebase's own darwin host
+already showed the underlying fix works (the three JS-level tests) before any test code here changed; the
+subprocess check was simply never able to run on that platform at all. No server-side code changed — the
+fix is entirely in how the test measures and asserts, per this file's own header comment. Verified directly
+in this sandbox (linux, `procfs` mechanism): `bun test tests/board-serve-sse-leak.test.ts` passes, 6 flat
+samples (`16, 16, 16, 16, 16, 16`) across 5 rounds of 20 cycles. The `lsof`-parsing branch itself was
+additionally smoke-tested standalone against this sandbox's own process (Linux, so this only proves the
+parsing/counting logic runs and returns a sane count, not darwin's actual socket-close timing) — the
+darwin (`lsof` mechanism) run is what the reporting host still needs to execute to close the loop, since
+this sandbox has no darwin access; `bun test tests/board-serve-sse-leak.test.ts` there should now report
+which mechanism it picked (baked into the passing test's own name) and a settled, non-leak-shaped sample
+sequence instead of an ENOENT crash.
+
+## Learnings
+A `seed`/resumability option that exists on an interface but is never actually consulted by the code
+using it (`runner.ts`'s `RunnerOptions.seed`, populated in the constructor but never read by `runStep`)
+is a trap for exactly the situation phase 8 walked into: reusing "the resumable Runner" sounds like the
+obviously-correct reuse until reading the implementation shows there's no resumability there to reuse —
+the NOTES B1 language describing it as resumable was aspirational, not accurate, and would have been
+taken at face value without re-reading the actual code.
+A design that is locally correct (produce a loop's companion member so the Conductor has something to
+read at the gate) can still be globally wrong the moment it's evaluated against EXISTING on-disk state
+it wasn't designed against — the golden fixture's own long-standing static gate shape was the thing that
+caught this, not a logical flaw in the rule itself; when a new autonomous process is about to start
+touching a shared, widely-fixture-reused repo tree, checking "what does this do to state that already
+exists, not just state I create fresh" is a distinct, necessary pass.
+A lock that's redundant against today's fully-synchronous call graph is still worth building explicitly
+when (a) the guarantee was explicitly asked for, (b) a nearby boundary in the same codebase has ALREADY
+gone from sync to async once (K9) with a real, live-discovered bug when a blocking call sat on a
+request path, and (c) the lock catches a genuinely different, real hazard (synchronous reentrancy) that
+has nothing to do with the async case it's also future-proofing against — "this can't happen today" and
+"this guarantee has no value" are not the same claim.

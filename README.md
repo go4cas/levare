@@ -159,5 +159,42 @@ machine that will actually run levare** resolves it; the checked-in `bun.lock` i
 platform-agnostic (it lists every optional platform package; only install time decides which one
 lands on disk).
 
+## Phase 8 — the daemon
+
+`levare serve` now boots a Runner process alongside the board, in the same process: the daemon watches
+`work/`, and on every relevant change walks every active unit one flow-step forward
+([src/dagwalk.ts](src/dagwalk.ts)#advanceUnit — the one shared "what's next" derivation now used by both
+the daemon and the board's `start` verb), through the real `MemberRunner`/`AdapterRunner` boundary. It
+halts at every gate (an artifact landing at `in-review`) and never resolves one — invariant 1 holds
+structurally, not by convention: a unit's very first invocation only ever happens either because it has
+no `after:` (its own existence, authored by the Conductor, is the approval — PRD §6's literal DAG-walk
+rule) or because the Conductor explicitly resolved its start gate.
+
+- **`levare serve [root] [--no-daemon]`** — [src/board/serve.ts](src/board/serve.ts)#serve: the daemon
+  is on by default on a writable root, off on a read-only one (nothing for it to legitimately write —
+  NOTES E14) or with `--no-daemon`.
+- **"Members running" / "Running now"** ([src/board/render.ts](src/board/render.ts)) are now a true
+  projection of the daemon's in-flight invocations, retiring NOTES E2.
+- **F3/E5 close for real**: `start` ([src/board/gateops.ts](src/board/gateops.ts)#doStart) hands the
+  unit to the same `advanceUnit` the daemon drives, authorized by that one Conductor click.
+- **Concurrency** — [src/daemon.ts](src/daemon.ts): a single-threaded work queue (one tick at a time,
+  units walked strictly sequentially, rapid repo-change bursts coalesce into one follow-up tick), plus
+  a fresh-from-disk existence check immediately before every production, so a kind is never produced
+  twice and a unit is never advanced by two invocations at once.
+- **Failures never crash or stall silently** — a member error, timeout, or off-contract doc becomes a
+  committed `status: blocked` artifact occupying that kind's slot (self-limiting: the next tick halts
+  on it rather than retrying); a budget/timebox already exceeded halts before producing, with the reason
+  recorded and test-visible (`Daemon#recentActivity`).
+- **Two git identities** — a Conductor's own actions (approve/reject/start/…) still commit as
+  `cas <cas@levare.local>`; the daemon's own autonomous productions commit as
+  `levare-runner <runner@levare.local>` ([src/git.ts](src/git.ts)), so `git log` stays an honest record
+  of who/what acted.
+
+```sh
+bun test                                          # full suite, including tests/daemon.test.ts
+levare serve /path/to/studio                      # board + daemon, same process
+levare serve /path/to/studio --no-daemon          # board only, no autonomous advancement
+```
+
 Uncertainties and assumptions are recorded in [NOTES.md](NOTES.md) (phase-1 A1–A8, phase-2 B1–B7,
-phase-3 D1–D9, phase-4 E1–E14, phase-5 F1–F7, phase-6 G1/H1–H7, phase-7 K1–K9).
+phase-3 D1–D9, phase-4 E1–E14, phase-5 F1–F7, phase-6 G1/H1–H7, phase-7 K1–K9, phase-8 O1–O9).
