@@ -20,6 +20,7 @@ import { readFileSync } from "node:fs";
 import type { Intent, OrchestratorBoundary } from "./orchestrator.ts";
 import { deterministicBoundary } from "./orchestrator.ts";
 import type { Verb } from "./runner.ts";
+import type { Receipt } from "./types.ts";
 import {
   asyncSdkTransport,
   hasAnthropicCredentials,
@@ -36,7 +37,27 @@ export function loadOrchestratorPromptSource(path: string = ORCHESTRATOR_PROMPT_
   return readFileSync(path, "utf8");
 }
 
-const DEFAULT_MODEL = "claude-opus-4-8";
+// §10, NOTES phase-7 K16: surface the SDK's OWN reported cost/tokens (never an estimate) so a
+// Conductor running `levare serve` can actually see what each Orchestrator call cost. This is
+// visibility only, not persistence — there is no unit/artifact for a chat message to attach a ledger
+// entry to (see K16 for why full ledger integration is deliberately out of scope here).
+function logReceipt(call: "interpret" | "narrate", receipt: Receipt | undefined): void {
+  if (!receipt) return;
+  const usd = receipt.usd !== null ? `$${receipt.usd.toFixed(4)}` : "usd unreported";
+  const tokens = receipt.tokens_in !== null && receipt.tokens_out !== null ? `${receipt.tokens_in} in / ${receipt.tokens_out} out` : "tokens unreported";
+  console.error(`levare: Orchestrator ${call}() usage — ${receipt.model ?? "model unreported"} · ${tokens} · ${usd}`);
+}
+
+// A live host spent $0.055 on a two-word "stats" reply — Opus, on every call, including trivial
+// intent classification, is dramatically more than that job needs (NOTES phase-7 K16). Default to a
+// much cheaper, faster model; `LEVARE_ORCHESTRATOR_MODEL` overrides it as an interim, environment-
+// based "studio-level setting" (a real registry field is the correct long-term home — see NOTES K16
+// for why that's deliberately out of scope for this fix-up cycle).
+const DEFAULT_MODEL = "claude-sonnet-5";
+
+function resolveOrchestratorModel(env: Record<string, string | undefined>): string {
+  return env.LEVARE_ORCHESTRATOR_MODEL || DEFAULT_MODEL;
+}
 
 /**
  * Raised by `interpret()` when the SDK TRANSPORT itself fails — the worker never ran, exited
@@ -141,10 +162,14 @@ export interface SdkOrchestratorBoundaryOptions {
  * call never freezes `levare serve`'s event loop for other requests (NOTES phase-7 K9). */
 export function createSdkOrchestratorBoundary(opts: SdkOrchestratorBoundaryOptions = {}): OrchestratorBoundary {
   const transport = opts.transport ?? asyncSdkTransport;
-  const model = opts.model ?? DEFAULT_MODEL;
   const systemPrompt = loadOrchestratorPromptSource(opts.systemPromptPath);
   const env = opts.env ?? process.env;
-  const timeoutMs = opts.timeoutMs ?? 120_000;
+  const model = opts.model ?? resolveOrchestratorModel(env);
+  // Well under a minute (NOTES phase-7 K15) — an Orchestrator chat reply is a conversational round
+  // trip, not a long-running member task; a live successful call took ~9s. Any caller's own outer
+  // timeout must stay comfortably LONGER than this, never shorter — the reverse is what let a hung
+  // call outlive the test that was supposed to catch it.
+  const timeoutMs = opts.timeoutMs ?? 45_000;
   // Resolved ONCE, here, at construction time — never left to the SDK's own implicit resolution
   // inside the worker (NOTES phase-7 K14: a live host showed that implicit lookup fail to find a
   // platform binary that genuinely existed as a sibling node_modules package). Every request this
@@ -169,6 +194,7 @@ export function createSdkOrchestratorBoundary(opts: SdkOrchestratorBoundaryOptio
         console.error(`levare: Orchestrator SDK interpret() failed: ${res.error}`);
         throw new OrchestratorSdkError(`Orchestrator SDK interpret() failed: ${res.error}`);
       }
+      logReceipt("interpret", res.receipt);
       return coerceIntent(res.structuredOutput, text);
     },
     async narrate(prompt: string): Promise<string> {
@@ -176,6 +202,7 @@ export function createSdkOrchestratorBoundary(opts: SdkOrchestratorBoundaryOptio
       // A transport failure must never surface as a fabricated Orchestrator line — fall back to the
       // plain computed fact (identical to the deterministic boundary's own narrate) rather than lie.
       if (!res.ok) return prompt;
+      logReceipt("narrate", res.receipt);
       return res.result;
     },
   };

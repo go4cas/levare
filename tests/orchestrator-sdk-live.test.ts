@@ -26,5 +26,8 @@ test.skipIf(!live)(
     // classification miss, distinct from (and only reachable past) a transport failure.
     expect(intent.kind).toBe("briefing");
   },
-  60_000,
+  // Comfortably LONGER than the boundary's own internal timeout (45s — orchestrator-boundary.ts),
+  // never shorter (NOTES phase-7 K15): a shorter outer timeout is exactly what let a real hang run to
+  // this test's own limit instead of the transport's own timeout-kill firing and being observed.
+  90_000,
 );
