@@ -14,6 +14,7 @@ import { validatePath } from "../validate.ts";
 import type { Verb } from "../runner.ts";
 import { conductorCommit, CONDUCTOR_NAME } from "../git.ts";
 import { handle as orchestratorHandle } from "../orchestrator.ts";
+import { selectOrchestratorBoundary } from "../orchestrator-boundary.ts";
 import { isStudioInitialized, renderOnboarding } from "./onboarding.ts";
 
 export interface RouteDef {
@@ -183,9 +184,13 @@ export const ROUTES: RouteDef[] = [
       }
       // PRD §7: the Orchestrator holds no state — every call re-derives from the repo. `handle` is
       // the same entry point a scripted/chat driver uses in tests; a gate-decision message round-trips
-      // to the identical `resolveGate` mutation the POST /gates route uses (ruling C7).
+      // to the identical `resolveGate` mutation the POST /gates route uses (ruling C7). The boundary
+      // itself is the real SDK when ANTHROPIC_API_KEY is present, else the deterministic offline
+      // fallback (phase 7) — selected fresh per request so a key added mid-session takes effect
+      // without a restart, and never logged either way (invariant 11).
       const today = new Date().toISOString().slice(0, 10);
-      const { reply, result } = orchestratorHandle(text, { root: ctx.root, by: `${CONDUCTOR_NAME} ${today}` });
+      const boundary = selectOrchestratorBoundary();
+      const { reply, result } = orchestratorHandle(text, { root: ctx.root, by: `${CONDUCTOR_NAME} ${today}` }, boundary);
       if (result && "ok" in result && result.ok && result.commit) ctx.broadcast("reload");
       ctx.broadcast(`orchestrator:${JSON.stringify({ text: reply })}`);
       return json({ ok: true, reply });
