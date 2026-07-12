@@ -2459,3 +2459,87 @@ a lifted budget is the one arguably-durable piece still kept only in memory.
 **Revisit if the daemon becomes long-lived:** at that point acknowledgments (and the raised effective
 budget) should be persisted and committed like every other Conductor decision — most naturally as
 frontmatter on the unit, so a restart re-derives them from disk with everything else.
+
+# NOTES — F-series: defects found by running a real studio (dogfood)
+
+## F1. Agents could not declare what they produce — every real studio was unrunnable
+**Found by the Conductor, running a real studio for the first time (2026-07-12):** two teams, four
+agents, a research unit. `levare validate` said **valid**. Not one step ever ran. The unit sat
+"active", silent, forever.
+
+**The defect.** The Runner resolves a flow step to a member by consulting a capability map —
+`{member, kind}[]` (NOTES B2). That map had exactly one source in the entire codebase: the
+`CAPABILITIES` export in `fixtures/stubs/member-stub.ts`, derived from the stub's own canned
+artifacts and **injected into `AdapterRunner` at construction** (`opts.capabilities`). A fixture-era
+seam. Real agent definitions had no field in which to declare a capability *at all*, so for any
+studio that wasn't the golden fixture the map was empty, `resolveStep` threw "no member of team X can
+produce a kind for flow step Y", `dagwalk.ts#nextAction` converted the throw into a `halt`, the daemon
+recorded the halt in a bounded in-memory ring buffer nobody reads, and the unit did nothing. Forever.
+Every real studio failed on its first unit, and the failure was invisible from every surface.
+
+**Why this is the worst fail-open so far.** It is the fifth in this codebase's history (validator
+S0/S1 and S2a, the unknown intent, the SDK transport). The others let a *check* pass when it could not
+actually verify what it claimed. This one let the **validator itself** say "valid" about a studio that
+was structurally incapable of running — the one tool whose entire job is to tell you the truth about
+your studio before you trust it with money and a subprocess. A gate that can't be reached is worse
+than a gate that's wrong.
+
+**The fix, in three parts.** Binding alone would have been necessary and insufficient: it would have
+fixed the studios people write correctly and kept silent about the ones they don't.
+
+1. **Agents declare `produces:`** (`agents/*.md`, PRD §5, `AGENT_SCHEMA`) — required, non-empty
+   (`EMPTY_PRODUCES`). A member that produces nothing can bind to no step.
+2. **Capabilities derive from the repo** — `repo.ts#repoCapabilities(repo)` reads every agent's
+   `produces` and returns the `{member, kind}[]` map. `AdapterRunner` takes it from the repo by
+   default; `opts.capabilities` is now an optional **test-only override** (the stub/replay path uses
+   it nowhere — `stubAdapterRunner` derives from the repo like everything else, and still reproduces
+   the golden oracle byte-for-byte, because the golden agents now declare exactly the pairs the stub
+   can render). What the stubs mock is member **invocation**; they no longer supply the studio's own
+   **declarations**. Files are the truth (invariant 2) — a capability is a fact an agent declares on
+   disk, never one injected at construction.
+3. **Validation rejects a structurally unrunnable studio** (`validate.ts#validateStudioBindings`, run
+   for any tree carrying both `teams/` and `agents/`): `UNPRODUCIBLE_KIND` (a team declaring
+   `produces: [k]` when no member of it declares k — the message names the team, the kind, and what
+   each member actually produces), `UNBINDABLE_STEP` (a flow step — plain, or either half of a loop —
+   that no member can satisfy under the Runner's own resolution rule), `AMBIGUOUS_STEP` (two producers
+   for one step; the Runner never guesses). Rejection fixtures: `team-unproducible-kind`,
+   `unbindable-step`.
+4. **Runtime blocks loudly.** `nextAction` returns a distinct `unbindable` action (not a `halt`: a halt
+   means "something is legitimately in the way, look again later" — a resolution failure never resolves
+   itself, so re-deriving it every tick is a silent infinite no-op). `advanceUnit` blocks the unit **on
+   disk** — `status: blocked` plus a new `blocked_reason` field carrying the resolution error verbatim,
+   committed — `board/derive.ts#openGates` surfaces it as a **gate** with its reason on the card, and
+   the daemon prints it. The daemon also no longer skips an invalid-repo tick in silence.
+
+**Uncertainties recorded, not guessed.**
+- **`produces:` is required, not optional.** An agent with no `produces` is a `MISSING_FIELD`, not a
+  silently-empty capability. This is deliberately the loud direction: the entire defect was an empty
+  capability map that nothing complained about. Cost: every existing agent definition needs the field
+  (the golden fixture, the `init` scaffold, and `tests/multiteam.test.ts`'s agent were updated).
+- **A team may have members producing kinds the team doesn't advertise** (kestrel's `finch` produces
+  `review`; kestrel's `produces:` doesn't list it — `review` is an internal loop kind, not a kind the
+  team offers the DAG). So `UNPRODUCIBLE_KIND` checks team→member, never member→team. Flagging the
+  reverse would reject the golden fixture, and would be wrong: what a team *offers* and what its
+  members *can make* are different sets.
+- **`blocked_reason` is a new work-unit field** (schema, type, loader). The alternative — writing a
+  `blocked` *artifact* the way a member failure does (NOTES O5) — has no kind to write under: nothing
+  ran, and the missing kind IS the failure. The unit is what's broken, so the unit carries the reason.
+- **The blocked gate card has no verbs.** A Conductor cannot approve their way out of a misconfigured
+  studio; they fix `teams/`/`agents/` (and `levare validate` now names exactly what to fix) and the
+  block clears. This is the one gate type that is informational — it is on the board because a failure
+  no one is shown is a failure the system pretends it doesn't have.
+- **Runtime binding failure is now defence in depth, not the primary path.** Since validation rejects
+  an unbindable studio, `loadRepo` (which validates) fails first, so the daemon refuses the tick and
+  says why. The runtime block still fires for the paths validation cannot pre-empt — a member boundary
+  that reports a narrower capability map than the repo declares (an adapter that cannot reach a
+  member, a stub, a test override). Both paths are tested (`tests/binding.test.ts`).
+- **`AMBIGUOUS_STEP` is new enforcement at validate time.** The Runner already refused an ambiguous
+  step at runtime (NOTES B2); hoisting it to validation is a strictly-earlier failure of the same rule,
+  and no existing fixture trips it.
+
+**Still open:** `runner.ts`'s in-memory engine (the phase-2 replay walk) still throws a `RunnerError`
+on an unbindable step rather than blocking — correct there, because replay is a scripted simulation
+that must fail loudly to the operator rather than mutate a fixture tree, but it means the "what happens
+when a step can't bind" answer now lives in two places. That is the same runner⇄dagwalk duplication R3
+already tracks (`resolveStep`, `untilSatisfied`, the C8 computation); F1 adds one more entry to the
+list of things a shared leaf module would unify.

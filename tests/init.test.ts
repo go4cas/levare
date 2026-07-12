@@ -1,11 +1,15 @@
 import { test, expect, describe, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scaffoldStudio, initStudio } from "../src/init.ts";
 import { validatePath } from "../src/validate.ts";
 import { createBoard } from "../src/board/serve.ts";
+import { loadRepo, repoCapabilities } from "../src/repo.ts";
+import { resolveStep } from "../src/gates.ts";
+import { advanceUnit } from "../src/dagwalk.ts";
+import { stubAdapterRunner } from "../src/replay.ts";
 
 // Phase 6 deliverable (a): `levare init` scaffolds an empty directory into a working studio — the
 // skeleton, the five type templates, one example team with its agents, a sample skill, a
@@ -189,5 +193,55 @@ describe("initStudio — git init + the founding commit", () => {
     expect(log.stdout.trim().split("\n").filter(Boolean).length).toBe(1); // still exactly one commit
 
     rmSync(configFile, { force: true });
+  });
+});
+
+// NOTES F1: `levare init` must scaffold a studio that is not merely on-contract but RUNNABLE — the
+// defect was a studio that validated clean and could not bind a single flow step to a member. The
+// scaffold is the first studio every new Conductor gets; if its example team cannot bind, the very
+// first unit they open sits silent. So: it validates, its capability map is non-empty and derived
+// from its own agents, every step of its example team's flow resolves, and a unit opened against it
+// actually produces its first artifact through the walk.
+describe("F1: the scaffolded studio is runnable, not merely valid", () => {
+  test("its example team binds every flow step to a member, and a unit produces its first artifact", () => {
+    const root = tmpRoot();
+    scaffoldStudio(root);
+    expect(validatePath(root).ok).toBe(true);
+
+    const repo = loadRepo(root);
+    const caps = repoCapabilities(repo);
+    // Capabilities come from the scaffolded agents' own `produces:` — no stub map anywhere.
+    expect(caps).toEqual([
+      { member: "finch", kind: "review" },
+      { member: "lyra", kind: "design" },
+      { member: "lyra", kind: "spec" },
+      { member: "wren", kind: "product-brief" },
+    ]);
+
+    // Every step the example team declares resolves to exactly one member.
+    const kestrel = repo.teams.get("kestrel")!;
+    expect(resolveStep(kestrel, "brief", caps)).toEqual({ member: "wren", kind: "product-brief" });
+    expect(resolveStep(kestrel, "design", caps)).toEqual({ member: "lyra", kind: "design" });
+    expect(resolveStep(kestrel, "spec", caps)).toEqual({ member: "lyra", kind: "spec" });
+    expect(resolveStep(kestrel, "review", caps)).toEqual({ member: "finch", kind: "review" });
+
+    // End to end: open a feature unit against the scaffolded studio's own project and walk it. The
+    // member INVOCATION is stubbed (invariant 10 — no real model call in a test); the binding,
+    // capability map, team, flow, and write path are all the scaffold's own.
+    const unitDir = join(root, "work", "studio", "pilot");
+    mkdirSync(unitDir, { recursive: true });
+    writeFileSync(join(unitDir, "unit.md"), ["---", "type: feature", "status: active", "---", "", "# pilot", "", "The first unit in a fresh studio.", ""].join("\n"));
+
+    const withUnit = loadRepo(root);
+    const unit = withUnit.units.find((u) => u.unit === "pilot")!;
+    const result = advanceUnit(root, withUnit, unit, stubAdapterRunner(withUnit), {
+      startAuthorized: true,
+      commit: () => "no-git", // the scaffold-only test root has no git history; the walk's write is what matters
+    });
+    expect(result.outcome).toBe("produced");
+    if (result.outcome !== "produced") throw new Error("unreachable");
+    expect(result).toMatchObject({ member: "wren", kind: "product-brief", artifactId: "product-brief-pilot-v1" });
+    expect(readFileSync(result.file, "utf8")).toContain("produced_by: kestrel/wren");
+    expect(validatePath(root).ok).toBe(true); // still a valid studio after the walk wrote to it
   });
 });
