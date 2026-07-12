@@ -68,7 +68,7 @@ export interface DecisionSource {
 // Gates and events
 // ---------------------------------------------------------------------------
 
-export type GateType = "start" | "flow" | "loop" | "exhaust" | "budget" | "timebox" | "blocked";
+export type GateType = "start" | "flow" | "loop" | "exhaust" | "budget" | "timebox";
 
 export interface Gate {
   type: GateType;
@@ -105,7 +105,6 @@ export type RunEvent =
   | { t: "budget"; unit: string; spent: number; budget: number }
   | { t: "timebox"; unit: string; spent_s: number; limit_s: number }
   | { t: "pace"; unit: string; step: string }
-  | { t: "blocked"; unit: string; id: string }
   | { t: "unit-status"; unit: string; status: string }
   | { t: "note"; message: string };
 
@@ -127,8 +126,6 @@ type FlowOutcome = "complete" | "paused";
 export interface RunnerOptions {
   members: MemberRunner;
   decisions: DecisionSource;
-  /** Seed the in-memory artifact state (default: empty — replay reconstructs the story from scratch). */
-  seed?: Map<string, Map<string, Artifact>>;
 }
 
 export class Runner {
@@ -147,9 +144,6 @@ export class Runner {
     this.repo = repo;
     this.members = opts.members;
     this.decisions = opts.decisions;
-    if (opts.seed) {
-      for (const [k, m] of opts.seed) this.artifacts.set(k, new Map(m));
-    }
   }
 
   run(): RunResult {

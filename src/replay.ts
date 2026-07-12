@@ -248,9 +248,6 @@ function formatEvents(events: RunEvent[]): string[] {
       case "pace":
         lines.push(`  ⏸ pace: step — nod before '${e.step}'`);
         break;
-      case "blocked":
-        lines.push(`  ✋ blocked: ${e.id}`);
-        break;
       case "unit-status":
         lines.push(`  unit ${e.unit} → ${e.status}`);
         break;

@@ -32,7 +32,7 @@ import { join } from "node:path";
 import { validateArtifactSource } from "./validate.ts";
 import { parseArtifactDoc } from "./repo.ts";
 import type { Repo } from "./repo.ts";
-import { RunnerError, timeboxSeconds, type MemberRunner } from "./runner.ts";
+import { RunnerError, timeboxSeconds, bumpVersion, type MemberRunner } from "./runner.ts";
 import { responsibleTeamsFor, resolveStep, unmetAfter, patchFrontmatter } from "./gates.ts";
 import { runnerCommit } from "./git.ts";
 import type { Artifact, FlowLoop, Team, WorkUnit } from "./types.ts";
@@ -254,7 +254,8 @@ function produceOne(
   // regardless of which unit asked, which would collide under the validator's project-scoped
   // DUPLICATE_ID check the moment a second unit produces the same kind. Only ever round 1: a later
   // round is produced by board/gateops.ts#doRequest's own versioning (see this file's header note).
-  const newId = `${kind}-${unit.unit}-v1`;
+  // The `-vN` convention has one home — runner.ts#bumpVersion — rather than a literal string here.
+  const newId = bumpVersion(`${kind}-${unit.unit}`, 1);
 
   let baseDoc: string;
   try {

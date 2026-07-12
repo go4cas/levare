@@ -23,7 +23,7 @@ import { diagnose, type CliProbe, type ConnectorHealth, type EnvProbe } from "./
 import { resolveGate, type GateOpResult } from "./board/gateops.ts";
 import type { Verb } from "./runner.ts";
 import { validatePath } from "./validate.ts";
-import { conductorCommit } from "./git.ts";
+import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL } from "./git.ts";
 
 // ---------------------------------------------------------------------------
 // The mocked SDK boundary
@@ -418,7 +418,10 @@ export function runNewProjectSkill(opts: NewProjectOptions): GateOpResult {
   if (clone.status !== 0) return { ok: false, status: 500, error: `clone failed: ${clone.stderr}` };
 
   writeFileSync(join(opts.cloneDir, "README.md"), `# ${opts.name}\n`);
-  const cloneGitArgs = (args: string[]) => ["-C", opts.cloneDir, "-c", "user.name=cas", "-c", "user.email=cas@levare.local", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args];
+  // Reuse the one Conductor identity (git.ts) rather than a second inline "cas" literal — this commits
+  // into the freshly-cloned PROJECT repo (not the studio, so it can't call conductorCommit directly),
+  // but the identity it stamps must never drift from every other Conductor-authored commit.
+  const cloneGitArgs = (args: string[]) => ["-C", opts.cloneDir, "-c", `user.name=${CONDUCTOR_NAME}`, "-c", `user.email=${CONDUCTOR_EMAIL}`, "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args];
   spawnSync("git", cloneGitArgs(["add", "-A"]));
   spawnSync("git", cloneGitArgs(["commit", "-q", "-m", "initial commit"]));
 
