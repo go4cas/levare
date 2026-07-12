@@ -39,11 +39,13 @@ export type Intent =
   | { kind: "unknown"; text: string };
 
 /** The Orchestrator's LLM-shaped surface — natural language in, structured intent or prose out.
- * Mocked this phase (invariant 10): the SDK is not a runtime dependency, so `interpret`/`narrate`
- * are deterministic stand-ins, injectable exactly like adapters.ts's NativeBoundary. */
+ * Async (phase 7): the real implementation is an I/O call (a spawned SDK worker process), and this is
+ * the ONE seam that carries that — `handle()`'s dispatch below (the switch, gate resolution, repo
+ * operations) is unchanged; it just awaits this boundary instead of calling it inline. The
+ * deterministic boundary below has no I/O of its own and resolves immediately. */
 export interface OrchestratorBoundary {
-  interpret(text: string): Intent;
-  narrate(prompt: string): string;
+  interpret(text: string): Promise<Intent>;
+  narrate(prompt: string): Promise<string>;
 }
 
 const GATE_VERB_RE = /^(approve|reject|start|notyet|not[- ]yet|rescope)\s+(\S+)(?:\s*:\s*(.*)|\s+(.*))?$/i;
@@ -55,7 +57,7 @@ const PROMOTE_IDEA_RE = /^promote idea (\S+) to (\S+)(?:\s+as\s+(\S+))?$/i;
 /** The deterministic default boundary: a small, documented pattern grammar standing in for the real
  * model's intent extraction and narration this phase. Real free-form NLU is out of scope (mocked). */
 export const deterministicBoundary: OrchestratorBoundary = {
-  interpret(text: string): Intent {
+  async interpret(text: string): Promise<Intent> {
     const t = text.trim();
     if (/^(what needs me|briefing|brief me)\b/i.test(t)) return { kind: "briefing" };
 
@@ -84,7 +86,7 @@ export const deterministicBoundary: OrchestratorBoundary = {
 
     return { kind: "unknown", text: t };
   },
-  narrate(prompt: string): string {
+  async narrate(prompt: string): Promise<string> {
     return prompt;
   },
 };
@@ -469,15 +471,20 @@ export function locateProjectForTarget(repo: Repo, target: string): string | und
   return unit?.project;
 }
 
-export function handle(text: string, ctx: OrchestratorContext, boundary: OrchestratorBoundary = deterministicBoundary): HandleResult {
-  const intent = boundary.interpret(text);
+// Async only because `boundary.interpret`/`boundary.narrate` are (the real SDK boundary is an I/O
+// call to a spawned subprocess — see orchestrator-boundary.ts and NOTES phase-7 K9). The dispatch
+// itself — which case runs, which repo operation it calls, in what order, what it returns — is
+// byte-for-byte the same switch as before; every line below differs from the prior synchronous
+// version only by an added `await`.
+export async function handle(text: string, ctx: OrchestratorContext, boundary: OrchestratorBoundary = deterministicBoundary): Promise<HandleResult> {
+  const intent = await boundary.interpret(text);
   const today = ctx.by.match(/\d{4}-\d{2}-\d{2}/)?.[0];
 
   switch (intent.kind) {
     case "briefing": {
       const repo = loadRepo(ctx.root);
       const b = buildBriefing(repo, ctx.env ?? defaultEnv(), ctx.cliProbe ?? defaultCliProbe());
-      return { reply: boundary.narrate(b.text), intent, result: b };
+      return { reply: await boundary.narrate(b.text), intent, result: b };
     }
     case "gate-decision": {
       const repo = loadRepo(ctx.root);
@@ -489,26 +496,26 @@ export function handle(text: string, ctx: OrchestratorContext, boundary: Orchest
       const reply = result.ok
         ? `Done — ${intent.verb} recorded on ${intent.target}.`
         : `Couldn't ${intent.verb} ${intent.target}: ${result.error}`;
-      return { reply: boundary.narrate(reply), intent, result };
+      return { reply: await boundary.narrate(reply), intent, result };
     }
     case "capture-idea": {
       const result = captureIdea({ root: ctx.root, name: intent.name, pitch: intent.pitch, tags: intent.tags });
       const reply = result.ok ? `Captured idea '${intent.name}'.` : `Couldn't capture idea: ${result.error}`;
-      return { reply: boundary.narrate(reply), intent, result };
+      return { reply: await boundary.narrate(reply), intent, result };
     }
     case "open-unit": {
       const result = openUnit({ root: ctx.root, project: intent.project, unit: intent.unit, type: intent.type, after: intent.after, body: `Opened via the Orchestrator.` });
       const reply = result.ok ? `Opened ${intent.type} unit ${intent.project}/${intent.unit}.` : `Couldn't open unit: ${result.error}`;
-      return { reply: boundary.narrate(reply), intent, result };
+      return { reply: await boundary.narrate(reply), intent, result };
     }
     case "promote-idea": {
       const result = promoteIdea({ root: ctx.root, idea: intent.idea, project: intent.project, unit: intent.unit });
       const reply = result.ok ? `Promoted idea '${intent.idea}' → ${intent.project}/${intent.unit}.` : `Couldn't promote idea: ${result.error}`;
-      return { reply: boundary.narrate(reply), intent, result };
+      return { reply: await boundary.narrate(reply), intent, result };
     }
     case "stats": {
       const s = computeStats(loadRepo(ctx.root));
-      return { reply: boundary.narrate(formatStats(s)), intent, result: s };
+      return { reply: await boundary.narrate(formatStats(s)), intent, result: s };
     }
     case "unknown":
     default:

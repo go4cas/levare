@@ -13,7 +13,7 @@ import { resolveGate } from "./gateops.ts";
 import { validatePath } from "../validate.ts";
 import type { Verb } from "../runner.ts";
 import { conductorCommit, CONDUCTOR_NAME } from "../git.ts";
-import { handle as orchestratorHandle } from "../orchestrator.ts";
+import { handle as orchestratorHandle, type OrchestratorBoundary } from "../orchestrator.ts";
 import { selectOrchestratorBoundary } from "../orchestrator-boundary.ts";
 import { isStudioInitialized, renderOnboarding } from "./onboarding.ts";
 
@@ -32,6 +32,10 @@ export interface BoardCtx {
   broadcast: (msg: string) => void;
   /** When true, every mutating route refuses with 405 before its handler ever runs (see NOTES E14). */
   readOnly: boolean;
+  /** Override the per-request `selectOrchestratorBoundary()` call — production never sets this;
+   * tests use it to inject a controllable (e.g. deliberately slow) boundary to prove a concurrent,
+   * unrelated request is never blocked by an in-flight `/orchestrator/message` call (NOTES phase-7 K9). */
+  orchestratorBoundary?: OrchestratorBoundary;
 }
 
 // A demo/screenshot server pointed at a fixtures/ tree must not be able to mutate it, structurally —
@@ -187,10 +191,13 @@ export const ROUTES: RouteDef[] = [
       // to the identical `resolveGate` mutation the POST /gates route uses (ruling C7). The boundary
       // itself is the real SDK when ANTHROPIC_API_KEY is present, else the deterministic offline
       // fallback (phase 7) — selected fresh per request so a key added mid-session takes effect
-      // without a restart, and never logged either way (invariant 11).
+      // without a restart, and never logged either way (invariant 11). `handle` is async because the
+      // real boundary is an I/O call (a non-blocking spawn — NOTES phase-7 K9); this `await` is the
+      // ONLY thing that changed here — the route's own dispatch is untouched. `ctx.orchestratorBoundary`
+      // is a test-only override (unset in production, where `selectOrchestratorBoundary()` always runs).
       const today = new Date().toISOString().slice(0, 10);
-      const boundary = selectOrchestratorBoundary();
-      const { reply, result } = orchestratorHandle(text, { root: ctx.root, by: `${CONDUCTOR_NAME} ${today}` }, boundary);
+      const boundary = ctx.orchestratorBoundary ?? selectOrchestratorBoundary();
+      const { reply, result } = await orchestratorHandle(text, { root: ctx.root, by: `${CONDUCTOR_NAME} ${today}` }, boundary);
       if (result && "ok" in result && result.ok && result.commit) ctx.broadcast("reload");
       ctx.broadcast(`orchestrator:${JSON.stringify({ text: reply })}`);
       return json({ ok: true, reply });
@@ -290,11 +297,12 @@ export interface Board {
   ctx: BoardCtx;
 }
 
-export function createBoard(root: string, opts: { readOnly?: boolean } = {}): Board {
+export function createBoard(root: string, opts: { readOnly?: boolean; orchestratorBoundary?: OrchestratorBoundary } = {}): Board {
   const readOnly = opts.readOnly ?? isUnderFixtures(root);
   const ctx: BoardCtx = {
     root,
     readOnly,
+    orchestratorBoundary: opts.orchestratorBoundary,
     broadcast: (msg) => {
       for (const send of subscribersOf(ctx)) send(msg);
     },

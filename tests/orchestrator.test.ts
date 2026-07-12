@@ -129,7 +129,7 @@ describe("(b) one gate-resolution path: chat vs POST /gates", () => {
     const viaChat = seedScratchRepo();
     const viaRoute = seedScratchRepo();
     try {
-      const chatResult = handle("approve spec-checkout-flow-v1", { root: viaChat, by: CAS_TODAY });
+      const chatResult = await handle("approve spec-checkout-flow-v1", { root: viaChat, by: CAS_TODAY });
       expect(chatResult.result && "ok" in chatResult.result && chatResult.result.ok).toBe(true);
 
       const board = createBoard(viaRoute);
@@ -162,11 +162,11 @@ describe("(b) one gate-resolution path: chat vs POST /gates", () => {
     }
   });
 
-  test("a chat gate-decision on an unknown target replies without touching the repo", () => {
+  test("a chat gate-decision on an unknown target replies without touching the repo", async () => {
     const root = seedScratchRepo();
     try {
       const before = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
-      const r = handle("approve does-not-exist", { root, by: CAS_TODAY });
+      const r = await handle("approve does-not-exist", { root, by: CAS_TODAY });
       expect(r.result).toBeNull();
       const after = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
       expect(after).toBe(before);
@@ -245,10 +245,10 @@ describe("(c) retro / knowledge-promotion proposals are gates, not direct writes
 // ---------------------------------------------------------------------------
 
 describe("(d) intent-to-unit operations", () => {
-  test("open a unit of a given type creates work/<project>/<unit>/unit.md and commits", () => {
+  test("open a unit of a given type creates work/<project>/<unit>/unit.md and commits", async () => {
     const root = seedScratchRepo();
     try {
-      const r = handle("open spike unit perf-spike in storefront", { root, by: CAS_TODAY });
+      const r = await handle("open spike unit perf-spike in storefront", { root, by: CAS_TODAY });
       expect(r.result && "ok" in r.result && r.result.ok).toBe(true);
       const unitFile = join(root, "work/storefront/perf-spike/unit.md");
       expect(existsSync(unitFile)).toBe(true);
@@ -260,10 +260,10 @@ describe("(d) intent-to-unit operations", () => {
     }
   });
 
-  test("capture an idea writes ideas/<name>.md and commits", () => {
+  test("capture an idea writes ideas/<name>.md and commits", async () => {
     const root = seedScratchRepo();
     try {
-      const r = handle("capture idea: faster-checkout | Skip the confirmation step for repeat buyers. | storefront, speed", { root, by: CAS_TODAY });
+      const r = await handle("capture idea: faster-checkout | Skip the confirmation step for repeat buyers. | storefront, speed", { root, by: CAS_TODAY });
       expect(r.result && "ok" in r.result && r.result.ok).toBe(true);
       const file = join(root, "ideas/faster-checkout.md");
       expect(existsSync(file)).toBe(true);
@@ -316,10 +316,10 @@ describe("stats", () => {
     expect(typeof s.spendUsd).toBe("number");
   });
 
-  test("a chat 'stats' message answers from the derived metrics", () => {
+  test("a chat 'stats' message answers from the derived metrics", async () => {
     const root = seedScratchRepo();
     try {
-      const r = handle("stats", { root, by: CAS_TODAY });
+      const r = await handle("stats", { root, by: CAS_TODAY });
       expect(r.intent.kind).toBe("stats");
       expect(r.reply).toMatch(/gate\(s\) open/);
     } finally {

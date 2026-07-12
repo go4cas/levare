@@ -1,9 +1,11 @@
 // The real Claude Agent SDK backing for `OrchestratorBoundary` (§7, phase 7). `interpret`/`narrate`
-// stay exactly the shapes orchestrator.ts's `handle()` already dispatches against — synchronous,
-// text/Intent in, text/Intent out — per the phase directive ("back the two boundaries behind their
-// existing interfaces... the dispatch logic, gate resolution, and repo operations do not change").
-// The real async SDK call happens in a separate worker process (sdk-transport.ts); this module is
-// the pure request/response shaping around that transport.
+// are async — the boundary interface itself (orchestrator.ts) is the one seam that carries the SDK's
+// I/O; `handle()`'s dispatch (the switch, gate resolution, repo operations) is unchanged, it just
+// awaits this boundary instead of calling it inline. The real SDK call happens in a separate worker
+// process reached over `AsyncSdkTransport` (sdk-transport.ts, spawned via non-blocking `Bun.spawn` —
+// NOT `Bun.spawnSync`, which was found to freeze the entire `levare serve` event loop for every
+// concurrent connection, not just the in-flight one; see NOTES phase-7 K9). This module is the pure
+// request/response shaping around that transport.
 //
 // The Orchestrator's system prompt (docs/orchestrator-prompt.md, the Conductor-authored voice) is
 // loaded from disk VERBATIM — read once, passed to the SDK's `systemPrompt` option unmodified, never
@@ -18,7 +20,7 @@ import { readFileSync } from "node:fs";
 import type { Intent, OrchestratorBoundary } from "./orchestrator.ts";
 import { deterministicBoundary } from "./orchestrator.ts";
 import type { Verb } from "./runner.ts";
-import { bunSdkTransport, hasAnthropicCredentials, type SdkTransport } from "./sdk-transport.ts";
+import { asyncSdkTransport, hasAnthropicCredentials, type AsyncSdkTransport } from "./sdk-transport.ts";
 
 export const ORCHESTRATOR_PROMPT_PATH = new URL("../docs/orchestrator-prompt.md", import.meta.url).pathname;
 
@@ -28,6 +30,17 @@ export function loadOrchestratorPromptSource(path: string = ORCHESTRATOR_PROMPT_
 }
 
 const DEFAULT_MODEL = "claude-opus-4-8";
+
+/**
+ * Raised by `interpret()` when the SDK TRANSPORT itself fails — the worker never ran, exited
+ * non-zero, timed out, or produced unparseable output. This is deliberately distinct from a
+ * successful call whose model answer doesn't classify into a known Intent (that stays a legitimate
+ * `{kind:"unknown"}`, via `coerceIntent`): a transport failure must never impersonate a valid
+ * classification, the same lesson validate.ts's immutability check already enforces for its own
+ * fail-open states (NOTES A4 — "every early-exit valid state is an escape hatch; make the taken state
+ * observable"). `narrate()` intentionally does NOT throw on the same failure — see NOTES phase-7 K8.
+ */
+export class OrchestratorSdkError extends Error {}
 
 const VERBS: Verb[] = ["approve", "request", "reject", "start", "notyet", "rescope", "continue", "raise", "stop"];
 
@@ -103,7 +116,7 @@ export function coerceIntent(raw: unknown, fallbackText: string): Intent {
 }
 
 export interface SdkOrchestratorBoundaryOptions {
-  transport?: SdkTransport;
+  transport?: AsyncSdkTransport;
   model?: string;
   systemPromptPath?: string;
   /** Environment the transport's spawned worker draws from (default process.env). Never logged. */
@@ -111,27 +124,36 @@ export interface SdkOrchestratorBoundaryOptions {
   timeoutMs?: number;
 }
 
-/** The real SDK-driven `OrchestratorBoundary`: `interpret`/`narrate` behind the exact same
- * synchronous interface the deterministic boundary implements (adapters.ts's NativeBoundary pattern,
- * mirrored here for the Orchestrator). */
+/** The real SDK-driven `OrchestratorBoundary`: `interpret`/`narrate` behind the exact same async
+ * interface the deterministic boundary implements — non-blocking end to end, so a slow or hung SDK
+ * call never freezes `levare serve`'s event loop for other requests (NOTES phase-7 K9). */
 export function createSdkOrchestratorBoundary(opts: SdkOrchestratorBoundaryOptions = {}): OrchestratorBoundary {
-  const transport = opts.transport ?? bunSdkTransport;
+  const transport = opts.transport ?? asyncSdkTransport;
   const model = opts.model ?? DEFAULT_MODEL;
   const systemPrompt = loadOrchestratorPromptSource(opts.systemPromptPath);
   const env = opts.env ?? process.env;
   const timeoutMs = opts.timeoutMs ?? 120_000;
 
   return {
-    interpret(text: string): Intent {
-      const res = transport.run(
+    async interpret(text: string): Promise<Intent> {
+      const res = await transport.run(
         { prompt: text, systemPrompt, model, tools: [], allowedTools: [], outputFormat: { type: "json_schema", schema: INTENT_SCHEMA } },
         { env, timeoutMs },
       );
-      if (!res.ok) return { kind: "unknown", text };
+      // A transport failure (worker never ran / exited non-zero / timed out / unparseable output) is
+      // NOT a legitimate "unknown" intent — "unknown" is a real classification a live model can
+      // genuinely return, and silently mapping a system failure onto it would be indistinguishable
+      // from a working call that just didn't recognize the phrase. Surface it loudly instead: log to
+      // stderr (never the value of any credential — `res.error` is the transport's own diagnostic
+      // text) and throw, so the caller sees exactly what failed (exit code / stderr / parse error).
+      if (!res.ok) {
+        console.error(`levare: Orchestrator SDK interpret() failed: ${res.error}`);
+        throw new OrchestratorSdkError(`Orchestrator SDK interpret() failed: ${res.error}`);
+      }
       return coerceIntent(res.structuredOutput, text);
     },
-    narrate(prompt: string): string {
-      const res = transport.run({ prompt, systemPrompt, model, tools: [], allowedTools: [] }, { env, timeoutMs });
+    async narrate(prompt: string): Promise<string> {
+      const res = await transport.run({ prompt, systemPrompt, model, tools: [], allowedTools: [] }, { env, timeoutMs });
       // A transport failure must never surface as a fabricated Orchestrator line — fall back to the
       // plain computed fact (identical to the deterministic boundary's own narrate) rather than lie.
       if (!res.ok) return prompt;

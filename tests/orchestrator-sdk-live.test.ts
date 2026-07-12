@@ -12,20 +12,19 @@ const live = hasAnthropicCredentials();
 
 test.skipIf(!live)(
   "live: the real SDK-driven OrchestratorBoundary completes a real interpret() round trip",
-  () => {
+  async () => {
+    // A genuine transport failure (bad/missing credential, worker crash, timeout) now throws
+    // OrchestratorSdkError directly out of interpret() — see tests/orchestrator-sdk.test.ts — so this
+    // call is left unwrapped: any transport-level failure fails this test loudly and legibly (the
+    // thrown message carries the worker's exit code / stderr), rather than being swallowed into a
+    // passing-but-wrong "unknown" result. Manually verify wall-clock: a genuine round trip to a real
+    // model takes on the order of seconds, not the ~70ms a broken-transport short-circuit would.
     const boundary = createSdkOrchestratorBoundary();
-    const intent = boundary.interpret("what needs me");
-    // Loose on the exact kind (a live model call is not byte-deterministic), strict on the shape:
-    // it must be one of the seven Intent kinds the SDK's json_schema output format constrains it to,
-    // never an SDK/parse failure silently downgraded to "unknown" with the raw text echoed back.
-    expect(["briefing", "gate-decision", "capture-idea", "open-unit", "promote-idea", "stats", "unknown"]).toContain(intent.kind);
-    if (intent.kind === "unknown") {
-      // "unknown" is a legal Intent, but for this literal briefing phrase it should not be reachable
-      // through a live, working SDK call — surface the raw text so a real failure is diagnosable.
-      throw new Error(`live interpret() fell back to unknown for a plain briefing phrase: ${JSON.stringify(intent)}`);
-    } else {
-      expect(intent.kind).toBe("briefing");
-    }
+    const intent = await boundary.interpret("what needs me");
+    // "unknown" is still a legal Intent a live model could genuinely return, but not for this literal
+    // briefing phrase under docs/orchestrator-prompt.md's own §Behaviors — treat it as a real
+    // classification miss, distinct from (and only reachable past) a transport failure.
+    expect(intent.kind).toBe("briefing");
   },
   60_000,
 );
