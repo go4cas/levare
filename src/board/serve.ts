@@ -138,7 +138,7 @@ export const ROUTES: RouteDef[] = [
     method: "GET",
     pattern: "/events",
     mutating: false,
-    handler: (_req, _params, ctx) => sseResponse(ctx),
+    handler: (req, _params, ctx) => sseResponse(ctx, req),
   },
   {
     method: "POST",
@@ -289,44 +289,99 @@ function matchRoute(method: string, pathname: string): { route: RouteDef; params
 }
 
 // ---------------------------------------------------------------------------
-// SSE
+// SSE — a stability fix (was BLOCKING): every connection used to call `subscribe()`, capture the
+// returned `unsubscribe`, and then discard it (`void unsubscribe`) — a navigated-away or closed
+// client's Sender was NEVER removed from the subscriber set. Observed live as the server process's
+// open file descriptor count climbing with every page navigation (each page load opens a fresh
+// EventSource) until the OS's per-process handle limit was exhausted and the server stopped
+// responding — exactly the "something goes wrong after a few navigations" the Conductor reported.
+// The fs.watch handle itself was already correct — ONE watcher per board, created once in
+// createBoard() below and shared by every subscriber (a property of the repo being served, never of
+// a client) — so the fix here is entirely about actually releasing a connection's resources on
+// disconnect, not creating fewer watchers.
 // ---------------------------------------------------------------------------
 
-type Sender = (chunk: string) => void;
+interface SseSubscriber {
+  send: (chunk: string) => void;
+  /** Ends this subscriber's stream from the server side — used on board shutdown to close every
+   * still-open SSE connection, not just stop tracking it. */
+  close: () => void;
+}
 
-function sseResponse(ctx: BoardCtx): Response {
-  let send: Sender = () => {};
+function sseResponse(ctx: BoardCtx, req: Request): Response {
+  let unsubscribe: (() => void) | undefined;
+  let cleaned = false;
+  // Idempotent: both the stream's own cancel() and the request's abort signal can fire for the same
+  // disconnect (belt and suspenders across runtime/version differences in which one actually fires),
+  // and this must only ever remove the subscriber once.
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    unsubscribe?.();
+  };
+
   const stream = new ReadableStream({
     start(controller) {
       const enc = new TextEncoder();
-      send = (chunk) => {
-        try {
-          controller.enqueue(enc.encode(`data: ${chunk}\n\n`));
-        } catch {
-          /* client gone */
-        }
+      const sub: SseSubscriber = {
+        send: (chunk) => {
+          try {
+            controller.enqueue(enc.encode(`data: ${chunk}\n\n`));
+          } catch {
+            cleanup(); // enqueue failing means the controller is already dead — stop tracking it now
+          }
+        },
+        close: () => {
+          try {
+            controller.close();
+          } catch {
+            /* already closed */
+          }
+        },
       };
+      unsubscribe = subscribe(ctx, sub);
       controller.enqueue(enc.encode(`: connected\n\n`));
     },
+    // Fires when the stream's consumer (Bun, on client disconnect) cancels it.
+    cancel() {
+      cleanup();
+    },
   });
-  const unsubscribe = subscribe(ctx, send);
-  // Bun surfaces stream cancel on client disconnect; unsubscribe to avoid leaking senders.
-  const wrapped = new Response(stream, {
+
+  // Bun aborts a request's own AbortSignal when the underlying connection closes — the primary,
+  // reliable "this client is gone" signal for a navigated-away or closed EventSource; the stream's
+  // own cancel() above is the second path so cleanup still runs if only one of the two fires.
+  req.signal.addEventListener("abort", cleanup);
+
+  return new Response(stream, {
     headers: { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" },
   });
-  void unsubscribe;
-  return wrapped;
 }
 
-const subscribers = new WeakMap<BoardCtx, Set<Sender>>();
-function subscribe(ctx: BoardCtx, send: Sender): () => void {
+const subscribers = new WeakMap<BoardCtx, Set<SseSubscriber>>();
+function subscribe(ctx: BoardCtx, sub: SseSubscriber): () => void {
   let set = subscribers.get(ctx);
   if (!set) subscribers.set(ctx, (set = new Set()));
-  set.add(send);
-  return () => set!.delete(send);
+  set.add(sub);
+  return () => set!.delete(sub);
 }
-function subscribersOf(ctx: BoardCtx): Set<Sender> {
+function subscribersOf(ctx: BoardCtx): Set<SseSubscriber> {
   return subscribers.get(ctx) ?? new Set();
+}
+/** Ends every still-open SSE stream for this board and stops tracking them — called on shutdown so a
+ * server restart never leaves a client hanging on a connection nobody will ever write to again. */
+function closeAllSubscribers(ctx: BoardCtx): void {
+  for (const sub of subscribersOf(ctx)) sub.close();
+  subscribers.delete(ctx);
+}
+
+/** Test-only: the live SSE subscriber count for a board. Broadcasting still reaching a fresh
+ * connection after a churn of connect/disconnect cycles is NOT, on its own, proof the leak is
+ * fixed — a dead subscriber's `send` just throws-and-is-caught silently, so a broadcast test alone
+ * would pass whether or not old entries were ever actually removed. This is what lets a test assert
+ * the set genuinely returns to empty, not merely that it still happens to work. */
+export function debugSubscriberCount(ctx: BoardCtx): number {
+  return subscribersOf(ctx).size;
 }
 
 // ---------------------------------------------------------------------------
@@ -351,10 +406,13 @@ export function createBoard(
     orchestratorBoundary: opts.orchestratorBoundary,
     orchestratorSelectOpts: opts.orchestratorSelectOpts,
     broadcast: (msg) => {
-      for (const send of subscribersOf(ctx)) send(msg);
+      for (const sub of subscribersOf(ctx)) sub.send(msg);
     },
   };
 
+  // ONE fs.watch for this board's entire lifetime, shared by every SSE subscriber — a property of the
+  // repo being served, never of a client. Nothing below creates a watcher per connection; this is the
+  // only `watch()` call in the board's lifecycle, made once here at startup.
   let watcher: FSWatcher | null = null;
   let debounce: ReturnType<typeof setTimeout> | null = null;
   const notify = () => {
@@ -400,6 +458,10 @@ export function createBoard(
     close() {
       watcher?.close();
       if (debounce) clearTimeout(debounce);
+      // Shutdown must end every still-open SSE stream, not just stop the watcher that used to feed
+      // them — otherwise a restart leaves each connected client hanging on a socket nobody will ever
+      // write to again.
+      closeAllSubscribers(ctx);
     },
   };
 }
