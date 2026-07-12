@@ -247,6 +247,15 @@ button{ font-family:inherit; }
 .composer input{ flex:1; border:none; background:transparent; outline:none; font-family:var(--sans);
   font-size:13px; color:var(--fg); min-width:0; }
 .composer .ret{ font-family:var(--mono); font-size:11px; color:var(--fg-mute); flex:none; }
+/* Pending/thinking state (NOTES phase-7 K17): quiet, non-attention-seeking per the design brief's
+   motion rules — the pulse class is reserved for live things and gate arrival, so this reuses the
+   same understated blink already used for a working member's avatar, not a new attention-grabbing
+   animation. Respects prefers-reduced-motion via the existing global rule below. */
+.msg--pending .msg__dots{ display:inline-flex; gap:4px; }
+.msg--pending .msg__dots span{ width:4px; height:4px; border-radius:50%; background:var(--fg-mute);
+  animation:lv-blink 1.2s infinite; }
+.msg--pending .msg__dots span:nth-child(2){ animation-delay:.25s; }
+.msg--pending .msg__dots span:nth-child(3){ animation-delay:.5s; }
 
 /* orchestrator link/mono inside message */
 .msg__body .link{ border-bottom-color:color-mix(in oklab, var(--accent) 60%, transparent); }

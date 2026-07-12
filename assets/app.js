@@ -190,15 +190,26 @@
           body.appendChild(r);
           body.scrollTop = body.scrollHeight;
         }
+        // Pending state (a real SDK call routinely takes seconds): quiet, non-attention-seeking per
+        // the design brief's motion rules, cleared as soon as a reply (or a failure) arrives, so the
+        // composer never just looks dead while the Orchestrator is working.
+        var pending = document.createElement('div');
+        pending.className = 'msg msg--pending';
+        pending.innerHTML = '<div class="msg__dots"><span></span><span></span><span></span></div>';
+        body.appendChild(pending);
+        body.scrollTop = body.scrollHeight;
+        input.disabled = true;
         fetch('/orchestrator/message', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ text: text })
         }).then(function (res) { return res.json(); })
-          .then(function (data) { showReply(data.reply || 'Noted.'); })
+          .then(function (data) { pending.remove(); showReply(data.reply || 'Noted.'); })
           .catch(function () {
+            pending.remove();
             showReply('Noted. I\u2019ll fold that into the next brief \u2014 nothing here changes state until you act on a gate.');
-          });
+          })
+          .then(function () { input.disabled = false; input.focus(); });
       });
     });
 
