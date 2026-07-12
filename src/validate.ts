@@ -25,8 +25,9 @@ export interface ValidationError {
 //   S1  file has no history in HEAD       → nothing to compare (valid)
 //   S2a file in HEAD and unchanged        → valid
 //   S2b file in HEAD and differs          → MODIFIED_AFTER_APPROVAL
+//   S2c file differs from its recorded approval commit (A7 committed-mutation) → MODIFIED_AFTER_APPROVAL
 //   S2e git diff errored (status > 1)     → unverifiable; fail-open (valid), never mistaken for S2a
-export type ImmutabilityState = "S0" | "S1" | "S2a" | "S2b" | "S2e";
+export type ImmutabilityState = "S0" | "S1" | "S2a" | "S2b" | "S2c" | "S2e";
 export interface ImmutabilityCheck {
   file: string;
   state: ImmutabilityState;
@@ -70,6 +71,10 @@ const ARTIFACT_SCHEMA: Schema = {
     consumes: { type: "str[]", required: true },
     supersedes: { type: "str", required: true, nullable: true },
     approved_by: { type: "str", required: true, nullable: true },
+    // A7: the commit whose content the Conductor approved — recorded at gate resolution so the
+    // immutability check can diff against that ref rather than HEAD, closing the committed-mutation
+    // gap. Optional/nullable: pre-A7 artifacts carry none and fall back to the HEAD diff.
+    approved_commit: { type: "str", required: false, nullable: true },
     created: { type: "date", required: true },
     files: { type: "str[]", required: true },
     usage: {
@@ -662,6 +667,42 @@ function gitImmutabilityCheck(
     if (a.data.status !== "approved") continue;
     // Canonicalize both sides so the symlinked-tmpdir case (macOS /var → /private/var) resolves.
     const rel = relative(toplevel, canonical(a.file));
+
+    // A7 (committed-mutation): when the artifact records the commit whose content was approved,
+    // diff the working file against THAT ref, not HEAD — so a mutation that is itself committed
+    // (advancing HEAD) can no longer report "unchanged". The approval-stamp fields (status,
+    // approved_by, approved_commit) legitimately differ from the pre-approval baseline and are
+    // excluded; any other content change (body, consumes, files, …) is a violation. A missing/null
+    // approved_commit falls back to the HEAD diff below (pre-A7 artifacts, backward compatible).
+    const approvedCommit = typeof a.data.approved_commit === "string" ? a.data.approved_commit.trim() : "";
+    if (approvedCommit) {
+      const baseline = spawnSync("git", ["-C", toplevel, "show", `${approvedCommit}:${rel}`], { encoding: "utf8" });
+      if (baseline.status !== 0) {
+        // The recorded ref doesn't contain this file (unreachable ref, or never committed there) —
+        // no usable baseline; fall open like S1 rather than fabricate a violation.
+        checks.push({ file: a.file, state: "S1" });
+        continue;
+      }
+      let current: string;
+      try {
+        current = readFileSync(a.file, "utf8");
+      } catch {
+        checks.push({ file: a.file, state: "S2e" });
+        continue;
+      }
+      if (stripApprovalStamp(baseline.stdout) === stripApprovalStamp(current)) {
+        checks.push({ file: a.file, state: "S2a" });
+      } else {
+        checks.push({ file: a.file, state: "S2c" });
+        errors.push({
+          code: "MODIFIED_AFTER_APPROVAL",
+          message: "approved artifact content differs from the commit in which it was approved; approved artifacts are immutable (§4)",
+          file: a.file,
+        });
+      }
+      continue;
+    }
+
     // S1: does the approved file exist in the current commit at all?
     const inHead = spawnSync("git", ["-C", toplevel, "cat-file", "-e", `HEAD:${rel}`], { encoding: "utf8" });
     if (inHead.status !== 0) {
@@ -687,6 +728,30 @@ function gitImmutabilityCheck(
     }
   }
   return checks;
+}
+
+// Remove the frontmatter lines the approval legitimately introduces/changes (status, approved_by,
+// approved_commit) so an approved artifact can be compared to its pre-approval-baseline content: what
+// remains (every other frontmatter field + the whole body) must be byte-identical, or the content was
+// mutated after approval. Only lines inside the leading `---`/`---` fence are stripped, so a body that
+// happens to contain such a token is never touched.
+function stripApprovalStamp(src: string): string {
+  const lines = src.split("\n");
+  if (lines[0]?.trim() !== "---") return src;
+  let end = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === "---") {
+      end = i;
+      break;
+    }
+  }
+  if (end === -1) return src;
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (i > 0 && i < end && /^(status|approved_by|approved_commit):/.test(lines[i])) continue;
+    out.push(lines[i]);
+  }
+  return out.join("\n");
 }
 
 // realpath, tolerant of a path that does not resolve (returns the input unchanged).

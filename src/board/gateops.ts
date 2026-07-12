@@ -13,12 +13,13 @@
 // one the Runner and `levare replay` drive — rather than a board-only reuse of the stub's `render()`.
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { loadRepo, type Repo } from "../repo.ts";
 import { validateArtifactSource } from "../validate.ts";
 import { bumpVersion, type MemberRunner, type Verb } from "../runner.ts";
 import { stubAdapterRunner } from "../replay.ts";
-import { loopMembershipFor, responsibleTeamFor, unmetAfter, patchFrontmatter } from "../gates.ts";
+import { loopMembershipFor, responsibleTeamFor, unmetAfter, patchFrontmatter, upsertFrontmatterField } from "../gates.ts";
 import { locateArtifactFile } from "./locate.ts";
 import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL } from "../git.ts";
 import { advanceUnit } from "../dagwalk.ts";
@@ -80,9 +81,27 @@ export function resolveGate(root: string, project: string, target: string, verb:
   return { ok: false, status: 400, error: `verb '${verb}' is not valid for an artifact gate` };
 }
 
+// The repo's current HEAD, captured BEFORE an approval commits — the commit that holds the exact
+// content the Conductor is approving. Recording it as the artifact's `approved_commit` (A7) lets
+// `validate` diff against a permanent ancestor rather than HEAD, so a later committed mutation can no
+// longer masquerade as unchanged. Recording the pre-approval HEAD (not the approval commit's own SHA)
+// sidesteps the self-reference paradox — a commit cannot contain its own hash — with no second commit
+// or dangling amend; it is equivalent for detecting post-approval content change. "" when there is no
+// HEAD yet (validate then falls back to the HEAD diff — nothing to launder against on an empty repo).
+function headRev(root: string): string {
+  const r = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" });
+  return r.status === 0 ? r.stdout.trim() : "";
+}
+
+function stampApproval(src: string, today: string, root: string): string {
+  const patched = patchFrontmatter(src, { status: "approved", approved_by: `${CONDUCTOR_NAME} ${today}` });
+  const head = headRev(root);
+  return head ? upsertFrontmatterField(patched, "approved_commit", head) : patched;
+}
+
 function doApprove(root: string, file: string, id: string, today: string, note: string | undefined, extraFiles: string[]): GateOpResult {
   const src = readFileSync(file, "utf8");
-  const patched = patchFrontmatter(src, { status: "approved", approved_by: `${CONDUCTOR_NAME} ${today}` });
+  const patched = stampApproval(src, today, root);
   const errs = validateArtifactSource(patched, file, dirname(file));
   if (errs.length > 0) return { ok: false, status: 422, error: `${errs[0].code}: ${errs[0].message}` };
   writeFileSync(file, patched);
@@ -173,7 +192,7 @@ function applyLoopCompanionApproval(
   const located = locateArtifactFile(unit.dir, companion.id);
   if (!located) return null;
   const src = readFileSync(located.file, "utf8");
-  const patched = patchFrontmatter(src, { status: "approved", approved_by: `${CONDUCTOR_NAME} ${today}` });
+  const patched = stampApproval(src, today, root);
   const errs = validateArtifactSource(patched, located.file, dirname(located.file));
   if (errs.length > 0) return null; // never let a companion validation edge case block the primary resolution.
   writeFileSync(located.file, patched);

@@ -16,6 +16,7 @@ import { createBoard, isCrossOriginWrite, isRegistryEditablePath } from "../src/
 import { Daemon } from "../src/daemon.ts";
 import { stubAdapterRunner } from "../src/replay.ts";
 import { validatePath } from "../src/validate.ts";
+import { resolveGate } from "../src/board/gateops.ts";
 
 const HERMETIC_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
 
@@ -255,16 +256,17 @@ describe("[surface 5/1 · HIGH · FIXED — ruling C8] daemon autostart without 
 });
 
 // ---------------------------------------------------------------------------
-// Surface 7 + 10 — fail-open / audit-trail: the committed-mutation immutability gap (A7) (HIGH,
-// DEFERRED — known/documented). Invariant 3 says an approved artifact is immutable; §4 says its content
-// "may not change in a later commit". The check only diffs the working tree against HEAD, so a mutation
-// that is itself committed advances HEAD and the check reports valid (S2a). This lets an adversary with
-// repo write (or the daemon/CSRF write paths) rewrite an APPROVED artifact's content and have `levare
-// validate` still pass — laundering a machine/adversary edit as an intact Conductor-approved artifact.
-// Closing it requires recording each artifact's approval commit ref (NOTES A7) — deferred by design.
+// Surface 7 + 10 — fail-open / audit-trail: the committed-mutation immutability gap (A7) (HIGH, NOW
+// FIXED). Invariant 3 says an approved artifact is immutable; §4 says its content "may not change in a
+// later commit". The old check only diffed the working tree against HEAD, so a mutation that is itself
+// committed advanced HEAD and the check reported valid (S2a) — laundering a machine/adversary edit as
+// an intact Conductor-approved artifact. FIX (A7): gate resolution records the approval baseline commit
+// in the artifact's `approved_commit` frontmatter, and `validate` diffs the artifact's content against
+// THAT ref (excluding the approval-stamp fields), not HEAD. A committed post-approval edit is now S2c →
+// MODIFIED_AFTER_APPROVAL. This former `test.failing` is now a real prevention test.
 // ---------------------------------------------------------------------------
 
-describe("[surface 7/10 · HIGH · DEFERRED — known gap A7] approved artifact mutated in a later commit", () => {
+describe("[surface 7/10 · HIGH · FIXED — A7] approved artifact mutated in a later commit", () => {
   let root: string;
   beforeEach(() => {
     root = seedScratchRepo();
@@ -273,24 +275,29 @@ describe("[surface 7/10 · HIGH · DEFERRED — known gap A7] approved artifact 
     rmSync(root, { recursive: true, force: true });
   });
 
-  test.failing("EXPECTED-TO-FAIL: validate must reject an approved artifact whose content changed in a later commit", () => {
-    // Approve an artifact and commit that approval.
+  test("PREVENTED: validate rejects an approved artifact whose content changed in a later commit", () => {
     const specAbs = join(root, SPEC_REL);
-    let src = readFileSync(specAbs, "utf8").replace("status: in-review", "status: approved").replace(
-      "approved_by: null",
-      'approved_by: "cas 2026-07-11"',
-    );
-    writeFileSync(specAbs, src);
-    git(root, ["add", "-A"]);
-    git(root, ["commit", "-q", "-m", "approve spec"]);
+    // Approve through the REAL gate path — this is what records `approved_commit` (A7). doApprove
+    // commits the approval as the Conductor, so HEAD now sits at the approval; a naive HEAD-diff would
+    // report the artifact unchanged forever after.
+    const r = resolveGate(root, "storefront", "spec-checkout-flow-v1", "approve", { today: "2026-07-11" });
+    expect(r.ok).toBe(true);
+    const approved = readFileSync(specAbs, "utf8");
+    expect(approved).toContain("status: approved");
+    expect(approved).toMatch(/^approved_commit: [0-9a-f]{40}$/m);
+    // A legitimate approval is clean: the content matches its approval baseline (stamp fields aside).
+    expect(validatePath(root).ok).toBe(true);
 
-    // Now mutate the APPROVED artifact's body and commit the change (advancing HEAD).
-    writeFileSync(specAbs, src + "\n\nAdversary-inserted paragraph after approval.\n");
+    // Now mutate the APPROVED artifact's body and COMMIT it (advancing HEAD) — the exact laundering
+    // A7 described, which previously passed because the working tree matched HEAD again.
+    writeFileSync(specAbs, approved + "\n\nAdversary-inserted paragraph after approval.\n");
     git(root, ["add", "-A"]);
     git(root, ["commit", "-q", "-m", "tamper with approved spec"]);
 
-    // SECURE behavior (currently violated): the immutability check should flag the post-approval edit.
     const result = validatePath(root);
     expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.code === "MODIFIED_AFTER_APPROVAL")).toBe(true);
+    // And it is caught by the A7-specific committed-mutation state, not the old working-tree drift one.
+    expect(result.immutability.some((c) => c.state === "S2c")).toBe(true);
   });
 });

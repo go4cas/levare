@@ -1,5 +1,5 @@
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -188,5 +188,62 @@ describe("approved-immutability when git diff errors", () => {
     expect(state).not.toBe("S2a");
     // Fail-open: an environment hiccup must not fabricate a MODIFIED_AFTER_APPROVAL violation.
     expect(r.errors.map((e) => e.code)).not.toContain("MODIFIED_AFTER_APPROVAL");
+  });
+});
+
+// A7: when an approved artifact records the commit it was approved in (`approved_commit`), the check
+// diffs against THAT ref, not HEAD — so a mutation that is itself COMMITTED (advancing HEAD, which the
+// working-tree/HEAD diff above cannot see) is still caught. State-explicit, like every case above.
+describe("approved-immutability against the recorded approval commit (A7)", () => {
+  let root: string;
+  const REL = join("work", "storefront", "checkout-flow", "spec-a7-v1.md");
+
+  // Build: commit an in-review artifact (baseline commit B), then commit the artifact as approved with
+  // approved_commit=B — exactly what gate resolution does. Returns nothing; each test mutates from here.
+  function seedApprovedWithRef(r: string): string {
+    git(r, ["init", "-q"]);
+    mkdirSync(join(r, "work", "storefront", "checkout-flow"), { recursive: true });
+    const inReview = APPROVED.replace("status: approved", "status: in-review").replace(
+      /approved_by: .*/,
+      "approved_by: null",
+    ).replace("spec-immutable-v1", "spec-a7-v1");
+    writeFileSync(join(r, REL), inReview);
+    git(r, ["add", "-A"]);
+    git(r, ["commit", "-q", "-m", "produce in-review spec"]);
+    const baseline = git(r, ["rev-parse", "HEAD"]).stdout.trim();
+    const approved = inReview
+      .replace("status: in-review", "status: approved")
+      .replace("approved_by: null", 'approved_by: "cas 2026-07-11"')
+      .replace("created: 2026-07-11", `approved_commit: ${baseline}\ncreated: 2026-07-11`);
+    writeFileSync(join(r, REL), approved);
+    git(r, ["add", "-A"]);
+    git(r, ["commit", "-q", "-m", "approve spec"]);
+    return baseline;
+  }
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), "levare-a7-"));
+    seedApprovedWithRef(root);
+  });
+  afterAll(() => {
+    if (root) rmSync(root, { recursive: true, force: true });
+  });
+
+  test("a legitimately-approved artifact is S2a against its approval commit (stamp fields aside)", () => {
+    const r = validatePath(root);
+    expect(stateOf(r, "spec-a7-v1.md")).toBe("S2a");
+    expect(r.errors.map((e) => e.code)).not.toContain("MODIFIED_AFTER_APPROVAL");
+  });
+
+  test("a COMMITTED post-approval body edit is S2c + MODIFIED_AFTER_APPROVAL (not masked as S2a)", () => {
+    const abs = join(root, REL);
+    writeFileSync(abs, readFileSync(abs, "utf8") + "\nSmuggled paragraph.\n");
+    git(root, ["add", "-A"]);
+    git(root, ["commit", "-q", "-m", "tamper after approval"]);
+    const r = validatePath(root);
+    const state = stateOf(r, "spec-a7-v1.md");
+    expect(state).toBe("S2c");
+    expect(state).not.toBe("S2a");
+    expect(r.errors.some((e) => e.code === "MODIFIED_AFTER_APPROVAL")).toBe(true);
   });
 });

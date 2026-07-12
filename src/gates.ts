@@ -125,3 +125,31 @@ function formatScalarLine(key: string, value: string | null): string {
   if (/^[A-Za-z0-9._/-]+$/.test(value)) return `${key}: ${value}`;
   return `${key}: ${JSON.stringify(value)}`;
 }
+
+/**
+ * Set a top-level frontmatter scalar field, patching it in place if present or inserting it as a new
+ * line just before the closing `---` if absent — unlike `patchFrontmatter`, which fails loud on a
+ * missing key. Used to record `approved_commit` (A7) on artifacts whose frontmatter never carried it
+ * before, without demanding every existing/fixture artifact pre-declare a null placeholder.
+ */
+export function upsertFrontmatterField(src: string, key: string, value: string | null): string {
+  const lines = src.split("\n");
+  if (lines[0]?.trim() !== "---") throw new Error("document has no frontmatter fence");
+  let end = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === "---") {
+      end = i;
+      break;
+    }
+  }
+  if (end === -1) throw new Error("frontmatter is not terminated");
+  for (let i = 1; i < end; i++) {
+    const m = /^([A-Za-z_][A-Za-z0-9_]*):/.exec(lines[i]);
+    if (m && m[1] === key) {
+      lines[i] = formatScalarLine(key, value);
+      return lines.join("\n");
+    }
+  }
+  lines.splice(end, 0, formatScalarLine(key, value));
+  return lines.join("\n");
+}
