@@ -1493,6 +1493,95 @@ live path (K5), full ledger integration for both boundaries is left as a documen
 follow-up rather than a partial, silently-incomplete one — visibility (the log line) ships now; full
 persistence is a design decision for whichever phase actually wires live member invocation in.
 
+## K17. Live-gate fix-up: the regex grammar was intercepting dispatch, a forced-guess answered the
+wrong question, the composer looked dead mid-call, and a silent no-reply traced to two real bugs
+
+**Finding 1 — BLOCKING: free-form messages never reached the model.** A live run with the real SDK
+boundary selected showed every free-form Conductor message ("what's the story with the loyalty
+flow?", "should I approve the spec?", "start it") answered with the deterministic boundary's canned
+line (`Noted: "<text>". Nothing changes state until you act on a gate.`) — even though the real
+boundary was selected and correctly classified these as `unknown`. Root cause: `handle()`'s
+`unknown`/`default` case (`orchestrator.ts`) was a hard-coded string, returned unconditionally
+regardless of *which* boundary was active — it never called `boundary` at all. The deterministic
+grammar wasn't "intercepting" anything at the boundary-selection level (K13's selection logic was
+already correct); the canned line was baked into dispatch itself, one layer downstream of where the
+boundary choice mattered.
+
+**Fix.** `OrchestratorBoundary` gained a third method, `converse(text, root): Promise<string>` — the
+genuine conversational path for a message `interpret()` didn't classify into one of the six structured
+kinds. `deterministicBoundary.converse()` is now the ONLY source of the canned offline line (moved
+here verbatim from `handle()`), so it can only ever appear when the offline boundary is genuinely
+selected. The real SDK boundary's `converse()` (`orchestrator-boundary.ts`) sends the Conductor's text
+verbatim to the model, under the full verbatim system prompt, with `Read`/`Grep`/`Glob` tools scoped
+read-only (never `Write`/`Edit`/`Bash` — "the Orchestrator proposes, never writes" now holds
+structurally even with tool access, not just by convention) and `cwd` set to the repo root so the
+model can genuinely re-derive facts from the repo (§7) before answering. `handle()`'s `unknown` case
+now awaits `boundary.converse(text, ctx.root)` — an empty message is the one case that still short-
+circuits without calling any boundary (there's nothing to converse about).
+
+**Finding 2 — the one reply that DID reach the model answered the wrong question.**
+"just approve everything for me" produced a briefing instead of a refusal — the structured-output
+schema has no way to express "decline," so an ambiguous/refusal-worthy instruction got force-fit into
+the nearest known `kind` rather than coming back `unknown` and reaching `converse()` (whose system
+prompt already instructs refusal-by-name for an invariant-violating instruction). Rather than adding a
+seventh `kind: "refuse"` to the schema — more surface for the model to misuse, and refusal is exactly
+what free-form prose in `converse()` is for — `interpret()`'s call now wraps the Conductor's raw text
+in a task-framing prefix (`INTERPRET_TASK_PREFIX`, user-turn only; the verbatim system prompt is never
+touched, matching K3's established pattern) that tells the model explicitly: a question, a vague or
+batch instruction, an ambiguity between two operations, or anything its own instructions say to
+decline or ask about should come back `kind: "unknown"` — "a wrong guess that mutates the repo is
+worse than asking again." Once classified `unknown`, `converse()`'s full prompt and tool access give
+the model room to actually refuse by name instead of being coerced into a JSON shape with no room for
+refusal.
+
+**Finding 3 — no thinking indicator.** The composer gave no feedback while a real multi-second SDK
+call was in flight. `assets/app.js`'s submit handler now appends a `.msg--pending` element (three
+small dots, `assets/styles.css`) immediately after the user's message, disables the input, and removes
+the pending element (re-enabling and refocusing the input) as soon as the reply — or a fetch failure —
+resolves. Per the design brief's motion rules ("always fast, physical, and quiet... the pulse on live
+things and gate arrival remain the only *attention-seeking* animations"), this deliberately reuses the
+existing quiet `lv-blink` keyframe (already used for a working member's avatar in `render.ts`) rather
+than the attention-seeking `pulse` class, and inherits the existing global
+`prefers-reduced-motion:reduce` rule that disables all animation. **Not verified in a real browser** —
+no headless browser is available in this sandbox; verified by code review (selectors match
+`render.ts`'s emitted markup) and by parsing `assets/app.js` as JS. The live host is where this should
+get a real visual check.
+
+**Finding 4 — the injection probe returned NO output at all.** Investigation ruled out the injected
+text itself as a cause — at every point the "no output" was reported, the boundary in play had no tool
+access at all (this round's `converse()` fix is what FIRST gives the model any ability to read a file's
+contents), so a prompt-injection reinterpretation of the file text isn't what produced silence. Two
+real, independent bugs were found instead:
+  - `Bun.serve`'s own DEFAULT `idleTimeout` is 10 seconds; a real SDK round trip routinely exceeds
+    that. `serve()` (`board/serve.ts`) now pins `idleTimeout` explicitly (180s, overridable via a
+    test-only `idleTimeoutSeconds` option) — comfortably past every internal SDK timeout (90s, see
+    `converseTimeoutMs`) so OUR OWN timeouts fire first. **This is defense in depth, not the actual
+    guarantee**: empirically, in this Bun version (1.3.14), a POST request that carries a body — the
+    shape of every real `/orchestrator/message` call — was observed to bypass Bun's idle-timeout
+    enforcement entirely, even well past the configured value (GET/bodyless requests trip it
+    reliably; see `tests/board-serve-idletimeout.test.ts` for the characterization). The actual
+    guarantee that "a request must always produce a reply" is what was already built in an earlier
+    round: the SDK transport's own `setTimeout`-based kill (`sdk-transport.ts`, proven end to end by
+    `tests/sdk-transport-hermetic.test.ts`'s hung-worker tests, which assert the timeout fires AND the
+    whole process tree is reaped) plus K11's route-level catch-and-degrade-to-offline, both
+    method/body-agnostic since they live below the HTTP layer entirely.
+  - `serve()` bound `hostname: "0.0.0.0"` (correctly, for container port-forwarding) but then handed
+    that same literal string back as the connect URL (`http://0.0.0.0:<port>` — printed by the CLI's
+    `levare serve` startup message, and exactly what a user would paste into a browser). Connecting to
+    the literal address `"0.0.0.0"` is OS/resolver-dependent and was observed, while chasing the
+    idleTimeout fix above, to sometimes bypass Bun's idle-timeout enforcement in a DIFFERENT way than
+    the POST-body case. `serve()` now always returns `http://localhost:<port>` as the connect URL —
+    the socket still binds `0.0.0.0`, only the address handed to callers changed.
+
+**New coverage.** `tests/orchestrator.test.ts` §(b2): a real-SDK-style mock boundary's `unknown`
+intent is answered by its own `converse()` (never the canned line); the deterministic boundary still
+produces the canned line for the same input; an empty message never calls `converse()` at all.
+`tests/orchestrator-sdk.test.ts`: the task-framing prefix's exact refusal-safety language reaches the
+transport while the system prompt stays untouched; `converse()`'s tool scoping (`Read`/`Grep`/`Glob`
+only), verbatim prompt pass-through, own timeout, and throw-not-fabricate-on-failure behavior.
+`tests/board-serve-idletimeout.test.ts`: `idleTimeoutSeconds` reaches `Bun.serve` and a slow request
+still completes normally through the real socket; `serve()` never returns the literal `0.0.0.0` URL.
+
 ## Learnings
 
 A boundary that must front a fundamentally different concurrency model than its own interface (a
@@ -1506,3 +1595,22 @@ Reading a package's own shipped `.d.ts`/README before writing against it beats t
 knowledge prior of a similarly-named API — the Agent SDK's `query()` shape, its subprocess
 architecture, and its `outputFormat: json_schema` structured-output support were all confirmed from
 `node_modules/@anthropic-ai/claude-agent-sdk/{sdk.d.ts,README.md}` directly, not assumed.
+A hand-rolled test double for an interface (`OrchestratorBoundary`, `AsyncSdkTransport`, etc.) that's
+missing a newly-added method doesn't fail loudly — it throws `TypeError: x.method is not a function`,
+which an existing broad catch-and-degrade path (K11) can silently absorb, making the test pass via the
+WRONG code path instead of failing. Adding a method to an interface used by multiple hand-rolled test
+doubles across the suite means auditing every implementer, not just the production boundaries — a
+green suite after an interface change is not proof every double still exercises what it was written to
+exercise.
+An HTTP server's own connection-level timeout (Bun's `idleTimeout`, here) is not a substitute for an
+application-level timeout on the actual slow operation — empirically, Bun's idle-timeout enforcement
+did not reliably fire for a request carrying a body, which is the shape of virtually all real POST
+traffic. The layer that can actually guarantee "this operation gives up after N seconds" is the one
+directly wrapping the slow call itself (the SDK transport's own `setTimeout`), not a generic HTTP
+server setting one layer removed from it — the HTTP-layer timeout is worth setting correctly anyway
+(defense in depth, and it does work for GET/bodyless requests), but it should never be the ONLY thing
+relied on to make that guarantee.
+"0.0.0.0" is a bind wildcard, not a connectable address — handing it back as "the URL" (whether printed
+to a user or returned from a `serve()`-style function) works by OS/resolver accident on some systems
+and not others; always translate a wildcard bind hostname to `localhost` (or a real interface address)
+before it reaches any caller that might actually connect to it.
