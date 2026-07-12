@@ -71,6 +71,23 @@ describe("levare serve — GET screens (in-process, no socket)", () => {
     }
   });
 
+  // Item 1 + 6, phase 7.5: the artifact render view is a real, routed screen — not just a pure
+  // function tested in isolation.
+  test("GET /artifact/:project/:unit/:id and /idea/:name render the artifact render view", async () => {
+    const artifactRes = await board.fetch(req("/artifact/storefront/checkout-flow/spec-checkout-flow-v1"));
+    expect(artifactRes.status).toBe(200);
+    const artifactText = await artifactRes.text();
+    expect(artifactText).toContain("<!doctype html>");
+    expect(artifactText).toContain("spec-checkout-flow-v1");
+    expect(artifactText).toContain("Lineage");
+
+    const ideaRes = await board.fetch(req("/idea/loyalty-program"));
+    expect(ideaRes.status).toBe(200);
+    const ideaText = await ideaRes.text();
+    expect(ideaText).toContain("<!doctype html>");
+    expect(ideaText).toContain("loyalty-program");
+  });
+
   test("GET /styles.css and /app.js serve the verbatim assets", async () => {
     const css = await board.fetch(req("/styles.css"));
     expect(css.status).toBe(200);

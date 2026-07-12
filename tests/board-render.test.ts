@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRepo } from "../src/repo.ts";
-import { renderStudio, renderProject, renderRun, renderRegistry, scoreNodeClass, projectStatusChip } from "../src/board/render.ts";
+import { renderStudio, renderProject, renderRun, renderRegistry, renderArtifact, renderIdea, scoreNodeClass, projectStatusChip } from "../src/board/render.ts";
 import { scoreNodes, type NodeState } from "../src/board/derive.ts";
 import { resolveGate } from "../src/board/gateops.ts";
 
@@ -41,8 +41,33 @@ describe("studio screen", () => {
     expect(html).toContain("loyalty-program");
   });
 
-  test("every gate name is a mono link", () => {
-    expect(html).toMatch(/<a class="tok link mono" href="\/run\/storefront\/checkout-flow">spec-checkout-flow-v1\.md<\/a>/);
+  // Item 1, phase 7.5: an artifact id is a mono link into the artifact render view now, never a
+  // fallback to the unit/run view.
+  test("every gate name is a mono link into the artifact render view", () => {
+    expect(html).toMatch(/<a class="tok link mono" href="\/artifact\/storefront\/checkout-flow\/spec-checkout-flow-v1">spec-checkout-flow-v1\.md<\/a>/);
+  });
+
+  test("renders ideas as real links into the idea render view (item 6)", () => {
+    expect(html).toContain('<a class="idea" href="/idea/loyalty-program">loyalty-program</a>');
+  });
+
+  // Item 2, phase 7.5: a project card carries the full anatomy — status chip, name, an A8 one-
+  // paragraph summary from its most relevant unit (newest gated, else newest active), and a mono
+  // meta line (unit count, deploy target, latest release).
+  test("project card carries the full approved anatomy", () => {
+    const storefrontCardMatch = html.match(/<a class="pcard" href="\/project\/storefront">[\s\S]*?<\/a>/);
+    expect(storefrontCardMatch).not.toBeNull();
+    const card = storefrontCardMatch![0];
+    expect(card).toContain('<span class="chip is-gate">2 gates</span>');
+    expect(card).toContain('<span class="pcard__name">storefront</span>');
+    // A8: the summary is the spec's full first paragraph (newest gated unit's leading artifact),
+    // not a first-sentence truncation and not the alphabetically-first unit.
+    expect(card).toContain("The guest-checkout spec is ready for review");
+    expect(card).toContain("how a payment should be kept idempotent when there is no account to anchor the order.");
+    expect(card).toContain('class="pcard__meta mono"');
+    expect(card).toContain("3 units");
+    expect(card).toContain("https://storefront.acme.dev"); // deploy target from the project pointer
+    expect(card).toContain("released cart-icon-fix"); // latest release proxy: most recently shipped unit
   });
 
   // Phase-6 gate fix-up: a project's status chip is a real derivation (gate count → active → idle),
@@ -94,6 +119,20 @@ describe("project screen", () => {
   test("constitution shows founding artifacts with citation counts", () => {
     expect(html).toContain('class="founding"');
     expect(html).toContain("cited 2"); // product-brief-v1 is consumed by design + spec
+  });
+
+  test("founding artifact links into the artifact render view (item 1)", () => {
+    expect(html).toContain('href="/artifact/storefront/checkout-flow/product-brief-v1"');
+  });
+
+  // Item 3, phase 7.5: the stat strip must never leave an empty grid cell — five stats now fill a
+  // five-column grid (was three stats in a four-column grid, leaving one dark cell).
+  test("stat strip has no empty grid cells — five stats, five columns", () => {
+    expect(html).toContain('style="grid-template-columns:repeat(5,1fr)"');
+    const statCount = (html.match(/class="stat"/g) || []).length;
+    expect(statCount).toBe(5);
+    expect(html).toContain("Median review rounds");
+    expect(html).toContain("Spend");
   });
 
   test("gate summon template embeds the full gate card anatomy", () => {
@@ -307,5 +346,105 @@ describe("scoreNodeClass — every canonical-palette state maps to a class asset
     expect(cls).toBe("snode upcoming");
     expect(hasCssRuleFor("snode is-wait")).toBe(false); // the old, invisible class — confirms this is a real fix, not a coincidence
     expect(hasCssRuleFor(cls)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Item 4, phase 7.5: the derivation line used to render twice (once under the page title, once in
+// the sidebar footer) on several screens. Exactly one must survive now, and it must live in the
+// footer — never bare in `.phead`/`.main`.
+// ---------------------------------------------------------------------------
+
+describe("derivation line renders exactly once per screen, in the sidebar footer", () => {
+  const screens: Array<[string, string]> = [
+    ["studio", renderStudio(repo, root, now)],
+    ["project", renderProject(repo, "storefront", now)],
+    ["run", renderRun(repo, "storefront", "checkout-flow", root, now)],
+    ["registry", renderRegistry(repo, root)],
+  ];
+
+  for (const [name, html] of screens) {
+    test(`${name} screen carries exactly one derivation line`, () => {
+      const count = (html.match(/class="deriv"/g) || []).length;
+      expect(count).toBe(1);
+    });
+
+    test(`${name} screen's derivation line lives inside the railfoot, not under the title`, () => {
+      const footMatch = /<div class="railfoot">[\s\S]*?<\/div>\s*<\/aside>/.exec(html);
+      expect(footMatch).not.toBeNull();
+      expect(footMatch![0]).toContain('class="deriv"');
+      const pheadMatch = /<header class="phead">[\s\S]*?<\/header>/.exec(html);
+      if (pheadMatch) expect(pheadMatch[0]).not.toContain('class="deriv"');
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Item 1 + 6, phase 7.5: the artifact render view. Read-only projection of one artifact or idea
+// markdown file — frontmatter as a header block, the full body (not just the A8 first paragraph),
+// and navigable lineage (consumes, supersedes/superseded-by, cited-by).
+// ---------------------------------------------------------------------------
+
+describe("artifact render view", () => {
+  const html = renderArtifact(repo, "storefront", "checkout-flow", "spec-checkout-flow-v1", now);
+
+  test("renders frontmatter as a header block", () => {
+    expect(html).toContain('<span class="k">kind</span><span class="v mono">spec</span>');
+    expect(html).toContain('<span class="k">id</span><span class="v mono">spec-checkout-flow-v1</span>');
+    expect(html).toContain('<span class="chip is-gate">at gate</span>'); // status: in-review
+    expect(html).toContain("kestrel/lyra");
+    expect(html).toContain("2026-07-11");
+  });
+
+  test("renders the full body, not just the A8 first-paragraph summary", () => {
+    expect(html).toContain("The guest-checkout spec is ready for review");
+    expect(html).toContain("Route"); // second paragraph
+    expect(html).toContain("Payment submission is idempotent on an order key"); // third paragraph
+  });
+
+  test("renders navigable lineage: consumes, supersedes, superseded-by, cited-by", () => {
+    expect(html).toContain("Consumes");
+    expect(html).toContain('href="/artifact/storefront/checkout-flow/product-brief-v1"');
+    expect(html).toContain('href="/artifact/storefront/checkout-flow/design-checkout-v1"');
+    expect(html).toContain("Supersedes");
+    expect(html).toContain("supersedes nothing");
+    expect(html).toContain("Superseded by");
+    expect(html).toContain("not superseded");
+    expect(html).toContain("Cited by");
+    expect(html).toContain("not cited yet"); // nothing in the fixture consumes the spec itself
+  });
+
+  test("a cited artifact shows the real citing artifact in its cited-by lineage", () => {
+    const designHtml = renderArtifact(repo, "storefront", "checkout-flow", "design-checkout-v1", now);
+    expect(designHtml).toContain("Cited by");
+    expect(designHtml).toContain('href="/artifact/storefront/checkout-flow/spec-checkout-flow-v1"');
+  });
+
+  test("throws on an unknown artifact id (routed to a 404-equivalent by the caller)", () => {
+    expect(() => renderArtifact(repo, "storefront", "checkout-flow", "not-a-real-id", now)).toThrow();
+  });
+});
+
+describe("idea render view", () => {
+  const html = renderIdea(root, "loyalty-program");
+
+  test("renders frontmatter as a header block", () => {
+    expect(html).toContain('<span class="k">name</span><span class="v mono">loyalty-program</span>');
+    expect(html).toContain("Reward repeat storefront buyers with points redeemable at checkout.");
+    expect(html).toContain("storefront");
+    expect(html).toContain("retention");
+  });
+
+  test("renders the body", () => {
+    expect(html).toContain("A captured pitch with no project yet");
+  });
+
+  test("renders a lineage section (honestly empty — no schema field ties an idea back to a project)", () => {
+    expect(html).toContain("Lineage");
+    expect(html).toContain("nothing consumes, supersedes, or cites it");
+  });
+
+  test("throws on an unknown idea name", () => {
+    expect(() => renderIdea(root, "not-a-real-idea")).toThrow();
   });
 });
