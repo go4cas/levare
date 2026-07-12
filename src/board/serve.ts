@@ -8,7 +8,7 @@ import { watch, type FSWatcher } from "node:fs";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { join, extname, dirname, resolve, sep } from "node:path";
 import { loadRepo, type Repo } from "../repo.ts";
-import { renderStudio, renderProject, renderRun, renderRegistry } from "./render.ts";
+import { renderStudio, renderProject, renderRun, renderRegistry, renderArtifact, renderIdea } from "./render.ts";
 import { resolveGate } from "./gateops.ts";
 import { validatePath } from "../validate.ts";
 import type { Verb } from "../runner.ts";
@@ -113,6 +113,24 @@ export const ROUTES: RouteDef[] = [
       const entity = new URL(req.url).searchParams.get("entity") ?? undefined;
       return html(renderRegistry(withRepo(ctx.root), ctx.root, entity));
     },
+  },
+  // Artifact render view (item 1, phase 7.5) — every artifact id in the product routes here now,
+  // instead of falling back to the unit/run view. Read-only: the definition-browser pattern applied
+  // to work/.
+  {
+    method: "GET",
+    pattern: "/artifact/:project/:unit/:id",
+    mutating: false,
+    page: true,
+    handler: (_req, params, ctx) => html(renderArtifact(withRepo(ctx.root), params.project, params.unit, params.id)),
+  },
+  // Idea render view (item 6) — the same artifact render view, applied to ideas/*.md.
+  {
+    method: "GET",
+    pattern: "/idea/:name",
+    mutating: false,
+    page: true,
+    handler: (_req, params, ctx) => html(renderIdea(ctx.root, params.name)),
   },
   { method: "GET", pattern: "/styles.css", mutating: false, handler: () => serveAsset("styles.css") },
   { method: "GET", pattern: "/app.js", mutating: false, handler: () => serveAsset("app.js") },

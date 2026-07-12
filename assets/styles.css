@@ -81,7 +81,8 @@ button{ font-family:inherit; }
 .rel{ display:flex; align-items:baseline; gap:8px; padding:5px 8px; margin:0 -8px; border-radius:7px; text-decoration:none; }
 .rel:hover{ background:var(--panel-2); }
 .rel:hover .nm{ color:var(--fg); }
-.idea{ font-family:var(--mono); font-size:11.5px; color:var(--fg-mute); padding:4px 0; }
+.idea{ display:block; font-family:var(--mono); font-size:11.5px; color:var(--fg-mute); padding:4px 0; text-decoration:none; }
+.idea:hover{ color:var(--fg-dim); }
 .rel .nm{ font-family:var(--mono); font-size:11.5px; color:var(--fg-dim); }
 .rel .ag{ margin-left:auto; font-family:var(--mono); font-size:10.5px; color:var(--fg-mute); }
 
@@ -288,8 +289,8 @@ button{ font-family:inherit; }
 .chip.is-superseded{ color:var(--fg-mute); border:1px solid var(--border-strong); padding:2px 8px; }
 
 /* ---------- pointer / constitution (project view) ---------- */
-.card{ background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:18px 20px;
-  display:flex; flex-direction:column; gap:13px; }
+.card{ background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:15px 17px;
+  display:flex; flex-direction:column; gap:10px; }
 .card__h{ font-family:var(--mono); font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--fg-mute); }
 .prow{ display:flex; gap:12px; align-items:baseline; }
 .prow .k{ font-size:12px; color:var(--fg-mute); width:78px; flex:none; }
@@ -333,8 +334,8 @@ button{ font-family:inherit; }
 .reg-nav a:hover{ background:var(--panel-2); color:var(--fg); }
 .reg-nav a.is-active{ background:var(--panel-2); color:var(--fg); }
 .reg-nav a .ct{ margin-left:auto; font-size:10.5px; color:var(--fg-mute); }
-.entity{ display:flex; flex-direction:column; gap:22px; }
-.rendered{ display:flex; flex-direction:column; gap:16px; }
+.entity{ display:flex; flex-direction:column; gap:14px; }
+.rendered{ display:flex; flex-direction:column; gap:11px; }
 .entity__head{ display:flex; align-items:center; gap:13px; }
 .entity__title{ font-size:22px; font-weight:600; letter-spacing:-.01em; }
 .entity__kind{ font-family:var(--mono); font-size:11px; color:var(--fg-mute); border:1px solid var(--border);
@@ -345,9 +346,9 @@ button{ font-family:inherit; }
 .flowstrip .mn{ font-family:var(--mono); font-size:11px; color:var(--fg-dim); }
 .recipe{ display:flex; gap:8px; flex-wrap:wrap; }
 .pill{ font-family:var(--mono); font-size:11.5px; color:var(--fg-dim); background:var(--panel-2);
-  border:1px solid var(--border); padding:5px 10px; border-radius:20px; text-decoration:none; }
+  border:1px solid var(--border); padding:4px 9px; border-radius:20px; text-decoration:none; }
 .pill:hover{ border-color:var(--border-strong); color:var(--fg); }
-.backlink{ display:flex; align-items:center; gap:8px; padding:7px 0; }
+.backlink{ display:flex; align-items:center; gap:8px; padding:5px 0; }
 .editbar{ display:flex; align-items:center; gap:10px; }
 .togglebtn{ background:var(--panel); border:1px solid var(--border-strong); color:var(--fg-dim);
   padding:6px 12px; border-radius:7px; font-size:12px; font-weight:500; cursor:pointer; font-family:var(--mono); }

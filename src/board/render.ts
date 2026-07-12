@@ -20,7 +20,14 @@ import {
   leadingArtifact,
   unitSpend,
   repoSpend,
+  projectSpend,
   medianGateResponseDays,
+  medianReviewRounds,
+  mostRelevantUnit,
+  latestRelease,
+  findArtifactInProject,
+  supersededByOf,
+  citedByOf,
   type OpenGate,
   type ScoreNode,
 } from "./derive.ts";
@@ -60,10 +67,6 @@ function logo(): string {
   return `<a class="logo" href="/studio"><span class="logo__mark"><i></i><b></b></span><span class="logo__word">levare</span></a>`;
 }
 
-function derivLine(text: string): string {
-  return `<span class="deriv">${esc(text)}</span>`;
-}
-
 function orchHead(scope: string): string {
   return `<header class="orch__head"><span class="orch__mark"><i></i><b></b></span><span class="orch__title">Orchestrator</span><span class="orch__scope">${esc(scope)} scope</span></header>`;
 }
@@ -94,6 +97,27 @@ function artifactFileName(art: Artifact): string {
 
 function tokenLink(project: string, unit: string, text: string): string {
   return `<a class="tok link mono" href="/run/${esc(project)}/${esc(unit)}">${esc(text)}</a>`;
+}
+
+// Every artifact id is a mono token and every mono token is a link (design brief §"mono typeface
+// means filesystem truth") — routed to the artifact render view (item 1), never the unit/run view
+// it used to fall back to.
+function artifactHref(project: string, unit: string, id: string): string {
+  return `/artifact/${esc(project)}/${esc(unit)}/${esc(id)}`;
+}
+function artifactTokenLink(project: string, unit: string, id: string, text: string): string {
+  return `<a class="tok link mono" href="${artifactHref(project, unit, id)}">${esc(text)}</a>`;
+}
+function ideaHref(name: string): string {
+  return `/idea/${esc(name)}`;
+}
+
+// A single footer stamp carries the derivation line (item 4, phase 7.5) — the same info no longer
+// repeats under the page title. The inner `.deriv` span inherits `.stamp`'s own visual treatment
+// (mono, muted, small) via normal CSS inheritance; it exists so the derivation line keeps one stable,
+// distinctive marker regardless of which container it renders inside.
+function derivFooter(text: string): string {
+  return `<div class="stamp"><span class="deriv">${esc(text)}</span></div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -129,11 +153,11 @@ function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: boole
   const art = gate.artifact!;
   const ctx = esc(firstParagraph(art.body ?? ""));
   const consumesHtml = art.consumes.length
-    ? `<div class="gate__consumes">consumes: ${art.consumes.map((id) => tokenLink(gate.project, gate.unit, id)).join(" &middot; ")}</div>`
+    ? `<div class="gate__consumes">consumes: ${art.consumes.map((id) => artifactTokenLink(gate.project, gate.unit, id, id)).join(" &middot; ")}</div>`
     : "";
   const age = ageLabel(art.created, now);
   const cost = costLabel(art.usage);
-  const nameRow = `<div class="gate__name-row">${tokenLink(gate.project, gate.unit, artifactFileName(art))}<span class="gate__producer">member/<b>${esc(gate.member ?? "")}</b></span></div>`;
+  const nameRow = `<div class="gate__name-row">${artifactTokenLink(gate.project, gate.unit, art.id, artifactFileName(art))}<span class="gate__producer">member/<b>${esc(gate.member ?? "")}</b></span></div>`;
   const meta = `<div class="gate__meta"><span>${esc(age)}</span>${cost ? `<span class="cost">${cost}</span>` : ""}</div>`;
   const verbs = `<div class="gate__verbs">
         <button class="verb is-primary" data-verb="approve">Approve</button>
@@ -255,7 +279,7 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date()): 
     .join("\n");
 
   const ideasHtml = extras.ideas.length
-    ? extras.ideas.map((i) => `<div class="idea">${esc(i.name)}</div>`).join("\n")
+    ? extras.ideas.map((i) => `<a class="idea" href="${ideaHref(i.name)}">${esc(i.name)}</a>`).join("\n")
     : `<div class="idea" style="color:var(--fg-mute)">no ideas captured yet</div>`;
 
   const rail = `<aside class="rail">
@@ -265,7 +289,7 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date()): 
     <section class="railsec"><h3 class="railsec__h">Connectors</h3>${connectorRows}</section>
     <section class="railsec"><h3 class="railsec__h">Recent releases</h3><div class="stamp">no releases tracked yet</div></section>
     <section class="railsec"><h3 class="railsec__h">Ideas</h3>${ideasHtml}</section>
-    <div class="railfoot"><button class="themebtn" data-theme-toggle></button><div class="stamp">derived from work/ on every request</div></div>
+    <div class="railfoot"><button class="themebtn" data-theme-toggle></button>${derivFooter("derived from work/ on every request")}</div>
   </aside>`;
 
   const gateCards = gates.length
@@ -276,21 +300,32 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date()): 
     .map((p) => {
       const units = repo.units.filter((u) => u.project === p.name);
       const projGates = gates.filter((g) => g.project === p.name).length;
-      const desc = units[0] ? esc(unitSummary(repo, units[0]).split(/(?<=[.!?])\s/)[0] ?? "") : "No work units yet.";
+      // A8: the summary is the first paragraph of the most relevant unit's leading artifact — newest
+      // gated, else newest active, else honestly empty (no fabricated summary — see NOTES.md).
+      const summaryUnit = mostRelevantUnit(repo, p.name);
+      const desc = !summaryUnit
+        ? units.length ? "No unit currently gated or active." : "No work units yet."
+        : esc(unitSummary(repo, summaryUnit) || "Awaiting its first artifact.");
       const anyUnitActive = units.some((u) => u.status === "active");
       // membersRunning: always 0 until E2's live process registry exists (no fabricated activity).
       const chip = projectStatusChip(projGates, anyUnitActive, 0);
+      const release = latestRelease(repo, p.name);
+      const metaParts = [
+        `${units.length} unit${units.length === 1 ? "" : "s"}`,
+        p.deploy ? esc(p.deploy) : "no deploy target",
+        release ? `released ${esc(release.unit)}` : "no releases yet",
+      ];
       return `<a class="pcard" href="/project/${esc(p.name)}">
         <div class="pcard__top">${chip}</div>
         <span class="pcard__name">${esc(p.name)}</span>
         <span class="pcard__desc">${desc}</span>
-        <div class="pcard__meta"><span>${units.length} unit${units.length === 1 ? "" : "s"}</span></div>
+        <div class="pcard__meta mono">${metaParts.map((m) => `<span>${m}</span>`).join("")}</div>
       </a>`;
     })
     .join("\n");
 
   const main = `<main class="main">
-    <header class="phead"><h1>Studio</h1>${derivLine("derived from work/ on every request")}</header>
+    <header class="phead"><h1>Studio</h1></header>
     <div class="statstrip" style="grid-template-columns:repeat(5,1fr)">
       <div class="stat"><div class="n is-gate" data-gatestat="${gates.length}">${gates.length}</div><div class="l">Gates on you</div></div>
       <div class="stat"><div class="n">0</div><div class="l">Members running</div></div>
@@ -339,7 +374,7 @@ export function renderProject(repo: Repo, projectName: string, now: Date = new D
     ? founding
         .map(
           (f) =>
-            `<div class="founding">${tokenLink(projectName, f.artifact.unit, artifactFileName(f.artifact))}<span class="cite">cited ${f.citations}</span></div>`,
+            `<div class="founding">${artifactTokenLink(projectName, f.artifact.unit, f.artifact.id, artifactFileName(f.artifact))}<span class="cite">cited ${f.citations}</span></div>`,
         )
         .join("\n")
     : `<div class="founding" style="color:var(--fg-mute)">no founding artifacts yet</div>`;
@@ -354,7 +389,7 @@ export function renderProject(repo: Repo, projectName: string, now: Date = new D
     </section>
     <section class="railsec"><h3 class="railsec__h">Constitution</h3>${foundingHtml}</section>
     <section class="railsec"><h3 class="railsec__h">Releases</h3><div class="stamp">no releases tracked yet</div></section>
-    <div class="railfoot"><button class="themebtn" data-theme-toggle></button><div class="stamp">derived from work/${esc(projectName)}/ on every request</div></div>
+    <div class="railfoot"><button class="themebtn" data-theme-toggle></button>${derivFooter(`derived from work/${projectName}/ on every request`)}</div>
   </aside>`;
 
   const unitRows = units
@@ -370,7 +405,7 @@ export function renderProject(repo: Repo, projectName: string, now: Date = new D
           const ind = a.status === "approved" ? "ind-done" : a.status === "in-review" ? "ind-gate" : a.status === "superseded" ? "ind-super" : "ind-prog";
           const st = a.status === "in-review" ? `<span class="st gate">at gate</span>` : `<span class="st">${esc(a.status)}</span>`;
           const label = a.status === "superseded" ? `<s>${esc(artifactFileName(a))}</s>` : esc(artifactFileName(a));
-          return `<div class="aitem"><span class="ind ${ind}"></span><a class="nm link mono" href="/run/${esc(u.project)}/${esc(u.unit)}">${label}</a>${st}</div>`;
+          return `<div class="aitem"><span class="ind ${ind}"></span><a class="nm link mono" href="${artifactHref(u.project, u.unit, a.id)}">${label}</a>${st}</div>`;
         })
         .join("\n");
       const reviewRounds = artifacts.filter((a) => a.kind === "review").length;
@@ -402,16 +437,18 @@ export function renderProject(repo: Repo, projectName: string, now: Date = new D
     .map((g) => `<template id="tpl-gate-${esc(g.target)}">${gateCardHtml(repo, g, now, { cta: true })}</template>`)
     .join("\n");
 
+  const reviewMedian = medianReviewRounds(repo, projectName);
   const main = `<main class="main">
     <header class="phead">
       <div class="crumb"><a href="/studio">studio</a><span>/</span><span>${esc(projectName)}</span></div>
       <h1>${esc(projectName)}</h1>
-      ${derivLine(`derived from work/${projectName}/ on every request`)}
     </header>
-    <div class="statstrip">
+    <div class="statstrip" style="grid-template-columns:repeat(5,1fr)">
       <div class="stat"><div class="n">${units.filter((u) => u.status === "shipped").length}</div><div class="l">Shipped units</div></div>
       <div class="stat"><div class="n">${units.filter((u) => u.status === "active").length}</div><div class="l">Active</div></div>
       <div class="stat"><div class="n">${gates.length}</div><div class="l">Gates open</div></div>
+      <div class="stat"><div class="n">${reviewMedian === null ? "&mdash;" : reviewMedian}</div><div class="l">Median review rounds</div></div>
+      <div class="stat"><div class="n">$${projectSpend(repo, projectName).toFixed(2)}</div><div class="l">Spend</div></div>
     </div>
     <section class="sec"><div class="sec__h"><h2>Work units</h2></div><div class="units">${unitRows}</div></section>
   </main>`;
@@ -450,7 +487,9 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
         : n.state === "gate" ? `<span class="chip is-gate sstep__chip">needs you</span>`
         : n.state === "rejected" ? `<span class="chip sstep__chip" style="color:var(--danger)">rejected</span>`
         : "";
-      const sub = n.artifact ? `${esc(n.artifact.produced_by)} &middot; ${esc(artifactFileName(n.artifact))}` : "queued";
+      const sub = n.artifact
+        ? `${esc(n.artifact.produced_by)} &middot; ${artifactTokenLink(n.artifact.project, n.artifact.unit, n.artifact.id, artifactFileName(n.artifact))}`
+        : "queued";
       return `<div class="sstep ${nodeCls}">
         <div class="sstep__rail"><span class="${snodeCls}" aria-hidden="true"></span><span class="sstep__line" aria-hidden="true"></span></div>
         ${av}
@@ -465,7 +504,7 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
       <h3 class="railsec__h">Score &middot; ${esc(unitId)}</h3>
       <div class="score2" style="margin-top:14px">${scoreSteps}</div>
     </section>
-    <div class="railfoot"><button class="themebtn" data-theme-toggle></button><div class="stamp">${esc(project)}/${esc(unitId)}</div></div>
+    <div class="railfoot"><button class="themebtn" data-theme-toggle></button>${derivFooter(`${unit.type} · derived from work/${project}/${unitId}/ on every request`)}</div>
   </aside>`;
 
   const timeline = buildTimeline(root, unit.dir);
@@ -479,7 +518,6 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
     <header class="phead">
       <div class="crumb"><a href="/studio">studio</a><span>/</span><a href="/project/${esc(project)}">${esc(project)}</a><span>/</span><span>${esc(unitId)}</span></div>
       <h1><span style="font-family:var(--mono);font-weight:400;margin-right:8px" aria-hidden="true">${type?.glyph ?? ""}</span>${esc(unitId)}</h1>
-      ${derivLine(`${unit.type} · derived from work/${project}/${unitId}/ on every request`)}
     </header>
     <section class="sec">
       <div class="sec__h"><h2>Timeline <span class="mono" style="color:var(--fg-mute);font-weight:400">&middot; from git log + runner events</span></h2></div>
@@ -499,6 +537,193 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
   </aside>`;
 
   return shell(`levare · run · ${unitId}`, "Open score", `<div class="app app--run">${rail}${main}${orch}</div>`);
+}
+
+// ---------------------------------------------------------------------------
+// ARTIFACT / IDEA (item 1 + 6, phase 7.5) — the artifact render view. A read-only projection of one
+// artifact or idea markdown file: frontmatter as a header block, body below, and navigable lineage
+// (consumes, supersedes/superseded-by, cited-by). Every artifact id and idea name elsewhere in the
+// product links here now, instead of falling back to the unit/run view — "the definition-browser
+// pattern applied to work/" (design brief). Built entirely from existing component vocabulary
+// (`.card`/`.card__h`/`.prow`/`.founding`/`.chip`) — no new visual language.
+// ---------------------------------------------------------------------------
+
+/** Split a markdown body into paragraphs; a line starting with `#`s renders as a heading, everything
+ * else as a `<p>` (internal single newlines become `<br/>`). No markdown library — the same
+ * paragraph-splitting rule `firstParagraph` (repo.ts, ruling A8) uses, just not truncated to one. */
+function renderBody(body: string): string {
+  const paras = body
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+  return paras
+    .map((p) => {
+      const m = /^(#{1,6})\s+(.*)$/.exec(p);
+      if (m) {
+        const level = Math.min(m[1].length + 1, 4); // one level below the page's own h1
+        return `<h${level}>${esc(m[2])}</h${level}>`;
+      }
+      return `<p style="margin:0;font-size:13.5px;line-height:1.6;color:var(--fg-dim)">${esc(p).replace(/\n/g, "<br/>")}</p>`;
+    })
+    .join("\n");
+}
+
+// Reuses `.founding`/`.cite` (already the "artifact reference + a badge" row, used for the project
+// view's constitution list) for every lineage edge — consumes, supersedes, superseded-by, cited-by.
+function lineageItem(art: Artifact, badge: string): string {
+  return `<div class="founding">${artifactTokenLink(art.project, art.unit, art.id, artifactFileName(art))}<span class="cite">${esc(badge)}</span></div>`;
+}
+function lineageEmpty(text: string): string {
+  return `<div class="founding" style="color:var(--fg-mute)">${esc(text)}</div>`;
+}
+function lineageUnresolved(id: string): string {
+  return `<div class="founding" style="color:var(--fg-mute)"><span class="mono">${esc(id)}</span><span class="cite">unresolved</span></div>`;
+}
+
+export function renderArtifact(repo: Repo, project: string, unit: string, id: string, now: Date = new Date()): string {
+  const art = repo.artifacts.get(`${project}/${unit}`)?.get(id);
+  if (!art) throw new Error(`unknown artifact '${project}/${unit}/${id}'`);
+
+  const statusChip =
+    art.status === "approved" ? `<span class="chip is-approved">approved</span>`
+    : art.status === "in-review" ? `<span class="chip is-gate">at gate</span>`
+    : art.status === "superseded" ? `<span class="chip is-superseded">superseded</span>`
+    : art.status === "blocked" ? `<span class="chip is-blocked">blocked</span>`
+    : art.status === "rejected" ? `<span class="chip" style="color:var(--danger)">rejected</span>`
+    : `<span class="chip is-progress">${esc(art.status)}</span>`;
+
+  const consumesHtml = art.consumes.length
+    ? art.consumes
+        .map((cid) => {
+          const c = findArtifactInProject(repo, project, cid);
+          return c ? lineageItem(c, c.kind) : lineageUnresolved(cid);
+        })
+        .join("\n")
+    : lineageEmpty("consumes nothing — a founding artifact");
+
+  const supersedesArt = art.supersedes ? findArtifactInProject(repo, project, art.supersedes) : undefined;
+  const supersedesHtml = !art.supersedes
+    ? lineageEmpty("supersedes nothing")
+    : supersedesArt
+      ? lineageItem(supersedesArt, supersedesArt.kind)
+      : lineageUnresolved(art.supersedes);
+
+  const supersededBy = supersededByOf(repo, project, id);
+  const supersededByHtml = supersededBy ? lineageItem(supersededBy, supersededBy.kind) : lineageEmpty("not superseded");
+
+  const citedBy = citedByOf(repo, project, id);
+  const citedByHtml = citedBy.length ? citedBy.map((a) => lineageItem(a, a.kind)).join("\n") : lineageEmpty("not cited yet");
+
+  const rail = `<aside class="rail">
+    ${logo()}
+    <section class="railsec">
+      <h3 class="railsec__h">Context</h3>
+      <a class="rel" href="/project/${esc(project)}"><span class="nm">${esc(project)}</span></a>
+      <a class="rel" href="/run/${esc(project)}/${esc(unit)}"><span class="nm">${esc(unit)}</span><span class="ag">run</span></a>
+    </section>
+    <div class="railfoot"><button class="themebtn" data-theme-toggle></button>${derivFooter(`derived from work/${project}/${unit}/${artifactFileName(art)} on every request`)}</div>
+  </aside>`;
+
+  const frontmatter = `<div class="card">
+    <div class="card__h">Frontmatter</div>
+    <div class="prow"><span class="k">kind</span><span class="v mono">${esc(art.kind)}</span></div>
+    <div class="prow"><span class="k">id</span><span class="v mono">${esc(art.id)}</span></div>
+    <div class="prow"><span class="k">status</span><span class="v">${statusChip}</span></div>
+    <div class="prow"><span class="k">produced by</span><span class="v">${memberAvatar(repo, art.produced_by, { size: "sm" })} <span class="mono">${esc(art.produced_by)}</span></span></div>
+    <div class="prow"><span class="k">created</span><span class="v mono">${esc(art.created)} &middot; ${esc(ageLabel(art.created, now))}</span></div>
+    <div class="prow"><span class="k">approved by</span><span class="v mono">${art.approved_by ? esc(art.approved_by) : "&mdash;"}</span></div>
+    ${art.files.length ? `<div class="prow"><span class="k">files</span><span class="v mono">${art.files.map(esc).join(", ")}</span></div>` : ""}
+    ${costLabel(art.usage) ? `<div class="prow"><span class="k">cost</span><span class="v cost">${costLabel(art.usage)}</span></div>` : ""}
+  </div>`;
+
+  const bodyCard = `<div class="card">
+    <div class="card__h">Body</div>
+    ${renderBody(art.body ?? "") || `<p style="color:var(--fg-mute);font-size:13.5px">No body content.</p>`}
+  </div>`;
+
+  const lineageCard = `<div class="card">
+    <div class="card__h">Lineage</div>
+    <h3 class="railsec__h">Consumes</h3>${consumesHtml}
+    <h3 class="railsec__h" style="margin-top:8px">Supersedes</h3>${supersedesHtml}
+    <h3 class="railsec__h" style="margin-top:8px">Superseded by</h3>${supersededByHtml}
+    <h3 class="railsec__h" style="margin-top:8px">Cited by</h3>${citedByHtml}
+  </div>`;
+
+  const main = `<main class="main">
+    <header class="phead">
+      <div class="crumb"><a href="/studio">studio</a><span>/</span><a href="/project/${esc(project)}">${esc(project)}</a><span>/</span><a href="/run/${esc(project)}/${esc(unit)}">${esc(unit)}</a><span>/</span><span class="mono">${esc(art.id)}</span></div>
+      <h1>${esc(art.kind)} <span class="mono" style="font-weight:400;color:var(--fg-mute);font-size:.6em;margin-left:8px">${esc(art.id)}</span></h1>
+    </header>
+    ${frontmatter}
+    ${bodyCard}
+    ${lineageCard}
+  </main>`;
+
+  const orch = `<aside class="orch">
+    ${orchHead("artifact")}
+    <div class="orch__body">
+      <div class="msg"><div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
+      <p class="msg__body">${esc(art.kind)} ${esc(art.id)}, produced by ${esc(art.produced_by)}. ${citedBy.length ? `Cited by ${citedBy.length} artifact${citedBy.length === 1 ? "" : "s"}.` : "Not cited by anything yet."}</p></div>
+    </div>
+    ${composer()}
+  </aside>`;
+
+  return shell(`levare · ${art.kind} · ${art.id}`, "Open context", `<div class="app">${rail}${main}${orch}</div>`);
+}
+
+export function renderIdea(root: string, name: string): string {
+  const extras = loadExtras(root);
+  const idea = extras.ideas.find((i) => i.name === name);
+  if (!idea) throw new Error(`unknown idea '${name}'`);
+
+  const pitch = typeof idea.data.pitch === "string" ? idea.data.pitch : "";
+  const tags = Array.isArray(idea.data.tags) ? (idea.data.tags as unknown[]).map((t) => String(t)) : [];
+
+  const rail = `<aside class="rail">
+    ${logo()}
+    <section class="railsec"><h3 class="railsec__h">Context</h3><a class="rel" href="/studio"><span class="nm">studio</span><span class="ag">ideas</span></a></section>
+    <div class="railfoot"><button class="themebtn" data-theme-toggle></button>${derivFooter(`derived from ideas/${name}.md on every request`)}</div>
+  </aside>`;
+
+  const frontmatter = `<div class="card">
+    <div class="card__h">Frontmatter</div>
+    <div class="prow"><span class="k">name</span><span class="v mono">${esc(idea.name)}</span></div>
+    ${pitch ? `<div class="prow"><span class="k">pitch</span><span class="v">${esc(pitch)}</span></div>` : ""}
+    ${tags.length ? `<div class="prow"><span class="k">tags</span><span class="v mono">${tags.map((t) => esc(t)).join(", ")}</span></div>` : ""}
+  </div>`;
+
+  const bodyCard = `<div class="card">
+    <div class="card__h">Body</div>
+    ${renderBody(idea.body) || `<p style="color:var(--fg-mute);font-size:13.5px">No body content.</p>`}
+  </div>`;
+
+  // No project/unit references an idea back (the schema has no "promoted from" field) — an honest
+  // "nothing yet" rather than a fabricated lineage edge, matching the rest of the board's empty states.
+  const lineageCard = `<div class="card">
+    <div class="card__h">Lineage</div>
+    ${lineageEmpty("A captured pitch with no project yet — nothing consumes, supersedes, or cites it.")}
+  </div>`;
+
+  const main = `<main class="main">
+    <header class="phead">
+      <div class="crumb"><a href="/studio">studio</a><span>/</span><span>ideas</span><span>/</span><span class="mono">${esc(idea.name)}</span></div>
+      <h1>${esc(idea.name)}</h1>
+    </header>
+    ${frontmatter}
+    ${bodyCard}
+    ${lineageCard}
+  </main>`;
+
+  const orch = `<aside class="orch">
+    ${orchHead("idea")}
+    <div class="orch__body">
+      <div class="msg"><div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
+      <p class="msg__body">${esc(idea.name)} is a captured pitch with no project yet. Promoting it opens an inception unit.</p></div>
+    </div>
+    ${composer()}
+  </aside>`;
+
+  return shell(`levare · idea · ${idea.name}`, "Open context", `<div class="app">${rail}${main}${orch}</div>`);
 }
 
 // ---------------------------------------------------------------------------
@@ -548,7 +773,7 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string):
   const rail = `<aside class="rail">
     ${logo()}
     <section class="railsec"><h3 class="railsec__h">Registry</h3><nav class="reg-nav">${nav}</nav></section>
-    <div class="railfoot"><button class="themebtn" data-theme-toggle></button><div class="stamp">derived from the repo root<br/>on every request</div></div>
+    <div class="railfoot"><button class="themebtn" data-theme-toggle></button>${derivFooter("derived from the repo root on every request")}</div>
   </aside>`;
 
   const teamBlocks = [...repo.teams.values()]
@@ -625,7 +850,6 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string):
 
   const main = `<main class="main">
     <div class="crumb"><a href="/studio">studio</a><span>/</span><span>registry</span></div>
-    ${derivLine("derived from the repo root on every request")}
     ${teamBlocks}${agentBlocks}${skillBlocks}${knowledgeBlocks}${typeBlocks}${connectorBlocks}${evalBlocks}
   </main>`;
 

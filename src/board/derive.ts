@@ -219,6 +219,99 @@ export function repoSpend(repo: Repo): number {
   return Math.round(usd * 100) / 100;
 }
 
+/** Spend across every unit in one project — the project-scoped twin of `repoSpend`. */
+export function projectSpend(repo: Repo, project: string): number {
+  let usd = 0;
+  for (const unit of repo.units.filter((u) => u.project === project)) usd += unitSpend(repo, unit).usd;
+  return Math.round(usd * 100) / 100;
+}
+
+/** Median count of `review`-kind artifacts per unit, across a project's units. Null with no units. */
+export function medianReviewRounds(repo: Repo, project: string): number | null {
+  const counts: number[] = [];
+  for (const unit of repo.units) {
+    if (unit.project !== project) continue;
+    const m = repo.artifacts.get(`${unit.project}/${unit.unit}`);
+    counts.push(m ? [...m.values()].filter((a) => a.kind === "review").length : 0);
+  }
+  if (counts.length === 0) return null;
+  counts.sort((a, b) => a - b);
+  const mid = Math.floor(counts.length / 2);
+  return counts.length % 2 ? counts[mid] : (counts[mid - 1] + counts[mid]) / 2;
+}
+
+// ---------------------------------------------------------------------------
+// Project-card anatomy (item 2, phase 7.5): status chip, name, one-sentence A8 summary, mono meta
+// line (unit count, deploy target, latest release).
+// ---------------------------------------------------------------------------
+
+/**
+ * The unit a project card summarizes (ruling A8): the newest unit currently at a gate, else the
+ * newest active unit, else undefined (no work yet). "Newest" is read from the unit's leading
+ * artifact's own `created` date (real authored data) rather than filesystem mtime, which a fresh git
+ * checkout stamps uniformly and so carries no real recency signal. A unit with no artifact yet sorts
+ * last (empty recency key), never first.
+ */
+export function mostRelevantUnit(repo: Repo, project: string): WorkUnit | undefined {
+  const units = repo.units.filter((u) => u.project === project);
+  const gatedUnitNames = new Set(openGates(repo).filter((g) => g.project === project).map((g) => g.unit));
+  const gated = units.filter((u) => gatedUnitNames.has(u.unit));
+  const pool = gated.length ? gated : units.filter((u) => u.status === "active");
+  if (pool.length === 0) return undefined;
+  const recency = (u: WorkUnit) => leadingArtifact(repo, u)?.created ?? "";
+  return [...pool].sort((a, b) => recency(b).localeCompare(recency(a)))[0];
+}
+
+/**
+ * Most recently shipped unit in a project — the closest honest proxy for "latest release" the
+ * schema supports today (there is no dedicated release/changelog concept; see NOTES.md).
+ */
+export function latestRelease(repo: Repo, project: string): WorkUnit | undefined {
+  const shipped = repo.units.filter((u) => u.project === project && u.status === "shipped");
+  if (shipped.length === 0) return undefined;
+  const recency = (u: WorkUnit) => leadingArtifact(repo, u)?.created ?? "";
+  return [...shipped].sort((a, b) => recency(b).localeCompare(recency(a)))[0];
+}
+
+// ---------------------------------------------------------------------------
+// Artifact lineage (item 1, phase 7.5): consumes/supersedes resolved to real artifacts, plus the two
+// reverse edges (superseded-by, cited-by) files never declare directly. Searches the whole project,
+// not just one unit, since `consumes` may cross a project's units (see the founding-artifact model).
+// ---------------------------------------------------------------------------
+
+/** Find an artifact by id anywhere in a project (not just the current unit). */
+export function findArtifactInProject(repo: Repo, project: string, id: string): Artifact | undefined {
+  for (const unit of repo.units) {
+    if (unit.project !== project) continue;
+    const a = repo.artifacts.get(`${unit.project}/${unit.unit}`)?.get(id);
+    if (a) return a;
+  }
+  return undefined;
+}
+
+/** The artifact (if any) whose `supersedes` names this id — the reverse of `supersedes`. */
+export function supersededByOf(repo: Repo, project: string, id: string): Artifact | undefined {
+  for (const unit of repo.units) {
+    if (unit.project !== project) continue;
+    for (const a of repo.artifacts.get(`${unit.project}/${unit.unit}`)?.values() ?? []) {
+      if (a.supersedes === id) return a;
+    }
+  }
+  return undefined;
+}
+
+/** Every artifact in the project whose `consumes` names this id. */
+export function citedByOf(repo: Repo, project: string, id: string): Artifact[] {
+  const out: Artifact[] = [];
+  for (const unit of repo.units) {
+    if (unit.project !== project) continue;
+    for (const a of repo.artifacts.get(`${unit.project}/${unit.unit}`)?.values() ?? []) {
+      if (a.consumes.includes(id)) out.push(a);
+    }
+  }
+  return out;
+}
+
 /** Median days from an artifact's `created` to its `approved_by` ISO date, across approved artifacts. */
 export function medianGateResponseDays(repo: Repo): number | null {
   const deltas: number[] = [];
