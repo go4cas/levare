@@ -17,7 +17,7 @@ import { normalizeReceipt } from "./receipts.ts";
 import { buildMemberEnv } from "./env.ts";
 import { allowedTools } from "./guardrails.ts";
 import { assembleContext } from "./context.ts";
-import { bunSdkTransport, type SdkTransport } from "./sdk-transport.ts";
+import { bunSdkTransport, resolveNativeBinary, type SdkTransport } from "./sdk-transport.ts";
 import type { Pricing } from "./pricing.ts";
 import type { Repo } from "./repo.ts";
 import type { MemberRunner } from "./runner.ts";
@@ -53,6 +53,8 @@ export interface SdkNativeBoundaryOptions {
   transport?: SdkTransport;
   env?: Record<string, string | undefined>;
   timeoutMs?: number;
+  /** Test-only override for the resolved native-binary path — see `resolveNativeBinary` default below. */
+  pathToClaudeCodeExecutable?: string;
 }
 
 /**
@@ -75,12 +77,17 @@ export function createSdkNativeBoundary(opts: SdkNativeBoundaryOptions = {}): Na
   const transport = opts.transport ?? bunSdkTransport;
   const baseEnv = opts.env ?? process.env;
   const timeoutMs = opts.timeoutMs ?? 600_000;
+  // Resolved ONCE, explicitly — never left to the SDK's own implicit resolution inside the worker
+  // (NOTES phase-7 K14: a live host showed that implicit lookup fail to find a platform binary that
+  // genuinely existed as a sibling node_modules package; the same fix applied to OrchestratorBoundary
+  // applies here for the identical reason, even though this boundary isn't wired into any live path yet).
+  const pathToClaudeCodeExecutable = opts.pathToClaudeCodeExecutable ?? resolveNativeBinary() ?? undefined;
   return {
     invoke(req: InvokeRequest): { doc: string } {
       const env: Record<string, string | undefined> = { ...req.env };
       if (typeof baseEnv.ANTHROPIC_API_KEY === "string") env.ANTHROPIC_API_KEY = baseEnv.ANTHROPIC_API_KEY;
       const res = transport.run(
-        { prompt: req.context, model: req.agent.model, tools: req.tools, allowedTools: req.tools, cwd: req.agent.cwd },
+        { prompt: req.context, model: req.agent.model, tools: req.tools, allowedTools: req.tools, cwd: req.agent.cwd, pathToClaudeCodeExecutable },
         { env, timeoutMs },
       );
       if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`);

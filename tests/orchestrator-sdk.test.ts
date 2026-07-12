@@ -292,10 +292,26 @@ describe("the async transport does not block the event loop while a call is in f
 // credential is knowable in milliseconds, without ever attempting (and timing out on) a real spawn.
 // ---------------------------------------------------------------------------
 
+// Computed once at module load, independent of resolveNativeBinary itself (a plain existsSync probe,
+// not a call to the function under test), so the skip decision below can't be circular.
+const platformPackageInstalled = (() => {
+  try {
+    const req = require("node:module").createRequire(import.meta.url);
+    req.resolve(`@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/package.json`);
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
 describe("resolveNativeBinary — mirrors the SDK's own require.resolve-based check exactly", () => {
-  test("resolves the real, currently-installed platform binary for this sandbox", () => {
-    // Ground truth: this sandbox's own node_modules genuinely has the platform package installed
-    // (verified independently — see NOTES K13) — this is not a mock, it exercises the real filesystem.
+  // Acceptance ask: "a test asserting the transport can resolve the native CLI on the host platform
+  // (skipped when the platform package is absent)" — this repo's own optional-dependency install can
+  // genuinely be absent (a pruned CI install, or the K13 spontaneous-swap flakiness recurring), so this
+  // must skip rather than fail in that case; when the package IS present, it must actually resolve —
+  // this is the literal regression test for the K14 finding (a present sibling package that the SDK's
+  // OWN implicit resolution failed to find on at least one host).
+  test.skipIf(!platformPackageInstalled)("resolves the real, currently-installed platform binary for this host", () => {
     const resolved = resolveNativeBinary();
     expect(resolved).not.toBeNull();
     expect(resolved).toContain(`claude-agent-sdk-${process.platform}-${process.arch}`);
@@ -336,9 +352,10 @@ describe("checkSdkPreconditions — credential presence + binary resolvability, 
     }
   });
 
-  test("credential present and binary resolvable → viable", () => {
+  test("credential present and binary resolvable → viable, and the resolved path is surfaced", () => {
     const check = checkSdkPreconditions({ ANTHROPIC_API_KEY: "sk-ant-test" });
-    expect(check).toEqual({ viable: true });
+    expect(check.viable).toBe(true);
+    expect(check.binaryPath).toBe(resolveNativeBinary());
   });
 });
 
@@ -366,7 +383,7 @@ describe("checkSdkPreconditionsCached — probed once, not on every call", () =>
       const first = checkSdkPreconditionsCached({ ANTHROPIC_API_KEY: "sk-ant-test" }, { requireFrom: join(dir, "scratch.ts") }, t0);
       expect(first.viable).toBe(false);
       const second = checkSdkPreconditionsCached({ ANTHROPIC_API_KEY: "sk-ant-test" }, {}, t0 + 30_001);
-      expect(second).toEqual({ viable: true });
+      expect(second.viable).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -401,6 +418,51 @@ describe("selectOrchestratorBoundary — the fast-fail precondition, end to end"
     expect(boundary).not.toBe(deterministicBoundary);
     await boundary.interpret("stats");
     expect(calls).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// K14: the real invocation NEVER relies on the SDK's own implicit binary resolution — it always
+// carries an explicitly-resolved pathToClaudeCodeExecutable, resolved by THIS repo's own code, the
+// same code the fast-precondition probe already proved viable. A live host showed the SDK's own
+// internal require.resolve-based lookup fail to find a platform binary that genuinely existed as a
+// sibling node_modules package — "the probe works, what it probed for did not" was actually "the
+// probe and the real call used two different resolution attempts that could disagree"; passing an
+// explicit path collapses them into the same one, by construction.
+// ---------------------------------------------------------------------------
+
+describe("pathToClaudeCodeExecutable is resolved explicitly and threaded to every real request", () => {
+  test("createSdkOrchestratorBoundary resolves once and sends the same path on interpret() and narrate()", async () => {
+    const { transport, calls } = fakeTransport(() => ({ ok: true, result: "{}", structuredOutput: { kind: "stats" } }));
+    const boundary = createSdkOrchestratorBoundary({ transport });
+    await boundary.interpret("stats");
+    await boundary.narrate("hi");
+    expect(calls).toHaveLength(2);
+    // Both requests carry the identical resolved value (present or undefined depending on this
+    // sandbox's own install state — either way, the SAME value both times, never re-derived per call).
+    expect(calls[0].pathToClaudeCodeExecutable).toBe(calls[1].pathToClaudeCodeExecutable);
+  });
+
+  test.skipIf(!platformPackageInstalled)("when the binary IS resolvable, the exact resolved path is threaded through", async () => {
+    const { transport, calls } = fakeTransport(() => ({ ok: true, result: "{}", structuredOutput: { kind: "stats" } }));
+    const boundary = createSdkOrchestratorBoundary({ transport });
+    await boundary.interpret("stats");
+    expect(calls[0].pathToClaudeCodeExecutable).toBe(resolveNativeBinary());
+  });
+
+  test("an explicit pathToClaudeCodeExecutable override wins over resolution", async () => {
+    const { transport, calls } = fakeTransport(() => ({ ok: true, result: "{}", structuredOutput: { kind: "stats" } }));
+    const boundary = createSdkOrchestratorBoundary({ transport, pathToClaudeCodeExecutable: "/explicit/override/claude" });
+    await boundary.interpret("stats");
+    expect(calls[0].pathToClaudeCodeExecutable).toBe("/explicit/override/claude");
+  });
+
+  test("selectOrchestratorBoundary reuses the EXACT path its own precondition probe resolved — not a second, separate resolution", async () => {
+    const { transport, calls } = fakeTransport(() => ({ ok: true, result: "{}", structuredOutput: { kind: "stats" } }));
+    const boundary = selectOrchestratorBoundary({ ANTHROPIC_API_KEY: "sk-ant-test" }, { transport });
+    await boundary.interpret("stats");
+    const check = checkSdkPreconditionsCached({ ANTHROPIC_API_KEY: "sk-ant-test" });
+    expect(calls[0].pathToClaudeCodeExecutable).toBe(check.binaryPath);
   });
 });
 

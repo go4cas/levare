@@ -24,6 +24,7 @@ import {
   asyncSdkTransport,
   hasAnthropicCredentials,
   checkSdkPreconditionsCached,
+  resolveNativeBinary,
   type AsyncSdkTransport,
   type SdkPreconditionOptions,
 } from "./sdk-transport.ts";
@@ -128,6 +129,11 @@ export interface SdkOrchestratorBoundaryOptions {
   /** Environment the transport's spawned worker draws from (default process.env). Never logged. */
   env?: Record<string, string | undefined>;
   timeoutMs?: number;
+  /** Explicit override for the resolved native-binary path (test-only) — see
+   * `resolveNativeBinaryPath` default below and NOTES phase-7 K14. */
+  pathToClaudeCodeExecutable?: string;
+  /** Test-only: threaded into `resolveNativeBinary` when `pathToClaudeCodeExecutable` above is unset. */
+  binaryResolution?: { platform?: string; arch?: string; requireFrom?: string };
 }
 
 /** The real SDK-driven `OrchestratorBoundary`: `interpret`/`narrate` behind the exact same async
@@ -139,11 +145,18 @@ export function createSdkOrchestratorBoundary(opts: SdkOrchestratorBoundaryOptio
   const systemPrompt = loadOrchestratorPromptSource(opts.systemPromptPath);
   const env = opts.env ?? process.env;
   const timeoutMs = opts.timeoutMs ?? 120_000;
+  // Resolved ONCE, here, at construction time — never left to the SDK's own implicit resolution
+  // inside the worker (NOTES phase-7 K14: a live host showed that implicit lookup fail to find a
+  // platform binary that genuinely existed as a sibling node_modules package). Every request this
+  // boundary makes carries the SAME resolved path, so "the probe says viable" and "the real call
+  // actually uses that binary" can never diverge — they're the same function call.
+  const br = opts.binaryResolution;
+  const pathToClaudeCodeExecutable = opts.pathToClaudeCodeExecutable ?? resolveNativeBinary(br?.platform, br?.arch, br?.requireFrom) ?? undefined;
 
   return {
     async interpret(text: string): Promise<Intent> {
       const res = await transport.run(
-        { prompt: text, systemPrompt, model, tools: [], allowedTools: [], outputFormat: { type: "json_schema", schema: INTENT_SCHEMA } },
+        { prompt: text, systemPrompt, model, tools: [], allowedTools: [], outputFormat: { type: "json_schema", schema: INTENT_SCHEMA }, pathToClaudeCodeExecutable },
         { env, timeoutMs },
       );
       // A transport failure (worker never ran / exited non-zero / timed out / unparseable output) is
@@ -159,7 +172,7 @@ export function createSdkOrchestratorBoundary(opts: SdkOrchestratorBoundaryOptio
       return coerceIntent(res.structuredOutput, text);
     },
     async narrate(prompt: string): Promise<string> {
-      const res = await transport.run({ prompt, systemPrompt, model, tools: [], allowedTools: [] }, { env, timeoutMs });
+      const res = await transport.run({ prompt, systemPrompt, model, tools: [], allowedTools: [], pathToClaudeCodeExecutable }, { env, timeoutMs });
       // A transport failure must never surface as a fabricated Orchestrator line — fall back to the
       // plain computed fact (identical to the deterministic boundary's own narrate) rather than lie.
       if (!res.ok) return prompt;
@@ -191,6 +204,10 @@ export function selectOrchestratorBoundary(
 ): OrchestratorBoundary {
   if (!hasAnthropicCredentials(env)) return deterministicBoundary;
   const { precondition, ...boundaryOpts } = opts;
-  if (!checkSdkPreconditionsCached(env, precondition).viable) return deterministicBoundary;
-  return createSdkOrchestratorBoundary({ ...boundaryOpts, env });
+  const check = checkSdkPreconditionsCached(env, precondition);
+  if (!check.viable) return deterministicBoundary;
+  // Reuse the EXACT path the precondition probe just resolved, rather than letting
+  // createSdkOrchestratorBoundary re-resolve it — "the probe says viable" and "the real call uses
+  // that binary" are then provably the same value, not just the same algorithm (NOTES K14).
+  return createSdkOrchestratorBoundary({ ...boundaryOpts, env, pathToClaudeCodeExecutable: boundaryOpts.pathToClaudeCodeExecutable ?? check.binaryPath });
 }
