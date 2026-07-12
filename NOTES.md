@@ -199,6 +199,8 @@ C6 — Branches and file paths are different guardrail namespaces. A team's `pro
 
 C7 — One gate-resolution path. Board gate ops (src/board/gateops.ts) and Runner gate resolution (src/runner.ts) must converge on a single implementation before v1. A Conductor's approve means the same thing regardless of which surface received the click; ruling C2 (companion-artifact resolution on loop gates) applies to both. The phase-4 split — the board performing the direct §4 operation while the Runner drives the walk engine — is a scaffolding artifact, not the semantics. Close it in phase 5, when live member invocation enters the server process; that same convergence retires E4's stub-reuse in doRequest and E5's 501 on the `start` verb.
 
+C8 — EVERY work unit's first flow step raises a start gate, regardless of type, regardless of `after:`. There is no auto-start path. `after:` remains exactly what it always was — a condition that must be satisfied before the start gate is RAISED — never a licence to begin work once satisfied or absent. This is a Conductor ruling on a security-audit finding (`docs/security-audit.md`, Surface 5/1, HIGH), not an engineering judgment call: the audit demonstrated that a hand-written or injected `unit.md` with no `after:` caused the daemon to invoke a real member (`Daemon.tick()`, no gate, no click) — an unattended, real-money invocation with no Conductor approval anywhere in its causal chain, a direct violation of invariant 1 (§2). Combined with the CSRF hole closed in the same audit (Surface 6, now fixed), this was one step from remote unattended spend: a foreign web page or a merged PR touching `work/` could have reached a live subprocess with zero human decision in between. **Supersedes NOTES O3**, which took the deliberately loose reading ("the Conductor authoring/committing `unit.md` is itself the causal-chain intent") and flagged itself explicitly as "the single most debatable call in this phase" — re-read here as a demonstrated invariant-1 violation, not a defensible interpretation. Fixed structurally in `src/dagwalk.ts` (`advanceUnit`'s `startAuthorized` check now fires for every unit with no artifacts yet, not only ones with `after:`), `src/runner.ts` (`walkUnit` raises the `start` gate unconditionally at flow position zero, `after:` unmet still makes a unit invisible first), and `src/board/derive.ts` (`openGates` renders a start-gate card for any no-artifact active unit). `tests/security-audit.test.ts`'s xfail for this surface now passes as a real prevention test (renamed, `test.failing` → `test`); `tests/daemon.test.ts` case (b) is rewritten into two tests — a no-`after:` unit raises a start gate and is never auto-started, and once the Conductor resolves it the daemon advances the unit normally on later ticks, with no further authorization needed for subsequent steps. `src/replay.ts`'s golden/exhaustion scripts gained a leading `{ expect: "start", verb: "start" }` decision for `checkout-flow` (which has no `after:`); `fixtures/golden/expected.json` needed no change — the extra gate doesn't alter final artifact statuses, only the transcript.
+
 # NOTES — uncertainties and assumptions (Phase 3)
 
 Phase-3 delivers the adapters, context assembly, §10 receipts, guardrails, and doctor. These entries
@@ -982,6 +984,27 @@ acceptance criterion asks for and that risks a live `levare serve` silently maki
 calls from existing phase-4/5/6 tests that assumed a deterministic stub. Wiring
 `createSdkNativeBoundary` behind the same key-presence selection as the Orchestrator boundary is the
 natural next step whenever a phase actually exercises live member invocation end to end.
+
+**Update (security audit, `docs/security-audit.md`) — two BLOCKING PREREQUISITES for closing this
+deferral, not ordinary notes.** The audit found both latent (Medium) because K5 keeps the native
+boundary out of every reachable call site — but they arm the moment it is wired in, so whichever future
+phase closes K5 must resolve both *before* that phase can be called done, not as follow-up hardening:
+
+1. **The native SDK member boundary does not apply the connector allowlist (Surface 3).** Member env is
+   supposed to be a strict allowlist (`buildMemberEnv`, invariant 11, D5) — but `createSdkNativeBoundary`
+   drives members through `sdk-transport.ts`'s `hermeticSpawnEnv()`, which spreads the **full launching
+   `process.env`** into the worker, not `buildMemberEnv`. The moment K5 is closed, a native SDK member
+   would inherit the Orchestrator's `ANTHROPIC_API_KEY` and every other ambient secret, bypassing the
+   allowlist entirely. **Prerequisite:** route native/CLI member spawns through `buildMemberEnv`, not
+   `process.env`, before any live path can reach `createSdkNativeBoundary`.
+2. **A vendored agent definition can self-grant tools and connectors with no enforcement (Surface 8).**
+   The vendoring ritual is a human "read it, commit it, stamp provenance" process with no code-level
+   check: a hostile/careless agent definition can grant itself a connector via its own `connectors:`
+   field (unioned with the team's grants), and `createSdkNativeBoundary` passes a definition's declared
+   `tools:` straight through to `Options.tools`/`allowedTools` (K6) with no bound — a vendored agent
+   declaring `tools: [Bash]` gets shell. **Prerequisite:** validate a vendored agent's declared tools
+   against a permitted set, and prevent a definition from self-granting a connector the Conductor didn't
+   explicitly intend, before K5's boundary is wired into any live path.
 
 ## K6. Member tool-name vocabulary is passed through as-is; no SDK built-in tool-name mapping is invented
 
@@ -2071,6 +2094,13 @@ request that resolved the gate — by the time any walker looks again, it's alre
 correctly with zero extra code.
 
 ## O3. A plain unit with no `after:` is walkable from the moment it's declared — no separate "start" nod
+**Superseded by ruling C8 (see the Rulings section above).** The security audit (`docs/security-audit.md`,
+Surface 5/1) demonstrated this reading as a real invariant-1 hole, not a defensible interpretation: a
+hand-written or injected `unit.md` with no `after:` caused `Daemon.tick()` to invoke a real member with
+no Conductor approval anywhere in its causal chain. C8 rules the opposite: EVERY unit's first flow step
+raises a start gate, `after:` or not. The reasoning this entry originally recorded is kept below,
+unedited, as the record of what was tried and why it turned out wrong — not as current behavior.
+
 PRD §6's DAG-walk rule has no carve-out for "the very first kind" — only `after:` makes a unit
 "invisible to the walk." Read literally, a freshly-declared active unit with `product-brief`'s
 `consumes: []` (trivially satisfied) is producible the instant the unit exists. Read against invariant 1
@@ -2084,6 +2114,15 @@ draws the `after:`/no-`after:` distinction deliberately and only gates the forme
 described as a "start-gate condition" specifically — implying units WITHOUT one have no start gate to
 speak of, by design, not by oversight. Tested directly (`tests/daemon.test.ts`, case b): a
 freshly-declared unit gets its first kind produced on the very next tick, no further click.
+
+**What this reading missed**, per the audit: §12's own non-goals list ("No autostart — a future
+per-unit `autostart: true` opt-in is permitted by the invariants but out of scope") and §5's own
+parenthetical on `after:` ("start-gate condition — never autostart") both read, together, as leaning
+firmly toward the strict interpretation — a signal this entry's literal-§6 argument didn't weigh heavily
+enough against reading (a) alone. "The Conductor authored the unit.md" is also not reliably true the
+moment the threat model (per the audit brief) grants an adversary "the contents of any file in the
+studio repo" — a member escaping its unit, a prompt-injected Orchestrator, a merged PR, or a vendored
+skill's file write can all produce a `unit.md` with none of them being the Conductor.
 
 ## O4. Concurrency safety: a single-threaded work queue (deliverable e), and what it actually guards
 against

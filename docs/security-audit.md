@@ -8,21 +8,24 @@ phases 7–8 created (prompt injection into the Orchestrator; the daemon's unatt
 test (`tests/security-audit.test.ts`), not an opinion; fix structurally, not advisorily; never loosen
 a test to pass. Deferred findings requiring a Conductor ruling are left as `test.failing` (xfail).
 
-**Bottom line.** Two **Critical** holes were found in the write surface and are **fixed** here: any web
+**Bottom line.** Three findings are now **fixed**: two **Critical** holes in the write surface — any web
 page open in the operator's browser could forge Conductor approvals and start members (CSRF), and the
-registry edit route could plant an executable `.git` hook anywhere under the studio root. Two further
-findings (**High**) are real, demonstrated, and **deferred to a Conductor ruling** with expected-to-fail
-tests left in place: the daemon autostarts any hand-written active unit with no approval in its causal
-chain, and an approved artifact can be tampered with in a later commit without `validate` noticing.
-Several latent findings are gated behind the not-yet-wired native SDK member boundary (K5).
+registry edit route could plant an executable `.git` hook anywhere under the studio root — plus the
+**High** daemon-autostart hole, closed by Conductor ruling C8 (`NOTES.md`): the daemon autostarted any
+hand-written active unit with no approval in its causal chain; every unit's first flow step now raises a
+start gate regardless of `after:`, with no auto-start path. One further **High** finding remains
+**deferred to a known gap**: an approved artifact can be tampered with in a later commit without
+`validate` noticing (A7). Two Medium findings are latent, gated behind the not-yet-wired native SDK
+member boundary (K5) — and are now recorded in `NOTES.md` as **blocking prerequisites** for whichever
+future phase wires that boundary into a live path, not as ordinary follow-up notes.
 
 | # | Surface | Severity | Status |
 |---|---------|----------|--------|
 | 6 | CSRF on the three write routes | **Critical** | Fixed |
 | 4/6 | Registry route escapes its namespace (`.git/hooks`) | **Critical** | Fixed |
-| 5/1 | Daemon autostarts a unit with no approval | **High** | Deferred — Conductor ruling |
+| 5/1 | Daemon autostarts a unit with no approval | **High** | **Fixed — ruling C8** |
 | 7/10 | Approved artifact mutable via a later commit (A7) | **High** | Deferred — known gap |
-| 3/8 | Native SDK member inherits full env + tools | Medium | Latent (native boundary unwired, K5) |
+| 3/8 | Native SDK member inherits full env + tools | Medium | Latent — blocking prerequisite for K5 wiring |
 | 6 | No request-body size limit on write routes | Low | Hardening — noted |
 | 10 | `approved_by` has no identity binding (no auth) | Low | Inherent to no-auth model (non-goal) |
 
@@ -154,30 +157,37 @@ real path-injection and is fixed under Surface 6.
 **Tried.** Can the daemon invoke a member without a Conductor approval in its causal chain — via a
 hand-written `unit.md`, a manipulated `after:`, a superseded artifact, a crafted flow, or a race?
 
-**FINDING (HIGH, DEFERRED — CONDUCTOR RULING REQUIRED).** **The daemon autostarts any `active` unit
-that has no `after:` and no artifacts yet, invoking its first member with no gate and no click.**
-`advanceUnit` (`src/dagwalk.ts`) only demands explicit `startAuthorized` for units that *have* an
-`after:` and no artifacts; a plain no-`after:` active unit is producible the instant it exists, and the
-daemon (which never sets `startAuthorized`) produces its first kind on the very next tick. Demonstrated
-against the real `Daemon.tick()`: an injected `work/storefront/injected-unit/unit.md`
-(`status: active`, no `after:`) causes `wren:product-brief` to be invoked with nothing but the file's
-existence as "intent". On a live `levare serve` this spends money and runs the SDK unattended.
+**FINDING (HIGH, FIXED — ruling C8).** **The daemon autostarted any `active` unit that had no `after:`
+and no artifacts yet, invoking its first member with no gate and no click.** `advanceUnit`
+(`src/dagwalk.ts`) only demanded explicit `startAuthorized` for units that *had* an `after:` and no
+artifacts; a plain no-`after:` active unit was producible the instant it existed, and the daemon (which
+never sets `startAuthorized`) produced its first kind on the very next tick. Demonstrated against the
+real `Daemon.tick()`: an injected `work/storefront/injected-unit/unit.md` (`status: active`, no
+`after:`) caused `wren:product-brief` to be invoked with nothing but the file's existence as "intent".
+On a live `levare serve` this would spend money and run the SDK unattended.
 
-The only thing between "a `unit.md` appears on disk" and "a member runs unattended" is that the file is
-`active` and lacks `after:`. Any **non-Conductor** write into `work/` reaches that trigger: a member
-escaping its unit directory, a prompt-injected Orchestrator, a merged PR, a vendored skill's file write.
-The threat model explicitly grants the adversary "the contents of any file in the studio repo," so this
-is a genuine invariant-1 exposure.
+The only thing standing between "a `unit.md` appears on disk" and "a member runs unattended" was that
+the file was `active` and lacked `after:`. Any **non-Conductor** write into `work/` reached that
+trigger: a member escaping its unit directory, a prompt-injected Orchestrator, a merged PR, a vendored
+skill's file write. The threat model explicitly grants the adversary "the contents of any file in the
+studio repo," so this was a genuine invariant-1 exposure.
 
-**Why deferred, not fixed here.** NOTES **O3** records this as "the single most debatable call in this
-phase" and *deliberately* took the loose reading (the Conductor authoring/committing `unit.md` is itself
-the causal-chain intent). The secure reading — require explicit start authorization for **every** unit's
-first production, not only `after:` ones — is a PRD-level policy change (it changes what "start" means
-for all units), which the brief says to leave to the Conductor rather than decide unilaterally.
-**Demonstrating test:** `tests/security-audit.test.ts` → `[surface 5/1 · HIGH · DEFERRED …] EXPECTED-TO-FAIL:
-daemon must NOT invoke a member for an injected active/no-after unit …` (xfail; flips to a real failure
-if the gap is ever closed). **Recommended ruling:** treat a unit's first production as a start gate
-regardless of `after:`, so `unit.md` existence raises a gate rather than authorizing a spawn.
+**Ruling and fix.** NOTES **O3** recorded this as "the single most debatable call in this phase" and
+*deliberately* took the loose reading (the Conductor authoring/committing `unit.md` is itself the
+causal-chain intent). This finding demonstrated that reading as a real invariant-1 violation, not a
+defensible interpretation, and combined with the CSRF hole (Surface 6, fixed above) it was one step from
+remote unattended spend. The Conductor's ruling (**C8**, `NOTES.md`): every work unit's first flow step
+raises a start gate, regardless of type, regardless of `after:` — there is no auto-start path; `after:`
+remains only a precondition on when the gate may be raised, never a licence to begin work. Fixed
+structurally in `src/dagwalk.ts` (`advanceUnit`'s `startAuthorized` check now fires for any unit with no
+artifacts yet, not only ones with `after:`), `src/runner.ts` (`walkUnit` raises the `start` gate
+unconditionally at flow position zero), and `src/board/derive.ts` (`openGates` renders a start-gate card
+for any no-artifact active unit, not only `after:`-bearing ones). **Test:**
+`tests/security-audit.test.ts` → `[surface 5/1 · HIGH · FIXED — ruling C8] PREVENTED: daemon must NOT
+invoke a member for an injected active/no-after unit …` — the former xfail now passes as a real
+prevention test. `tests/daemon.test.ts` case (b) asserts both halves directly: a no-`after:` unit raises
+a start gate and is never auto-started across repeated ticks, and once the Conductor resolves it the
+daemon advances the unit normally on later ticks with no further authorization needed.
 
 **What held.** The `after:`-gated path is solid: a unit with a satisfied `after:` and no artifacts
 returns `halted: "start gate open; awaiting Conductor"` unless `startAuthorized` (only board `doStart`,
@@ -370,13 +380,26 @@ human. The CSRF fix is what keeps "human-surface" from meaning "any website."
 `bun test` → 375 pass / 1 skip / 0 fail (the 2 xfail count as passing expected-failures).
 `bun run deps:check` → deps ok.
 
+## Follow-up (ruling C8) — Surface 5/1 closed
+
+The Conductor's ruling on open item 1 below (yes — every unit's first production requires an explicit
+start gate regardless of `after:`) is implemented as **C8** (`NOTES.md`), superseding NOTES O3. Fixed in
+`src/dagwalk.ts`, `src/runner.ts`, and `src/board/derive.ts` (see Surface 5's updated finding above and
+NOTES.md's C8 entry for the full mechanics); `tests/security-audit.test.ts`'s Surface 5/1 test is no
+longer `test.failing` — it passes as a real prevention test. `docs/levare-prd.md` §2 invariant 1 and §6
+are amended to state the rule plainly.
+
+`bun test` → 376 pass / 1 skip / 0 fail (one fewer xfail than the original audit branch; the remaining
+xfail is A7, still deferred below). `bun run deps:check` → deps ok.
+
 ## Open items for the Conductor
 
-1. **Ruling — daemon start semantics (Surface 5, High).** Should a unit's first production require an
-   explicit start gate regardless of `after:`? The audit's position: yes — `unit.md` existence should
-   *raise a gate*, not authorize a spawn, closing the invariant-1 exposure. Xfail test in place.
+1. ~~**Ruling — daemon start semantics (Surface 5, High).**~~ **Resolved — ruling C8.** Every unit's
+   first production requires an explicit start gate regardless of `after:`; `unit.md` existence raises
+   a gate, never authorizes a spawn. See the Follow-up section above.
 2. **A7 (Surface 7/10, High).** Record each artifact's approval commit ref so the immutability check
    diffs against it, closing the committed-mutation gap. Xfail test in place.
-3. **K5 wiring guardrails (Surfaces 3/8, Medium).** When the native SDK member boundary goes live, route
-   its spawn env through `buildMemberEnv` (not `process.env`) and bound a vendored agent's `tools:`.
+3. **K5 wiring guardrails (Surfaces 3/8, Medium) — now recorded in NOTES.md as blocking prerequisites,
+   not ordinary notes.** When the native SDK member boundary goes live, that phase is not done until it
+   routes spawn env through `buildMemberEnv` (not `process.env`) and bounds a vendored agent's `tools:`.
 4. **Hardening (Surface 9, Low).** Add a request-body size cap to the write routes.

@@ -19,7 +19,7 @@ All state is markdown files with YAML frontmatter in a git repository. The UI is
 
 These hold across every phase and every future feature. A change that breaks one is a PRD amendment, not an implementation decision.
 
-1. **No member process ever starts without a Conductor approval in its causal chain.** Start gates let that approval be prompted rather than remembered, but never replaced. External events (issues, schedules, `after:` conditions) may only *raise gates*.
+1. **No member process ever starts without a Conductor approval in its causal chain.** Start gates let that approval be prompted rather than remembered, but never replaced. External events (issues, schedules, `after:` conditions) may only *raise gates*. **Every work unit's first flow step raises a start gate, regardless of type, regardless of `after:` (ruling C8) — there is no auto-start path.** A unit's own existence — hand-written, committed, or otherwise appearing on disk — is never itself consent; `after:` is only ever a precondition on when the gate may be raised, never a licence to begin work once satisfied or absent.
 2. **Files are the truth.** Every entity — team, agent, skill, type, project, work unit, artifact, connector, knowledge, eval — is a markdown file with frontmatter. Git is the audit log. The binary holds no state that cannot be reconstructed by re-reading the repo.
 3. **Artifacts are immutable once approved.** Changes produce a new artifact that `supersedes:` the old id. Lineage is never rewritten.
 4. **Only the Conductor sets `approved_by`.** Members and the Orchestrator may move an artifact `draft → in-review` or `→ blocked`; nothing else.
@@ -90,7 +90,7 @@ Rules the validator enforces: required fields present and typed; `status` in the
 
 Deterministic, target ≤ ~500 lines excluding tests. Responsibilities:
 
-**DAG walk.** On any change under `work/` (or on demand): for each active unit, find kinds that some team `produces`, that don't yet exist, and whose `consumes` are all approved → execute that team's flow. Units with unmet `after:` are invisible to the walk; when an `after:` condition becomes satisfied, raise a **start gate** (verbs: start / not-yet / re-scope) — mechanically a gate at flow position zero. `pace: step` pauses for a nod before each team invocation.
+**DAG walk.** On any change under `work/` (or on demand): for each active unit, find kinds that some team `produces`, that don't yet exist, and whose `consumes` are all approved → execute that team's flow. Units with unmet `after:` are invisible to the walk. **Every unit's first production — `after:` or not — raises a start gate** (verbs: start / not-yet / re-scope) at flow position zero before the walk executes a single member (ruling C8); an `after:` condition becoming satisfied is what makes that gate reachable for a unit that has one, never a substitute for raising it. `pace: step` pauses for a nod before each subsequent team invocation.
 
 **Flow execution.** Steps run sequentially; `gate: human` halts the walk and surfaces the gate; `loop` alternates its members until the `until` condition, `max_rounds`, then `on_exhaust`. `blocked` artifacts halt like gates. Timeouts and timeboxes kill member processes and mark the step for escalation.
 
