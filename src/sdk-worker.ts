@@ -2,8 +2,12 @@
 // real Claude Agent SDK query to completion and prints its outcome as a single line of JSON on
 // stdout — the actual async/await boundary lives in this separate process, so the caller can block
 // on it with a plain `Bun.spawnSync` the same way adapters.ts's `bunSpawn` already blocks on the
-// "cli" agent kind. Never logs or persists `ANTHROPIC_API_KEY`: the key is read only implicitly, by
-// the SDK itself, from this process's own environment (invariant 11) — this file never touches it.
+// "cli" agent kind. Never logs or persists `ANTHROPIC_API_KEY`: this file never reads the key's
+// value — it only spreads its own already-scoped `process.env` (set by the parent's `Bun.spawnSync`
+// call, per sdk-transport.ts's env-trust-boundary note) into the SDK's own `options.env`, explicitly
+// rather than relying on the SDK's documented "omitted env inherits process.env" default — being
+// explicit here removes any doubt that the credential the launching process was granted actually
+// reaches the inner `claude` CLI subprocess the SDK itself spawns (invariant 11).
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SdkWorkerRequest, SdkWorkerResponse } from "./sdk-transport.ts";
@@ -38,6 +42,10 @@ async function main(): Promise<void> {
         cwd: req.cwd,
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
+        // Explicit, not omitted: spread this process's own env (already scoped by the parent spawn,
+        // per sdk-transport.ts's env-trust-boundary note) so the SDK's inner `claude` subprocess is
+        // guaranteed the same credentials this worker itself was launched with.
+        env: { ...process.env },
       },
     })) {
       if (message.type === "result") {
@@ -46,7 +54,8 @@ async function main(): Promise<void> {
           resultText = message.result;
           structuredOutput = message.structured_output;
         } else {
-          failure = `sdk query did not succeed (${message.subtype})`;
+          const errs = "errors" in message && Array.isArray(message.errors) ? message.errors.join("; ") : undefined;
+          failure = `sdk query did not succeed (${message.subtype})${errs ? `: ${errs}` : ""}`;
         }
       }
     }

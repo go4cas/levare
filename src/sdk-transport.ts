@@ -1,21 +1,46 @@
-// levare SDK transport (phase 7, closing invariant-10's "mocked this phase" deferral). The two
-// boundary interfaces this repo already has — `OrchestratorBoundary` (orchestrator.ts) and
-// `NativeBoundary` (adapters.ts) — are both synchronous by design (dispatch, gate resolution, and
-// repo operations all assume a synchronous member/boundary call, per phase 5/3). The real Claude
-// Agent SDK is inherently asynchronous: its `query()` spawns and streams from a `claude` CLI
-// subprocess (confirmed from the SDK's own shipped README — see the `bun build --compile` section on
-// `pathToClaudeCodeExecutable`). Rather than thread async through the Runner/board/gateops call
-// chain — a change the phase directive explicitly warns against ("back the two boundaries behind
-// their existing interfaces... if you find yourself editing orchestrator.ts's dispatch to
-// accommodate the SDK, stop and reconsider the boundary instead") — a small standalone worker script
-// (`sdk-worker.ts`) makes the one real async `query()` call and prints its outcome as a single line
-// of JSON on stdout. This module spawns that worker SYNCHRONOUSLY via `Bun.spawnSync`, exactly the
-// pattern `adapters.ts`'s `CliSpawn`/`bunSpawn` already uses for the "cli" agent kind.
+// levare SDK transport (phase 7, closing invariant-10's "mocked this phase" deferral). Both real
+// implementations spawn a small standalone worker script (`sdk-worker.ts`) that makes the one real
+// async `query()` call (the SDK itself is inherently async — it spawns and streams from a `claude`
+// CLI subprocess, confirmed from the SDK's own shipped README) and prints its outcome as a single
+// line of JSON on stdout. This module has TWO ways of spawning that worker, for two different trust
+// levels of caller:
 //
-// This is also the literal "transport level" the goal asks tests to mock at: `SdkTransport` is
-// injectable exactly like `CliSpawn` (adapters.test.ts already establishes the pattern of injecting
-// a fake spawn and asserting the argv/env it was handed), so `bun test` never spawns the worker,
+//   `SdkTransport`      — SYNCHRONOUS, via `Bun.spawnSync`, exactly the pattern `adapters.ts`'s
+//                          `CliSpawn`/`bunSpawn` already uses for the "cli" agent kind. Used ONLY by
+//                          `NativeBoundary` (adapters.ts), which is not reachable from any live
+//                          `levare serve` request path today (NOTES K5) — nothing yet calls it from
+//                          inside `Bun.serve`'s single-threaded request handler.
+//   `AsyncSdkTransport` — genuinely non-blocking, via `Bun.spawn` + `await`. Used by
+//                          `OrchestratorBoundary` (orchestrator-boundary.ts), which IS wired into
+//                          `board/serve.ts`'s `/orchestrator/message` route.
+//
+// The distinction is load-bearing, not stylistic (NOTES phase-7 K9, a live-gate fix-up): a live run
+// with a real key showed `Bun.spawnSync` freezing the ENTIRE server — not just the in-flight request,
+// but concurrent unrelated ones too (`GET /styles.css`, a plain static-file read with no SDK
+// involvement, timed out while an `/orchestrator/message` call was in flight). Bun's server runs on
+// one JS thread; a blocking synchronous spawn call freezes that thread — and therefore every
+// concurrent connection — for as long as the child process runs, exactly like any other synchronous
+// blocking call would. `Bun.spawn` (async) does not: the OS-level wait happens off-thread, and
+// `await`ing its exit yields the event loop back to Bun.serve for the duration.
+//
+// This is also the literal "transport level" the goal asks tests to mock at: both interfaces are
+// injectable exactly like `CliSpawn` (adapters.test.ts already establishes the pattern of injecting a
+// fake spawn and asserting the argv/env it was handed), so `bun test` never spawns a real worker,
 // never touches the network, and never needs `ANTHROPIC_API_KEY`.
+//
+// Env trust boundary (phase-7 live-gate fix-up, NOTES K8): env.ts's allowlist-only scoping
+// (`buildMemberEnv`) is correct for a MEMBER's spawned process — a member is a granted, scoped
+// participant and must see nothing beyond PATH/HOME plus its own connectors' vars. The worker this
+// module spawns is NOT a member; it is levare's own Orchestrator, running with the same trust level
+// as the process that launched `levare` itself. It must inherit the FULL launching environment
+// (including whatever credential — `ANTHROPIC_API_KEY`, an OAuth profile env var, AWS/GCP creds for
+// a third-party backend — the SDK needs to authenticate), not an allowlisted subset. Every caller of
+// `bunSdkTransport`/`createBunSdkTransport` in this repo therefore passes the FULL environment
+// (`process.env`, unscoped) as `opts.env` — see orchestrator-boundary.ts's `createSdkOrchestratorBoundary`,
+// whose default is exactly `process.env`. `createSdkNativeBoundary` (adapters.ts) is the one caller
+// that scopes `env` — for a *member* invocation, correctly, per invariant 11 — and it explicitly adds
+// `ANTHROPIC_API_KEY` back on top of that scoped set for the same reason: the platform credential is
+// not a connector grant, but the SDK call still needs it regardless of what the member was granted.
 
 import { existsSync } from "node:fs";
 
@@ -35,12 +60,23 @@ export interface SdkWorkerRequest {
 
 export type SdkWorkerResponse = { ok: true; result: string; structuredOutput?: unknown } | { ok: false; error: string };
 
-/** The transport boundary: run one SDK request to completion and return its final outcome. */
+/** The synchronous transport boundary (adapters.ts's NativeBoundary only — see the module note above
+ * for why this must never be called from a `levare serve` request path). */
 export interface SdkTransport {
   run(req: SdkWorkerRequest, opts: { env: Record<string, string | undefined>; timeoutMs: number }): SdkWorkerResponse;
 }
 
-export const SDK_WORKER_PATH = new URL("./sdk-worker.ts", import.meta.url).pathname;
+/** The non-blocking transport boundary (orchestrator-boundary.ts — the one reachable from
+ * `levare serve`'s request path). Same request/response shape as `SdkTransport`, Promise-returning. */
+export interface AsyncSdkTransport {
+  run(req: SdkWorkerRequest, opts: { env: Record<string, string | undefined>; timeoutMs: number }): Promise<SdkWorkerResponse>;
+}
+
+// `Bun.fileURLToPath` (not raw `URL.pathname`), matching the pattern already established in
+// adapters.test.ts for spawning a real subprocess against a `file://`-resolved script path — a raw
+// `.pathname` can carry percent-encoded characters (spaces, unicode) that a literal argv element
+// spawned with no shell will not decode, which `fileURLToPath` handles correctly.
+export const SDK_WORKER_PATH = Bun.fileURLToPath(new URL("./sdk-worker.ts", import.meta.url));
 
 /**
  * Whether the environment carries credentials the SDK can authenticate with — presence only, the
@@ -54,29 +90,99 @@ export function hasAnthropicCredentials(env: Record<string, string | undefined> 
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 
-/** Default transport: a real, synchronous spawn of the worker script, which makes the real SDK call. */
-export const bunSdkTransport: SdkTransport = {
-  run(req, opts) {
-    if (!existsSync(SDK_WORKER_PATH)) {
-      return { ok: false, error: `sdk worker script not found at ${SDK_WORKER_PATH}` };
-    }
-    const proc = Bun.spawnSync([process.execPath, SDK_WORKER_PATH], {
-      env: opts.env as Record<string, string>,
-      stdin: Buffer.from(JSON.stringify(req)),
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    });
-    if (proc.exitedDueToTimeout) return { ok: false, error: `sdk worker timed out after ${opts.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms` };
-    const stdout = proc.stdout ? new TextDecoder().decode(proc.stdout).trim() : "";
-    if (proc.exitCode !== 0) {
-      const stderr = proc.stderr ? new TextDecoder().decode(proc.stderr).trim() : "";
-      return { ok: false, error: `sdk worker exited ${proc.exitCode}: ${stderr || stdout || "(no output)"}` };
-    }
-    try {
-      return JSON.parse(stdout) as SdkWorkerResponse;
-    } catch {
-      return { ok: false, error: `sdk worker produced non-JSON output: ${stdout.slice(0, 200)}` };
-    }
-  },
-};
+// Drop undefined-valued entries before handing an env record to Bun.spawnSync: process.env's TS type
+// allows `string | undefined` per key, and a literal `undefined` value serialized into a child's
+// environment block is exactly the kind of quiet, hard-to-diagnose corruption this transport must
+// not risk — every real value (including ANTHROPIC_API_KEY, when present) is passed through exactly
+// as given; nothing is filtered by name (that would be the allowlist model, wrong for this seam).
+function definedEnv(env: Record<string, string | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) if (typeof v === "string") out[k] = v;
+  return out;
+}
+
+/** A transport that spawns `workerPath` synchronously and blocks on it — the default (`bunSdkTransport`)
+ * points at the real `sdk-worker.ts`; tests can point another instance at a bogus path to exercise a
+ * genuine, network-free, deterministic transport failure (see tests/orchestrator-sdk.test.ts). */
+export function createBunSdkTransport(workerPath: string = SDK_WORKER_PATH): SdkTransport {
+  return {
+    run(req, opts) {
+      if (!existsSync(workerPath)) {
+        return { ok: false, error: `sdk worker script not found at ${workerPath}` };
+      }
+      const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      const proc = Bun.spawnSync([process.execPath, workerPath], {
+        env: definedEnv(opts.env),
+        stdin: Buffer.from(JSON.stringify(req)),
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: timeoutMs,
+      });
+      if (proc.exitedDueToTimeout) return { ok: false, error: `sdk worker timed out after ${timeoutMs}ms` };
+      const stdout = proc.stdout ? new TextDecoder().decode(proc.stdout).trim() : "";
+      if (proc.exitCode !== 0) {
+        const stderr = proc.stderr ? new TextDecoder().decode(proc.stderr).trim() : "";
+        return { ok: false, error: `sdk worker exited ${proc.exitCode}: ${stderr || stdout || "(no output)"}` };
+      }
+      try {
+        return JSON.parse(stdout) as SdkWorkerResponse;
+      } catch {
+        return { ok: false, error: `sdk worker produced non-JSON output: ${stdout.slice(0, 200)}` };
+      }
+    },
+  };
+}
+
+/** Default transport: a real, synchronous spawn of the real worker script, which makes the real SDK call. */
+export const bunSdkTransport: SdkTransport = createBunSdkTransport();
+
+/**
+ * A transport that spawns `workerPath` via `Bun.spawn` (non-blocking) and awaits it — the async
+ * counterpart to `createBunSdkTransport` above, used wherever the caller may be servicing concurrent
+ * requests (today: only `OrchestratorBoundary`, wired into `board/serve.ts`). The timeout is enforced
+ * explicitly (a `setTimeout` that kills the child) rather than relying on `Bun.spawn`'s own `timeout`
+ * option, whose `exitedDueToTimeout` signal is documented for `spawnSync` but was NOT observed to be
+ * populated for async `spawn` in this Bun version — an explicit flag is unambiguous either way.
+ */
+export function createAsyncSdkTransport(workerPath: string = SDK_WORKER_PATH): AsyncSdkTransport {
+  return {
+    async run(req, opts) {
+      if (!existsSync(workerPath)) {
+        return { ok: false, error: `sdk worker script not found at ${workerPath}` };
+      }
+      const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      const proc = Bun.spawn([process.execPath, workerPath], {
+        env: definedEnv(opts.env),
+        stdin: Buffer.from(JSON.stringify(req)),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        proc.kill();
+      }, timeoutMs);
+      try {
+        const [stdout, stderr] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+          proc.exited,
+        ]);
+        if (timedOut) return { ok: false, error: `sdk worker timed out after ${timeoutMs}ms` };
+        if (proc.exitCode !== 0) {
+          return { ok: false, error: `sdk worker exited ${proc.exitCode}: ${stderr.trim() || stdout.trim() || "(no output)"}` };
+        }
+        try {
+          return JSON.parse(stdout.trim()) as SdkWorkerResponse;
+        } catch {
+          return { ok: false, error: `sdk worker produced non-JSON output: ${stdout.trim().slice(0, 200)}` };
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
+}
+
+/** Default async transport: a real, non-blocking spawn of the real worker script. */
+export const asyncSdkTransport: AsyncSdkTransport = createAsyncSdkTransport();
