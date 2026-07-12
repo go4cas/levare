@@ -504,9 +504,14 @@ describe("the rail is identical navigation on every screen", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Gate-review round 2, item 1 (breadcrumbs): studio / <project> / <unit> / <artifact>, each segment a
-// link (except the current page's own segment), always in the same place — inside .phead, immediately
-// before the <h1>.
+// The breadcrumb rule (gate-review round 3, item 2 — stated once here, applied everywhere): a
+// breadcrumb renders one segment per REAL, LINKABLE page between studio and the current page, each
+// one a link except the last (the current page, rendered as plain — or mono, for a filesystem-truth
+// token — text, never a link to itself). No synthetic or non-navigable category label is ever
+// inserted as a segment — an idea has no project to nest under and no `/ideas` listing route, so its
+// crumb is `studio / <name>`, the same two-segment shape as a project's `studio / <project>`, not the
+// three-segment `studio / ideas / <name>` a prior round rendered ("ideas" pointed nowhere). Always in
+// the same place — inside .phead, immediately before the <h1>.
 // ---------------------------------------------------------------------------
 
 describe("breadcrumbs are consistent across all screens", () => {
@@ -534,6 +539,37 @@ describe("breadcrumbs are consistent across all screens", () => {
 
   test("registry: studio(link) / registry(current)", () => {
     expect(renderRegistry(repo, root)).toContain('<div class="crumb"><a href="/studio">studio</a><span>/</span><span>registry</span></div>');
+  });
+
+  // Idea has no project to nest under and no real `/ideas` route — its crumb is two segments
+  // (studio/link, name/current), the same shape as a project's, never a fake "ideas" middle segment.
+  test("idea: studio(link) / name(current, mono) — no synthetic 'ideas' segment", () => {
+    const html = renderIdea(repo, root, "loyalty-program");
+    expect(html).toContain('<div class="crumb"><a href="/studio">studio</a><span>/</span><span class="mono">loyalty-program</span></div>');
+    expect(html).not.toContain(">ideas<");
+  });
+
+  test("every breadcrumb segment is either a link or the final (current-page) segment — never a bare non-linkable middle segment", () => {
+    const screens = [
+      renderStudio(repo, root, now),
+      renderProject(repo, "storefront", root, now),
+      renderRun(repo, "storefront", "checkout-flow", root, now),
+      renderRegistry(repo, root),
+      renderArtifact(repo, "storefront", "checkout-flow", "spec-checkout-flow-v1", root, now),
+      renderIdea(repo, root, "loyalty-program"),
+    ];
+    for (const html of screens) {
+      const crumbMatch = /<div class="crumb">([\s\S]*?)<\/div>/.exec(html);
+      expect(crumbMatch).not.toBeNull();
+      // Every top-level child of .crumb is either <a ...>text</a>, <span>/</span> (a separator), or
+      // the one trailing <span> (current page — plain or mono). Strip separators and the trailing
+      // segment; everything left must be an <a>.
+      const withoutSeparators = crumbMatch![1].replace(/<span>\/<\/span>/g, "");
+      const segments = [...withoutSeparators.matchAll(/<a [^>]*>[^<]*<\/a>|<span[^>]*>[^<]*<\/span>/g)].map((m) => m[0]);
+      expect(segments.length).toBeGreaterThan(0);
+      // Every segment except the last must be a real link.
+      for (const seg of segments.slice(0, -1)) expect(seg.startsWith("<a ")).toBe(true);
+    }
   });
 
   test("every screen's breadcrumb sits in the same place — inside .phead, immediately before the h1", () => {
@@ -612,5 +648,33 @@ describe("registry cards are gridded, not one-per-row", () => {
       expect(railHtml).toContain(`data-goto="${k}"`);
       expect(tabHtml).toContain(`data-goto="${k}"`);
     }
+  });
+
+  // Gate-review round 3, item 3: the kind chip and the Edit-source action row weren't on consistent
+  // baselines. Fix: the kind badge (.entity__kind) right-aligns on the header line (matching every
+  // other card's label-left/status-right anatomy), and the actions row (.editbar) pins to the card's
+  // bottom edge regardless of that entity's own content height.
+  describe("registry card header/actions alignment", () => {
+    const css = readFileSync("assets/styles.css", "utf8");
+
+    test(".entity__kind right-aligns on the header line", () => {
+      expect(css).toMatch(/\.entity__kind\{[^}]*margin-left:auto/);
+    });
+
+    test(".editbar pins to the bottom of the card regardless of the entity's own content height", () => {
+      expect(css).toMatch(/\.rendered\{[^}]*flex:1/);
+      expect(css).toMatch(/\.editbar\{[^}]*margin-top:auto/);
+    });
+
+    test("entity__head puts the title before the (now right-aligned) kind badge, for every entity kind", () => {
+      const html = renderRegistry(repo, root);
+      for (const m of html.matchAll(/<div class="entity__head">([\s\S]*?)<\/div>/g)) {
+        const head = m[1];
+        const titleIdx = head.indexOf('class="entity__title"');
+        const kindIdx = head.indexOf('class="entity__kind"');
+        expect(titleIdx).toBeGreaterThanOrEqual(0);
+        expect(kindIdx).toBeGreaterThan(titleIdx);
+      }
+    });
   });
 });

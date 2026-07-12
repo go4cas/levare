@@ -734,7 +734,7 @@ export function renderIdea(repo: Repo, root: string, name: string): string {
 
   const main = `<main class="main">
     <header class="phead">
-      <div class="crumb"><a href="/studio">studio</a><span>/</span><span>ideas</span><span>/</span><span class="mono">${esc(idea.name)}</span></div>
+      <div class="crumb"><a href="/studio">studio</a><span>/</span><span class="mono">${esc(idea.name)}</span></div>
       <h1>${esc(idea.name)}</h1>
     </header>
     ${frontmatter}

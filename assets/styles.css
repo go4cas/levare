@@ -336,11 +336,16 @@ button{ font-family:inherit; }
 .reg-nav a.is-active{ background:var(--panel-2); color:var(--fg); }
 .reg-nav a .ct{ margin-left:auto; font-size:10.5px; color:var(--fg-mute); }
 .entity{ display:flex; flex-direction:column; gap:14px; }
-.rendered{ display:flex; flex-direction:column; gap:11px; }
+/* flex:1 so a card stretched taller than its content (grid row alignment, .pcards' default
+   align-items:stretch) still puts its actions row at the true bottom edge, not right after its own
+   shorter content — the fix for entity cards of different natural heights sharing a grid row. */
+.rendered{ display:flex; flex-direction:column; gap:11px; flex:1; }
 .entity__head{ display:flex; align-items:center; gap:13px; }
 .entity__title{ font-size:22px; font-weight:600; letter-spacing:-.01em; }
+/* Right-aligned on the header line, matching every other card's label/status-right anatomy in the
+   product (gate cards, unit rows, project cards). */
 .entity__kind{ font-family:var(--mono); font-size:11px; color:var(--fg-mute); border:1px solid var(--border);
-  padding:2px 8px; border-radius:5px; }
+  padding:2px 8px; border-radius:5px; margin-left:auto; }
 .flowstrip{ display:flex; align-items:center; gap:0; flex-wrap:wrap; }
 .flowstrip .m{ display:flex; flex-direction:column; align-items:center; gap:6px; }
 .flowstrip .arr{ color:var(--fg-mute); font-family:var(--mono); margin:0 10px; align-self:flex-start; margin-top:11px; }
@@ -350,7 +355,10 @@ button{ font-family:inherit; }
   border:1px solid var(--border); padding:4px 9px; border-radius:20px; text-decoration:none; }
 .pill:hover{ border-color:var(--border-strong); color:var(--fg); }
 .backlink{ display:flex; align-items:center; gap:8px; padding:5px 0; }
-.editbar{ display:flex; align-items:center; gap:10px; }
+/* margin-top:auto pins this row to the bottom of .rendered's (now flex:1) box, so every entity
+   kind's actions row lands on a consistent baseline regardless of its own content's natural height —
+   the fix for the chip/actions-row misalignment across teams/agents/skills/etc. sharing a grid row. */
+.editbar{ display:flex; align-items:center; gap:10px; margin-top:auto; }
 .togglebtn{ background:var(--panel); border:1px solid var(--border-strong); color:var(--fg-dim);
   padding:6px 12px; border-radius:7px; font-size:12px; font-weight:500; cursor:pointer; font-family:var(--mono); }
 .togglebtn:hover{ color:var(--fg); }
