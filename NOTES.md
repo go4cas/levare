@@ -1329,6 +1329,62 @@ process), so every test in this file resets it in `beforeEach` — the exact kin
 pollution that surfaced the spontaneous-binary-swap finding above in the first place, when an
 unrelated earlier test's cached "not viable" result leaked into this file's own "viable" assertion.
 
+## K14. Live-gate fix-up: stop trusting the SDK's own implicit binary resolution for the REAL call —
+resolve explicitly, once, and pass it in
+
+**Finding.** On the host, with the darwin-arm64 platform package genuinely present as a sibling
+`node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64` package (not a `vendor/` subdirectory), the
+transport still reported "Native CLI binary for darwin-arm64 not found." K13's fast precondition
+probe was doing exactly its job — correctly reporting what it found — but what it found disagreed with
+reality on that host. This is a genuinely different, more serious problem than K13 itself: it means
+`resolveNativeBinary()`'s `require.resolve`-based mechanism (which K13 asserted mirrors the SDK's own
+internal resolution exactly, extracted from the shipped `sdk.mjs`) can disagree with what's actually
+on disk, on at least one host/Bun-version/environment combination.
+
+**Root cause not fully pinned down, but the fix doesn't require pinning it down.** Rather than
+continuing to chase why `require.resolve` (in either our probe or the SDK's own identical-looking
+internal call) fails to find a package that's genuinely there, the correct structural fix — precisely
+what the Conductor's own message pointed at — is to stop relying on ANY implicit resolution for the
+REAL invocation at all. The SDK's `Options.pathToClaudeCodeExecutable` field exists exactly for this:
+"Path to the Claude Code executable. Uses the built-in executable if not specified." When set, the
+SDK's own internal `require.resolve` loop never runs — our explicitly-resolved path is used directly.
+
+**Fix.** `createSdkOrchestratorBoundary` (orchestrator-boundary.ts) now calls `resolveNativeBinary()`
+ONCE at boundary-construction time and includes the result as `pathToClaudeCodeExecutable` on
+*every* `SdkWorkerRequest` it builds (both `interpret()` and `narrate()`) — the worker
+(`sdk-worker.ts`) passes it straight through to `query()`'s own `options.pathToClaudeCodeExecutable`.
+`selectOrchestratorBoundary` goes one step further: it reuses the EXACT `binaryPath` its own
+precondition probe (K13) just resolved (`checkSdkPreconditionsCached` now surfaces `binaryPath` on a
+viable result), rather than letting `createSdkOrchestratorBoundary` re-resolve independently — so "the
+probe says viable" and "the real call uses that binary" are provably the same value, not merely the
+same algorithm run twice. `createSdkNativeBoundary` (adapters.ts) received the identical fix for
+consistency, even though it isn't wired into any live path yet (K5) — the same class of bug would
+apply the moment it is.
+
+**Why this closes the "two different resolution paths" question regardless of root cause.** Before
+this fix, there were, in principle, two `require.resolve` call sites that were SUPPOSED to agree
+(K13's probe, and the SDK's own internal lookup inside the spawned worker) but had no structural
+guarantee of doing so — they were two separate calls, in two separate processes, at two different
+moments, and (per this finding) they evidently CAN disagree on some hosts. After this fix there is
+only ONE resolution call in the entire flow that matters for a real request: `resolveNativeBinary()`,
+called once, whose result is carried by value into the worker and handed to `query()` directly. The
+SDK's own internal resolution logic never executes at all when `pathToClaudeCodeExecutable` is set —
+it is not a second opinion that could disagree, it is simply not consulted. If our own single
+resolution is ever wrong, the SDK will report `pathToClaudeCodeExecutable` as unusable and that error
+is exactly as diagnosable as the "not found" error was, but it can no longer disagree with a probe
+that already said "viable" — the fast-fail path and the real invocation are now, by construction, one
+codepath, not two.
+
+**New coverage.** `tests/orchestrator-sdk.test.ts`: `createSdkOrchestratorBoundary` resolves once and
+sends the identical `pathToClaudeCodeExecutable` on both `interpret()` and `narrate()`; when the
+platform package is genuinely installed (skipped otherwise, via a plain `existsSync`-style probe
+independent of the function under test), the exact resolved path matches `resolveNativeBinary()`'s own
+return value; an explicit override wins over resolution; and `selectOrchestratorBoundary` is asserted
+to reuse the SAME `binaryPath` its own precondition check produced, not a second independent
+resolution. Also added the acceptance criterion's own explicit ask: a `test.skipIf` ground-truth test
+that resolves the real, currently-installed platform binary on whatever host runs the suite, skipping
+cleanly (not failing) when the optional platform package is absent.
+
 ## Learnings
 
 A boundary that must front a fundamentally different concurrency model than its own interface (a
