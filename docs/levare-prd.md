@@ -1,6 +1,6 @@
 # levare — Product Requirements Document
 
-**Version:** 1.0 · 2026-07-11
+**Version:** 1.1 · 2026-07-12 (amendment 1 folded in — see `docs/prd-amendment-1.md` for the historical record of each change)
 **Author:** Cas (the Conductor), with architecture consolidated from design sessions
 **Builder:** Claude Code, staged `/goal` runs under auto mode (run plan is a separate document)
 **Companions:** `levare-design-brief.md` (design law), CD round-3.1 assets (`styles.css`, `app.js`, `studio.html`, `project.html`, `run.html`, `registry.html` — adopted as the board's actual templates and assets, not references), `Levare_Design_System.html` (token and derivation-rule reference).
@@ -19,13 +19,13 @@ All state is markdown files with YAML frontmatter in a git repository. The UI is
 
 These hold across every phase and every future feature. A change that breaks one is a PRD amendment, not an implementation decision.
 
-1. **No member process ever starts without a Conductor approval in its causal chain.** Start gates let that approval be prompted rather than remembered, but never replaced. External events (issues, schedules, `after:` conditions) may only *raise gates*. **Every work unit's first flow step raises a start gate, regardless of type, regardless of `after:` (ruling C8) — there is no auto-start path.** A unit's own existence — hand-written, committed, or otherwise appearing on disk — is never itself consent; `after:` is only ever a precondition on when the gate may be raised, never a licence to begin work once satisfied or absent.
+1. **No member process ever starts without a Conductor approval in its causal chain. Every work unit's first flow step raises a start gate — regardless of type, regardless of `after:`. A unit's existence is not consent (ruling C8).** Start gates let that approval be prompted rather than remembered, but never replaced. There is no auto-start path. External events (issues, schedules, `after:` conditions) may only *raise gates*; `after:` is only ever a precondition on when a start gate is *raised* — a unit's own existence, hand-written, committed, or otherwise appearing on disk, is never a licence to begin work once `after:` is satisfied or absent.
 2. **Files are the truth.** Every entity — team, agent, skill, type, project, work unit, artifact, connector, knowledge, eval — is a markdown file with frontmatter. Git is the audit log. The binary holds no state that cannot be reconstructed by re-reading the repo.
 3. **Artifacts are immutable once approved.** Changes produce a new artifact that `supersedes:` the old id. Lineage is never rewritten.
 4. **Only the Conductor sets `approved_by`.** Members and the Orchestrator may move an artifact `draft → in-review` or `→ blocked`; nothing else.
 5. **`consumes` is a hard dependency.** The DAG is recomputed from frontmatter on every walk; no scheduler state exists to corrupt.
-6. **Code reaches a project's main branch only through the review loop plus a merge gate.** Spike code never merges — promotion means a new feature unit consuming the spike's findings.
-7. **Exactly one LLM orchestrator.** Team-internal sequencing is declarative `flow` data executed by the Runner; `mode: led` is the sole escape hatch, per team, opt-in.
+6. **Code reaches a project's main branch only through the review loop plus a merge gate.** Spike code never merges — promotion means a new feature unit consuming the spike's findings. **[SPECIFIED, NOT IMPLEMENTED — v1.1: the merge phase does not exist yet; levare produces artifacts through gates but does not yet take a branch through a merge gate to `main`, so this invariant has no enforcement point until that phase ships. See `docs/prd-amendment-1.md` §2.]**
+7. **Exactly one LLM orchestrator.** Team-internal sequencing is declarative `flow` data executed by the Runner. There is no escape hatch. (The `mode: led` opt-in from v1.0 was cut — it was never built and no unit needed it; one orchestrator, no second locus of judgment. See `docs/prd-amendment-1.md` §3.)
 8. **Members never communicate laterally.** A member with a question exits `blocked`; the Runner raises it as a gate; the Conductor is the disambiguator.
 9. **The board's write surface is exactly three routes** (§9). Everything else is GET or SSE. A test asserts the route table.
 10. **Zero runtime dependencies except `@anthropic-ai/claude-agent-sdk`.** The rule behind the rule: where a dependency would replace a deliverable (parser, validator, server, renderer), build it; where it would replace a platform (the agent harness), buy it. Dev dependencies are unrestricted.
@@ -58,6 +58,7 @@ produced_by: kestrel/lyra   # team/member, or "conductor"
 consumes: [product-brief-v1, design-checkout-v1]
 supersedes: null            # id of the artifact this replaces, if any
 approved_by: null           # conductor-only; name + ISO date on approval
+approved_commit: null       # conductor-only; commit ref recorded at gate resolution — the immutability baseline (nullable; absent on pre-amendment artifacts)
 created: 2026-07-11
 files: []                   # supplementary files that travel with this index artifact
 usage:                      # §10; nullable fields allowed
@@ -68,13 +69,13 @@ usage:                      # §10; nullable fields allowed
   wall_clock_s: 480
 ```
 
-Rules the validator enforces: required fields present and typed; `status` in the enum; keys under known schema (unknown keys are errors, not warnings); `consumes`/`supersedes` ids resolve to existing artifacts within the project; an approved artifact's file content may not change in a later commit (checked at validation time against git); folder artifacts (design output, code changes) have exactly one markdown index file carrying the frontmatter, with binaries listed in `files:` and verified to exist. Status transitions: `draft → in-review` (member), `in-review → approved | rejected` (Conductor only), `any → superseded` (by a successor's `supersedes`), `draft|in-review → blocked` (member, with questions in the body), `blocked → in-review` (after Conductor input re-invokes the member).
+Rules the validator enforces: required fields present and typed; `status` in the enum; keys under known schema (unknown keys are errors, not warnings); `consumes`/`supersedes` ids resolve to existing artifacts within the project; an approved artifact's file content may not change in a later commit — enforced against git by diffing the artifact against its recorded `approved_commit` ref (excluding the approval-stamp fields), so a committed post-approval edit is caught, not only an uncommitted working-tree edit (closes A7; an approved artifact with no `approved_commit` falls back to the pre-amendment HEAD diff); folder artifacts (design output, code changes) have exactly one markdown index file carrying the frontmatter, with binaries listed in `files:` and verified to exist. Status transitions: `draft → in-review` (member), `in-review → approved | rejected` (Conductor only), `any → superseded` (by a successor's `supersedes`), `draft|in-review → blocked` (member, with questions in the body), `blocked → in-review` (after Conductor input re-invokes the member).
 
 **Gates** are not stored entities: a gate *is* an artifact at `in-review` whose flow position declares `gate: human`, plus start gates (§6). Gate verbs: approve, request-changes (Conductor note → producer re-invoked → successor artifact supersedes → same gate), reject (unit paused). Resolution writes `approved_by` (or rejection state) and commits with the Conductor as author.
 
 ## 5. Registry entities
 
-**Teams** (`teams/*.md`): `name`, `consumes`, `produces`, `members`, `flow` (ordered list of `step`, `gate: human`, and `loop` blocks — loop: `between: [a, b]`, `until` (a status condition on a named kind), `max_rounds`, `on_exhaust: gate`), `mode: declarative | led` (default declarative), `style: { color }`, optional `guardrails:` (per-team `protected_paths`, `never` actions) and `knowledge:` refs. Body = charter, injected into member context.
+**Teams** (`teams/*.md`): `name`, `consumes`, `produces`, `members`, `flow` (ordered list of `step`, `gate: human`, and `loop` blocks — loop: `between: [a, b]`, `until` (a status condition on a named kind), `max_rounds`, `on_exhaust: gate`), `style: { color }`, optional `guardrails:` (per-team `protected_paths`, `never` actions) and `knowledge:` refs. Body = charter, injected into member context. (Sequencing is always declarative — the v1.0 `mode: declarative | led` field is cut, per invariant 7.)
 
 **Agents** (`agents/*.md`): `kind: native | cli | remote`. Native: `model`, `skills`, `tools`, `knowledge`. CLI: `command` template with `{task}` substitution, `cwd` template (`{feature_repo}`), `timeout`, `result` contract description. Remote: MCP server ref. All: `style: { avatar }` (1–2 chars or file). Body = system prompt (native) or wrapper notes.
 
@@ -92,7 +93,7 @@ Deterministic, target ≤ ~500 lines excluding tests. Responsibilities:
 
 **DAG walk.** On any change under `work/` (or on demand): for each active unit, find kinds that some team `produces`, that don't yet exist, and whose `consumes` are all approved → execute that team's flow. Units with unmet `after:` are invisible to the walk. **Every unit's first production — `after:` or not — raises a start gate** (verbs: start / not-yet / re-scope) at flow position zero before the walk executes a single member (ruling C8); an `after:` condition becoming satisfied is what makes that gate reachable for a unit that has one, never a substitute for raising it. `pace: step` pauses for a nod before each subsequent team invocation.
 
-**Flow execution.** Steps run sequentially; `gate: human` halts the walk and surfaces the gate; `loop` alternates its members until the `until` condition, `max_rounds`, then `on_exhaust`. `blocked` artifacts halt like gates. Timeouts and timeboxes kill member processes and mark the step for escalation.
+**Flow execution.** Steps run sequentially; `gate: human` halts the walk and surfaces the gate; `loop` alternates its members until the `until` condition, `max_rounds`, then `on_exhaust`. `blocked` artifacts halt like gates. Timeouts and timeboxes kill member processes and mark the step for escalation. **A budget gate halts like any other gate — including in the unattended daemon (ruling C3, extended):** when a unit's ledger crosses its declared `budget:`, the gate is raised and the daemon halts *that unit* until the Conductor resolves it; a budget gate that does not stop the daemon is a gate that watches you overspend. `continue` acknowledges the current spend and suppresses re-raising until a new threshold is crossed (C3's memory rule); `raise` updates the effective budget; `stop` pauses the unit. Budgets are per-unit — other units are unaffected.
 
 **Context assembly** — the fixed recipe, in order: (1) agent definition body, (2) referenced skills, (3) referenced knowledge files, (4) team charter + team `LEARNINGS.md`, (5) project house rules, (6) the task string from the flow step, (7) *paths* to consumed artifacts — never their contents. Deterministic and inspectable: `levare context <agent> --unit <u> --dry-run` prints the exact assembled context.
 
@@ -124,7 +125,7 @@ POST /orchestrator/message                # conductor → orchestrator; reply st
 
 ## 10. Cost tracking
 
-Receipts are recorded at the Runner boundary into the producing artifact's `usage:` block, plus an append-only `work/<project>/<unit>/ledger.ndjson` for invocations that don't map to one artifact (loop rounds, blocked retries). Three numbers, three reliabilities: wall-clock (always), tokens (when reported), USD (estimate from `knowledge/model-pricing.md`, nullable; subscription-plan members price at 0 with plan noted). Cost renders as quiet mono figures (timeline entries, unit footers, gate cards, studio spend stat) — never as alarm. `budget:` on a unit raises a gate when the ledger sum crosses it.
+Receipts are recorded at the Runner boundary into the producing artifact's `usage:` block, plus an append-only `work/<project>/<unit>/ledger.ndjson` for invocations that don't map to one artifact (loop rounds, blocked retries). Three numbers, three reliabilities: wall-clock (always), tokens (when reported), USD (estimate from `knowledge/model-pricing.md`, nullable; subscription-plan members price at 0 with plan noted). Cost renders as quiet mono figures (timeline entries, unit footers, gate cards, studio spend stat) — never as alarm. `budget:` on a unit raises a gate when the ledger sum crosses it, and **that gate halts the unit's walk — the daemon included — until the Conductor resolves it** (ruling C3, extended; verbs continue / raise / stop, per §6): a budget gate stops spend, it does not merely report it. Budgets are per-unit, never global.
 
 ## 11. Build phases and acceptance criteria
 

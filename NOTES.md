@@ -197,11 +197,17 @@ build). Deferred until a fixture exercises more than one producing team.
 Rulings issued at the phase-2 gate. Unlike the assumptions above (which record the highest-confidence
 reading of ambiguous prose), these are binding decisions — cite them, don't re-derive them.
 
+**PRD amendment 1 (`docs/prd-amendment-1.md`, 2026-07-12) is folded into `docs/levare-prd.md` v1.1:**
+invariant 1 restated in its strict C8 form; invariant 6 marked SPECIFIED, NOT IMPLEMENTED (the merge
+phase does not exist); invariant 7's `mode: led` escape hatch cut; the §4 artifact contract gains
+`approved_commit` (closes A7); and **ruling C3 is extended** (see C3 below). The amendment doc is the
+historical record of *why* each change was made; the PRD now reads correctly standing alone.
+
 C1 — Two legal loop styles. A loop whose until references artifact approval (e.g. spec.approved) is the conductor-amendment style: one Conductor gate per round, as kestrel's flow does. A loop may instead terminate on a member-set frontmatter field (e.g. review.verdict == approved, written by the reviewing member), with the human gate following the loop — the autonomous style. Invariant 4 is untouched: artifact status approved remains Conductor-only; a verdict field is member data, never a status. Phase-3 adapters must support both styles.
 
 C2 — Gate-resolution completeness. No gate resolution may leave its artifact at in-review: approve → approved, reject → rejected, request-changes → superseded by the successor round's artifact. On any loop-gate resolution, including the exhaust gate, the round's companion review artifact resolves to approved (the Conductor accepted it as read). An artifact at in-review always means exactly one thing: an open gate awaiting the Conductor.
 
-C3 — Budget acknowledgment memory. A continue at a budget gate acknowledges the current spend; the gate re-raises only when spend crosses a new threshold beyond the acknowledged amount. A raise updates the effective budget. Budget gates inform, they never spam.
+C3 — Budget acknowledgment memory. A continue at a budget gate acknowledges the current spend; the gate re-raises only when spend crosses a new threshold beyond the acknowledged amount. A raise updates the effective budget. Budget gates inform, they never spam. **Extended (PRD amendment 1, §5): a budget gate also HALTS the unit — the unattended daemon included — until the Conductor resolves it, exactly as every other gate halts the walk; it stops spend, it does not merely report it. `continue`/`raise`/`stop` retain the meanings above; budgets are per-unit, never global.** This settles the daemon-budget divergence the code review flagged as needing a ruling.
 
 C4 — Responsible-team selection (B7) is a fixture-scale shortcut, not the semantics. PRD §6's walk is per-kind: find producible kinds whose consumes are all approved, and invoke the team that produces each kind — this is how a unit hands from a shaping team to a build team. The per-unit heuristic is equivalent while fixtures contain one team; the divergence must be closed when a multi-team fixture lands.
 
