@@ -301,6 +301,9 @@ export function validatePath(target: string): ValidationResult {
     discoverFolderArtifacts(target, errors, artifacts);
   }
 
+  // Cross-entity structural checks: can this studio actually RUN? (only meaningful for a whole tree)
+  if (st.isDirectory()) validateStudioBindings(target, errors);
+
   // Cross-artifact checks over everything discovered.
   crossReference(artifacts, errors);
   const immutability = gitImmutabilityCheck(target, artifacts, errors);
@@ -611,6 +614,131 @@ function validateAgentVariant(data: Record<string, YamlValue>, file: string, err
     need("command");
     need("result");
   } else if (data.kind === "remote") need("server");
+}
+
+// ---------------------------------------------------------------------------
+// Studio bindability (NOTES F1) — is this studio structurally RUNNABLE?
+//
+// The defect this closes: `levare validate` said "valid" about a studio that could not run a single
+// step. Every per-file schema check passed; what nothing checked was the one cross-entity fact the
+// whole Runner rests on — that each flow step a team declares binds to a member that declares it can
+// produce a matching kind. That binding failure surfaced only at runtime, inside the daemon, on the
+// unit's first step. A studio whose teams cannot bind is not "valid with a runtime surprise ahead";
+// it is invalid, and it is told so here, naming the team, the kind, and the members it looked at.
+//
+// This is the same resolution rule the Runner applies (runner.ts/gates.ts#resolveStep, NOTES B2):
+// a step label binds to a member producing `kind === label` or `kind.endsWith("-" + label)`; zero
+// matches or more than one is a hard failure, never a silent guess. `kindMatches` is a local copy of
+// runner.ts's for the same reason gates.ts/dagwalk.ts keep theirs — validate.ts is imported BY
+// runner.ts, so importing back would close an import cycle (see NOTES R3's standing item).
+// ---------------------------------------------------------------------------
+
+function kindMatches(kind: string, stepLabel: string): boolean {
+  return kind === stepLabel || kind.endsWith(`-${stepLabel}`);
+}
+
+/** Every flow step label a team's flow declares, in order — plain steps plus both halves of a loop. */
+function flowStepLabels(flow: YamlValue): string[] {
+  const labels: string[] = [];
+  if (!Array.isArray(flow)) return labels;
+  for (const node of flow) {
+    if (node === null || typeof node !== "object" || Array.isArray(node)) continue;
+    const m = node as Record<string, YamlValue>;
+    if (typeof m.step === "string") labels.push(m.step);
+    if (m.loop !== null && typeof m.loop === "object" && !Array.isArray(m.loop)) {
+      const between = (m.loop as Record<string, YamlValue>).between;
+      if (Array.isArray(between)) for (const b of between) if (typeof b === "string") labels.push(b);
+    }
+  }
+  return labels;
+}
+
+function strList(v: YamlValue): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+}
+
+/**
+ * Reject a studio that cannot run: a team promising a kind no member of it produces, or a flow step
+ * that binds to no member (or to more than one — an ambiguity the Runner refuses to guess through).
+ * Runs only for a tree carrying BOTH `teams/` and `agents/` — the two halves of the binding; a
+ * subtree with only one of them (a rejection fixture, a single registry file) is not a studio and
+ * has nothing to bind.
+ */
+function validateStudioBindings(root: string, errors: ValidationError[]): void {
+  const teamsDir = join(root, "teams");
+  const agentsDir = join(root, "agents");
+  if (!existsSync(teamsDir) || !existsSync(agentsDir)) return;
+
+  // agent name → the kinds it declares it can produce.
+  const produces = new Map<string, string[]>();
+  for (const name of readdirSync(agentsDir).sort()) {
+    if (!name.endsWith(".md") || name.endsWith(".learnings.md")) continue;
+    let data: Record<string, YamlValue>;
+    try {
+      ({ data } = parseFrontmatter(readFileSync(join(agentsDir, name), "utf8")));
+    } catch {
+      continue; // its own PARSE_ERROR was already recorded by the per-file pass.
+    }
+    if (typeof data.name === "string") produces.set(data.name, strList(data.produces));
+  }
+
+  for (const file of readdirSync(teamsDir).sort()) {
+    if (!file.endsWith(".md") || file.endsWith(".learnings.md")) continue;
+    const path = join(teamsDir, file);
+    let data: Record<string, YamlValue>;
+    try {
+      ({ data } = parseFrontmatter(readFileSync(path, "utf8")));
+    } catch {
+      continue;
+    }
+    const team = typeof data.name === "string" ? data.name : basename(file, ".md");
+    const members = strList(data.members);
+    // What this team's members can actually produce, and how each is described in an error message.
+    const caps: Array<{ member: string; kind: string }> = [];
+    for (const m of members) for (const kind of produces.get(m) ?? []) caps.push({ member: m, kind });
+    const roster = members
+      .map((m) => {
+        const ks = produces.get(m);
+        if (ks === undefined) return `${m} (no agent definition)`;
+        return ks.length ? `${m} produces [${ks.join(", ")}]` : `${m} produces nothing`;
+      })
+      .join("; ");
+
+    // (1) A promise the team cannot keep: `produces: [k]` with no member producing k.
+    for (const kind of strList(data.produces)) {
+      if (caps.some((c) => c.kind === kind)) continue;
+      errors.push({
+        code: "UNPRODUCIBLE_KIND",
+        message:
+          `team '${team}' declares it produces '${kind}', but no member of it declares '${kind}' in its own 'produces': ` +
+          `${roster || "the team has no members"}`,
+        file: path,
+      });
+    }
+
+    // (2) A flow step no member can satisfy — the exact failure the Runner would hit on this unit's
+    // first walk, hoisted to validation time so it is a studio error, not a runtime surprise.
+    for (const label of flowStepLabels(data.flow)) {
+      const matches = caps.filter((c) => kindMatches(c.kind, label));
+      if (matches.length === 0) {
+        errors.push({
+          code: "UNBINDABLE_STEP",
+          message:
+            `flow step '${label}' in team '${team}' binds to no member: no member produces a kind matching it ` +
+            `(a kind matches when it equals the step label or ends with '-${label}'): ${roster || "the team has no members"}`,
+          file: path,
+        });
+      } else if (matches.length > 1) {
+        errors.push({
+          code: "AMBIGUOUS_STEP",
+          message:
+            `flow step '${label}' in team '${team}' is ambiguous — it binds to ${matches.map((c) => `${c.member}:${c.kind}`).join(", ")}; ` +
+            "the Runner never guesses between two producers",
+          file: path,
+        });
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
