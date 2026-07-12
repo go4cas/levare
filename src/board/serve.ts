@@ -58,6 +58,59 @@ export function isUnderFixtures(root: string): boolean {
   return resolve(root).split(sep).includes("fixtures");
 }
 
+// CSRF defense (surface 6). The board is an unauthenticated localhost server whose three write routes
+// mutate the repo, resolve gates (forging a Conductor approval — invariant 4), and can start members
+// (spending money, invariant 1). A malicious web page open in the operator's browser can POST to
+// localhost with a CORS "simple request" (a text/plain body needs no preflight, and Bun's req.json()
+// parses the body regardless of content-type), so with no origin check ANY site could drive every
+// write route. This is a STRUCTURAL guard, not per-handler: a browser attaches an `Origin` header to
+// every cross-origin POST (and to same-origin fetch POSTs too), so a mutating request is refused when
+// it carries an Origin that is not this server's own. Non-browser clients (curl, the CLI, tests) send
+// no Origin and are unaffected — they are not the CSRF threat, which is specifically a page in the
+// operator's browser being made to act as them. `Sec-Fetch-Site: cross-site` is honored as a second
+// signal for browsers that send it even when they omit Origin.
+export function isCrossOriginWrite(req: Request, url: URL): boolean {
+  const origin = req.headers.get("origin");
+  if (origin) {
+    try {
+      if (new URL(origin).host !== url.host) return true;
+    } catch {
+      return true; // an unparseable Origin is not our own origin
+    }
+  }
+  const site = req.headers.get("sec-fetch-site");
+  if (site && site !== "same-origin" && site !== "none") return true;
+  return false;
+}
+
+// The only directories the registry edit route may write into. The route edits registry ENTITY
+// definitions (PRD §9: "registry — all entity kinds rendered; Edit source → validate → write → commit")
+// — never arbitrary repo paths. Without this, `POST /registry/*path` accepted any path under root:
+// a `..`-free path like `.git/hooks/pre-commit` planted an executable git hook (code execution the
+// next time the operator runs git), and the file was written to disk BEFORE the validate/commit step,
+// so it persisted even when the commit then failed. Confinement is by resolved-path containment plus
+// a top-level-segment allowlist, not a textual `..` scan (which a `.git` segment slips straight past).
+const REGISTRY_EDITABLE_DIRS = new Set([
+  "teams", "agents", "skills", "knowledge", "types", "connectors", "projects", "evals", "ideas",
+]);
+
+/** True when `relPath` (a `/registry/*path` remainder) is a real, in-repo registry entity file the
+ * edit route is allowed to write. Rejects traversal, absolute paths, `.git`/dotfile escapes, and any
+ * top-level directory not in REGISTRY_EDITABLE_DIRS. */
+export function isRegistryEditablePath(root: string, relPath: string): boolean {
+  if (!relPath || relPath.includes("\0")) return false;
+  const rootAbs = resolve(root);
+  const fileAbs = resolve(rootAbs, relPath);
+  // Must stay strictly inside the studio root.
+  if (fileAbs !== rootAbs && !fileAbs.startsWith(rootAbs + sep)) return false;
+  const rel = fileAbs.slice(rootAbs.length + 1);
+  const segs = rel.split(sep);
+  if (segs.length < 2) return false; // must be <dir>/<file>, never a bare top-level file
+  if (segs.some((s) => s === "" || s === "." || s === ".." || s.startsWith(".git"))) return false;
+  if (!REGISTRY_EDITABLE_DIRS.has(segs[0])) return false;
+  return segs[segs.length - 1].endsWith(".md");
+}
+
 const ASSET_DIR = new URL("../../assets/", import.meta.url).pathname;
 
 function html(body: string, status = 200): Response {
@@ -179,7 +232,11 @@ export const ROUTES: RouteDef[] = [
     mutating: true,
     handler: async (req, params, ctx) => {
       const relPath = params.path;
-      if (!relPath || relPath.includes("..")) return json({ ok: false, error: "invalid path" }, 400);
+      // Confine to real registry entity files (see isRegistryEditablePath). This replaces the old
+      // textual `..` scan, which let `.git/hooks/pre-commit` and any other in-root path through.
+      if (!isRegistryEditablePath(ctx.root, relPath)) {
+        return json({ ok: false, error: "invalid path: the registry edit route may only write entity definition files under teams/agents/skills/knowledge/types/connectors/projects/evals/ideas" }, 400);
+      }
       const file = join(ctx.root, relPath);
       let content: string;
       try {
@@ -461,6 +518,15 @@ export function createBoard(
       // root or every screen rendering its ordinary "nothing here" empty state with no next step.
       if (matched.route.page && !isStudioInitialized(ctx.root)) {
         return html(renderOnboarding(ctx.root));
+      }
+      // CSRF (surface 6): a cross-origin write is refused ahead of the handler — structurally, the
+      // same posture as the read-only guard below — so no write route can ever run for a request
+      // driven by a page on another origin in the operator's browser. See isCrossOriginWrite.
+      if (matched.route.mutating && isCrossOriginWrite(req, url)) {
+        return json(
+          { ok: false, error: "cross-origin write refused: the board's write routes require a same-origin request (invariant: only the Conductor, from the board itself, mutates the repo)" },
+          403,
+        );
       }
       // Enforced ahead of the handler, not inside it: a read-only board's write routes cannot run at
       // all, by construction — there is no handler code path left to accidentally trigger a mutation.
