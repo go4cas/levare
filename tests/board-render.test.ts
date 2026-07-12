@@ -252,15 +252,16 @@ function escapeRegExp(s: string): string {
 }
 
 describe("scoreNodeClass — every canonical-palette state maps to a class assets/styles.css defines", () => {
-  // done/active/waiting/blocked/needs-you (design-brief §"canonical state palette"); "failed"
-  // (rejected) is a known, separately-tracked gap — assets/styles.css has no dedicated `.snode` rule
-  // for it yet, so it is deliberately not asserted here.
+  // done/active/waiting/blocked/needs-you/failed — all six canonical-palette states (design-brief
+  // §"canonical state palette"). "failed" (rejected) closed NOTES.md gap G1: assets/styles.css now
+  // defines `.snode.is-danger`, so this case is asserted exactly like its five siblings.
   const cases: Array<{ label: string; state: NodeState; isGate: boolean }> = [
     { label: "done", state: "done", isGate: false },
     { label: "active", state: "active", isGate: false },
     { label: "waiting", state: "wait", isGate: false },
     { label: "blocked", state: "blocked", isGate: false },
     { label: "needs-you (open gate)", state: "gate", isGate: true },
+    { label: "failed", state: "rejected", isGate: false },
   ];
 
   for (const c of cases) {

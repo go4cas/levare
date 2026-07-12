@@ -188,14 +188,16 @@ function miniScoreHtml(nodes: ScoreNode[]): string {
 // assets/styles.css — a mismatched class renders a real DOM node with zero visible size, not a
 // missing one, which is exactly the defect this guards (a "waiting" node emitting "snode is-wait",
 // a class assets/styles.css has never defined; the stylesheet's actual hollow/queued rule is
-// `.snode.upcoming`). "rejected" (the palette's "failed" state) has no dedicated `.snode` rule yet in
-// the frozen stylesheet — a known, separately-scoped gap, not fixed here.
+// `.snode.upcoming`). "rejected" (the palette's "failed" state, red) maps to `.snode.is-danger`,
+// added to assets/styles.css alongside the rest of the `is-danger` convention already used for
+// every other failed-state element (`.verb.is-danger`, `.status-dot.is-danger`, the resolved-line
+// decision) — closing NOTES.md gap G1.
 export function scoreNodeClass(n: Pick<ScoreNode, "state">, isGate: boolean): string {
   if (n.state === "done") return "snode done";
   if (isGate) return "snode is-gate-open";
   if (n.state === "active") return "snode active";
   if (n.state === "blocked") return "snode blocked";
-  if (n.state === "rejected") return "snode is-danger"; // known gap — see comment above
+  if (n.state === "rejected") return "snode is-danger";
   return "snode upcoming"; // waiting/queued (default): hollow neutral, matches .snode.upcoming
 }
 

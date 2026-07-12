@@ -396,6 +396,7 @@ button{ font-family:inherit; }
 .snode.active{ background:var(--active); --pulse-c:var(--active); animation:lv-pulse 1.9s infinite; }
 .snode.blocked{ background:transparent; border:2px solid var(--border-strong); }
 .snode.upcoming{ background:transparent; border:2px solid var(--border-strong); }
+.snode.is-danger{ background:var(--danger); }
 .sstep__body{ display:flex; flex-direction:column; gap:3px; min-width:0; padding-bottom:2px; }
 .sstep__label{ font-size:14px; font-weight:600; line-height:1.2; }
 .sstep.upcoming .sstep__label, .sstep.blocked .sstep__label{ color:var(--fg-dim); }
