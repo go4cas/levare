@@ -714,3 +714,122 @@ failed-state usage in the stylesheet). Once that rule exists, extend
 `tests/board-render.test.ts`'s renderer↔stylesheet class-parity suite (currently five cases, done/
 active/waiting/blocked/needs-you) with a sixth `{ label: "failed", state: "rejected", isGate: false }`
 case, so the same test that would have caught G1's sibling bug catches this one closing too.
+
+**G1 closed in phase 6** — see phase-6 section below.
+
+# NOTES — uncertainties and assumptions (Phase 6)
+
+Phase-6 delivers onboarding and distribution: `levare init`, the `levare serve` first-run
+experience, and closing gap G1. These entries record where the goal's prose left a mechanical
+choice and the highest-confidence reading taken.
+
+## G1 (closed). `.snode.is-danger` added to assets/styles.css
+`.snode.is-danger{ background:var(--danger); }` added right beside `.snode.done` — a filled circle,
+red instead of green, exactly mirroring the design brief's "done = solid green ... failed = red"
+parallel treatment (no border, no animation; shape stays a plain dot, only fill color differs).
+`--danger` and the `is-danger` naming convention were already used identically for every other
+failed-state element in the frozen stylesheet (`.verb.is-danger`, `.status-dot.is-danger`, the
+resolved-line `.decision.is-danger`), so this is the one place the goal explicitly permitted new
+CSS: matching an existing convention, not inventing one. `render.ts#scoreNodeClass` needed no
+change — it already emitted `"snode is-danger"`; the class was simply undefined until now.
+`tests/board-render.test.ts`'s class-parity suite gained the sixth case exactly as G1 prescribed.
+
+## H1. What "genericizing the golden fixture" actually meant
+Re-reading `fixtures/golden/` closely: its **registry** entities — `teams/kestrel.md`,
+`agents/{wren,lyra,finch}.md`, `skills/{flow-design,spec-writing,new-project}.md`, the five
+`types/*.md`, `connectors/{github,linear}.md`, `knowledge/*.md`, and `projects/studio.md` — never
+mentioned "storefront" in the first place; they're already generic pitch-to-spec vocabulary (a
+product framer, a flow designer, a wrapped reviewer). Only four things in golden are actually
+demo-specific: `projects/storefront.md` (a real-looking `acme/storefront` repo pointer),
+`work/storefront/*` (the checkout-flow/cart-icon-fix/loyalty-flow units and their artifacts),
+`ideas/loyalty-program.md`, and `evals/checkout-flow.md`. So "genericized … into an editable
+starting studio" is implemented as: reuse the registry entities above near-verbatim (embedded as
+literal templates in `src/init.ts`, not read from `fixtures/golden/` at runtime — see H2), and drop
+the four demo-specific items entirely, per the explicit "no demo work units" instruction. `evals/`
+itself is dropped from the scaffold too: the goal's own directory list ("teams/ agents/ skills/
+knowledge/ types/ connectors/ projects/ work/ ideas/") omits it, even though PRD §3's repo-layout
+diagram lists `evals/` alongside the others — the phase-6 goal's explicit enumeration is treated as
+authoritative for what `init` scaffolds, not the PRD's more general layout sketch.
+
+## H2. Templates are embedded string literals, not copied from fixtures/golden/ at runtime
+`src/init.ts` does not read `fixtures/golden/` off disk during `init` — every template is a literal
+string in the module. Rationale: PRD §3's stated end state is `bun build --compile` to a single
+portable binary; a user who only has that compiled binary (no adjacent source tree, no
+`fixtures/golden/`) must still be able to run `levare init`. Reading golden at runtime would work
+today (dev mode runs via `bun ./levare`, same as how `assets/styles.css`/`app.js` are currently
+served by path, per `ASSET_DIR` in `board/serve.ts`) but would silently break the moment the binary
+ships without its source tree — a portability regression with no test to catch it until someone
+actually tried a bare binary. Embedding costs one copy of the content living in two places
+(`fixtures/golden/` as the phase 1–5 test fixture, `src/init.ts` as the phase-6 shipped template) —
+an acceptable, explicit duplication given the two serve genuinely different purposes and audiences.
+
+## H3. No `teams/<name>.learnings.md` scaffolded
+Golden's `teams/kestrel.learnings.md` records fictional retrospective knowledge ("guest checkout is
+the recurring ambiguity…") — necessarily demo-flavored, since real LEARNINGS only exist after a team
+has actually run. A freshly-scaffolded studio has never run anything, so the honest starting state
+is *no* learnings file at all (`repo.ts#toTeam` already handles a missing learnings file gracefully,
+falling back to `""`) rather than a fabricated one. Same principle as "no demo work units," applied
+one level down.
+
+## H4. `wren.md`'s `skills: [product-brief]` is a carried-forward pre-existing gap, not introduced here
+Golden's own `agents/wren.md` declares `skills: [product-brief]`, but no `skills/product-brief.md`
+(or `skills/product-brief/SKILL.md`) exists anywhere in golden — the validator doesn't check that a
+`skills:`/`knowledge:` name resolves to an actual file (only `consumes`/`supersedes` and artifact
+`files:` get existence checks), so this has always silently passed `levare validate`. The scaffold
+reuses `wren.md` verbatim (H1), so the same dangling reference is carried forward rather than
+quietly "fixed" — fixing it would mean inventing new content not asked for for a file already
+established as a faithful reuse of golden. Noted here rather than silently left for a future
+Conductor to puzzle over.
+
+## H5. The Agent Skills format sample skill, and why it isn't wired into an agent's `skills:` list
+"A skill following the Agent Skills format" is read as: a folder carrying its own `SKILL.md` (plus
+optional supporting files), the convention Claude Code's own Agent Skills feature uses — as opposed
+to golden's flat `skills/<name>.md` convention. `skills/new-project/SKILL.md` (+
+`scripts/create-repo.sh`, a stub) is the natural candidate: golden's `new-project.md` already
+declared a `scripts:` field pointing at a script that never actually existed on disk, i.e. it was
+already halfway describing a skill bundle, just in the wrong shape. Converting it is safe because
+`runNewProjectSkill` (`src/orchestrator.ts`) never reads the skill file at all — the new-project flow
+is implemented directly in code; the file is registry-only documentation — so nothing breaks by
+moving it. It is deliberately **not** added to any scaffolded agent's `skills:` list: no agent in the
+example team performs the new-project flow (that's an Orchestrator-level operation, not a team
+member's job), so there's no natural referrer, and inventing one would be scope creep. Made the
+reference path actually work regardless (`context.ts#readEntityBody` and `board/extra.ts#loadDir` now
+fall back from `<dir>/<name>.md` to `<dir>/<name>/SKILL.md`) so a future agent that *does* reference
+a folder-format skill gets real context content instead of an invisible registry entry or a silent
+"(not found)" — a small, generically-scoped fix rather than a special case for this one skill.
+
+## H6. `init` never overwrites; the "empty directory" requirement is enforced by the caller, not `init`
+The goal's acceptance path always runs `init` against a freshly-made empty temp directory, so `init`
+itself does not refuse a non-empty target — it writes only files that don't yet exist and leaves
+everything else untouched (`ScaffoldResult.skipped`), the same "never clobber in-progress work"
+posture as the rest of this codebase (NOTES E14, the read-only-fixtures guarantee). This makes
+`levare init` safe to re-run against a studio a Conductor has already started editing — a second run
+fills in only what's still missing (e.g. a directory added to the skeleton in a later levare
+version) rather than being a one-shot command that becomes dangerous the moment it's run twice.
+
+## H7. `levare serve` first-run heuristic: any one skeleton directory, not "fully valid studio"
+`isStudioInitialized` (`src/board/onboarding.ts`) considers a root initialized the moment **any**
+skeleton directory (`teams/ agents/ skills/ knowledge/ types/ connectors/ projects/ work/ ideas/`)
+exists — not "has at least one team" or "passes `levare validate`". Rationale: a Conductor
+hand-building a studio from scratch (not via `init`) might create `teams/` before `agents/`; that
+partial studio should render its ordinary (mostly-empty) screens immediately, not linger on the
+onboarding page until every directory exists. The onboarding page is specifically for "nothing has
+been scaffolded at all yet," the literal first-run case the goal names — not a general
+studio-health check (that's what `levare validate` is for). Applies to every repo-projecting screen
+route (`/`, `/studio`, `/project/:name`, `/run/:project/:unit`, `/registry`) via a `page: true` flag
+on those `RouteDef`s, checked once in the router's `fetch()` dispatcher ahead of every handler —
+consistent with how the read-only write-route gate (NOTES E14) is structural rather than
+per-handler. Assets (`/styles.css`, `/app.js`) and the SSE channel (`/events`) are untouched by the
+gate since they carry no repo-derived content to be blank about. The write routes (`/gates/...`,
+`/registry/...`, `/orchestrator/message`) are also left ungated here — out of scope for "explains
+and suggests `levare init` rather than rendering blank screens," which is about GET screens; a POST
+against an uninitialized repo simply fails its own existing validation/lookup path (e.g. "no such
+project") with no onboarding-specific handling needed.
+
+## Learnings
+Reading a fixture closely before "genericizing" it is worth the time: the instinct was to invent new
+team/agent names to make the scaffold "obviously not the demo," but golden's registry entities were
+already fully generic — only its work/ tree and one project pointer were ever storefront-flavored.
+Deleting the actual demo-specific parts and reusing the rest verbatim is both less work and a more
+faithful reading of "genericized" than inventing parallel content that says the same thing in
+different words.

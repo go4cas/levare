@@ -82,5 +82,42 @@ GITHUB_TOKEN=… ./levare doctor           # connector env/reachability report
 bun run deps:check                       # dependency policy (zero runtime deps)
 ```
 
+## Phase 4 — the board
+
+`levare serve`: the four screens (studio, project, run, registry), server-rendered from the repo on
+every request, CD's assets integrated, SSE re-renders on `fs.watch`, and the three write routes
+(§9): gate verbs, registry edit-source, and the Orchestrator message route.
+
+## Phase 5 — Orchestrator integration
+
+An SDK-shaped Orchestrator (§7) behind a mocked, documented dispatch grammar: session briefing,
+intent → unit operations, the `new-project` skill, retro/knowledge-promotion proposals, `stats`.
+Ruling C7 (one gate-resolution path) and E4/E5 (real member invocation for `request`/`start`) close
+here — see [src/gates.ts](src/gates.ts), [src/git.ts](src/git.ts), [src/orchestrator.ts](src/orchestrator.ts).
+
+## Phase 6 — onboarding and distribution
+
+- **`levare init [path]`** — [src/init.ts](src/init.ts): scaffolds an empty (or partially-built)
+  directory into a working studio: the registry skeleton, the five type templates, one example
+  team (`kestrel`, whose flow demonstrates a `step`, a `gate`, and a `loop`) with its native and cli
+  agents, a sample skill in the Agent Skills folder format (`skills/new-project/SKILL.md`), a
+  `.devcontainer/`, and a starter `README.md` — with no demo work units. Never overwrites an
+  existing file, so it's safe to re-run.
+- **First-run experience** — [src/board/onboarding.ts](src/board/onboarding.ts): `levare serve`
+  pointed at a directory with none of the skeleton dirs renders an explanatory page suggesting
+  `levare init`, instead of a blank or crashing screen.
+- **Gap G1 closed** — `assets/styles.css` now defines `.snode.is-danger` for the failed/rejected
+  score-node state, completing the six-state canonical palette; the renderer↔stylesheet class-parity
+  test in `tests/board-render.test.ts` covers all six.
+
+### Run it
+
+```sh
+bun test                                      # full suite
+levare init /path/to/new-studio               # scaffold a fresh studio
+levare validate /path/to/new-studio           # prints "valid", exits 0
+levare serve /path/to/new-studio              # the board, non-empty from the first request
+```
+
 Uncertainties and assumptions are recorded in [NOTES.md](NOTES.md) (phase-1 A1–A8, phase-2 B1–B7,
-phase-3 D1–D9).
+phase-3 D1–D9, phase-4 E1–E14, phase-5 F1–F7, phase-6 G1/H1–H7).
