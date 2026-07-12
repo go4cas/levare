@@ -103,7 +103,7 @@ describe("projectStatusChip — gate count wins, then active, else idle", () => 
 });
 
 describe("project screen", () => {
-  const html = renderProject(repo, "storefront", now);
+  const html = renderProject(repo, "storefront", root, now);
 
   test("carries a derivation line", () => {
     expect(html).toContain('class="deriv"');
@@ -257,9 +257,11 @@ function stepCount(scoreHtml: string): number {
   // The outer <div class="sstep ..."> per node — not its sstep__rail/__av/__body sub-elements.
   return (scoreHtml.match(/<div class="sstep(?: |")/g) || []).length;
 }
+// Gate-review round 2, item 1: the score moved out of the rail into its own content column, beside
+// the timeline — slice up to the timeline column's own marker instead of the rail's old `railfoot`.
 function scoreBlock(html: string): string {
   const start = html.indexOf('class="score2"');
-  const end = html.indexOf('class="railfoot"');
+  const end = html.indexOf('class="timeline"');
   return html.slice(start, end);
 }
 
@@ -358,7 +360,7 @@ describe("scoreNodeClass — every canonical-palette state maps to a class asset
 describe("derivation line renders exactly once per screen, in the sidebar footer", () => {
   const screens: Array<[string, string]> = [
     ["studio", renderStudio(repo, root, now)],
-    ["project", renderProject(repo, "storefront", now)],
+    ["project", renderProject(repo, "storefront", root, now)],
     ["run", renderRun(repo, "storefront", "checkout-flow", root, now)],
     ["registry", renderRegistry(repo, root)],
   ];
@@ -386,7 +388,7 @@ describe("derivation line renders exactly once per screen, in the sidebar footer
 // ---------------------------------------------------------------------------
 
 describe("artifact render view", () => {
-  const html = renderArtifact(repo, "storefront", "checkout-flow", "spec-checkout-flow-v1", now);
+  const html = renderArtifact(repo, "storefront", "checkout-flow", "spec-checkout-flow-v1", root, now);
 
   test("renders frontmatter as a header block", () => {
     expect(html).toContain('<span class="k">kind</span><span class="v mono">spec</span>');
@@ -415,18 +417,18 @@ describe("artifact render view", () => {
   });
 
   test("a cited artifact shows the real citing artifact in its cited-by lineage", () => {
-    const designHtml = renderArtifact(repo, "storefront", "checkout-flow", "design-checkout-v1", now);
+    const designHtml = renderArtifact(repo, "storefront", "checkout-flow", "design-checkout-v1", root, now);
     expect(designHtml).toContain("Cited by");
     expect(designHtml).toContain('href="/artifact/storefront/checkout-flow/spec-checkout-flow-v1"');
   });
 
   test("throws on an unknown artifact id (routed to a 404-equivalent by the caller)", () => {
-    expect(() => renderArtifact(repo, "storefront", "checkout-flow", "not-a-real-id", now)).toThrow();
+    expect(() => renderArtifact(repo, "storefront", "checkout-flow", "not-a-real-id", root, now)).toThrow();
   });
 });
 
 describe("idea render view", () => {
-  const html = renderIdea(root, "loyalty-program");
+  const html = renderIdea(repo, root, "loyalty-program");
 
   test("renders frontmatter as a header block", () => {
     expect(html).toContain('<span class="k">name</span><span class="v mono">loyalty-program</span>');
@@ -445,6 +447,170 @@ describe("idea render view", () => {
   });
 
   test("throws on an unknown idea name", () => {
-    expect(() => renderIdea(root, "not-a-real-idea")).toThrow();
+    expect(() => renderIdea(repo, root, "not-a-real-idea")).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate-review round 2, item 1 (structural): the rail is ONE thing — persistent navigation, byte-
+// identical in structure on every screen. Page-specific material (a project's pointer/constitution,
+// a run's score, the registry's own entity switcher) must never appear in it again.
+// ---------------------------------------------------------------------------
+
+describe("the rail is identical navigation on every screen", () => {
+  const screens: Array<[string, string]> = [
+    ["studio", renderStudio(repo, root, now)],
+    ["project", renderProject(repo, "storefront", root, now)],
+    ["run", renderRun(repo, "storefront", "checkout-flow", root, now)],
+    ["registry", renderRegistry(repo, root)],
+    ["artifact", renderArtifact(repo, "storefront", "checkout-flow", "spec-checkout-flow-v1", root, now)],
+    ["idea", renderIdea(repo, root, "loyalty-program")],
+  ];
+
+  function railOf(html: string): string {
+    const m = /<aside class="rail">[\s\S]*?<\/aside>/.exec(html);
+    expect(m).not.toBeNull();
+    return m![0];
+  }
+
+  for (const [name, html] of screens) {
+    test(`${name}: rail carries exactly the approved nav-index sections, in order, and nothing else`, () => {
+      const rail = railOf(html);
+      const headings = [...rail.matchAll(/<h3 class="railsec__h">([^<]*)<\/h3>/g)].map((m) => m[1]);
+      expect(headings).toEqual(["Projects", "Registry", "Connectors", "Ideas"]);
+      // Page-specific material must never leak back into the rail.
+      expect(rail).not.toContain("Pointer");
+      expect(rail).not.toContain("Constitution");
+      expect(rail).not.toContain('>Score<');
+      expect(rail).not.toContain("Recent releases");
+      expect(rail).not.toContain('class="score2"');
+      expect(rail).not.toContain('class="founding"');
+    });
+
+    test(`${name}: rail carries the logo, theme toggle, and exactly one derivation line`, () => {
+      const rail = railOf(html);
+      expect(rail).toContain('class="logo"');
+      expect(rail).toContain("data-theme-toggle");
+      expect((rail.match(/class="deriv"/g) || []).length).toBe(1);
+    });
+  }
+
+  test("the rail's structure (sections, classes, order) is byte-identical across all six screens — only the derivation-footer text and the registry sub-nav's is-active highlight legitimately vary", () => {
+    const normalize = (rail: string) =>
+      rail.replace(/<span class="deriv">[^<]*<\/span>/, '<span class="deriv"></span>').replace(/ class="is-active"/g, ' class=""');
+    const rails = screens.map(([, html]) => normalize(railOf(html)));
+    for (const r of rails.slice(1)) expect(r).toBe(rails[0]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate-review round 2, item 1 (breadcrumbs): studio / <project> / <unit> / <artifact>, each segment a
+// link (except the current page's own segment), always in the same place — inside .phead, immediately
+// before the <h1>.
+// ---------------------------------------------------------------------------
+
+describe("breadcrumbs are consistent across all screens", () => {
+  test("studio carries the root crumb", () => {
+    expect(renderStudio(repo, root, now)).toContain('<div class="crumb"><span>studio</span></div>');
+  });
+
+  test("project: studio(link) / project(current)", () => {
+    expect(renderProject(repo, "storefront", root, now)).toContain(
+      '<div class="crumb"><a href="/studio">studio</a><span>/</span><span>storefront</span></div>',
+    );
+  });
+
+  test("run: studio(link) / project(link) / unit(current)", () => {
+    expect(renderRun(repo, "storefront", "checkout-flow", root, now)).toContain(
+      '<div class="crumb"><a href="/studio">studio</a><span>/</span><a href="/project/storefront">storefront</a><span>/</span><span>checkout-flow</span></div>',
+    );
+  });
+
+  test("artifact: studio(link) / project(link) / unit(link) / artifact(current, mono)", () => {
+    expect(renderArtifact(repo, "storefront", "checkout-flow", "spec-checkout-flow-v1", root, now)).toContain(
+      '<div class="crumb"><a href="/studio">studio</a><span>/</span><a href="/project/storefront">storefront</a><span>/</span><a href="/run/storefront/checkout-flow">checkout-flow</a><span>/</span><span class="mono">spec-checkout-flow-v1</span></div>',
+    );
+  });
+
+  test("registry: studio(link) / registry(current)", () => {
+    expect(renderRegistry(repo, root)).toContain('<div class="crumb"><a href="/studio">studio</a><span>/</span><span>registry</span></div>');
+  });
+
+  test("every screen's breadcrumb sits in the same place — inside .phead, immediately before the h1", () => {
+    const screens = [
+      renderStudio(repo, root, now),
+      renderProject(repo, "storefront", root, now),
+      renderRun(repo, "storefront", "checkout-flow", root, now),
+      renderRegistry(repo, root),
+      renderArtifact(repo, "storefront", "checkout-flow", "spec-checkout-flow-v1", root, now),
+      renderIdea(repo, root, "loyalty-program"),
+    ];
+    for (const html of screens) {
+      expect(html).toMatch(/<header class="phead">\s*<div class="crumb">[\s\S]*?<\/div>\s*<h1/);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate-review round 2, item 1 (score column): the run view's score is that page's primary content,
+// not navigation — it renders as its own content column beside the timeline now.
+// ---------------------------------------------------------------------------
+
+test("run view: the score is a content column beside the timeline, not the nav rail", () => {
+  const html = renderRun(repo, "storefront", "checkout-flow", root, now);
+  const railHtml = /<aside class="rail">[\s\S]*?<\/aside>/.exec(html)![0];
+  expect(railHtml).not.toContain('class="score2"');
+  const mainHtml = /<main class="main">[\s\S]*?<\/main>/.exec(html)![0];
+  expect(mainHtml).toContain('class="score2"');
+  expect(mainHtml).toContain('class="timeline"');
+});
+
+// ---------------------------------------------------------------------------
+// Gate-review round 2, item 2: project cards — title and status chip share one line (chip
+// right-aligned, matching gate cards/unit rows), and the A8 summary clamps to two lines so every
+// card is the same height regardless of content.
+// ---------------------------------------------------------------------------
+
+describe("project card layout consistency", () => {
+  test("title and status chip share the same line, chip after the title", () => {
+    const html = renderStudio(repo, root, now);
+    expect(html).toContain('<div class="pcard__top"><span class="pcard__name">storefront</span><span class="chip is-gate">2 gates</span></div>');
+  });
+
+  test(".pcard__desc clamps to two lines regardless of content length, so card height never depends on summary length", () => {
+    const css = readFileSync("assets/styles.css", "utf8");
+    expect(css).toMatch(/\.pcard__desc\{[^}]*-webkit-line-clamp:2/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate-review round 2, item 3: registry cards grid (repeat(auto-fill, minmax(320px,1fr))) instead of
+// one full-width card per row, and the entity switcher moved into an in-content tab strip.
+// ---------------------------------------------------------------------------
+
+describe("registry cards are gridded, not one-per-row", () => {
+  test("entity cards render inside an auto-fill grid wrapper, minmax(320px,1fr)", () => {
+    const html = renderRegistry(repo, root);
+    expect(html).toContain('<div class="pcards" style="grid-template-columns:repeat(auto-fill,minmax(320px,1fr))">');
+  });
+
+  test("the in-content tab strip lists every entity kind and highlights the active one", () => {
+    const html = renderRegistry(repo, root, "agents");
+    const tabMatch = /<nav class="reg-nav" style="flex-direction:row[^"]*">[\s\S]*?<\/nav>/.exec(html);
+    expect(tabMatch).not.toBeNull();
+    expect(tabMatch![0]).toContain('data-goto="agents" class="is-active"');
+    for (const k of ["teams", "agents", "skills", "knowledge", "types", "connectors", "evals"]) {
+      expect(tabMatch![0]).toContain(`data-goto="${k}"`);
+    }
+  });
+
+  test("the rail's own Registry section and the in-content tab strip never drift apart (same shared link list)", () => {
+    const html = renderRegistry(repo, root, "skills");
+    const railHtml = /<aside class="rail">[\s\S]*?<\/aside>/.exec(html)![0];
+    const tabHtml = /<nav class="reg-nav" style="flex-direction:row[^"]*">[\s\S]*?<\/nav>/.exec(html)![0];
+    for (const k of ["teams", "agents", "skills", "knowledge", "types", "connectors", "evals"]) {
+      expect(railHtml).toContain(`data-goto="${k}"`);
+      expect(tabHtml).toContain(`data-goto="${k}"`);
+    }
   });
 });
