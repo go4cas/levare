@@ -1,0 +1,324 @@
+import { test, expect, describe, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, rmSync, cpSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Daemon } from "../src/daemon.ts";
+import { resolveGate } from "../src/board/gateops.ts";
+import { stubAdapterRunner } from "../src/replay.ts";
+import { loadRepo } from "../src/repo.ts";
+import type { MemberRunner } from "../src/runner.ts";
+import type { Verb } from "../src/runner.ts";
+
+// Phase 8: the daemon walks the DAG between gates and halts at every gate (invariant 1). These tests
+// drive a real scratch studio (a git-backed copy of fixtures/golden) with the real AdapterRunner
+// boundary behind the still-mocked native/CLI adapters (invariant 10) — the same boundary
+// board/gateops.ts and `levare replay` already drive — never a second, daemon-only member-invocation
+// path.
+
+const HERMETIC_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
+
+function git(root: string, args: string[]) {
+  const r = spawnSync(
+    "git",
+    ["-C", root, "-c", "user.name=seed", "-c", "user.email=seed@levare.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main", ...args],
+    { encoding: "utf8", env: HERMETIC_ENV },
+  );
+  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+  return r;
+}
+
+function seedScratchRepo(): string {
+  const root = mkdtempSync(join(tmpdir(), "levare-daemon-"));
+  cpSync("fixtures/golden", root, { recursive: true });
+  git(root, ["init", "-q"]);
+  git(root, ["add", "-A"]);
+  git(root, ["commit", "-q", "-m", "seed golden fixture"]);
+  return root;
+}
+
+// A MemberRunner wrapper that records every (member, kind) call, in order — the causal-chain audit
+// trail these tests assert against.
+function countingRunner(root: string): { runner: MemberRunner; calls: Array<{ member: string; kind: string }> } {
+  const calls: Array<{ member: string; kind: string }> = [];
+  const inner = stubAdapterRunner(loadRepo(root));
+  return {
+    calls,
+    runner: {
+      capabilities: () => inner.capabilities(),
+      produce: (member, kind, unit, project) => {
+        calls.push({ member, kind });
+        return inner.produce(member, kind, unit, project);
+      },
+    },
+  };
+}
+
+let root: string;
+beforeEach(() => {
+  root = seedScratchRepo();
+});
+afterEach(() => {
+  rmSync(root, { recursive: true, force: true });
+});
+
+describe("(a) the daemon walks between gates and halts at every gate", () => {
+  test("loyalty-flow: start gate never auto-starts; approving each gate advances exactly one step, which halts as the next gate", () => {
+    const unitDir = join(root, "work/storefront/loyalty-flow");
+    const { runner, calls } = countingRunner(root);
+    const daemon = new Daemon(root, { memberRunner: () => runner });
+
+    // Invariant 1: a satisfied-but-unauthorized start gate is never crossed by the autonomous walk,
+    // no matter how many times it ticks.
+    for (let i = 0; i < 3; i++) daemon.tick();
+    expect(calls).toEqual([]);
+    expect(readdirSync(unitDir)).toEqual(["unit.md"]);
+
+    // The Conductor authorizes the start gate (the ONE call allowed to cross it — board/gateops.ts).
+    const started = resolveGate(root, "storefront", "loyalty-flow", "start", { memberRunner: runner, today: "2026-07-12" });
+    expect(started.ok).toBe(true);
+    expect(calls).toEqual([{ member: "wren", kind: "product-brief" }]);
+    const brief = readFileSync(join(unitDir, "product-brief-loyalty-flow-v1.md"), "utf8");
+    expect(brief).toContain("status: in-review");
+
+    // Halts at the gate the start just reached: repeated ticks produce nothing further.
+    for (let i = 0; i < 3; i++) daemon.tick();
+    expect(calls).toEqual([{ member: "wren", kind: "product-brief" }]);
+
+    // Conductor approves → daemon advances exactly one more step (design), then halts again.
+    const approve: Verb = "approve";
+    const approved1 = resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", approve, { memberRunner: runner, today: "2026-07-12" });
+    expect(approved1.ok).toBe(true);
+    expect(calls).toEqual([{ member: "wren", kind: "product-brief" }]); // approval itself never invokes a member.
+
+    let result = daemon.tick();
+    expect(calls).toEqual([{ member: "wren", kind: "product-brief" }, { member: "lyra", kind: "design" }]);
+    expect(existsSync(join(unitDir, "design-loyalty-flow-v1.md"))).toBe(true);
+    let entry = result.entries.find((e) => e.unit === "loyalty-flow")!;
+    expect(entry.outcome.outcome).toBe("produced");
+
+    // Halts at design's gate.
+    result = daemon.tick();
+    entry = result.entries.find((e) => e.unit === "loyalty-flow")!;
+    expect(entry.outcome.outcome).toBe("halted");
+    expect(calls.length).toBe(2);
+
+    // Approve design → the loop's first member (spec) is produced, then the walk halts there too —
+    // never producing spec's companion review automatically (documented scope boundary, dagwalk.ts).
+    resolveGate(root, "storefront", "design-loyalty-flow-v1", approve, { memberRunner: runner, today: "2026-07-12" });
+    result = daemon.tick();
+    expect(calls).toEqual([
+      { member: "wren", kind: "product-brief" },
+      { member: "lyra", kind: "design" },
+      { member: "lyra", kind: "spec" },
+    ]);
+    expect(existsSync(join(unitDir, "spec-loyalty-flow-v1.md"))).toBe(true);
+    expect(existsSync(join(unitDir, "review-loyalty-flow-v1.md"))).toBe(false);
+    entry = result.entries.find((e) => e.unit === "loyalty-flow")!;
+    expect(entry.outcome.outcome).toBe("produced");
+
+    // Invariant 1, the hard part: the daemon NEVER resolves the gate it just raised — spec sits at
+    // in-review indefinitely, and the daemon never invents a review artifact for it, no matter how
+    // many times it ticks.
+    for (let i = 0; i < 5; i++) daemon.tick();
+    expect(calls.length).toBe(3);
+    const spec = readFileSync(join(unitDir, "spec-loyalty-flow-v1.md"), "utf8");
+    expect(spec).toContain("status: in-review");
+    expect(spec).toContain("approved_by: null");
+    expect(existsSync(join(unitDir, "review-loyalty-flow-v1.md"))).toBe(false);
+
+    // Every commit whose CONTENT is a member's own output — including the `start` verb's own
+    // production, not just the daemon's later autonomous ones — is attributed to the runner identity,
+    // never "cas": authorship reflects who wrote the file, not whose click caused the commit
+    // (NOTES.md's phase-8 O6 gate-review fix). Conductor decisions (approve/reject/start's own
+    // authorization click) stay "cas" — this is exactly the mixed sequence the gate finding's own
+    // live evidence showed, reproduced deterministically here.
+    const log = spawnSync("git", ["-C", root, "log", "--format=%an|%ae|%s"], { encoding: "utf8" }).stdout;
+    expect(log).toContain("levare-runner|runner@levare.local|start loyalty-flow → kestrel/wren produced product-brief product-brief-loyalty-flow-v1");
+    expect(log).toContain("levare-runner|runner@levare.local|advance loyalty-flow → kestrel/lyra produced design");
+    expect(log).toContain("levare-runner|runner@levare.local|advance loyalty-flow → kestrel/lyra produced spec");
+    expect(log).toContain("cas|cas@levare.local|approve product-brief-loyalty-flow-v1");
+    expect(log).toContain("cas|cas@levare.local|approve design-loyalty-flow-v1");
+    // Never the other way around: no member-produced artifact's commit is ever attributed to cas.
+    expect(log).not.toContain("cas|cas@levare.local|start loyalty-flow");
+    expect(log).not.toContain("cas|cas@levare.local|advance loyalty-flow");
+  });
+});
+
+describe("(g) commit authorship reflects who acted, not who triggered (gate-review fix)", () => {
+  test("a gate resolution (no member invoked) commits as the Conductor; a member-produced artifact — however it was triggered — commits as levare-runner", () => {
+    // (1) A plain gate resolution: no member runs, the Conductor's own frontmatter flip is the sole
+    // content of the commit.
+    const started = resolveGate(root, "storefront", "loyalty-flow", "start" as Verb, { today: "2026-07-12" });
+    expect(started.ok).toBe(true);
+    const approveCommit = resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
+    expect(approveCommit.ok).toBe(true);
+    const approveAuthor = commitAuthor(root, (approveCommit as { commit: string }).commit);
+    expect(approveAuthor).toEqual({ name: "cas", email: "cas@levare.local" });
+
+    // (2) The `start` verb's own production: legal because the Conductor clicked it, but the file
+    // content is entirely a member's output — must NOT carry the Conductor's identity.
+    const startCommit = (started as { commit: string }).commit;
+    const startAuthor = commitAuthor(root, startCommit);
+    expect(startAuthor).toEqual({ name: "levare-runner", email: "runner@levare.local" });
+    expect(startAuthor).not.toEqual({ name: "cas", email: "cas@levare.local" });
+
+    // (3) A daemon-driven, fully autonomous production (no verb, no direct click at all): the same
+    // identity as (2) — confirming the rule is about WHO WROTE the content, not which code path ran.
+    const daemon = new Daemon(root);
+    const result = daemon.tick(); // advances loyalty-flow past the now-approved product-brief → design
+    const designEntry = result.entries.find((e) => e.unit === "loyalty-flow" && e.outcome.outcome === "produced")!;
+    const daemonAuthor = commitAuthor(root, (designEntry.outcome as { commit: string }).commit);
+    expect(daemonAuthor).toEqual({ name: "levare-runner", email: "runner@levare.local" });
+  });
+});
+
+function commitAuthor(root: string, sha: string): { name: string; email: string } {
+  const out = spawnSync("git", ["-C", root, "show", "-s", "--format=%an|%ae", sha], { encoding: "utf8" }).stdout.trim();
+  const [name, email] = out.split("|");
+  return { name, email };
+}
+
+describe("(b) a plain unit with no after: is walkable from the moment it's declared (PRD §6's literal DAG walk)", () => {
+  test("a freshly-declared active unit gets its first kind produced without any further Conductor click", () => {
+    const unitDir = join(root, "work/storefront/widget-tweak");
+    mkdirSync(unitDir, { recursive: true });
+    writeFileSync(
+      join(unitDir, "unit.md"),
+      "---\ntype: feature\nstatus: active\n---\n\n# widget-tweak\n\nA small storefront affordance change, for daemon test coverage.\n",
+    );
+    const { runner, calls } = countingRunner(root);
+    const daemon = new Daemon(root, { memberRunner: () => runner });
+    daemon.tick();
+    expect(calls).toEqual([{ member: "wren", kind: "product-brief" }]);
+    expect(existsSync(join(unitDir, "product-brief-widget-tweak-v1.md"))).toBe(true);
+    // Halts immediately — a second tick does not chase further without an approval.
+    daemon.tick();
+    expect(calls.length).toBe(1);
+  });
+});
+
+describe("(c) 'Members running' is a true projection of in-flight invocations", () => {
+  test("running() reflects exactly the window a member call is in flight, and clears after", () => {
+    // Get loyalty-flow past its start gate first (not itself under observation here).
+    resolveGate(root, "storefront", "loyalty-flow", "start", { today: "2026-07-12" });
+    resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
+
+    let sawRunning: ReturnType<Daemon["running"]> | null = null;
+    const inner = stubAdapterRunner(loadRepo(root));
+    const daemon = new Daemon(root, {
+      memberRunner: () => ({
+        capabilities: () => inner.capabilities(),
+        produce: (member, kind, unit, project) => {
+          sawRunning = daemon.running();
+          return inner.produce(member, kind, unit, project);
+        },
+      }),
+    });
+    expect(daemon.running()).toEqual([]);
+    daemon.tick(); // advances loyalty-flow to `design`
+    expect(sawRunning).not.toBeNull();
+    expect(sawRunning).toEqual([{ project: "storefront", unit: "loyalty-flow", member: "lyra", kind: "design", startedAt: sawRunning![0].startedAt }]);
+    // Cleared the instant production finishes.
+    expect(daemon.running()).toEqual([]);
+  });
+});
+
+describe("(d) failures never crash the daemon or stall silently — they surface as a blocked artifact", () => {
+  test("a member that throws produces a `blocked` artifact instead of crashing the tick, and is never retried", () => {
+    resolveGate(root, "storefront", "loyalty-flow", "start", { today: "2026-07-12" });
+    resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
+
+    let calls = 0;
+    const daemon = new Daemon(root, {
+      memberRunner: () => ({
+        // "product-brief" is included so `brief`'s own step resolution still succeeds (it's already
+        // approved on disk, so it's never re-produced) — otherwise resolveStep would fail to resolve
+        // that earlier step at all and mask the case under test.
+        capabilities: () => [{ member: "wren", kind: "product-brief" }, { member: "lyra", kind: "design" }, { member: "lyra", kind: "spec" }],
+        produce: () => {
+          calls++;
+          throw new Error("simulated member timeout");
+        },
+      }),
+    });
+
+    const r1 = daemon.tick();
+    expect(calls).toBe(1);
+    const entry = r1.entries.find((e) => e.unit === "loyalty-flow")!;
+    expect(entry.outcome.outcome).toBe("blocked");
+    const unitDir = join(root, "work/storefront/loyalty-flow");
+    const blocked = readFileSync(join(unitDir, "design-loyalty-flow-v1.md"), "utf8");
+    expect(blocked).toContain("status: blocked");
+    expect(blocked).toContain("simulated member timeout");
+
+    // The daemon is still alive and keeps ticking normally — a member failure never crashes it.
+    const r2 = daemon.tick();
+    expect(r2.entries.length).toBeGreaterThan(0);
+    // Never retried: the blocked artifact occupies design's slot, so the daemon halts there instead.
+    expect(calls).toBe(1);
+  });
+});
+
+describe("(e) concurrency safety: a single-threaded work queue", () => {
+  test("many rapid ticks never invoke a member twice for the same producible kind", () => {
+    resolveGate(root, "storefront", "loyalty-flow", "start", { today: "2026-07-12" });
+    resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
+
+    const { runner, calls } = countingRunner(root);
+    const daemon = new Daemon(root, { memberRunner: () => runner });
+    // 30 rapid repeated ticks — simulating a burst of repo-change signals — must produce `design`
+    // exactly once (it halts there; spec is behind an unresolved gate).
+    for (let i = 0; i < 30; i++) daemon.tick();
+    expect(calls).toEqual([{ member: "lyra", kind: "design" }]);
+  });
+
+  test("tick() refuses to run re-entrantly (the mutex itself), rather than interleaving", () => {
+    // A member call that itself (synchronously) tries to trigger another tick — the one genuine
+    // reentrancy hazard possible with today's fully-synchronous MemberRunner boundary — must be
+    // refused by the same single-flight guard the watcher-driven loop relies on, not silently allowed
+    // to interleave two unit-walks against the same on-disk state. A fresh, immediately-walkable unit
+    // (case b) guarantees `produce` genuinely fires within this tick.
+    const unitDir = join(root, "work/storefront/widget-tweak");
+    mkdirSync(unitDir, { recursive: true });
+    writeFileSync(join(unitDir, "unit.md"), "---\ntype: feature\nstatus: active\n---\n\n# widget-tweak\n\nReentrancy test fixture unit.\n");
+
+    let sawReentrantThrow = false;
+    const inner = new Daemon(root, {
+      memberRunner: () => ({
+        capabilities: () => [{ member: "wren", kind: "product-brief" }],
+        produce: (member, kind, unit, project) => {
+          try {
+            inner.tick();
+          } catch (e) {
+            sawReentrantThrow = /already in progress/.test(String(e));
+          }
+          return stubAdapterRunner(loadRepo(root)).produce(member, kind, unit, project);
+        },
+      }),
+    });
+    inner.tick();
+    expect(sawReentrantThrow).toBe(true);
+  });
+});
+
+describe("(f) budget halts stop the walk without crashing or silently dropping the reason", () => {
+  test("a unit already over budget halts with a visible reason instead of producing further", () => {
+    const unitDir = join(root, "work/storefront/loyalty-flow");
+    resolveGate(root, "storefront", "loyalty-flow", "start", { today: "2026-07-12" });
+    // product-brief's canned usage.usd is 0.06 (fixtures/stubs/member-stub.ts) — set a budget below
+    // that so the very next production attempt is already over it.
+    const unitSrc = readFileSync(join(unitDir, "unit.md"), "utf8").replace("budget: 15.00", "budget: 0.01");
+    writeFileSync(join(unitDir, "unit.md"), unitSrc);
+    resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
+
+    const { runner, calls } = countingRunner(root);
+    const daemon = new Daemon(root, { memberRunner: () => runner });
+    const result = daemon.tick();
+    expect(calls).toEqual([]); // never invoked — the budget check runs before production.
+    const entry = result.entries.find((e) => e.unit === "loyalty-flow")!;
+    expect(entry.outcome.outcome).toBe("halted");
+    expect((entry.outcome as { reason: string }).reason).toContain("budget");
+    expect(daemon.recentActivity().some((e) => e.outcome.outcome === "halted" && (e.outcome as { reason: string }).reason.includes("budget"))).toBe(true);
+  });
+});

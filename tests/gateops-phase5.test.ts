@@ -70,8 +70,12 @@ describe("(f) POST /gates/:project/:unit/start invokes the flow", () => {
       expect(produced).toContain("status: in-review");
       expect(produced).toContain("unit: loyalty-flow");
 
+      // Phase 8 gate-review fix (NOTES.md O6): the commit's CONTENT is entirely a member's own output
+      // (wren's product brief) — the Conductor's start click made the invocation legal, but authorship
+      // reflects who wrote the file, not who triggered the write, so this is the runner identity, not
+      // the Conductor's.
       const log = spawnSync("git", ["-C", root, "log", "-1", "--format=%an|%ae|%s"], { encoding: "utf8" }).stdout.trim();
-      expect(log).toContain("cas|cas@levare.local|start loyalty-flow");
+      expect(log).toContain("levare-runner|runner@levare.local|start loyalty-flow");
 
       // The whole repo — including checkout-flow's own, separately-created product-brief-v1 — still
       // validates: no DUPLICATE_ID between the two units' product-brief artifacts in "storefront".
