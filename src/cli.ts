@@ -8,6 +8,7 @@ import { assembleContext } from "./context.ts";
 import { runDoctor } from "./doctor.ts";
 import { CAPABILITIES } from "../fixtures/stubs/member-stub.ts";
 import { serve } from "./board/serve.ts";
+import { scaffoldStudio } from "./init.ts";
 
 // Until the studio repo root is populated, the fixture golden tree stands in as the studio (NOTES
 // A1); context/doctor default their root there. `--root <path>` overrides.
@@ -84,6 +85,22 @@ export function runDoctorCmd(rest: string[]): number {
   }
 }
 
+// `levare init [path]` — scaffold an empty (or not-yet-a-studio) directory into a working studio:
+// the skeleton, the five type templates, one example team with its agents, a sample skill, a
+// .devcontainer/, and a starter README (§3, phase 6). Never overwrites an existing file.
+export function runInitCmd(rest: string[]): number {
+  const target = rest.find((a) => !a.startsWith("-")) ?? ".";
+  const result = scaffoldStudio(target);
+  console.log(`levare init · ${target}`);
+  console.log(`  ${result.created.length} file(s)/dir(s) created`);
+  if (result.skipped.length > 0) {
+    console.log(`  ${result.skipped.length} file(s) already existed and were left untouched:`);
+    for (const s of result.skipped) console.log(`    ${s}`);
+  }
+  console.log(`Next: levare validate ${target}    ·    levare serve ${target}`);
+  return 0;
+}
+
 // `levare serve [root] [--port N] [--read-only]` — the board (§9): four screens, SSE live
 // updates, three write routes. Read-only when --read-only is passed, or by default when root sits
 // under a fixtures/ tree (NOTES E14).
@@ -101,7 +118,8 @@ export function runServeCmd(rest: string[]): number {
 
 function usage(): number {
   console.error(
-    "usage: levare validate <path>\n" +
+    "usage: levare init [path]\n" +
+      "       levare validate <path>\n" +
       "       levare replay <path> --stubs\n" +
       "       levare context <agent> --unit <unit> [--step <step>] [--root <path>] [--dry-run]\n" +
       "       levare doctor [root]\n" +
@@ -113,6 +131,8 @@ function usage(): number {
 export function main(argv: string[]): number {
   const [command, ...rest] = argv;
   switch (command) {
+    case "init":
+      return runInitCmd(rest);
     case "validate": {
       const path = rest[0];
       if (!path) return usage();

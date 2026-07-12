@@ -14,11 +14,15 @@ import { validatePath } from "../validate.ts";
 import type { Verb } from "../runner.ts";
 import { conductorCommit, CONDUCTOR_NAME } from "../git.ts";
 import { handle as orchestratorHandle } from "../orchestrator.ts";
+import { isStudioInitialized, renderOnboarding } from "./onboarding.ts";
 
 export interface RouteDef {
   method: "GET" | "POST";
   pattern: string;
   mutating: boolean;
+  /** A repo-projecting screen (as opposed to an asset/SSE/write route) — gated by the first-run
+   * onboarding check (NOTES phase-6 deliverable b) before its handler ever runs. */
+  page?: boolean;
   handler: (req: Request, params: Record<string, string>, ctx: BoardCtx) => Response | Promise<Response>;
 }
 
@@ -64,6 +68,7 @@ export const ROUTES: RouteDef[] = [
     method: "GET",
     pattern: "/",
     mutating: false,
+    page: true,
     // Renders studio directly (200), not a redirect: a plain `curl /` with no `-L` must see real
     // content, not a bounce (NOTES E12 — the phase-4 gate demonstration curls `/` directly).
     handler: (_req, _params, ctx) => html(renderStudio(withRepo(ctx.root), ctx.root)),
@@ -72,24 +77,28 @@ export const ROUTES: RouteDef[] = [
     method: "GET",
     pattern: "/studio",
     mutating: false,
+    page: true,
     handler: (_req, _params, ctx) => html(renderStudio(withRepo(ctx.root), ctx.root)),
   },
   {
     method: "GET",
     pattern: "/project/:name",
     mutating: false,
+    page: true,
     handler: (_req, params, ctx) => html(renderProject(withRepo(ctx.root), params.name)),
   },
   {
     method: "GET",
     pattern: "/run/:project/:unit",
     mutating: false,
+    page: true,
     handler: (_req, params, ctx) => html(renderRun(withRepo(ctx.root), params.project, params.unit, ctx.root)),
   },
   {
     method: "GET",
     pattern: "/registry",
     mutating: false,
+    page: true,
     handler: (req, _params, ctx) => {
       const entity = new URL(req.url).searchParams.get("entity") ?? undefined;
       return html(renderRegistry(withRepo(ctx.root), ctx.root, entity));
@@ -308,6 +317,12 @@ export function createBoard(root: string, opts: { readOnly?: boolean } = {}): Bo
       const url = new URL(req.url);
       const matched = matchRoute(req.method, url.pathname);
       if (!matched) return json({ ok: false, error: "not found" }, 404);
+      // First-run experience (phase 6b): a repo-projecting screen against a root that isn't yet a
+      // studio explains that and suggests `levare init`, instead of loadRepo throwing on a missing
+      // root or every screen rendering its ordinary "nothing here" empty state with no next step.
+      if (matched.route.page && !isStudioInitialized(ctx.root)) {
+        return html(renderOnboarding(ctx.root));
+      }
       // Enforced ahead of the handler, not inside it: a read-only board's write routes cannot run at
       // all, by construction — there is no handler code path left to accidentally trigger a mutation.
       if (matched.route.mutating && ctx.readOnly) {

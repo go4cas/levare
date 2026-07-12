@@ -152,9 +152,14 @@ export function assembleContext(repo: Repo, opts: AssembleOptions): string {
 }
 
 // Read an entity's markdown body (frontmatter stripped) from a registry dir, or a not-found marker.
+// A referenced name resolves to either the flat convention (`<dir>/<name>.md`) or the Agent Skills
+// folder convention (`<dir>/<name>/SKILL.md`, a directory bundling the skill with its own supporting
+// files) — the latter matters for `skills/`, where the golden/scaffolded `new-project` skill lives.
 function readEntityBody(root: string, dir: string, name: string): string {
-  const file = join(root, dir, `${name}.md`);
-  if (!existsSync(file)) return `(not found: ${dir}/${name}.md)`;
+  const flat = join(root, dir, `${name}.md`);
+  const bundled = join(root, dir, name, "SKILL.md");
+  const file = existsSync(flat) ? flat : existsSync(bundled) ? bundled : null;
+  if (!file) return `(not found: ${dir}/${name}.md)`;
   const { body } = parseFrontmatter(readFileSync(file, "utf8"));
   return body.trim();
 }

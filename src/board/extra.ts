@@ -3,7 +3,7 @@
 // directly — loaded here, independently, so repo.ts's shape (and the tests that pin it) stays
 // untouched.
 
-import { readdirSync, readFileSync, existsSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parseFrontmatter, type YamlValue } from "../yaml.ts";
 
@@ -13,13 +13,26 @@ export interface Entity {
   body: string;
 }
 
+// Each directory entry is either a flat `<name>.md` file or (the Agent Skills convention, used by
+// e.g. `skills/new-project/`) a folder containing its own `SKILL.md` bundled with supporting files —
+// both resolve to one registry entity so the registry screen doesn't silently omit the latter.
 function loadDir(dir: string): Entity[] {
   if (!existsSync(dir)) return [];
   const out: Entity[] = [];
   for (const name of readdirSync(dir).sort()) {
-    if (!name.endsWith(".md")) continue;
-    const { data, body } = parseFrontmatter(readFileSync(join(dir, name), "utf8"));
-    out.push({ name: String(data.name ?? name.replace(/\.md$/, "")), data, body: body.trim() });
+    let file: string;
+    let stem: string;
+    if (name.endsWith(".md")) {
+      file = join(dir, name);
+      stem = name.replace(/\.md$/, "");
+    } else if (statSync(join(dir, name)).isDirectory() && existsSync(join(dir, name, "SKILL.md"))) {
+      file = join(dir, name, "SKILL.md");
+      stem = name;
+    } else {
+      continue;
+    }
+    const { data, body } = parseFrontmatter(readFileSync(file, "utf8"));
+    out.push({ name: String(data.name ?? stem), data, body: body.trim() });
   }
   return out;
 }
