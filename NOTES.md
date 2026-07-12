@@ -2385,11 +2385,10 @@ never produced) and pass under the per-kind walk (a build team produces `code`, 
 ## R3. Deferred, requiring a Conductor ruling (written up, not guessed — see docs/code-review.md §4)
 - **Invariant 6** (merge gate / spike-never-merges): no merge surface exists; `checkGuardrails` is a
   ready but unwired deliverable. Needs the build-team/merge phase (entangled with C4 build teams + K5).
-- **Invariant 7** (`mode: led`): parsed but inert (nothing branches on it). Needs a decision on what
-  `led` changes before it can be wired.
-- **C3 on the daemon**: the daemon re-halts every tick while `spent > budget` (no C3 acknowledgment
-  memory, unlike the Runner engine). Ruling needed: does "informs, never spams" bind the autonomous
-  daemon, or is a hard re-halt the intended posture?
+- ~~**Invariant 7** (`mode: led`)~~ — **CLOSED, PRD v1.1 (see R4).** Ratified as cut; the field is now
+  removed from the schema and actively rejected.
+- ~~**C3 on the daemon**~~ — **CLOSED, PRD v1.1 (see R4).** Ratified: "informs, never spams" binds the
+  daemon too; the budget gate now halts the unit and carries continue/raise/stop memory.
 - **C5 on the board surface**: `doApprove`/`applyLoopCompanionApproval` bypass `applyApproval`'s
   name+ISO format guard (validate presence only; safe because the string is hard-constructed).
   Recommended follow-up: route both through `applyApproval`.
@@ -2397,3 +2396,66 @@ never produced) and pass under the per-kind walk (a build team produces `code`, 
 - **Runner⇄dagwalk/gates duplication** (resolveStep, untilSatisfied, the C8/after: computation): the
   recommended end state is a leaf module both engines import, breaking the gates→runner import cycle
   that motivates the hand-synced copies (C7's own lesson, applied to the one place it was not).
+
+## R4. PRD v1.1 reconciliation — `mode` removed, C3 budget behaviour on the daemon
+Two clauses the v1.1 amendment ratified but the code did not yet do (both listed unresolved in R3).
+
+**(1) `mode` cut from the team schema (amendment §3, invariant 7 restated).** Removed the inert field
+end-to-end: the `Team.mode` type (`types.ts`), its parser default (`repo.ts#toTeam`), and the
+`TEAM_SCHEMA` enum field (`validate.ts`). Nothing ever branched on it, so there were no code paths to
+unwind — it was dead data. The removal is *diagnostic*, not silent: the validator's schema DSL gained a
+`removed?: Record<string,name→message>` map, and `validateAgainstSchema` checks it *before* the
+generic unknown-key path, so a definition still declaring `mode:` fails with **`REMOVED_FIELD`** naming
+the field and the version ("removed in PRD v1.1 … no `mode: led` escape hatch") rather than a bare
+`UNKNOWN_KEY`. An old studio gets a diagnosis. The `team-bad-mode` rejection fixture now carries the
+once-valid `mode: declarative` and asserts `REMOVED_FIELD` (it used to assert `BAD_ENUM` on `bossy`);
+a dedicated test asserts the message names `mode` + `v1.1` and is *not* swallowed as an unknown key.
+The golden/init/multiteam team fixtures dropped their `mode:` line so they still validate clean.
+
+**(2) C3 budget behaviour on the daemon (amendment §5).** Previously the daemon re-halted every tick
+while `spent > budget` with no acknowledgment memory (R3's open question). Now it mirrors
+`runner.ts#overBudget` — the difference is only *where the resolution comes from* (out-of-band, not an
+interactive `DecisionSource`):
+- `dagwalk.ts#advanceUnit` gained a distinct **`budget-gate`** outcome (carrying `spent`/`budget`),
+  raised — before producing anything — when the ledger crosses the *effective* budget AND no prior
+  `continue`/`raise` acknowledged this level. A plain `halt` couldn't carry the "this is a budget gate
+  the Conductor can resolve" signal. Budget state arrives via a new `opts.budget: { eff?, ack? }`.
+- The **`Daemon`** owns the per-unit C3 memory in-process (it is the one long-lived process, so that is
+  "the run"): `budgetEff` (a `raise`-lifted budget), `budgetAck` (the acknowledged spend), and
+  `openBudgetGates` (raised, awaiting the Conductor). Each tick passes `{eff, ack}` per unit; a
+  `budget-gate` outcome records the open gate, any other outcome clears it. Strictly per-unit — a
+  sibling unit in the same project is never touched (the halt is a `return` inside the per-unit loop).
+- `Daemon.resolveBudget(project, unit, verb)`: `continue` sets `ack = spent` (gate won't re-raise
+  until a *new* threshold beyond it); `raise` also lifts `budgetEff = spent` for the rest of the run
+  (observable via `effectiveBudget()`); `stop` pauses the unit **on disk** (`status → paused`,
+  Conductor-attributed commit) so the daemon's disk-truth re-derivation skips it thereafter. The board
+  gate route (`serve.ts`) routes the unit-targeted verbs `continue|raise|stop` here instead of through
+  the artifact-gate machinery, then `notify()`s so the walk resumes in the same interaction.
+
+Tests (`tests/daemon.test.ts`): (h) an over-budget unit sits at its gate and never advances until
+resolved while a solvent sibling advances freely; (i) `continue` resumes the walk and the gate
+re-raises only at the *next* spend threshold ($0.06→$0.16), and `raise` lifts the effective budget
+above the declared one; (j) `stop` pauses the unit on disk and the daemon stops walking it. Existing
+budget test (f) updated `halted`→`budget-gate`.
+
+*Uncertainty recorded:* `stop` persists `status: paused` to disk (faithful to invariant 2 / "files are
+the truth", survives a restart, agrees with the board's disk-derived view) rather than an in-memory
+flag. `continue`/`raise` memory stays in-process, exactly as the Runner's does — a daemon restart
+re-raises the gate at the current spend, which is the safe direction (re-ask, never silently proceed).
+
+## R5. Known tension — budget acknowledgments live in-process, not on disk
+The C3 acknowledgment memory added in R4 (`continue`/`raise` → `budgetAck`/`budgetEff`) is held
+in-process on the `Daemon`, not on disk. So a daemon restart re-raises a budget gate the Conductor had
+already acknowledged. This **fails safe** (the Conductor is asked again, never a silent overspend) and
+it mirrors the Runner engine's own in-memory maps — but it bends **invariant 2**: an acknowledgment is
+a Conductor decision, and Conductor decisions belong in the repo (files are the truth).
+
+**Accepted for v1** on the grounds that an acknowledgment is *session-scoped* ("continue for now")
+rather than a durable fact about an artifact — unlike an approval, which is a permanent property of the
+thing approved and *is* persisted (status + `approved_by` + `approved_commit`). `raise`'s effective
+budget and `stop`'s pause are the durable edges: `stop` already persists (`status: paused`, committed);
+a lifted budget is the one arguably-durable piece still kept only in memory.
+
+**Revisit if the daemon becomes long-lived:** at that point acknowledgments (and the raised effective
+budget) should be persisted and committed like every other Conductor decision — most naturally as
+frontmatter on the unit, so a restart re-derives them from disk with everything else.
