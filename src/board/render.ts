@@ -557,6 +557,10 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
         n.state === "done" ? `<span class="chip is-approved sstep__chip">approved</span>`
         : n.state === "gate" ? `<span class="chip is-gate sstep__chip">needs you</span>`
         : n.state === "rejected" ? `<span class="chip sstep__chip" style="color:var(--danger)">rejected</span>`
+        // NOTES F3: a blocked-status artifact (a member ran and failed) previously showed only a small
+        // colored dot with no label — the reason itself (now including the member's stderr) is a click
+        // away via the artifact link already rendered in `sub`, but nothing told the Conductor to click.
+        : n.state === "blocked" ? `<span class="chip sstep__chip" style="color:var(--danger)">blocked</span>`
         : "";
       const sub = n.artifact
         ? `${esc(n.artifact.produced_by)} &middot; ${artifactTokenLink(n.artifact.project, n.artifact.unit, n.artifact.id, artifactFileName(n.artifact))}`

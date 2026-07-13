@@ -2543,3 +2543,85 @@ that must fail loudly to the operator rather than mutate a fixture tree, but it 
 when a step can't bind" answer now lives in two places. That is the same runner⇄dagwalk duplication R3
 already tracks (`resolveStep`, `untilSatisfied`, the C8 computation); F1 adds one more entry to the
 list of things a shared leaf module would unify.
+
+## F3. A real member's failure said "exited 1" and nothing else — an hour of live debugging to learn what F1/F2 already knew
+**Found by the Conductor, debugging a real failing CLI member (`rook`) live (2026-07-13):** the
+blocked artifact said `cli member 'rook' exited 1`. No stderr. No argv. No cwd. Nothing to act on. The
+only way to learn *why* was to build an external environment-dumping spy CLI in place of the real
+member — which is itself a secret-leak hazard (invariant 11): a spy built under time pressure to solve
+"I have no diagnosis" has every incentive to dump `process.env` wholesale to find the answer fast.
+
+**The defect, in three parts — none of them new categories, all three already fixed once for a
+DIFFERENT symptom.** F1 fixed "the walk can't bind a step" by blocking loudly with a reason. F2 proved
+the env allowlist reaches a real spawned child. Neither touched what happens **after** a real,
+correctly-bound, correctly-scoped member is genuinely spawned and fails: `adapters.ts#runCli` (pre-F3)
+turned any non-zero exit or timeout into exactly `cli member '<member>' exited <N>` — the member's own
+stderr was captured by `bunSpawn` (`stderr: "pipe"`) and then **thrown away**, never attached to the
+`SpawnResult` at all. `dagwalk.ts#writeBlocked` faithfully persists whatever message it's given
+(NOTES F1's own blocked-artifact mechanism) — the diagnosis gap was entirely upstream, in what
+`runCli` chose to say. Separately, a misconfigured `cwd` or an unresolvable `argv[0]` were never
+checked before `Bun.spawn`, so those failed the same opaque way a *working* member's crash did — three
+different root causes (bad cwd, bad binary, member's own bug) all collapsed into one indistinguishable
+"exited N".
+
+**The fix, in four parts.**
+1. **Stderr reaches the reason.** `SpawnResult` gains an optional `stderr` field; `bunSpawn` decodes
+   it from `Bun.spawnSync`'s already-piped stderr (it was being captured and discarded). `runCli`
+   appends the last 2000 chars (`truncateTail`) plus the argv actually used to both the exit-code and
+   the timeout `AdapterError` message — an unbounded member's error output can never grow a blocked
+   artifact (and its git commit) without bound. `dagwalk.ts` needed no change: `writeBlocked` already
+   persists `error.message` verbatim: the fix is entirely in what message `runCli` constructs.
+2. **Pre-flight the spawn** (`adapters.ts#preflightCli`): before argv reaches `bunSpawn`, verify (a)
+   a resolved `cwd` exists and is a directory, (b) `argv[0]` resolves — an absolute/relative path
+   checked with `statSync`+`accessSync(X_OK)`, a bare name checked via `Bun.which` against the
+   member's own allowlisted `PATH`. Either failure throws a precise, member-attributed
+   `agent '<member>': cwd '<path>' does not exist` / `command '<argv0>' not found on PATH` before any
+   process is spawned. Scoped to `this.spawn === bunSpawn` only — a test-injected `CliSpawn` is a pure
+   behavioural stand-in (several existing tests deliberately drive unreal argv like `codex`, which
+   this sandbox never installs) and never touches the filesystem, so it was never subject to the
+   failure mode this guards.
+3. **The daemon's console mirrors the artifact-level case, not just the unit-level one.** F1 added a
+   `console.error` for `outcome.outcome === "unbindable"`; nothing mirrored it for
+   `outcome.outcome === "blocked"` (a member that ran and failed) — the asymmetry meant a human
+   watching `levare serve` saw the studio-misconfiguration case but not the member-crashed case. Fixed
+   in `daemon.ts#tickOnce`. The run-view score-step row (`board/render.ts`) also gained a `blocked`
+   chip — the state previously rendered as an unlabelled colored dot; the full reason was always a
+   click away (`renderArtifact` shows the complete, untruncated body), but nothing told the Conductor
+   there was something to click.
+4. **A generalised redaction guard** (`env.ts#describeMemberEnv`): doctor.ts already got this right —
+   `EnvProbe.has()` reads presence only, values never touched. `describeMemberEnv` gives every OTHER
+   diagnostic surface the same obviously-safe shape (`{name, present: true}[]`), so a future log/board
+   panel that wants to say "what env did this member get" has no reason to reach for
+   `buildMemberEnv`'s real `Record<string, string>` outside the spawn boundary itself.
+
+**Investigated, not reproduced: the subset-YAML single-quote question.** Asked whether
+`command: ['/tmp/foo.sh']` mis-parses to argv0 `'/tmp/foo.sh'` (quotes included) — a plausible-sounding
+cause for an "unresolvable binary" failure. It does not. `parseScalarAtom` dispatches single-quoted
+tokens to `parseSingleQuoted` (`t.slice(1, -1).replace(/''/g, "'")`) exactly like double-quoted tokens
+dispatch to `parseDoubleQuoted` — both strip their surrounding quote characters, and
+`parseInlineSequence` routes every element of a `[...]` array (including `command:`'s own elements)
+through that same `parseScalarAtom`, with no special-casing for list context. Verified directly
+(`parse("command: ['/tmp/foo.sh']")` → `{"command":["/tmp/foo.sh"]}`) and pinned with regression tests
+covering bare, single-quoted, double-quoted, and mixed elements, plus YAML's `''`-escapes-a-literal-
+quote rule (`tests/yaml.test.ts`). No fix needed here — the gap was entirely in what `runCli` reported
+after a real spawn, never in how argv got built.
+
+**Uncertainties recorded, not guessed.**
+- **Pre-flight is scoped to the real spawn boundary, not the `CliSpawn` interface.** Applying it
+  unconditionally would have meant either rewriting every test that deliberately drives an unreal
+  argv (several already exist, testing shell-injection safety) or weakening the check. A mocked
+  `CliSpawn` never touches the OS, so it was never the thing Bun's opaque-failure mode threatened.
+- **The stderr tail is 2000 chars, not the full stream.** A member that floods stderr must not grow
+  its blocked artifact — and the git commit that carries it — without bound. 2000 chars is enough to
+  show a stack trace or a license-check message; it is not an audit log.
+- **The redaction guard is additive, not enforced by a lint rule.** `describeMemberEnv` exists so the
+  SAFE path is also the EASY path; nothing currently in the codebase calls `buildMemberEnv`'s output
+  from a log/console/artifact/commit site (checked directly — see `tests/diagnostics.test.ts`, which
+  drives a real granted secret through a real failing subprocess, the daemon, and a real git commit,
+  and asserts the value appears in none of them), so there was nothing to retrofit onto the guard
+  today. A static check that no `console.*`/`writeFileSync`/commit call ever closes over a
+  `buildMemberEnv` result is future work, not this fix.
+
+**Still open:** the daemon's new `blocked`-outcome console line and the pre-existing `unbindable` one
+are two near-identical `console.error` calls in `tickOnce` with no shared formatter — a small
+duplication, not a defect, and in the same family as the runner⇄dagwalk duplication R3 tracks.

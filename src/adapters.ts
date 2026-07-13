@@ -12,6 +12,8 @@
 // is identical and `unreported` is recorded honestly when a member gives nothing. The doc itself is
 // never trusted from the member: the Runner re-validates it against the artifact contract.
 
+import { existsSync, statSync, accessSync, constants as fsConstants } from "node:fs";
+import { isAbsolute, join as pathJoin } from "node:path";
 import { parseFrontmatter } from "./yaml.ts";
 import { normalizeReceipt } from "./receipts.ts";
 import { buildMemberEnv } from "./env.ts";
@@ -101,6 +103,14 @@ export interface SpawnResult {
   stdout: string;
   exitCode: number;
   timedOut: boolean;
+  /**
+   * The member's captured stderr (NOTES F3: a bare "exited 1" is a symptom, not a diagnosis — the
+   * member's own error output is what actually tells a Conductor why). Optional so existing
+   * test-double `CliSpawn` implementations that predate this field keep compiling/running unchanged;
+   * treated as "" wherever absent. Never carries an env value — it is exactly what the member's own
+   * process wrote to fd 2, nothing levare adds to it.
+   */
+  stderr?: string;
 }
 
 /** The CLI spawn boundary — wraps Bun.spawnSync so tests can drive the adapter without real procs. */
@@ -125,6 +135,7 @@ export const bunSpawn: CliSpawn = {
       // Bun's own timeout flag — the authoritative signal. A slow-but-successful member (which exits
       // 0 on its own) is never misread as timed out, and a plain non-zero exit stays a non-zero exit.
       timedOut: proc.exitedDueToTimeout === true,
+      stderr: proc.stderr ? new TextDecoder().decode(proc.stderr) : "",
     };
   },
 };
@@ -161,6 +172,50 @@ function defaultCliCommand(req: InvokeRequest): string[] {
   if (!template || template.length === 0) throw new AdapterError(`cli agent '${req.member}' has no command template`);
   const feature = req.agent.cwd ?? ".";
   return template.map((element) => element.replace(/\{task\}/g, req.kind).replace(/\{feature_repo\}/g, feature));
+}
+
+/**
+ * NOTES F3: before handing argv/cwd to Bun.spawn, verify the two things that make Bun.spawn fail with
+ * an opaque, contextless nonzero exit (or, for a bad cwd, a Node-level ENOENT with no member context
+ * at all): (a) the resolved cwd exists and is a directory, and (b) argv[0] resolves to something
+ * actually executable — either an absolute/relative path on disk or a bare name on PATH. Either
+ * failure throws a precise, member-attributed AdapterError BEFORE any process is spawned, so a
+ * misconfigured studio never surfaces as a bare "exited N" with nothing to go on.
+ */
+function preflightCli(member: string, argv: string[], cwd: string | undefined, pathEnv: string | undefined): void {
+  if (cwd !== undefined) {
+    if (!existsSync(cwd)) throw new AdapterError(`agent '${member}': cwd '${cwd}' does not exist`);
+    if (!statSync(cwd).isDirectory()) throw new AdapterError(`agent '${member}': cwd '${cwd}' is not a directory`);
+  }
+  const argv0 = argv[0];
+  if (!argv0) throw new AdapterError(`agent '${member}': command has no argv[0]`);
+  if (argv0.includes("/")) {
+    const resolved = isAbsolute(argv0) ? argv0 : pathJoin(cwd ?? process.cwd(), argv0);
+    if (!isExecutableFile(resolved)) {
+      throw new AdapterError(`agent '${member}': command '${argv0}' is not an executable file (resolved to '${resolved}')`);
+    }
+  } else if (Bun.which(argv0, { PATH: pathEnv ?? "" }) === null) {
+    throw new AdapterError(`agent '${member}': command '${argv0}' not found on PATH`);
+  }
+}
+
+function isExecutableFile(p: string): boolean {
+  try {
+    const st = statSync(p);
+    if (!st.isFile()) return false;
+    accessSync(p, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Last N chars of a string, trimmed — the truncated stderr tail attached to a CLI failure reason
+// (NOTES F3). Never the full stderr: an unbounded member's error output must not grow a blocked
+// artifact (and its git commit) without bound.
+function truncateTail(s: string, maxLen: number): string {
+  const trimmed = s.trim();
+  return trimmed.length <= maxLen ? trimmed : trimmed.slice(-maxLen);
 }
 
 /**
@@ -217,9 +272,21 @@ export class AdapterRunner implements MemberRunner {
     // A `cwd` template that still holds an unresolved `{…}` (no feature repo bound this run) is not a
     // real directory — spawn in the default cwd rather than fail on a bogus path.
     const cwd = agent.cwd && !agent.cwd.includes("{") ? agent.cwd : undefined;
+    // NOTES F3: pre-flight ONLY guards the real `bunSpawn` boundary — the one that actually hands argv
+    // to the OS and can fail with an opaque, contextless nonzero exit. A test-injected `CliSpawn` is a
+    // stand-in for arbitrary behaviour (including deliberately-fake argv[0]s like "codex" that this
+    // sandbox never installs) and never touches the filesystem or PATH, so it is never subject to the
+    // failure mode this guards against.
+    if (this.spawn === bunSpawn) preflightCli(req.member, argv, cwd, req.env.PATH);
     const result = this.spawn.run(argv, { env: req.env, cwd, timeoutMs });
-    if (result.timedOut) throw new AdapterError(`cli member '${req.member}' timed out after ${agent.timeout ?? 600}s`);
-    if (result.exitCode !== 0) throw new AdapterError(`cli member '${req.member}' exited ${result.exitCode}`);
+    const tail = truncateTail(result.stderr ?? "", 2000);
+    const stderrSuffix = tail ? `\nstderr (last ${tail.length} chars):\n${tail}` : "";
+    if (result.timedOut) {
+      throw new AdapterError(`cli member '${req.member}' timed out after ${agent.timeout ?? 600}s (argv: ${JSON.stringify(argv)})${stderrSuffix}`);
+    }
+    if (result.exitCode !== 0) {
+      throw new AdapterError(`cli member '${req.member}' exited ${result.exitCode} (argv: ${JSON.stringify(argv)})${stderrSuffix}`);
+    }
     return result.stdout;
   }
 

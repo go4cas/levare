@@ -1,6 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import { loadRepo } from "../src/repo.ts";
-import { buildMemberEnv, grantedConnectors, ENV_BASELINE } from "../src/env.ts";
+import { buildMemberEnv, describeMemberEnv, grantedConnectors, ENV_BASELINE } from "../src/env.ts";
 
 // Security posture (§6, invariant 11): a member's spawned environment is an ALLOWLIST — only the
 // vars its granted connectors name, plus a minimal PATH/HOME baseline. Never a denylist over
@@ -71,5 +71,35 @@ describe("env scoping — allowlist only", () => {
     const env = buildMemberEnv(repo, "lyra", { PATH: "/bin" }); // no HOME in base
     expect(env.PATH).toBe("/bin");
     expect("HOME" in env).toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// NOTES F3: the redaction guard. doctor.ts already gets this right (it reads presence via `EnvProbe`,
+// never a value); `describeMemberEnv` generalises that same shape so any FUTURE diagnostic that wants
+// to show "what env did this member get" has an obviously-safe way to do it, one that structurally
+// cannot carry a value — never a reason to reach for `buildMemberEnv`'s own `Record<string, string>`
+// (which is real values, for the spawn boundary only) in a log/console/artifact/commit context.
+// -----------------------------------------------------------------------------
+describe("describeMemberEnv — the redaction guard (NOTES F3)", () => {
+  test("names only: every entry is a bare {name, present}, never the value", () => {
+    const repo = loadRepo(ROOT);
+    repo.agents.get("finch")!.connectors = ["github"];
+    const env = buildMemberEnv(repo, "finch", HOSTILE);
+    const described = describeMemberEnv(env);
+    expect(described).toEqual([
+      { name: "GITHUB_TOKEN", present: true },
+      { name: "HOME", present: true },
+      { name: "PATH", present: true },
+    ]);
+    // No entry's serialized form ever contains any real value that was in `env`.
+    const serialized = JSON.stringify(described);
+    for (const value of Object.values(env)) {
+      expect(serialized).not.toContain(value);
+    }
+  });
+
+  test("an empty env describes as an empty list, never throws", () => {
+    expect(describeMemberEnv({})).toEqual([]);
   });
 });

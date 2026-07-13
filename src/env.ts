@@ -55,3 +55,19 @@ export function buildMemberEnv(
   }
   return env;
 }
+
+/**
+ * NOTES F3 — the redaction guard, generalised from doctor.ts's `EnvProbe` (which already reads
+ * presence only, never values, per invariant 11). Any diagnostic that wants to SHOW a member's env —
+ * a log line, a console message, a future board panel — must describe it through this function, never
+ * by handing the `Record<string, string>` a `buildMemberEnv` call actually returns to a
+ * console.log/writeFileSync/commit call. It carries the variable NAME and, deliberately, only a
+ * `present: true` marker (every entry it returns already passed the allowlist, so "present" is
+ * always true here — the shape exists so a caller can never accidentally destructure a `.value`
+ * field that doesn't exist).
+ */
+export function describeMemberEnv(env: Record<string, string>): Array<{ name: string; present: true }> {
+  return Object.keys(env)
+    .sort()
+    .map((name) => ({ name, present: true as const }));
+}

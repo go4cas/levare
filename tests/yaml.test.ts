@@ -39,6 +39,40 @@ describe("subset-YAML collections", () => {
     expect(v.empty).toEqual([]);
   });
 
+  // NOTES F3: a `command: [...]` argv template is exactly this shape — an inline sequence whose
+  // elements go straight to Bun.spawn as argv. Every quoting style must yield the RAW string (no
+  // surrounding quote characters survive into argv[0]), or a definition like `command: ['/tmp/foo.sh']`
+  // would silently spawn the literal, unrunnable path `'/tmp/foo.sh'` (quotes and all) instead of
+  // `/tmp/foo.sh` — a broken argv that fails opaquely, never a validation error naming the real cause.
+  describe("command-array elements — bare, single-quoted, and double-quoted (NOTES F3)", () => {
+    test("a bare (unquoted) path element is passed through untouched", () => {
+      const v = parse("command: [/tmp/foo.sh]") as Record<string, unknown>;
+      expect(v.command).toEqual(["/tmp/foo.sh"]);
+    });
+
+    test("a single-quoted path element has its quotes stripped, not carried into argv", () => {
+      const v = parse("command: ['/tmp/foo.sh']") as Record<string, unknown>;
+      expect(v.command).toEqual(["/tmp/foo.sh"]);
+      expect((v.command as string[])[0]).not.toContain("'");
+    });
+
+    test("a double-quoted path element has its quotes stripped, not carried into argv", () => {
+      const v = parse('command: ["/tmp/foo.sh"]') as Record<string, unknown>;
+      expect(v.command).toEqual(["/tmp/foo.sh"]);
+      expect((v.command as string[])[0]).not.toContain('"');
+    });
+
+    test("mixed bare/single/double elements in one command array all resolve to their raw content", () => {
+      const v = parse(`command: [codex, '--flag=it''s on', "--repo", /tmp/x]`) as Record<string, unknown>;
+      expect(v.command).toEqual(["codex", "--flag=it's on", "--repo", "/tmp/x"]);
+    });
+
+    test("a single-quoted element containing a literal apostrophe uses YAML's '' escape, never a broken argv", () => {
+      const v = parse("command: ['it''s a trap']") as Record<string, unknown>;
+      expect(v.command).toEqual(["it's a trap"]);
+    });
+  });
+
   test("block sequence of scalars", () => {
     const v = parse(["items:", "  - one", "  - two", "  - 3"].join("\n")) as Record<string, unknown>;
     expect(v.items).toEqual(["one", "two", 3]);

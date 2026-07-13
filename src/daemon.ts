@@ -244,6 +244,14 @@ export class Daemon {
       if (outcome.outcome === "unbindable") {
         console.error(`levare: unit ${key} BLOCKED — ${outcome.reason}`);
       }
+      // NOTES F3: a member that ran and failed (nonzero exit, timeout, or a pre-flight rejection) was
+      // silently recorded on disk with nothing echoed to whoever is watching `levare serve`'s own
+      // output — the daemon's console mirrored the unbindable case (F1) but not this one, which is
+      // exactly the diagnosis gap: the artifact carries the full reason (now stderr + argv, see
+      // dagwalk.ts#writeBlocked / adapters.ts#runCli) but a human watching the daemon saw nothing.
+      if (outcome.outcome === "blocked") {
+        console.error(`levare: ${key} → ${outcome.kind} ${outcome.artifactId} BLOCKED — ${outcome.error}`);
+      }
       const entry: DaemonTickEntry = { project: unit.project, unit: unit.unit, outcome };
       entries.push(entry);
       this.pushLog(entry);

@@ -133,6 +133,159 @@ describe("cli adapter (against the fixture stub)", () => {
     expect(() => runner.produce("finch", "review", "checkout-flow", "storefront")).toThrow(/timed out/);
   });
 
+  // -------------------------------------------------------------------------
+  // NOTES F3: "exited N" is a symptom, not a diagnosis — the member's own stderr and the argv it was
+  // handed must reach the thrown error (and, from there, the blocked artifact — see dagwalk.ts's
+  // writeBlocked, which uses this message verbatim).
+  // -------------------------------------------------------------------------
+
+  test("a non-zero exit's stderr reaches the thrown error, alongside the argv", () => {
+    const repo = loadRepo(ROOT);
+    const failing: CliSpawn = { run: () => ({ stdout: "", exitCode: 1, timedOut: false, stderr: "rook: license check failed\nexiting\n" }) };
+    const runner = new AdapterRunner(repo, {
+      pricing,
+      capabilities: [{ member: "finch", kind: "review" }],
+      native: nativeMock,
+      remote: remoteMock,
+      spawn: failing,
+      cliCommand: stubCliCommand,
+    });
+    let caught: unknown;
+    try {
+      runner.produce("finch", "review", "checkout-flow", "storefront");
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(AdapterError);
+    const msg = (caught as Error).message;
+    expect(msg).toContain("exited 1");
+    expect(msg).toContain("rook: license check failed");
+    expect(msg).toContain('"bun"'); // the argv (stubCliCommand's first element) is present too.
+  });
+
+  test("stderr is truncated to the last 2000 chars — an unbounded member never grows the reason without bound", () => {
+    const repo = loadRepo(ROOT);
+    const longStderr = "x".repeat(3000) + "TAIL-MARKER";
+    const failing: CliSpawn = { run: () => ({ stdout: "", exitCode: 1, timedOut: false, stderr: longStderr }) };
+    const runner = new AdapterRunner(repo, {
+      pricing,
+      capabilities: [{ member: "finch", kind: "review" }],
+      native: nativeMock,
+      remote: remoteMock,
+      spawn: failing,
+      cliCommand: stubCliCommand,
+    });
+    let caught: unknown;
+    try {
+      runner.produce("finch", "review", "checkout-flow", "storefront");
+    } catch (e) {
+      caught = e;
+    }
+    const msg = (caught as Error).message;
+    expect(msg).toContain("TAIL-MARKER");
+    // The leading "x"*3000 is truncated to (at most) 2000 chars — the whole message stays well under
+    // stderr's own 3011-char length plus the rest of the message scaffolding.
+    expect(msg.length).toBeLessThan(longStderr.length);
+  });
+
+  test("a timeout's stderr is also surfaced — a killed member's last words are not thrown away", () => {
+    const repo = loadRepo(ROOT);
+    const slow: CliSpawn = { run: () => ({ stdout: "", exitCode: -1, timedOut: true, stderr: "still waiting on upstream...\n" }) };
+    const runner = new AdapterRunner(repo, {
+      pricing,
+      capabilities: [{ member: "finch", kind: "review" }],
+      native: nativeMock,
+      remote: remoteMock,
+      spawn: slow,
+      cliCommand: stubCliCommand,
+    });
+    expect(() => runner.produce("finch", "review", "checkout-flow", "storefront")).toThrow(/still waiting on upstream/);
+  });
+
+  // -------------------------------------------------------------------------
+  // NOTES F3: pre-flight the spawn. This guards ONLY the real `bunSpawn` boundary — the one that
+  // actually hands argv to the OS and can fail with an opaque, contextless nonzero exit (or, for a bad
+  // cwd, a bare filesystem error with no member context at all). A test-injected `CliSpawn` (used
+  // throughout the rest of this file, including with intentionally-unreal argv like "codex", which
+  // this sandbox never installs) is a pure stand-in and never touches the filesystem or PATH, so it is
+  // never subject to the failure mode this guards against — see adapters.ts#runCli's `this.spawn ===
+  // bunSpawn` check.
+  // -------------------------------------------------------------------------
+
+  describe("pre-flight checks the real spawn boundary before invoking it (NOTES F3)", () => {
+    test("a nonexistent cwd blocks with a precise reason, and Bun.spawn never runs", () => {
+      const repo = loadRepo(ROOT);
+      const dir = mkdtempSync(join(tmpdir(), "levare-preflight-"));
+      const marker = join(dir, "MARKER");
+      writeFileSync(marker, "intact");
+      const missingCwd = join(dir, "does-not-exist");
+      repo.agents.set("ghostcwd", { ...repo.agents.get("finch")!, name: "ghostcwd", command: ["rm", "-f", marker], cwd: missingCwd });
+      repo.teams.get("kestrel")!.members.push("ghostcwd");
+      const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "ghostcwd", kind: "review" }], native: nativeMock, remote: remoteMock });
+      try {
+        expect(() => runner.produce("ghostcwd", "review", "checkout-flow", "storefront")).toThrow(`agent 'ghostcwd': cwd '${missingCwd}' does not exist`);
+        expect(existsSync(marker)).toBe(true); // the `rm` argv was never spawned.
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("a cwd that is a file, not a directory, blocks with a precise reason", () => {
+      const repo = loadRepo(ROOT);
+      const dir = mkdtempSync(join(tmpdir(), "levare-preflight-"));
+      const notADir = join(dir, "im-a-file");
+      writeFileSync(notADir, "not a directory");
+      repo.agents.set("ghostfilecwd", { ...repo.agents.get("finch")!, name: "ghostfilecwd", command: ["echo", "hi"], cwd: notADir });
+      repo.teams.get("kestrel")!.members.push("ghostfilecwd");
+      const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "ghostfilecwd", kind: "review" }], native: nativeMock, remote: remoteMock });
+      try {
+        expect(() => runner.produce("ghostfilecwd", "review", "checkout-flow", "storefront")).toThrow(`agent 'ghostfilecwd': cwd '${notADir}' is not a directory`);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("an unresolvable bare argv[0] (not on PATH) blocks with a precise reason before spawn", () => {
+      const repo = loadRepo(ROOT);
+      repo.agents.set("ghostcmd", {
+        ...repo.agents.get("finch")!,
+        name: "ghostcmd",
+        command: ["levare-definitely-not-a-real-binary-xyz", "--version"],
+        cwd: undefined,
+      });
+      repo.teams.get("kestrel")!.members.push("ghostcmd");
+      const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "ghostcmd", kind: "review" }], native: nativeMock, remote: remoteMock });
+      expect(() => runner.produce("ghostcmd", "review", "checkout-flow", "storefront")).toThrow(
+        "agent 'ghostcmd': command 'levare-definitely-not-a-real-binary-xyz' not found on PATH",
+      );
+    });
+
+    test("an absolute argv[0] that does not exist blocks with a precise reason before spawn", () => {
+      const repo = loadRepo(ROOT);
+      const bogus = "/tmp/levare-does-not-exist-xyz-dir/rook-cli";
+      repo.agents.set("ghostabs", { ...repo.agents.get("finch")!, name: "ghostabs", command: [bogus], cwd: undefined });
+      repo.teams.get("kestrel")!.members.push("ghostabs");
+      const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "ghostabs", kind: "review" }], native: nativeMock, remote: remoteMock });
+      expect(() => runner.produce("ghostabs", "review", "checkout-flow", "storefront")).toThrow(`agent 'ghostabs': command '${bogus}' is not an executable file`);
+    });
+
+    test("a valid, resolvable cwd and argv[0] pass pre-flight — spawn proceeds normally", () => {
+      // Regression guard: pre-flight must not falsely reject the ordinary "the real Bun.spawn path
+      // executes the stub end-to-end" shape (an absolute interpreter path, no cwd template).
+      const repo = loadRepo(ROOT);
+      const stubPath = Bun.fileURLToPath(new URL("../fixtures/stubs/member-stub.ts", import.meta.url));
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        cliCommand: (r) => [process.execPath, stubPath, r.member, r.kind, "--unit", r.unit, "--project", r.project],
+      });
+      const { doc } = runner.produce("finch", "review", "checkout-flow", "storefront");
+      expect(doc).toContain("kind: review");
+    });
+  });
+
   test("the real Bun.spawn path executes the stub end-to-end", () => {
     // No injected spawn: uses the default bunSpawn against the actual stub CLI file.
     const repo = loadRepo(ROOT);
