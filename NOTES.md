@@ -219,6 +219,54 @@ C7 — One gate-resolution path. Board gate ops (src/board/gateops.ts) and Runne
 
 C8 — EVERY work unit's first flow step raises a start gate, regardless of type, regardless of `after:`. There is no auto-start path. `after:` remains exactly what it always was — a condition that must be satisfied before the start gate is RAISED — never a licence to begin work once satisfied or absent. This is a Conductor ruling on a security-audit finding (`docs/security-audit.md`, Surface 5/1, HIGH), not an engineering judgment call: the audit demonstrated that a hand-written or injected `unit.md` with no `after:` caused the daemon to invoke a real member (`Daemon.tick()`, no gate, no click) — an unattended, real-money invocation with no Conductor approval anywhere in its causal chain, a direct violation of invariant 1 (§2). Combined with the CSRF hole closed in the same audit (Surface 6, now fixed), this was one step from remote unattended spend: a foreign web page or a merged PR touching `work/` could have reached a live subprocess with zero human decision in between. **Supersedes NOTES O3**, which took the deliberately loose reading ("the Conductor authoring/committing `unit.md` is itself the causal-chain intent") and flagged itself explicitly as "the single most debatable call in this phase" — re-read here as a demonstrated invariant-1 violation, not a defensible interpretation. Fixed structurally in `src/dagwalk.ts` (`advanceUnit`'s `startAuthorized` check now fires for every unit with no artifacts yet, not only ones with `after:`), `src/runner.ts` (`walkUnit` raises the `start` gate unconditionally at flow position zero, `after:` unmet still makes a unit invisible first), and `src/board/derive.ts` (`openGates` renders a start-gate card for any no-artifact active unit). `tests/security-audit.test.ts`'s xfail for this surface now passes as a real prevention test (renamed, `test.failing` → `test`); `tests/daemon.test.ts` case (b) is rewritten into two tests — a no-`after:` unit raises a start gate and is never auto-started, and once the Conductor resolves it the daemon advances the unit normally on later ticks, with no further authorization needed for subsequent steps. `src/replay.ts`'s golden/exhaustion scripts gained a leading `{ expect: "start", verb: "start" }` decision for `checkout-flow` (which has no `after:`); `fixtures/golden/expected.json` needed no change — the extra gate doesn't alter final artifact statuses, only the transcript.
 
+C9 — How a member receives consumed artifacts (§6 recipe item 7) is a per-agent declaration, not a
+studio-wide constant, because the agent — not levare — knows what filesystem it can actually reach.
+`Agent.context_artifacts?: "paths" | "inline"` (`types.ts`/`repo.ts`/`validate.ts`), defaulting to
+`"paths"` when absent: unchanged behaviour, root-relative paths only, for a member with filesystem
+access to the studio (every pre-C9 agent definition, including the golden fixture's lyra/wren/finch).
+`"inline"`: `context.ts#assembleContext`'s section 7 carries the full text — frontmatter and body,
+byte-identical to the file on disk — of every consumed (currently-approved) artifact, each delimited
+by its own `── consumed artifact: <id> (<path>) ──` / `── end consumed artifact: <id> ──` pair, for a
+member that cannot open a path back into the studio at all — the closing half of D2's "paths only,
+never contents" rule, which stands as the *default*, not as an absolute.
+
+**This is a definition error, not a runtime surprise.** An agent whose declared `cwd` resolves to a
+location outside the studio root (a literal, non-templated path — a `cwd` still holding an unresolved
+`{…}` template resolves only at spawn time, per NOTES D9, and is not statically checkable, so it is
+skipped rather than guessed at) but has NOT declared `context_artifacts: inline` can never open the
+path §6 item 7 would otherwise hand it: `validate.ts#validateAgentContextScope` (wired into
+`validatePath` alongside `validateStudioBindings`, same "only meaningful for a whole tree" gate)
+rejects it with `CWD_OUTSIDE_STUDIO_NO_INLINE`, naming the agent, its literal `cwd`, and citing "ruling
+C9" in the message itself — the same "name what cannot bind, don't discover it live" posture C8 and
+F1 already established for other structural failures.
+
+**Closes D6** — the real Gemini member (`rook`, `command: ["gemini", "-p", "{task}", ...]`, the same
+member NOTES F3/F7 debugged live) was handed
+`work/studio/credential-scoping/question-credential-scoping-v1.md` while running from `/tmp` with no
+studio access; it would have had to guess the question. `fixtures/golden/agents/rook.md` is the
+fixture form of that exact member: `kind: cli`, `cwd: "/tmp"`, `context_artifacts: inline` — it
+validates precisely because it declares the mode its isolation requires. It is deliberately NOT a
+member of any team's roster (a standalone fixture demonstrating the schema/validator pair, not a new
+walkable unit) — `repoCapabilities`/board-registry tests that enumerate the golden fixture's agents
+were updated for its presence (`tests/binding.test.ts`, `tests/board-render.test.ts`), but nothing
+about the checkout-flow replay oracle changes, since replay only ever walks `storefront/checkout-flow`
+(NOTES `UNIT_KEY`) and rook binds to no flow step. `fixtures/rejections/cwd-outside-studio-no-inline/`
+is the negative twin: the same `cwd: "/tmp"`, no `context_artifacts` declared — `CWD_OUTSIDE_STUDIO_NO_INLINE`.
+
+**Tests.** `tests/context.test.ts` ("ruling C9" describe block) asserts `paths` (default and explicit)
+renders only paths, `inline` renders full frontmatter+body for both consumed artifacts (the exact
+"saved-card fallback"/"abandoned at that wall" body text D2's own test asserts ABSENT in paths mode),
+and the recipe's line-2 delivery-mode label tracks the mode actually in use.
+`tests/validate.test.ts` ("ruling C9" describe block) exercises the rejection fixture (naming the
+agent/cwd/ruling), a positive inline+outside-cwd case, the unresolved-template skip (against finch's
+own `{feature_repo}` cwd in the golden fixture), and the golden fixture's own rook. New
+`tests/cli-context-artifacts.test.ts` proves — against a REAL, unmocked `cat` subprocess, not an
+internal flag — that `levare context finch --unit checkout-flow --dry-run` matches
+`AdapterRunner.produce`'s real spawned member byte-for-byte in all three cases (`paths`, `inline`, and
+the field entirely absent), mirroring F7's own dry-run/live parity proof for the new delivery-mode
+axis. `bun test` — 446 pass, 1 pre-existing skip, 0 fail, across 40 files; `levare replay
+fixtures/golden --stubs` — still byte-for-byte against `expected.json`; `deps:check` — `deps ok`.
+
 # NOTES — uncertainties and assumptions (Phase 3)
 
 Phase-3 delivers the adapters, context assembly, §10 receipts, guardrails, and doctor. These entries
@@ -2867,7 +2915,7 @@ that guess should be treated as unconfirmed, not verbatim, until their own text 
 - D3 — FIXED (see F3: blocked reasons carry stderr and argv; spawn is pre-flighted; env values are never logged)
 - D4 — FIXED (see F5 and F7 together: CLI members receive the full assembled §6 context, and CLI invocation no longer blocks the event loop)
 - D5 — OPEN (no scratch-cwd concept; `cwd: scratch` should be first-class, created and cleaned up by levare)
-- D6 — OPEN, RULING NEEDED
+- D6 — FIXED (see ruling C9: `context_artifacts: paths | inline` is a per-agent declaration; `levare validate` rejects a cwd outside the studio root that hasn't declared `inline`)
 - D7 — OPEN (`pace: step` is invisible on the board)
 - D8 — OPEN (the Orchestrator narrates dispatches it does not perform)
 - D9 — OPEN (the Orchestrator conversation does not survive navigation)
