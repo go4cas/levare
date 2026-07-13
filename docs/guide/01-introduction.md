@@ -28,7 +28,7 @@ hand and the board changes. There is nowhere else for the truth to hide.
 
 ## The three roles
 
-![The Conductor decides, the Orchestrator routes, the Runner executes, and members do the work.](img/three-roles.svg)
+![The Conductor decides, the Orchestrator routes, the Runner executes, and members do the work.](img/three-roles.png)
 
 **You are the Conductor.** You are the only approver. Nothing runs, nothing lands, and nothing
 merges without a decision that traces back to you. Your decisions are commits with your name on

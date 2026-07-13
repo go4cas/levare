@@ -9,7 +9,7 @@ stops making sense.
 
 ## The whole picture
 
-![How levare's concepts relate: projects have work units, which have artifacts, which raise gates. Teams have agents, who author artifacts. Types define units; skills, knowledge, and connectors feed agents.](img/concept-map.svg)
+![How levare's concepts relate: projects have work units, which have artifacts, which raise gates. Teams have agents, who author artifacts. Types define units; skills, knowledge, and connectors feed agents.](img/concept-map.png)
 
 Read it in two lines:
 
@@ -26,7 +26,7 @@ Every one of those boxes is a markdown file in your studio. Nothing else exists.
 
 Three repositories, three jobs — and confusing them is the most common early mistake.
 
-![Three repositories: the levare source, your studio, and the products you build.](img/repo-roles.svg)
+![Three repositories: the levare source, your studio, and the products you build.](img/repo-roles.png)
 
 **The source repo** is levare itself. You clone it, build the binary, and never think about it again.
 
@@ -94,7 +94,7 @@ brief rather than from thin air.
 
 ### The lifecycle
 
-![An artifact is produced, sits in review, and is then approved, superseded, or rejected.](img/artifact-lifecycle.svg)
+![An artifact is produced, sits in review, and is then approved, superseded, or rejected.](img/artifact-lifecycle.png)
 
 **Only the Conductor moves an artifact out of `in-review`.** Not the Orchestrator, not the daemon,
 not the member that wrote it.
@@ -148,7 +148,7 @@ That is the whole reason a multi-vendor studio works.
 
 A team's **flow** is a declaration, not code. Three shapes:
 
-![A flow is a sequence of steps, human gates, and loops.](img/flow.svg)
+![A flow is a sequence of steps, human gates, and loops.](img/flow.png)
 
 ```yaml
 flow:
@@ -180,7 +180,7 @@ And the **gate** is the constitution:
 Every member — native, CLI, or remote — receives the same seven-part context, assembled
 deterministically:
 
-![The seven-part context recipe assembled for every member.](img/context-recipe.svg)
+![The seven-part context recipe assembled for every member.](img/context-recipe.png)
 
 You can print it before you spend a cent:
 
