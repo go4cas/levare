@@ -41,10 +41,18 @@ const stubNative: NativeBoundary = { invoke: (r: InvokeRequest) => ({ doc: rende
 const stubRemote: RemoteBoundary = { call: (r: InvokeRequest) => ({ doc: render(r.member, r.kind, r.unit, r.project) }) };
 
 /**
- * The phase-3 replay MemberRunner: drives the real AdapterRunner. Native/remote members go through
- * mocked boundaries; the one CLI member (finch/Codex) is genuinely spawned as a subprocess of the
- * stub CLI with its allowlisted env — exercising the real CLI adapter path. Every invocation yields
- * a normalized receipt, including the deliberately `unreported` one from the silent CLI member.
+ * NOTES F4 — the `--stubs`-ONLY replay MemberRunner. Every real invocation goes through the real
+ * AdapterRunner; native/remote members go through mocked boundaries (K5's documented, deliberate
+ * deferral); the one CLI member (finch/Codex) is deliberately redirected — via the `cliCommand`
+ * override below — to spawn the fixture stub CLI instead of its own declared command, so replay is
+ * reproducible without a real Codex install.
+ *
+ * That redirect is exactly the thing that must NEVER reach a live studio (F4: it did, for three
+ * phases — `daemon.ts`/`board/gateops.ts` defaulted their production `memberRunner` to THIS function,
+ * so `levare serve` never spawned a real CLI member's command, only ever this stub). This function is
+ * now reachable from exactly two places: `levare replay --stubs` (below) and a test that imports it
+ * explicitly. Production wiring (`daemon.ts`, `board/gateops.ts`) must use `productionAdapterRunner`
+ * instead, which has no `cliCommand` override at all — see its own doc comment.
  */
 // The capability map is NOT injected here (NOTES F1): the AdapterRunner derives it from the repo's
 // own agent definitions (`produces:`), exactly as it does for a real studio. What the stubs still
@@ -60,6 +68,26 @@ export function stubAdapterRunner(repo: Repo): AdapterRunner {
     // --stubs mode: spawn the stub CLI in place of the member's real command template. Use the
     // absolute interpreter path so resolution never depends on the allowlisted env's PATH.
     cliCommand: (r: InvokeRequest) => [process.execPath, STUB_CLI, r.member, r.kind, "--unit", r.unit, "--project", r.project],
+  });
+}
+
+/**
+ * NOTES F4 — the real production MemberRunner: what `levare serve` (via `daemon.ts`) and the board's
+ * own gate resolution (`board/gateops.ts`) actually drive by default. Native/remote members still go
+ * through the same mocked SDK/MCP boundaries `stubAdapterRunner` uses — K5's real-native-SDK wiring
+ * remains a documented, separate deferral, untouched by this fix. The CLI adapter, however, gets NO
+ * `cliCommand` override here: left unset, `AdapterRunner` falls back to its own `defaultCliCommand`,
+ * which substitutes the agent's own declared `command` template into argv. A CLI member invoked
+ * through this function spawns its REAL command — never the fixture stub — which is the entire point:
+ * before F4, `stubAdapterRunner` (above) was the only constructor in this codebase and doubled as the
+ * silent production default, so every live CLI member was actually invoking the phase-2 replay stub.
+ */
+export function productionAdapterRunner(repo: Repo): AdapterRunner {
+  return new AdapterRunner(repo, {
+    pricing: loadPricing(repo.root),
+    native: stubNative,
+    remote: stubRemote,
+    spawn: bunSpawn,
   });
 }
 

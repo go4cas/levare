@@ -18,7 +18,7 @@ import { dirname, join } from "node:path";
 import { loadRepo, type Repo } from "../repo.ts";
 import { validateArtifactSource } from "../validate.ts";
 import { bumpVersion, type MemberRunner, type Verb } from "../runner.ts";
-import { stubAdapterRunner } from "../replay.ts";
+import { productionAdapterRunner } from "../replay.ts";
 import { loopMembershipFor, responsibleTeamFor, unmetAfter, patchFrontmatter, upsertFrontmatterField } from "../gates.ts";
 import { locateArtifactFile } from "./locate.ts";
 import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL } from "../git.ts";
@@ -43,8 +43,10 @@ export interface ResolveOpts {
   note?: string;
   /** ISO date to stamp approved_by / commits with; defaults to today. Injectable for deterministic tests. */
   today?: string;
-  /** The member producer boundary (E4). Defaults to the same mocked-adapter boundary `levare replay`
-   * drives — real context assembly, env scoping, and receipts, behind the still-mocked SDK (invariant 10). */
+  /** The member producer boundary (E4). Defaults to `productionAdapterRunner` (NOTES F4) — the real
+   * AdapterRunner, with a CLI member's REAL declared command spawned (native/remote stay behind the
+   * still-mocked SDK/MCP boundaries, K5's own separate, documented deferral). `stubAdapterRunner`
+   * (replay.ts) must never be reachable from here — see daemon.ts's identical note. */
   memberRunner?: MemberRunner;
 }
 
@@ -52,7 +54,7 @@ export interface ResolveOpts {
 export function resolveGate(root: string, project: string, target: string, verb: Verb, opts: ResolveOpts = {}): GateOpResult {
   const today = opts.today ?? new Date().toISOString().slice(0, 10);
   const repo = loadRepo(root);
-  const memberRunner = opts.memberRunner ?? stubAdapterRunner(repo);
+  const memberRunner = opts.memberRunner ?? productionAdapterRunner(repo);
   const unit = repo.units.find((u) => u.project === project && repo.artifacts.get(`${project}/${u.unit}`)?.has(target));
 
   if (verb === "start" || verb === "notyet" || verb === "rescope") {

@@ -2625,3 +2625,80 @@ after a real spawn, never in how argv got built.
 **Still open:** the daemon's new `blocked`-outcome console line and the pre-existing `unbindable` one
 are two near-identical `console.error` calls in `tickOnce` with no shared formatter — a small
 duplication, not a defect, and in the same family as the runner⇄dagwalk duplication R3 tracks.
+
+## F4. `levare serve` never spawned a real member's command — every live invocation went to the phase-2 replay stub (the eighth fail-open, and the first where a FIXTURE leaked into production)
+
+**Found by the Conductor, reading F3's own new diagnostics on a real failing CLI member (`rook`,
+`command: ["gemini", "-p", "{task}", "--output-format", "json"]`) live (2026-07-13):** the blocked
+artifact's argv, now visible because of F3, was not `rook`'s own command at all —
+`["bun", "<repo>/fixtures/stubs/member-stub.ts", "rook", "report", "--unit", "credential-scoping",
+"--project", "studio"]` — and the error was `no canned artifact for member 'rook' kind 'report'`.
+Gemini was never spawned. F3 built the diagnostic that made this legible; it did not cause it, and it
+had been true since phase 8: **every** live `levare serve` production of a CLI member had gone to the
+`fixtures/stubs/member-stub.ts` replay stub, not the agent's own declared command.
+
+**Root cause: one constructor, two incompatible jobs.** `replay.ts#stubAdapterRunner` builds an
+`AdapterRunner` with `cliCommand: (r) => [process.execPath, STUB_CLI, r.member, r.kind, "--unit", ...]`
+— a deliberate, correct override for `levare replay --stubs`, which must be reproducible without a
+real Codex/Gemini install. But it was also the **default** `memberRunner` in both `daemon.ts`
+(`opts.memberRunner ?? stubAdapterRunner`) and `board/gateops.ts`
+(`opts.memberRunner ?? stubAdapterRunner(repo)`) — the two places that back `levare serve` and its
+board's gate resolution. Nothing else in the codebase ever constructed an `AdapterRunner` without that
+override: there was no "real" production constructor at all, only the stub wearing two hats. Every
+test that exercised the daemon/gateops default (`daemon.test.ts`, `binding.test.ts`,
+`board-serve-daemon.test.ts`, …) reached only `native`-kind steps (`lyra`, mocked at the SDK boundary
+regardless — K5's own separate, already-reviewed deferral) or explicitly injected a `memberRunner`
+override of their own; none of them ever drove a real CLI member through the untouched default all the
+way to a real subprocess. Every green test passed because **the tests were the ones injecting the
+real behavior** — the untested path was the literal default.
+
+This is the eighth fail-open this project's own NOTES record (F1 unbindable steps, F2 env leakage,
+F3 opaque member failures, the K-series SDK/orchestrator gaps, …) and the first of them where the thing
+that leaked into production was a **fixture** — a deterministic, canned stand-in — silently standing in
+for a real external system on a live path, rather than a missing check or a swallowed error.
+
+**The fix — split the constructor, not just the default.** `replay.ts` now exports two functions where
+there was one:
+- `stubAdapterRunner` (unchanged) — the `cliCommand` override stays, but its doc comment now says
+  plainly what it is: reachable ONLY from `levare replay --stubs` (`runScenario`, same file) and from
+  a test that imports it explicitly.
+- `productionAdapterRunner` (new) — identical `native`/`remote`/`spawn` wiring, but **no `cliCommand`
+  override at all**. Left unset, `AdapterRunner` falls back to its own `defaultCliCommand`
+  (`adapters.ts`), which substitutes the agent's own declared `command` template into argv — the thing
+  that was supposed to be the default all along.
+
+`daemon.ts` and `board/gateops.ts` no longer import `stubAdapterRunner` at all — their defaults now
+call `productionAdapterRunner`. This is the structural guarantee the goal asked for: it is not merely
+that the current default happens to be correct, but that the ONLY function serve/daemon construction
+can reach by default has no stub-spawning code path in it to accidentally reach. `stubAdapterRunner`
+remains available for injection (tests already do this explicitly everywhere it's still used), but
+production code no longer has a name for it in scope.
+
+**What stayed deliberately unfixed.** `productionAdapterRunner` still wires `native`/`remote` through
+the same fixture-rendering mocks `stubAdapterRunner` uses. That is K5's own already-reviewed, already-
+documented deferral (the real SDK-backed `NativeBoundary`, `createSdkNativeBoundary`, exists and is
+correct but is not wired into any live path yet) — unrelated to this defect and out of this fix's
+scope. F4 is specifically the CLI path, because that is the one that silently diverged from its
+"default reachable from serve" contract; native/remote were never claimed to be production-real in the
+first place, so there was nothing there to silently regress.
+
+**Closing the test gap that hid this for three phases** (`tests/serve-real-cli-e2e.test.ts`, new):
+spawns the actual `./levare` binary — not `createBoard`/`Daemon` driven in-process — against a scratch
+studio copied from `fixtures/golden` with one agent (`wren`) rewritten to a real `kind: cli` agent
+whose `command` points at a real, trivial, temp-file shell script (mirroring the goal's own example: a
+real, if minimal, external executable in place of `gemini`). The script records the exact argv it was
+invoked with to a capture file and prints a real, valid `product-brief` artifact to stdout with a body
+marker (`# REAL-CLI-MEMBER-RAN`) no fixture stub could produce. The test then starts the unit over a
+real HTTP POST to `/gates/storefront/loyalty-flow/start` (loyalty-flow's `after:` is already satisfied
+in the golden fixture, so no extra setup is needed) and asserts, against actual observed state only —
+never an internal flag — both that the captured argv is the script's own path with `{task}` substituted
+to `product-brief` (not the stub's `member kind --unit … --project …` shape, which the assertion
+explicitly checks is absent) and that the artifact written to disk is exactly the document the real
+script emitted. `bun test` (424 pass / 1 pre-existing skip, 0 fail), `levare replay fixtures/golden
+--stubs` (byte-for-byte oracle match, unaffected — the stub path still works exactly where it belongs),
+and `deps:check` all pass with this change in place.
+
+**Uncertainty recorded, not guessed:** whether any OTHER caller in this codebase still reaches
+`stubAdapterRunner` as an implicit default was checked directly (`grep`, not assumed) — the only
+production call site left is `replay.ts#runScenario` itself, which is `levare replay`'s own engine and
+correctly belongs there.

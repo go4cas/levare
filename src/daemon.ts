@@ -22,7 +22,7 @@ import { loadRepo, type Repo } from "./repo.ts";
 import { advanceUnit, type AdvanceResult } from "./dagwalk.ts";
 import { patchFrontmatter } from "./gates.ts";
 import { conductorCommit } from "./git.ts";
-import { stubAdapterRunner } from "./replay.ts";
+import { productionAdapterRunner } from "./replay.ts";
 import type { MemberRunner } from "./runner.ts";
 
 export interface DaemonInvocation {
@@ -64,9 +64,12 @@ export interface ResolveBudgetResult {
 }
 
 export interface DaemonOptions {
-  /** Builds the MemberRunner boundary for a freshly-loaded repo. Defaults to the same mocked-adapter
-   * boundary `levare replay`/the board's gate resolution already drive (real context assembly, env
-   * scoping, receipts, behind the still-mocked native/CLI boundaries — invariant 10). */
+  /** Builds the MemberRunner boundary for a freshly-loaded repo. Defaults to `productionAdapterRunner`
+   * (NOTES F4) — the real AdapterRunner, with a CLI member's REAL declared command spawned (native/
+   * remote stay behind the still-mocked SDK/MCP boundaries, K5's own separate, documented deferral).
+   * `stubAdapterRunner` (replay.ts) must never be reachable from here — that was F4's own defect: a
+   * live CLI member was silently invoking the phase-2 replay stub instead of its own command. Inject
+   * an override only from a test that explicitly wants the stub. */
   memberRunner?: (repo: Repo) => MemberRunner;
   /** Debounce window between a repo change and a tick, ms (mirrors board/serve.ts's own 80ms). */
   debounceMs?: number;
@@ -106,7 +109,7 @@ export class Daemon {
 
   constructor(root: string, opts: DaemonOptions = {}) {
     this.root = root;
-    this.memberRunnerFor = opts.memberRunner ?? stubAdapterRunner;
+    this.memberRunnerFor = opts.memberRunner ?? productionAdapterRunner;
     this.debounceMs = opts.debounceMs ?? 80;
     this.onTick = opts.onTick;
     this.now = opts.now ?? (() => new Date().toISOString());
