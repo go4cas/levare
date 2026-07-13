@@ -380,17 +380,24 @@ repo: .
 remote: null
 default_branch: main
 deploy: null
-pace: step
+pace: auto  # auto runs each team unattended; \`step\` pauses for the Conductor's nod before every team run
 ---
 
 # Studio
 
 Points at this studio repo itself, giving non-product work — research units, the field
-guide, registry care — a home. Paced \`step\`: the Conductor nods before each team runs.
+guide, registry care — a home. Paced \`auto\`: teams run unattended. Switch to \`step\` if
+you'd rather nod the Conductor through each team run individually before it fires.
+`;
+
+const GITIGNORE = `.DS_Store
+node_modules/
+.env
 `;
 
 const FILES: Template[] = [
   { path: "README.md", content: README },
+  { path: ".gitignore", content: GITIGNORE },
   { path: ".devcontainer/devcontainer.json", content: DEVCONTAINER },
   { path: "teams/kestrel.md", content: TEAM_KESTREL },
   { path: "agents/wren.md", content: AGENT_WREN },

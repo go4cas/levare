@@ -33,6 +33,7 @@ describe("scaffoldStudio", () => {
     const top = readdirSync(root).sort();
     expect(top).toEqual([
       ".devcontainer",
+      ".gitignore",
       "README.md",
       "agents",
       "connectors",
@@ -243,5 +244,64 @@ describe("F1: the scaffolded studio is runnable, not merely valid", () => {
     expect(result).toMatchObject({ member: "wren", kind: "product-brief", artifactId: "product-brief-pilot-v1" });
     expect(readFileSync(result.file, "utf8")).toContain("produced_by: kestrel/wren");
     expect(validatePath(root).ok).toBe(true); // still a valid studio after the walk wrote to it
+  });
+});
+
+// D10/D11 (NOTES "Dogfood findings", 2026-07-13): the phase-6 test above proves `validatePath` (an
+// internal function) is happy with a fresh scaffold — but `validatePath` IS what `runValidate`/the
+// CLI's `validate` command calls (src/cli.ts), so that was never actually a narrower check than the
+// CLI's. What it did NOT prove is that the real `levare` binary, invoked as a real subprocess exactly
+// the way a Conductor runs it, agrees — nor did anything pin the specific error codes
+// (UNPRODUCIBLE_KIND / UNBINDABLE_STEP / EMPTY_PRODUCES) a regression in the scaffold's `produces:`
+// declarations would trip. Both gaps are closed here: an actual `./levare init` + `./levare validate`
+// subprocess pair (no internal function calls at all), and a mutation test that strips a scaffolded
+// agent's `produces:` and asserts the exact error code the studio-bindings check would raise.
+const REPO_ROOT = join(import.meta.dir, "..");
+
+describe("D10/D11: a fresh `levare init` passes the real `levare validate` command, end to end", () => {
+  test("./levare init then ./levare validate against the same subprocess binary exits 0 and prints 'valid'", () => {
+    const root = tmpRoot();
+    const init = spawnSync("./levare", ["init", root], { cwd: REPO_ROOT, encoding: "utf8" });
+    expect(init.status).toBe(0);
+
+    const validate = spawnSync("./levare", ["validate", root], { cwd: REPO_ROOT, encoding: "utf8" });
+    expect(validate.stdout.trim()).toBe("valid");
+    expect(validate.status).toBe(0);
+  });
+
+  test("the scaffolded projects/studio.md pointer declares pace: auto", () => {
+    const root = tmpRoot();
+    scaffoldStudio(root);
+    const pointer = readFileSync(join(root, "projects/studio.md"), "utf8");
+    expect(pointer).toMatch(/^pace: auto\b/m);
+  });
+
+  test("the scaffolded .gitignore exists with .DS_Store, node_modules/, and .env", () => {
+    const root = tmpRoot();
+    scaffoldStudio(root);
+    const gitignore = readFileSync(join(root, ".gitignore"), "utf8");
+    const entries = gitignore.split("\n").map((l) => l.trim()).filter(Boolean);
+    expect(entries).toEqual([".DS_Store", "node_modules/", ".env"]);
+  });
+
+  test("a regression that empties an agent's produces: is caught by the SAME validator the CLI uses (EMPTY_PRODUCES / UNBINDABLE_STEP)", () => {
+    const root = tmpRoot();
+    scaffoldStudio(root);
+    // Reproduce the D10 defect directly: strip wren's `produces:` back to empty, as if the scaffold
+    // template had never declared it (the exact shape of the original dogfood bug).
+    const wrenPath = join(root, "agents/wren.md");
+    const wren = readFileSync(wrenPath, "utf8");
+    writeFileSync(wrenPath, wren.replace("produces: [product-brief]", "produces: []"));
+
+    const result = validatePath(root);
+    expect(result.ok).toBe(false);
+    const codes = result.errors.map((e) => e.code).sort();
+    expect(codes).toContain("EMPTY_PRODUCES");
+    expect(codes).toContain("UNBINDABLE_STEP");
+
+    // And the real CLI subprocess agrees — not just the internal function.
+    const validate = spawnSync("./levare", ["validate", root], { cwd: REPO_ROOT, encoding: "utf8" });
+    expect(validate.status).toBe(1);
+    expect(validate.stderr).toContain("EMPTY_PRODUCES");
   });
 });

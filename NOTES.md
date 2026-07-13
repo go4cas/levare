@@ -2844,3 +2844,85 @@ same dogfood report and touch the same call chain): `bun test` — 431 pass, 1 p
 across 39 files (up from 424/1/0/37 at F4); `levare replay fixtures/golden --stubs` — final artifact
 statuses still match `fixtures/golden/expected.json` byte-for-byte (the synchronous batch path this
 fix deliberately left untouched); `deps:check` — `deps ok`.
+
+# Dogfood findings (first live studio run, 2026-07-13)
+
+**Recording gap, uncertainty recorded, not guessed.** The goal that requested this section named
+eleven findings, D1–D11, and said their exact text would follow "in my next message." That message
+never arrived in this session — the very next turn was a Stop-hook status check, not the findings —
+so the verbatim text for several items genuinely does not exist in anything reachable from this repo
+or this conversation. Rather than fabricate wording for the missing ones, this section:
+- reconstructs D1, D3, D4, D5, D7 from the F-series write-ups already in this file (directly above —
+  "NOTES — F-series: defects found by running a real studio (dogfood)," same 2026-07-13 run, same
+  numbering gaps at F2/F6/F8/F9 that D2/D6/D8/D9 below share), since those five are the ones this
+  session has an actual detailed record of, already fixed and tested in prior commits;
+- writes D10 and D11 from TASK 2 of the goal itself, which IS verbatim user text and fully specifies
+  both — these two are fixed in this session (see below);
+- marks D2, D6, D8, D9 **RULING NEEDED**: no text, description, or inferable content exists anywhere
+  for these four. A future session with the actual findings text should fill these in; guessing their
+  content would misrepresent a live defect report as something it isn't.
+
+- **D1 — FIXED.** = F1: agents had no way to declare what they produce, so the capability map was
+  empty for any non-fixture studio; `levare validate` said "valid" while every real studio was
+  structurally unrunnable. Fixed by `produces:` on agents (required, `EMPTY_PRODUCES` if missing),
+  capabilities derived from the repo, and validation rejecting an unbindable studio
+  (`UNPRODUCIBLE_KIND`/`UNBINDABLE_STEP`/`AMBIGUOUS_STEP`). Full write-up above.
+- **D2 — RULING NEEDED.** No text received; content unknown. See recording-gap note above.
+- **D3 — FIXED.** = F3: a real CLI member's failure reported only "exited 1" — no stderr, argv, or
+  cwd, forcing an hour of live debugging via a hand-built spy CLI (itself a secret-leak hazard). Fixed
+  by capturing and surfacing real failure diagnostics. Full write-up above.
+- **D4 — FIXED.** = F4: `levare serve` never spawned a real member's actual command — every live
+  invocation silently went to the phase-2 replay stub, a fixture leaking into production. Fixed by
+  making `serve` spawn the agent's own declared command. Full write-up above.
+- **D5 — FIXED.** = F5: the CLI adapter used a blocking spawn (`Bun.spawnSync`), so a single live
+  ~10-minute member run froze the entire board — every concurrent request, not just the one that
+  triggered the member. Fixed with an async spawn transport on the live path only (`asyncBunSpawn`/
+  `produceAsync`), mirroring the phase-7 SDK-transport precedent; the synchronous batch `Runner`
+  (`levare replay`) was deliberately left untouched. Full write-up above.
+- **D6 — RULING NEEDED.** No text received; content unknown. See recording-gap note above.
+- **D7 — FIXED.** = F7: a real CLI member (wrapped Gemini) was invoked with only its flow step's bare
+  label (`gemini -p report`) instead of the full §6-assembled context every native member already
+  receives — a wrapped CLI could not see its own task, skills, knowledge, or consumed-artifact paths.
+  Fixed by substituting the same `assembleContext` output `{task}` for CLI members, plus an explicit
+  `context_via: "arg" | "stdin"` declaration and closing stdin in both modes so no CLI member hangs
+  waiting for input that will never arrive. Full write-up above.
+- **D8 — RULING NEEDED.** No text received; content unknown. See recording-gap note above.
+- **D9 — RULING NEEDED.** No text received; content unknown. See recording-gap note above.
+- **D10 — FIXED (this session).** The freshly-scaffolded studio's example team was, per the goal text,
+  expected to fail to validate/bind end to end for want of correct `produces:` on the `init.ts`-
+  embedded agent templates (wren/lyra/finch). On investigation, `src/init.ts`'s templates already
+  carried the exact `produces:` the goal specifies (`wren: [product-brief]`, `lyra: [design, spec]`,
+  `finch: [review]`) — this was already closed as a side effect of D1/F1's fix, which explicitly
+  updated "the golden fixture, the init scaffold, and `tests/multiteam.test.ts`'s agent." Verified
+  live: `./levare init` into an empty directory followed by `./levare validate` on it prints `valid`
+  and exits 0 (new subprocess test, `tests/init.test.ts`, "D10/D11" describe block). No production
+  code change was needed for (a); the investigation and the strengthened test in (b) are this
+  session's actual work on D10.
+- **D11 — FIXED (this session).** Three parts, all from the goal's own TASK 2 text:
+  - **(b) test strength.** The existing phase-6 test (`tests/init.test.ts`, "F1: the scaffolded
+    studio is runnable, not merely valid") already called `validatePath` — which, per `src/cli.ts`'s
+    `runValidate`, IS the exact function the CLI's `validate` command calls, not a subset of it — so
+    it was never actually checking a narrower path than the CLI. What it did not prove is that the
+    real compiled/dev `./levare` binary agrees when invoked as an actual subprocess the way a
+    Conductor runs it, nor did anything pin the specific error codes
+    (`UNPRODUCIBLE_KIND`/`UNBINDABLE_STEP`/`EMPTY_PRODUCES`) a `produces:` regression would trip.
+    Both gaps are closed: a new `./levare init` → `./levare validate` real-subprocess test, and a
+    mutation test that strips a scaffolded agent's `produces:` back to `[]` (reproducing the exact
+    shape of the original D1/F1 defect) and asserts both `validatePath` and the real CLI subprocess
+    report `EMPTY_PRODUCES`/`UNBINDABLE_STEP` by name.
+  - **(c) pace default.** `projects/studio.md`'s scaffold now declares `pace: auto` (was `step`), with
+    an inline comment on the field (`# auto runs each team unattended; \`step\` pauses for the
+    Conductor's nod before every team run`) and matching prose in the body, so a fresh studio runs
+    unattended by default and the tradeoff is explained at the point of the setting, not just in the
+    PRD.
+  - **(d) `.gitignore`.** `src/init.ts` now scaffolds a top-level `.gitignore` with exactly
+    `.DS_Store`, `node_modules/`, `.env` — the three entries the goal specified, nothing more (no
+    editor-specific or OS-specific entries beyond what was asked, since guessing at a Conductor's
+    toolchain is out of scope for a generic scaffold).
+  - Tests: `tests/init.test.ts`'s "D10/D11" describe block (new) — the skeleton-directory-set test
+    was also updated to expect `.gitignore` among the top-level scaffold, since it's now a real file
+    the old fixed list didn't account for.
+
+**Verification for D10/D11:** `bun test` — 435 pass, 1 pre-existing skip, 0 fail, across 39 files;
+`bun run deps:check` — `deps ok`; `./levare init <empty dir>` then `./levare validate <that dir>`
+prints `valid` and exits 0.
