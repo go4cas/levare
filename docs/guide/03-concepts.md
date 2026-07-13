@@ -9,7 +9,7 @@ stops making sense.
 
 ## The whole picture
 
-<img src="img/concept-map.svg" alt="How levare's concepts relate: projects have work units, which have artifacts, which raise gates. Teams have agents, who author artifacts. Types define units; skills, knowledge, and connectors feed agents." width="100%">
+![How levare's concepts relate: projects have work units, which have artifacts, which raise gates. Teams have agents, who author artifacts. Types define units; skills, knowledge, and connectors feed agents.](img/concept-map.svg)
 
 Read it in two lines:
 
@@ -26,7 +26,7 @@ Every one of those boxes is a markdown file in your studio. Nothing else exists.
 
 Three repositories, three jobs — and confusing them is the most common early mistake.
 
-<img src="img/repo-roles.svg" alt="Three repositories: the levare source, your studio, and the products you build." width="100%">
+![Three repositories: the levare source, your studio, and the products you build.](img/repo-roles.svg)
 
 **The source repo** is levare itself. You clone it, build the binary, and never think about it again.
 
@@ -94,7 +94,7 @@ brief rather than from thin air.
 
 ### The lifecycle
 
-<img src="img/artifact-lifecycle.svg" alt="An artifact is produced, sits in review, and is then approved, superseded, or rejected." width="100%">
+![An artifact is produced, sits in review, and is then approved, superseded, or rejected.](img/artifact-lifecycle.svg)
 
 **Only the Conductor moves an artifact out of `in-review`.** Not the Orchestrator, not the daemon,
 not the member that wrote it.
@@ -148,7 +148,7 @@ That is the whole reason a multi-vendor studio works.
 
 A team's **flow** is a declaration, not code. Three shapes:
 
-<img src="img/flow.svg" alt="A flow is a sequence of steps, human gates, and loops." width="100%">
+![A flow is a sequence of steps, human gates, and loops.](img/flow.svg)
 
 ```yaml
 flow:
@@ -180,7 +180,7 @@ And the **gate** is the constitution:
 Every member — native, CLI, or remote — receives the same seven-part context, assembled
 deterministically:
 
-<img src="img/context-recipe.svg" alt="The seven-part context recipe assembled for every member." width="100%">
+![The seven-part context recipe assembled for every member.](img/context-recipe.svg)
 
 You can print it before you spend a cent:
 
