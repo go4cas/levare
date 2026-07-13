@@ -82,6 +82,15 @@ export interface Agent {
    * stdin rather than an argv flag. Ignored for `native`/`remote` agents.
    */
   context_via?: "arg" | "stdin";
+  /**
+   * How this member receives consumed artifacts (§6 recipe item 7, ruling C9). `"paths"` (default):
+   * root-relative paths only — correct for a member with filesystem access to the studio. `"inline"`:
+   * the full text (frontmatter + body) of every consumed artifact, for a member that cannot reach the
+   * studio filesystem (e.g. a wrapped CLI deliberately run in an isolated scratch directory). A cwd
+   * resolving outside the studio root without declaring `"inline"` is a definition error — `levare
+   * validate` rejects it (NOTES D6/C9).
+   */
+  context_artifacts?: "paths" | "inline";
   cwd?: string;
   timeout?: number;
   result?: string;

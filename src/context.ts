@@ -3,13 +3,16 @@
 //
 //   1. agent definition body            5. project house rules
 //   2. referenced skills                6. the task string from the flow step
-//   3. referenced knowledge files       7. paths to consumed artifacts — never their contents
+//   3. referenced knowledge files       7. consumed artifacts — paths or inline, per agent declaration
 //   4. team charter + team LEARNINGS.md
 //
-// Item 7 is paths only, by design: a member reads the files it needs; levare never inlines artifact
-// bodies into the prompt (they can be large, and the point of the graph is that dependencies are
-// addressable, not copied). The consumed set is the unit's currently-approved artifacts — the vetted
-// inputs available at that step.
+// Item 7's delivery mode is a per-agent declaration (ruling C9, NOTES D6): `agent.context_artifacts`
+// defaults to `"paths"` — root-relative paths only, unchanged since phase 3 — for a member with
+// filesystem access to the studio. A member that cannot reach the studio (e.g. a wrapped CLI
+// deliberately run in an isolated scratch directory, so a repo's own config can't alter its
+// behaviour) declares `"inline"`: section 7 then carries the full text (frontmatter + body) of every
+// consumed artifact instead of a pointer it could never open. The consumed set is the unit's
+// currently-approved artifacts — the vetted inputs available at that step — in both modes.
 
 import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -97,11 +100,14 @@ export function assembleContext(repo: Repo, opts: AssembleOptions): string {
   if (!chosen) throw new ContextError(`agent '${opts.agent}' has no flow step '${opts.step}' (has: ${steps.map((s) => s.label).join(", ")})`);
 
   const consumed = unitArtifactPaths(opts.root, unitRow.project, opts.unit).filter((a) => a.status === "approved");
+  const inline = agent.context_artifacts === "inline";
 
   // ---- Render the recipe, section by section, in fixed order. ----
   const out: string[] = [];
   out.push(`context · ${team.name}/${agent.name} · ${unitRow.project}/${opts.unit} · step ${chosen.label} → ${chosen.kind}`);
-  out.push("recipe: agent · skills · knowledge · team charter+learnings · project house rules · task · consumed paths");
+  out.push(
+    `recipe: agent · skills · knowledge · team charter+learnings · project house rules · task · ${inline ? "consumed artifacts (inline)" : "consumed paths"}`,
+  );
   out.push("");
 
   const kindTag = agent.kind === "native" ? `native, ${agent.model ?? "?"}` : agent.kind;
@@ -144,9 +150,21 @@ export function assembleContext(repo: Repo, opts: AssembleOptions): string {
   out.push(chosen.label);
   out.push("");
 
-  out.push("── 7. consumed artifacts (paths only — never contents) ──");
+  out.push(
+    inline
+      ? "── 7. consumed artifacts (inline — full text, per agent declaration `context_artifacts: inline`, ruling C9) ──"
+      : "── 7. consumed artifacts (paths only — never contents) ──",
+  );
   if (consumed.length === 0) out.push("(none)");
-  for (const c of consumed) out.push(c.rel);
+  for (const c of consumed) {
+    if (!inline) {
+      out.push(c.rel);
+      continue;
+    }
+    out.push(`── consumed artifact: ${c.id} (${c.rel}) ──`);
+    out.push(readFileSync(join(opts.root, c.rel), "utf8").replace(/\n$/, ""));
+    out.push(`── end consumed artifact: ${c.id} ──`);
+  }
 
   return out.join("\n") + "\n";
 }

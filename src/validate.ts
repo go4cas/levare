@@ -7,7 +7,7 @@
 // project. The approved-immutability rule is checked against git when the path is a git repo.
 
 import { readdirSync, readFileSync, statSync, existsSync, realpathSync } from "node:fs";
-import { join, relative, dirname, basename, sep } from "node:path";
+import { join, relative, dirname, basename, sep, isAbsolute, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseFrontmatter, YamlError, type YamlValue } from "./yaml.ts";
 
@@ -160,6 +160,10 @@ const AGENT_SCHEMA: Schema = {
     // How a cli member receives its assembled context (NOTES F7): `{task}` substitution (default) or
     // the child's stdin. Ignored for native/remote.
     context_via: { type: "enum", required: false, enum: ["arg", "stdin"] },
+    // How this member receives consumed artifacts (§6 recipe item 7, ruling C9): `paths` (default,
+    // unchanged behaviour) or `inline` (full text) — see validateAgentContextScope below for the
+    // corresponding cwd-outside-studio definition error.
+    context_artifacts: { type: "enum", required: false, enum: ["paths", "inline"] },
     cwd: { type: "str", required: false },
     timeout: { type: "num", required: false },
     result: { type: "str", required: false },
@@ -308,7 +312,10 @@ export function validatePath(target: string): ValidationResult {
   }
 
   // Cross-entity structural checks: can this studio actually RUN? (only meaningful for a whole tree)
-  if (st.isDirectory()) validateStudioBindings(target, errors);
+  if (st.isDirectory()) {
+    validateStudioBindings(target, errors);
+    validateAgentContextScope(target, errors);
+  }
 
   // Cross-artifact checks over everything discovered.
   crossReference(artifacts, errors);
@@ -744,6 +751,49 @@ function validateStudioBindings(root: string, errors: ValidationError[]): void {
         });
       }
     }
+  }
+}
+
+/**
+ * Ruling C9 (NOTES D6): how a member receives consumed artifacts (§6 recipe item 7) is a per-agent
+ * declaration — `context_artifacts: inline` carries the full text, the default `paths` carries only
+ * root-relative paths — because only the agent knows what it can reach. An agent whose declared `cwd`
+ * resolves outside the studio root but has NOT declared `inline` can never open what a path points at:
+ * that is a definition error, caught here rather than discovered live (the dogfood finding this
+ * closes — a real Gemini member, run from /tmp with no studio access, was handed a path it could not
+ * open and would have had to guess the question).
+ *
+ * A `cwd` still holding an unresolved `{…}` template (NOTES D9) resolves only at spawn time, not
+ * definition time, so its eventual location is unknowable here and is skipped, not guessed at.
+ */
+function validateAgentContextScope(root: string, errors: ValidationError[]): void {
+  const agentsDir = join(root, "agents");
+  if (!existsSync(agentsDir)) return;
+  const resolvedRoot = resolve(root);
+  for (const name of readdirSync(agentsDir).sort()) {
+    if (!name.endsWith(".md") || name.endsWith(".learnings.md")) continue;
+    const file = join(agentsDir, name);
+    let data: Record<string, YamlValue>;
+    try {
+      ({ data } = parseFrontmatter(readFileSync(file, "utf8")));
+    } catch {
+      continue; // its own PARSE_ERROR was already recorded by the per-file pass.
+    }
+    const cwd = typeof data.cwd === "string" ? data.cwd : undefined;
+    if (!cwd || cwd.includes("{")) continue;
+    if (data.context_artifacts === "inline") continue;
+    const resolvedCwd = resolve(isAbsolute(cwd) ? cwd : join(root, cwd));
+    const rel = relative(resolvedRoot, resolvedCwd);
+    const outside = rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+    if (!outside) continue;
+    const agentName = typeof data.name === "string" ? data.name : basename(name, ".md");
+    errors.push({
+      code: "CWD_OUTSIDE_STUDIO_NO_INLINE",
+      message:
+        `agent '${agentName}' has cwd '${cwd}' outside the studio root '${root}' and does not declare ` +
+        `'context_artifacts: inline'; such a member can never read what it consumes at that path (ruling C9)`,
+      file,
+    });
   }
 }
 

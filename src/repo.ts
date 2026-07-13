@@ -136,6 +136,7 @@ function toAgent(d: Record<string, YamlValue>, body: string): Agent {
     model: optStr(d.model),
     command: d.command !== undefined ? strArr(d.command) : undefined,
     context_via: d.context_via === "stdin" ? "stdin" : d.context_via === "arg" ? "arg" : undefined,
+    context_artifacts: d.context_artifacts === "inline" ? "inline" : d.context_artifacts === "paths" ? "paths" : undefined,
     cwd: optStr(d.cwd),
     timeout: typeof d.timeout === "number" ? d.timeout : undefined,
     result: optStr(d.result),
