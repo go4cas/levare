@@ -2702,3 +2702,145 @@ and `deps:check` all pass with this change in place.
 `stubAdapterRunner` as an implicit default was checked directly (`grep`, not assumed) — the only
 production call site left is `replay.ts#runScenario` itself, which is `levare replay`'s own engine and
 correctly belongs there.
+
+## F7. CLI members were blind — `{task}` substituted the bare flow step label, never the §6 context (the first live foreign-agent run, and the ninth fail-open)
+
+**Found in the first live multi-vendor dogfood run (2026-07-13):** a real Gemini member, wrapped as a
+`kind: cli` agent (`command: ["gemini", "-p", "{task}"]`), was invoked as `gemini -p report` — the
+single word `report`, its flow step's own label. F4 had already fixed *which* command got spawned (the
+agent's own declared command, not the fixture stub); this is what that real command was actually
+*told*. Every native member's system prompt is the full §6 recipe — agent definition body, referenced
+skills, referenced knowledge, team charter + LEARNINGS, project house rules, the task string, and paths
+to consumed artifacts (`context.ts#assembleContext`) — assembled once and injected as the model's only
+instruction (`adapters.ts`'s `createSdkNativeBoundary` doc comment says this explicitly: "no separate
+system prompt is layered on top"). A `kind: cli` member got none of it: `defaultCliCommand`
+(`adapters.ts`) substituted `{task}` with `req.kind` — the flow step's resolved kind/label, e.g.
+`"report"` — a leftover from phase 3, when `req.context` (the assembled recipe) existed in the
+`InvokeRequest` shape but was never actually wired into the one substitution point a CLI member reads
+from. A foreign agent could not see the question it was meant to answer, its own skills, its own
+knowledge, or the paths of the artifacts it was meant to consume — `kind: cli` is levare's entire
+multi-vendor thesis, and a wrapped CLI was a second-class member that could not see its own task.
+
+**The fix — one substitution, the same recipe every member already gets.** `defaultCliCommand` now
+substitutes `{task}` with `req.context` — the identical §6-assembled string a native member's system
+prompt already carries, assembled by the identical `assembleContext` call (`AdapterRunner#assemble`),
+with no separate recipe for CLI. `levare context <agent> --unit <u> [--dry-run]` prints exactly this
+same string (it always did — `runContextCmd` calls `assembleContext` with the same inputs
+`AdapterRunner#assemble` uses), so the pre-existing dry-run/live parity invariant for native members
+now holds for CLI members too, by construction rather than by a second, parallel guarantee to keep in
+sync — proven end to end in `tests/serve-real-cli-e2e.test.ts`, which now asserts the real script's
+captured argv is byte-for-byte equal to both `assembleContext(...)`'s direct return value and
+`./levare context wren --unit loyalty-flow --dry-run`'s stdout.
+
+**Delivery is now an agent-level declaration, not an assumption.** Some real CLIs take their prompt as
+an argv element (Gemini: `-p <text>`); some read stdin. `Agent.context_via?: "arg" | "stdin"` (default
+`"arg"`, `types.ts`/`validate.ts`/`repo.ts`) lets an agent definition say which. `"arg"` keeps the
+pre-existing `{task}` substitution (now carrying the full context instead of the bare label — the whole
+point of this fix). `"stdin"` writes the full context to the child's stdin instead, via a new `stdin?:
+string` field on `CliSpawnOptions` (`adapters.ts`) both spawn boundaries (`bunSpawn`, and the new
+`asyncBunSpawn` — see F5 below) read identically. **Stdin is closed in BOTH modes, always**: `context_via:
+stdin` writes the context and lets it EOF naturally; `context_via: arg` (the default, and every
+pre-existing agent definition, since the field is optional) passes `stdin: "ignore"` — Bun's own
+closed/no-input mode — rather than leaving it unset (which would inherit whatever the parent process's
+own stdin happens to be, e.g. a TTY, silently). No CLI member — old declaration or new — ever waits on
+input that will never arrive. Verified against REAL, unmocked subprocesses (`tests/cli-context-delivery.test.ts`,
+using `cat` as the simplest process that makes the OS-level contract observable): `context_via: stdin`
+receives the exact assembled context on stdin and echoes it back byte-for-byte; `context_via: arg`
+returns in well under the agent's timeout with empty output, proving stdin closed immediately rather
+than hanging until the timeout killed it — tested against BOTH the sync (`bunSpawn`) and async
+(`asyncBunSpawn`) transports, since F5 (below) means both are live production code, not one superseding
+the other.
+
+**What this fix deliberately did not touch.** `req.kind` — the resolved kind/label that used to leak
+into `{task}` — is still passed on `InvokeRequest` and still appears inside the assembled context
+itself (recipe item 6, "the task string from the flow step" — `context.ts` renders `chosen.label`
+under `── 6. task ──`), so nothing about *which step is running* is lost; it is simply no longer the
+*entire* payload a CLI member receives. `{feature_repo}` substitution is untouched. Native/remote
+members were already correct and needed no change — F7 is specifically the CLI path catching up to a
+guarantee everyone else already had.
+
+**Tests.** `tests/adapters.test.ts`'s injection-safety suite (renamed `cli argv carries the assembled
+context via {task} — no shell re-splitting`) now asserts `{task}` equals the real `assembleContext`
+output (not `"review"`, the bare kind — the pre-F7 defect, asserted absent by name) and that hostile
+content embedded in a legitimate part of the recipe (the agent's own definition body — the realistic
+injection surface now that `{task}` is the full context, not an isolated external string) still lands
+in exactly one argv element, never shell-re-split; `tests/serve-real-cli-e2e.test.ts` (F4's own e2e
+file, updated) proves the same thing against a real, unmocked subprocess and a real `./levare serve`,
+plus the dry-run/live parity above; `tests/cli-context-delivery.test.ts` (new) proves stdin delivery
+and stdin-closing across both context_via modes and both spawn transports. `bun test`, `levare replay
+fixtures/golden --stubs`, and `deps:check` all still pass (see F5 below for the combined final run —
+F5 and F7 were fixed and verified together, from the same dogfood report).
+
+## F5. The CLI adapter blocked the server's event loop — a live 10-minute member run froze the whole board (the tenth fail-open)
+
+**Found in the same live dogfood run as F7 (2026-07-13):** a real member run left `levare serve`'s
+console completely unresponsive for its entire ~10-minute duration. Root cause, structurally identical
+to the one phase 7 already fixed once for the SDK transport (NOTES phase-7 K9): CLI member invocation
+(`adapters.ts`'s `runCli`, via `bunSpawn`) used `Bun.spawnSync` — a genuinely blocking call. Bun's
+server runs on one JS thread; `Bun.spawnSync` freezes that thread, and therefore **every** concurrent
+connection, for as long as the child process runs — not just the request that triggered the member,
+but a plain `GET /` with no member involvement at all. This was live-reachable two ways: `board/
+gateops.ts#doStart` (a Conductor's `POST /gates/.../start`, in-request) and `daemon.ts`'s own
+autonomous background tick (`fs.watch` → debounce → `tickOnce`), and both paths funnel through the
+exact same shared `dagwalk.ts#advanceUnit` → `MemberRunner.produce()` call — "reuse, don't
+reimplement," the same principle phase 8's own header comments state, meant the blocking defect was
+never local to one call site.
+
+**The fix — isolate the async at the transport, exactly as phase 7 did, not a rewrite of the dispatch
+layer.** `adapters.ts` gains `AsyncCliSpawn` (a `Promise`-returning counterpart to the existing
+`CliSpawn`) and its real implementation `asyncBunSpawn` — `Bun.spawn` + `await` instead of
+`Bun.spawnSync`, with the timeout enforced explicitly (a `setTimeout` that kills the process) rather
+than trusted to `Bun.spawn`'s own timeout flag, mirroring `sdk-transport.ts`'s `AsyncSdkTransport`
+precedent line for line, including the group-kill: `detached: true` puts the member in its own process
+group and a negative-PID `SIGKILL` reaps the member AND any of its own children on timeout — the same
+`killProcessGroup` pattern `sdk-transport.ts#killProcessTree` already established for the SDK worker.
+`AdapterRunner` gains `produceAsync` alongside the existing, UNCHANGED `produce` — same context
+assembly, same env scoping, same receipt normalization (shared via new private `prepare`/`finalize`
+helpers, not duplicated), differing only in which CLI spawn boundary a `kind: cli` member's run goes
+through. `produce`/`bunSpawn` stay exactly as blocking as before — that is correct and load-bearing,
+not a bug left in place: the phase-2 batch `Runner` (`runner.ts`, driving `levare replay`) is a
+synchronous, in-memory simulated walk with no event loop to protect, and touching it was explicitly out
+of scope ("do not make the whole dispatch layer async"). Only the LIVE path — `dagwalk.ts`'s
+`advanceUnit`/`produceOne`, `daemon.ts`'s tick machinery, and `board/gateops.ts`'s gate resolution,
+none of which `levare replay` ever calls — now flows through a new `AsyncMemberRunner` interface
+(`dagwalk.ts`) whose `produce()` return type is a union (`Result | Promise<Result>`) so every existing
+SYNCHRONOUS test double (`stubAdapterRunner`, every hand-rolled `MemberRunner` in `daemon.test.ts`/
+`binding.test.ts`/`multiteam.test.ts`/etc.) satisfies it unchanged — only `replay.ts#productionAdapterRunner`
+(F4's own real-production constructor) now wraps a genuinely async `produceAsync`, non-blocking for the
+one agent kind that's actually live (`kind: cli` — native/remote stay behind the still-mocked
+boundaries, K5's own separate, unrelated deferral).
+
+**The ripple, and why it's not "the whole dispatch layer."** Because `await` only ever suspends the
+function it's written in — it cannot make a caller non-blocking without that caller itself awaiting —
+`advanceUnit`/`produceOne` becoming `async` necessarily cascades to their own callers: `daemon.ts`'s
+`tickOnce`/`runTick`/the public `tick()` (a timer callback fires `runTick` fire-and-forget, exactly as
+it already fired a synchronous call; `tickRunning` stays a correct single-flight guard because it is
+set before, and cleared only after, every `await` in the chain resolves) and `board/gateops.ts`'s
+`resolveGate`/`doStart`/`doRequest`/`resolveStartGate` (the two call sites, `board/serve.ts`'s already-
+`async` `POST /gates/...` handler and `orchestrator.ts`'s already-`async` `handle`, each gained exactly
+one `await`). This is the boundary the goal drew: the phase-8 LIVE single-step-advance machinery
+(`dagwalk.ts` + `daemon.ts` + `gateops.ts` — already, by its own header comments, one shared mechanism
+distinct from `runner.ts`'s batch engine) becomes async because it is the thing actually reachable from
+`Bun.serve`'s request path; the batch `Runner` does not, because it never was.
+
+**Confirmed still working, unchanged:** the daemon's timeout-kill (F5's own goal text: "that part
+already works") — `asyncBunSpawn`'s group-kill is proven directly (`tests/adapters.test.ts`, "the real
+asyncBunSpawn (non-blocking) also kills a sleeping member on timeout, promptly" — a 1s timeout against a
+10s sleep, asserting the throw happens in well under 5s, not after the full sleep) alongside the
+pre-existing sync-path equivalent it mirrors.
+
+**Tests.** `tests/board-serve-nonblocking.test.ts` (existing, K9's own regression test) proved this
+property in-process for the orchestrator transport; this fix's own proof is `tests/serve-cli-nonblocking-e2e.test.ts`
+(new) — boots the REAL `./levare serve` binary (not `createBoard`/`Daemon` driven in-process) against a
+scratch studio whose CLI agent's command is `["sleep", "3"]` (a real, unmocked subprocess standing in
+for the dogfood's real ~10-minute Gemini call), fires `POST /gates/.../start` without awaiting it, then
+races a concurrent `GET /` and asserts it returns 200 in under a second WHILE the member is still
+sleeping — the exact scenario a real operator hit live. It also confirms the started request itself
+took the full 3+ seconds (proving the fast `GET /` genuinely raced a slow, in-flight call, not a fast
+one) once awaited.
+
+**Final verification, F5 and F7 together** (fixed and tested as one change, since both came from the
+same dogfood report and touch the same call chain): `bun test` — 431 pass, 1 pre-existing skip, 0 fail,
+across 39 files (up from 424/1/0/37 at F4); `levare replay fixtures/golden --stubs` — final artifact
+statuses still match `fixtures/golden/expected.json` byte-for-byte (the synchronous batch path this
+fix deliberately left untouched); `deps:check` — `deps ok`.
