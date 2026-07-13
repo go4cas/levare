@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 400" width="680" height="400" role="img" aria-labelledby="t d">
+<title id="t">The context recipe</title>
+<desc id="d">Every member receives the same seven-part context: its own definition, skills, knowledge, team charter and learnings, project house rules, the task, and its consumed artifacts.</desc>
+<style>
+  .th{font:500 14px 'Hanken Grotesk',system-ui,sans-serif}
+  .ts{font:400 11px 'IBM Plex Mono',ui-monospace,monospace}
+  .num{font:400 11px 'IBM Plex Mono',ui-monospace,monospace;fill:#8A8D93}
+  .cap{font:400 12px 'IBM Plex Mono',ui-monospace,monospace;fill:#6B6F76}
+  .r rect{fill:#F1F1F0;stroke:#8A8D93}.r .th{fill:#33363C}.r .ts{fill:#5C6067}
+  .out rect{fill:#EDF2F8;stroke:#2E6FB0}.out .th{fill:#1B4670}.out .ts{fill:#2A6099}
+  .arr{stroke:#8A8D93;stroke-width:1;fill:none}
+  @media (prefers-color-scheme:dark){
+    .r rect{fill:#232529;stroke:#767A81}.r .th{fill:#D9DBDE}.r .ts{fill:#A0A4AA}
+    .out rect{fill:#122236;stroke:#5C9BD8}.out .th{fill:#CFE1F2}.out .ts{fill:#9CC2E5}
+    .cap{fill:#8A8D93}.arr{stroke:#767A81}.num{fill:#767A81}
+  }
+</style>
+<defs><marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#8A8D93" stroke-width="1.5" stroke-linecap="round"/></marker></defs>
+
+<g class="r"><rect x="40" y="30" width="230" height="36" rx="5" stroke-width="1"/>
+<text class="num" x="54" y="53">1</text><text class="th" x="76" y="53">the agent's own definition</text></g>
+<g class="r"><rect x="40" y="74" width="230" height="36" rx="5" stroke-width="1"/>
+<text class="num" x="54" y="97">2</text><text class="th" x="76" y="97">its skills</text></g>
+<g class="r"><rect x="40" y="118" width="230" height="36" rx="5" stroke-width="1"/>
+<text class="num" x="54" y="141">3</text><text class="th" x="76" y="141">its knowledge</text></g>
+<g class="r"><rect x="40" y="162" width="230" height="36" rx="5" stroke-width="1"/>
+<text class="num" x="54" y="185">4</text><text class="th" x="76" y="185">team charter + learnings</text></g>
+<g class="r"><rect x="40" y="206" width="230" height="36" rx="5" stroke-width="1"/>
+<text class="num" x="54" y="229">5</text><text class="th" x="76" y="229">project house rules</text></g>
+<g class="r"><rect x="40" y="250" width="230" height="36" rx="5" stroke-width="1"/>
+<text class="num" x="54" y="273">6</text><text class="th" x="76" y="273">the task</text></g>
+<g class="r"><rect x="40" y="294" width="230" height="36" rx="5" stroke-width="1"/>
+<text class="num" x="54" y="317">7</text><text class="th" x="76" y="317">consumed artifacts</text></g>
+
+<path d="M270 180 L330 180" class="arr" marker-end="url(#a)"/>
+
+<g class="out"><rect x="340" y="140" width="180" height="80" rx="6" stroke-width="1"/>
+<text class="th" x="430" y="172" text-anchor="middle">Member</text>
+<text class="ts" x="430" y="194" text-anchor="middle">native · cli · remote</text></g>
+
+<text class="cap" x="340" y="368" text-anchor="middle">Assembled deterministically, the same way, for every member.</text>
+<text class="cap" x="340" y="388" text-anchor="middle">levare context &lt;agent&gt; --unit &lt;unit&gt; --dry-run prints exactly what it will receive.</text>
+</svg>

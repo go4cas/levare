@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 410" width="680" height="410" role="img" aria-labelledby="t d">
+<title id="t">How levare's concepts relate</title>
+<desc id="d">A studio is a git repository. Projects contain work units, which produce artifacts, which raise gates. Teams contain agents, who author the artifacts. Types define units; skills, knowledge, and connectors feed agents.</desc>
+<style>
+  .th{font:500 14px 'Hanken Grotesk',system-ui,sans-serif}
+  .ts{font:400 11px 'IBM Plex Mono',ui-monospace,monospace}
+  .lbl{font:400 11px 'IBM Plex Mono',ui-monospace,monospace;fill:#8A8D93}
+  .cap{font:400 12px 'IBM Plex Mono',ui-monospace,monospace;fill:#6B6F76}
+  .d rect{fill:#F1F1F0;stroke:#8A8D93}.d .th{fill:#33363C}.d .ts{fill:#5C6067}
+  .m rect{fill:#EDF2F8;stroke:#2E6FB0}.m .th{fill:#1B4670}.m .ts{fill:#2A6099}
+  .g rect{fill:#FAF3E0;stroke:#8A6414}.g .th{fill:#5C4309}.g .ts{fill:#8A6414}
+  .box{fill:none;stroke:#B9BBBF;stroke-dasharray:4 4}
+  .arr{stroke:#8A8D93;stroke-width:1;fill:none}
+  @media (prefers-color-scheme:dark){
+    .d rect{fill:#232529;stroke:#767A81}.d .th{fill:#D9DBDE}.d .ts{fill:#A0A4AA}
+    .m rect{fill:#122236;stroke:#5C9BD8}.m .th{fill:#CFE1F2}.m .ts{fill:#9CC2E5}
+    .g rect{fill:#33280A;stroke:#C79A2E}.g .th{fill:#F0DEA8}.g .ts{fill:#C79A2E}
+    .cap{fill:#8A8D93}.arr{stroke:#767A81}.lbl{fill:#767A81}.box{stroke:#4A4D53}
+  }
+</style>
+<defs><marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#8A8D93" stroke-width="1.5" stroke-linecap="round"/></marker></defs>
+
+<text class="cap" x="20" y="58">studio · one git repository of markdown files</text>
+<rect class="box" x="20" y="72" width="640" height="276" rx="8"/>
+
+<g class="d"><rect x="40" y="110" width="120" height="44" rx="6" stroke-width="1"/>
+<text class="th" x="100" y="137" text-anchor="middle">project</text></g>
+<line x1="160" y1="132" x2="196" y2="132" class="arr" marker-end="url(#a)"/>
+<text class="lbl" x="178" y="122" text-anchor="middle">has</text>
+
+<g class="d"><rect x="200" y="110" width="120" height="44" rx="6" stroke-width="1"/>
+<text class="th" x="260" y="137" text-anchor="middle">work unit</text></g>
+<line x1="320" y1="132" x2="356" y2="132" class="arr" marker-end="url(#a)"/>
+<text class="lbl" x="338" y="122" text-anchor="middle">has</text>
+
+<g class="d"><rect x="360" y="110" width="120" height="44" rx="6" stroke-width="1"/>
+<text class="th" x="420" y="137" text-anchor="middle">artifact</text></g>
+<line x1="480" y1="132" x2="516" y2="132" class="arr" marker-end="url(#a)"/>
+<text class="lbl" x="498" y="122" text-anchor="middle">raises</text>
+
+<g class="g"><rect x="520" y="110" width="120" height="44" rx="6" stroke-width="1"/>
+<text class="th" x="580" y="130" text-anchor="middle">gate</text>
+<text class="ts" x="580" y="146" text-anchor="middle">needs you</text></g>
+
+<g class="d"><rect x="40" y="200" width="120" height="40" rx="6" stroke-width="1"/>
+<text class="th" x="100" y="225" text-anchor="middle">type</text></g>
+<path d="M148 200 L232 158" class="arr" marker-end="url(#a)" fill="none"/>
+<text class="lbl" x="150" y="178">defines</text>
+
+<g class="m"><rect x="200" y="200" width="120" height="40" rx="6" stroke-width="1"/>
+<text class="th" x="260" y="225" text-anchor="middle">team</text></g>
+<line x1="320" y1="220" x2="356" y2="220" class="arr" marker-end="url(#a)"/>
+<text class="lbl" x="338" y="210" text-anchor="middle">has</text>
+
+<g class="m"><rect x="360" y="200" width="120" height="40" rx="6" stroke-width="1"/>
+<text class="th" x="420" y="225" text-anchor="middle">agent</text></g>
+<line x1="420" y1="200" x2="420" y2="158" class="arr" marker-end="url(#a)"/>
+<text class="lbl" x="432" y="182">authors</text>
+
+<g class="d"><rect x="300" y="290" width="100" height="38" rx="6" stroke-width="1"/>
+<text class="ts" x="350" y="314" text-anchor="middle">skill</text></g>
+<g class="d"><rect x="410" y="290" width="100" height="38" rx="6" stroke-width="1"/>
+<text class="ts" x="460" y="314" text-anchor="middle">knowledge</text></g>
+<g class="d"><rect x="520" y="290" width="100" height="38" rx="6" stroke-width="1"/>
+<text class="ts" x="570" y="314" text-anchor="middle">connector</text></g>
+<path d="M350 290 L392 244" class="arr" marker-end="url(#a)" fill="none"/>
+<path d="M460 290 L440 244" class="arr" marker-end="url(#a)" fill="none"/>
+<path d="M570 290 L472 244" class="arr" marker-end="url(#a)" fill="none"/>
+
+<text class="cap" x="340" y="378" text-anchor="middle">Blue has a model · gray is a file · brass needs you.</text>
+<text class="cap" x="340" y="398" text-anchor="middle">Every box above is a markdown file you can open and edit.</text>
+</svg>

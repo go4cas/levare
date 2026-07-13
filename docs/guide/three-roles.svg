@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 470" width="680" height="470" role="img" aria-labelledby="t d">
+<title id="t">The three roles</title>
+<desc id="d">The Conductor decides, the Orchestrator routes, the Runner executes, and members do the work.</desc>
+<style>
+  .bg{fill:none}
+  .th{font:500 14px 'Hanken Grotesk',system-ui,sans-serif}
+  .ts{font:400 12px 'IBM Plex Mono',ui-monospace,monospace}
+  .cap{font:400 12px 'IBM Plex Mono',ui-monospace,monospace;fill:#6B6F76}
+  .human rect{fill:#FBEDEA;stroke:#C2402A}
+  .human .th{fill:#7A2519}.human .ts{fill:#A33722}
+  .model rect{fill:#EDF2F8;stroke:#2E6FB0}
+  .model .th{fill:#1B4670}.model .ts{fill:#2A6099}
+  .det rect{fill:#F1F1F0;stroke:#8A8D93}
+  .det .th{fill:#33363C}.det .ts{fill:#5C6067}
+  .arr{stroke:#8A8D93;stroke-width:1;fill:none}
+  @media (prefers-color-scheme:dark){
+    .human rect{fill:#3A1710;stroke:#D8624B}.human .th{fill:#F5D4CC}.human .ts{fill:#E0907B}
+    .model rect{fill:#122236;stroke:#5C9BD8}.model .th{fill:#CFE1F2}.model .ts{fill:#9CC2E5}
+    .det rect{fill:#232529;stroke:#767A81}.det .th{fill:#D9DBDE}.det .ts{fill:#A0A4AA}
+    .cap{fill:#8A8D93}.arr{stroke:#767A81}
+  }
+</style>
+<defs><marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#8A8D93" stroke-width="1.5" stroke-linecap="round"/></marker></defs>
+
+<g class="human"><rect x="240" y="30" width="200" height="56" rx="6" stroke-width="1"/>
+<text class="th" x="340" y="53" text-anchor="middle">Conductor</text>
+<text class="ts" x="340" y="72" text-anchor="middle">you · the only approver</text></g>
+<line x1="340" y1="86" x2="340" y2="126" class="arr" marker-end="url(#a)"/>
+
+<g class="model"><rect x="240" y="130" width="200" height="56" rx="6" stroke-width="1"/>
+<text class="th" x="340" y="153" text-anchor="middle">Orchestrator</text>
+<text class="ts" x="340" y="172" text-anchor="middle">one LLM · holds no state</text></g>
+<line x1="340" y1="186" x2="340" y2="226" class="arr" marker-end="url(#a)"/>
+
+<g class="det"><rect x="240" y="230" width="200" height="56" rx="6" stroke-width="1"/>
+<text class="th" x="340" y="253" text-anchor="middle">Runner</text>
+<text class="ts" x="340" y="272" text-anchor="middle">deterministic · no model</text></g>
+
+<line x1="340" y1="286" x2="180" y2="336" class="arr" marker-end="url(#a)"/>
+<line x1="340" y1="286" x2="340" y2="336" class="arr" marker-end="url(#a)"/>
+<line x1="340" y1="286" x2="500" y2="336" class="arr" marker-end="url(#a)"/>
+
+<g class="model"><rect x="110" y="340" width="140" height="56" rx="6" stroke-width="1"/>
+<text class="th" x="180" y="363" text-anchor="middle">Member</text>
+<text class="ts" x="180" y="382" text-anchor="middle">native</text></g>
+<g class="model"><rect x="270" y="340" width="140" height="56" rx="6" stroke-width="1"/>
+<text class="th" x="340" y="363" text-anchor="middle">Member</text>
+<text class="ts" x="340" y="382" text-anchor="middle">cli</text></g>
+<g class="model"><rect x="430" y="340" width="140" height="56" rx="6" stroke-width="1"/>
+<text class="th" x="500" y="363" text-anchor="middle">Member</text>
+<text class="ts" x="500" y="382" text-anchor="middle">remote</text></g>
+
+<text class="cap" x="340" y="436" text-anchor="middle">human · has a model · deterministic</text>
+</svg>

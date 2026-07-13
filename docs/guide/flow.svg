@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 300" width="680" height="300" role="img" aria-labelledby="t d">
+<title id="t">A team's flow: steps, gates, and a loop</title>
+<desc id="d">A flow is a sequence of steps, human gates, and loops. The runner halts at every gate.</desc>
+<style>
+  .th{font:500 14px 'Hanken Grotesk',system-ui,sans-serif}
+  .ts{font:400 11px 'IBM Plex Mono',ui-monospace,monospace}
+  .cap{font:400 12px 'IBM Plex Mono',ui-monospace,monospace;fill:#6B6F76}
+  .step rect{fill:#F1F1F0;stroke:#8A8D93}.step .th{fill:#33363C}.step .ts{fill:#5C6067}
+  .gate rect{fill:#FAF3E0;stroke:#8A6414}.gate .th{fill:#5C4309}.gate .ts{fill:#8A6414}
+  .loop rect{fill:none;stroke:#8A8D93;stroke-dasharray:4 3}
+  .arr{stroke:#8A8D93;stroke-width:1;fill:none}
+  @media (prefers-color-scheme:dark){
+    .step rect{fill:#232529;stroke:#767A81}.step .th{fill:#D9DBDE}.step .ts{fill:#A0A4AA}
+    .gate rect{fill:#33280A;stroke:#C79A2E}.gate .th{fill:#F0DEA8}.gate .ts{fill:#C79A2E}
+    .cap{fill:#8A8D93}.arr{stroke:#767A81}.loop rect{stroke:#767A81}
+  }
+</style>
+<defs><marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#8A8D93" stroke-width="1.5" stroke-linecap="round"/></marker></defs>
+
+<g class="step"><rect x="30" y="60" width="110" height="48" rx="6" stroke-width="1"/>
+<text class="th" x="85" y="80" text-anchor="middle">brief</text>
+<text class="ts" x="85" y="97" text-anchor="middle">step</text></g>
+<line x1="140" y1="84" x2="172" y2="84" class="arr" marker-end="url(#a)"/>
+
+<g class="gate"><rect x="176" y="60" width="110" height="48" rx="6" stroke-width="1"/>
+<text class="th" x="231" y="80" text-anchor="middle">approve</text>
+<text class="ts" x="231" y="97" text-anchor="middle">gate: human</text></g>
+<line x1="286" y1="84" x2="318" y2="84" class="arr" marker-end="url(#a)"/>
+
+<g class="loop"><rect x="322" y="34" width="240" height="100" rx="6" stroke-width="1"/></g>
+<text class="cap" x="442" y="26" text-anchor="middle">loop · until spec.approved · max_rounds 3</text>
+<g class="step"><rect x="338" y="60" width="100" height="48" rx="6" stroke-width="1"/>
+<text class="th" x="388" y="80" text-anchor="middle">spec</text>
+<text class="ts" x="388" y="97" text-anchor="middle">author</text></g>
+<line x1="438" y1="84" x2="442" y2="84" class="arr" marker-end="url(#a)"/>
+<g class="step"><rect x="446" y="60" width="100" height="48" rx="6" stroke-width="1"/>
+<text class="th" x="496" y="80" text-anchor="middle">review</text>
+<text class="ts" x="496" y="97" text-anchor="middle">critic</text></g>
+
+<line x1="562" y1="84" x2="594" y2="84" class="arr" marker-end="url(#a)"/>
+<g class="gate"><rect x="598" y="60" width="60" height="48" rx="6" stroke-width="1"/>
+<text class="ts" x="628" y="88" text-anchor="middle">gate</text></g>
+
+<text class="cap" x="340" y="196" text-anchor="middle">The runner halts at every gate and waits for the Conductor.</text>
+<text class="cap" x="340" y="218" text-anchor="middle">A loop that exhausts its rounds escalates — it never gives up silently.</text>
+</svg>
