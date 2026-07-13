@@ -55,6 +55,7 @@ const REJECTIONS: Array<[string, string]> = [
   ["team-bad-mode", "REMOVED_FIELD"],
   ["team-unproducible-kind", "UNPRODUCIBLE_KIND"],
   ["unbindable-step", "UNBINDABLE_STEP"],
+  ["cwd-outside-studio-no-inline", "CWD_OUTSIDE_STUDIO_NO_INLINE"],
 ];
 
 describe("rejection fixtures", () => {
@@ -127,6 +128,64 @@ describe("F1: a structurally unrunnable studio fails validation, naming what can
   });
 
   test("the golden fixture — a studio that DOES bind end to end — still validates", () => {
+    expect(validatePath("fixtures/golden").ok).toBe(true);
+  });
+});
+
+// Ruling C9 (NOTES D6): an agent whose cwd resolves outside the studio root can never open a path
+// §6 item 7 would hand it, unless it declares `context_artifacts: inline`. `levare validate` must
+// reject the definition, naming the agent, its cwd, and the ruling — not discover this live.
+describe("ruling C9: cwd outside the studio root requires `context_artifacts: inline`", () => {
+  test("rejects, naming the agent, its cwd, and the ruling", () => {
+    const r = validatePath("fixtures/rejections/cwd-outside-studio-no-inline");
+    expect(r.ok).toBe(false);
+    const err = r.errors.find((e) => e.code === "CWD_OUTSIDE_STUDIO_NO_INLINE");
+    expect(err).toBeDefined();
+    expect(err!.message).toContain("scratch"); // the agent
+    expect(err!.message).toContain("/tmp"); // its cwd
+    expect(err!.message).toContain("C9"); // the ruling
+    expect(err!.file).toContain("agents/scratch.md");
+  });
+
+  test("an agent declaring `context_artifacts: inline` with the same outside cwd is accepted", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-cwd-inline-ok-"));
+    try {
+      mkdirSync(join(dir, "agents"), { recursive: true });
+      writeFileSync(
+        join(dir, "agents", "scratch.md"),
+        [
+          "---",
+          "name: scratch",
+          "kind: cli",
+          "produces: [report]",
+          "command: [gemini, -p, \"{task}\"]",
+          "cwd: \"/tmp\"",
+          "context_artifacts: inline",
+          "timeout: 600",
+          'result: "Emits a report artifact."',
+          "style:",
+          "  avatar: Sc",
+          "---",
+          "",
+          "Runs outside the studio; declares inline per ruling C9.",
+          "",
+        ].join("\n"),
+      );
+      const r = validatePath(dir);
+      expect(r.errors.map((e) => e.code)).not.toContain("CWD_OUTSIDE_STUDIO_NO_INLINE");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a cwd containing an unresolved `{...}` template is not statically checked (NOTES D9)", () => {
+    // finch's own golden-fixture cwd (`{feature_repo}`) resolves only at spawn time; C9 must not
+    // guess at where that will land.
+    const r = validatePath("fixtures/golden");
+    expect(r.errors.map((e) => e.code)).not.toContain("CWD_OUTSIDE_STUDIO_NO_INLINE");
+  });
+
+  test("the golden fixture's rook (isolated CLI research member) validates: inline + outside cwd", () => {
     expect(validatePath("fixtures/golden").ok).toBe(true);
   });
 });

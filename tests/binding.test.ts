@@ -62,6 +62,10 @@ describe("capabilities are derived from the agent definitions on disk", () => {
       { member: "finch", kind: "review" },
       { member: "lyra", kind: "design" },
       { member: "lyra", kind: "spec" },
+      // rook: an isolated-scratch-dir CLI research member (ruling C9, NOTES D6) — not on any team's
+      // roster, so it never binds a flow step; it exists in the fixture to prove `context_artifacts:
+      // inline` + a cwd outside the studio root validates.
+      { member: "rook", kind: "report" },
       { member: "wren", kind: "product-brief" },
     ]);
   });

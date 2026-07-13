@@ -82,3 +82,43 @@ describe("context assembly (§6 recipe)", () => {
     expect(out).toContain("kestrel — learnings"); // LEARNINGS.md
   });
 });
+
+// Ruling C9 (NOTES D6): delivery of consumed artifacts (recipe item 7) is a per-agent declaration.
+// An agent that cannot reach the studio filesystem (an isolated scratch-dir CLI member) declares
+// `context_artifacts: inline` and gets the full text instead of an unopenable path.
+describe("ruling C9: context_artifacts — paths (default) vs inline", () => {
+  const repo = loadRepo(ROOT);
+
+  test("an agent declaring `paths` (or nothing) gets only paths — unchanged behaviour", () => {
+    const agent = { ...repo.agents.get("lyra")!, context_artifacts: "paths" as const };
+    const cloned = { ...repo, agents: new Map(repo.agents).set("lyra", agent) };
+    const out = assembleContext(cloned, { root: ROOT, agent: "lyra", unit: "checkout-flow", capabilities: CAPABILITIES });
+    expect(out).toContain("── 7. consumed artifacts (paths only — never contents) ──");
+    expect(out).toContain("work/storefront/checkout-flow/product-brief-v1.md");
+    expect(out).not.toContain("saved-card fallback");
+  });
+
+  test("an agent declaring `inline` gets the full text (frontmatter + body) of every consumed artifact", () => {
+    const agent = { ...repo.agents.get("lyra")!, context_artifacts: "inline" as const };
+    const cloned = { ...repo, agents: new Map(repo.agents).set("lyra", agent) };
+    const out = assembleContext(cloned, { root: ROOT, agent: "lyra", unit: "checkout-flow", capabilities: CAPABILITIES });
+    expect(out).toContain("── 7. consumed artifacts (inline — full text, per agent declaration `context_artifacts: inline`, ruling C9) ──");
+    // The path is still named (in the per-artifact delimiter), but the body is now ALSO present.
+    expect(out).toContain("work/storefront/checkout-flow/product-brief-v1.md");
+    expect(out).toContain("kind: product-brief"); // frontmatter, inlined
+    expect(out).toContain("saved-card fallback"); // body, inlined — the exact text D2 asserted absent
+    expect(out).toContain("abandoned at that wall");
+    expect(out).toContain("kind: design");
+    expect(out).toContain("A single-page checkout"); // design-checkout-v1's body
+  });
+
+  test("recipe header line 2 names the delivery mode actually in use", () => {
+    const pathsOut = assembleContext(repo, { root: ROOT, agent: "lyra", unit: "checkout-flow", capabilities: CAPABILITIES });
+    expect(pathsOut.split("\n")[1]).toContain("consumed paths");
+
+    const inlineAgent = { ...repo.agents.get("lyra")!, context_artifacts: "inline" as const };
+    const cloned = { ...repo, agents: new Map(repo.agents).set("lyra", inlineAgent) };
+    const inlineOut = assembleContext(cloned, { root: ROOT, agent: "lyra", unit: "checkout-flow", capabilities: CAPABILITIES });
+    expect(inlineOut.split("\n")[1]).toContain("consumed artifacts (inline)");
+  });
+});
