@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRepo } from "../src/repo.ts";
+import { assembleContext } from "../src/context.ts";
 import { loadPricing } from "../src/pricing.ts";
 import { AdapterRunner, AdapterError, type CliSpawn, type InvokeRequest, type NativeBoundary, type RemoteBoundary, type SpawnResult } from "../src/adapters.ts";
 import { render } from "../fixtures/stubs/member-stub.ts";
@@ -338,14 +339,22 @@ describe("dispatch errors", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Command injection — a substituted {placeholder} is always exactly one argv element
+// NOTES F7: {task} substitutes the FULL §6-assembled context, never the bare step label — and,
+// regardless of what that context contains, a substituted {placeholder} is always exactly one argv
+// element (no shell re-splitting).
 // ---------------------------------------------------------------------------
 
-describe("cli argv is structured — no shell re-splitting (BLOCKING)", () => {
+describe("cli argv carries the assembled context via {task} — no shell re-splitting (NOTES F7, BLOCKING)", () => {
   // A runner over finch, whose command template is [codex, review, --input, {task}, --repo, {feature_repo}].
   // The default (non-stub) cliCommand builder does the substitution; a spy CliSpawn captures the argv.
-  function finchRunner(capture: { argv?: string[] }) {
+  // `agentOverrides` lets a test embed hostile content into a legitimate part of the context recipe
+  // (the agent's own definition body, §6 item 1) — the realistic injection surface now that {task} is
+  // the full context, not an isolated external string.
+  function finchRunner(capture: { argv?: string[] }, agentOverrides: Partial<{ body: string }> = {}) {
     const repo = loadRepo(ROOT);
+    if (agentOverrides.body !== undefined) {
+      repo.agents.set("finch", { ...repo.agents.get("finch")!, body: agentOverrides.body });
+    }
     const spy: CliSpawn = {
       run(argv): SpawnResult {
         capture.argv = argv;
@@ -362,27 +371,50 @@ describe("cli argv is structured — no shell re-splitting (BLOCKING)", () => {
     });
   }
 
-  // Each hostile task string must land in exactly the `--input` slot as ONE argument, untouched.
-  for (const task of ["a b", 'a"b', "; rm -rf .", "$(whoami)", "a\tb", "&& echo pwned"]) {
-    test(`task ${JSON.stringify(task)} arrives as a single argv element, never re-split`, () => {
+  test("{task} substitutes the FULL assembled context, never the bare kind/step label", () => {
+    const cap: { argv?: string[] } = {};
+    const repo = loadRepo(ROOT);
+    const expectedContext = assembleContext(repo, {
+      root: ROOT,
+      agent: "finch",
+      unit: "checkout-flow",
+      capabilities: [{ member: "finch", kind: "review" }],
+    });
+    finchRunner(cap).produce("finch", "review", "checkout-flow", "storefront");
+    const argv = cap.argv!;
+    expect(argv.length).toBe(6);
+    expect(argv).toEqual(["codex", "review", "--input", expectedContext, "--repo", "{feature_repo}"]);
+    // The pre-F7 defect: {task} was the bare kind/label, never the assembled recipe.
+    expect(argv[3]).not.toBe("review");
+    expect(argv[3]).toContain("── 1. agent · finch");
+  });
+
+  // Each hostile string, embedded in the agent's own definition body (a real, legitimate part of the
+  // context every CLI member receives), must land inside the `--input` slot without ever escaping it.
+  for (const hostile of ["a b", 'a"b', "; rm -rf .", "$(whoami)", "a\tb", "&& echo pwned"]) {
+    test(`hostile content ${JSON.stringify(hostile)} embedded in context arrives inside a single argv element, never re-split`, () => {
       const cap: { argv?: string[] } = {};
-      finchRunner(cap).produce("finch", task, "checkout-flow", "storefront");
+      finchRunner(cap, { body: `finch — a cli member.\n\nPAYLOAD: ${hostile}` }).produce("finch", "review", "checkout-flow", "storefront");
       const argv = cap.argv!;
       // The template has 6 slots; substitution must not change the element count.
       expect(argv.length).toBe(6);
-      expect(argv).toEqual(["codex", "review", "--input", task, "--repo", "{feature_repo}"]);
-      // The dangerous string is one element — it never leaks into adjacent slots.
-      expect(argv[3]).toBe(task);
+      expect(argv[3]).toContain(hostile);
+      // The dangerous string never leaks into an adjacent slot.
+      expect(argv[0]).toBe("codex");
+      expect(argv[2]).toBe("--input");
+      expect(argv[4]).toBe("--repo");
+      expect(argv[5]).toBe("{feature_repo}");
     });
   }
 
-  test("shell-less spawn executes nothing — a metacharacter task deletes no file", () => {
-    // A cli agent whose command echoes {task}. Run it for real via the default bunSpawn.
+  test("shell-less spawn executes nothing — a metacharacter-laden context deletes no file", () => {
+    // A cli agent whose command echoes {task} (now the full context). Run it for real via bunSpawn.
     const repo = loadRepo(ROOT);
     const dir = mkdtempSync(join(tmpdir(), "levare-inject-"));
     const marker = join(dir, "MARKER");
     writeFileSync(marker, "intact");
-    repo.agents.set("echoer", { ...repo.agents.get("finch")!, name: "echoer", command: ["echo", "{task}"], cwd: undefined });
+    const hostile = `hello ; rm -f ${marker}`;
+    repo.agents.set("echoer", { ...repo.agents.get("finch")!, name: "echoer", command: ["echo", "{task}"], cwd: undefined, body: hostile });
     repo.teams.get("kestrel")!.members.push("echoer");
     const runner = new AdapterRunner(repo, {
       pricing,
@@ -391,10 +423,10 @@ describe("cli argv is structured — no shell re-splitting (BLOCKING)", () => {
       remote: remoteMock,
     });
     try {
-      const task = `hello ; rm -f ${marker}`;
-      const { doc } = runner.produce("echoer", task, "checkout-flow", "storefront");
-      // echo printed the whole task as one argument; the embedded `rm` never ran.
-      expect(doc.trim()).toBe(task);
+      const { doc } = runner.produce("echoer", "review", "checkout-flow", "storefront");
+      // echo printed the whole context (containing the hostile fragment) as one argument; the
+      // embedded `rm` never ran.
+      expect(doc).toContain(hostile);
       expect(existsSync(marker)).toBe(true);
       expect(readFileSync(marker, "utf8")).toBe("intact");
     } finally {
@@ -439,6 +471,28 @@ describe("timeout vs. exit-code, kept distinct", () => {
     repo.teams.get("kestrel")!.members.push("sleeper");
     const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "sleeper", kind: "review" }], native: nativeMock, remote: remoteMock });
     expect(() => runner.produce("sleeper", "review", "checkout-flow", "storefront")).toThrow(/timed out/);
+  });
+
+  // NOTES F5: the daemon/gateops live path's timeout enforcement (asyncBunSpawn) must kill a hung
+  // member exactly as the sync bunSpawn boundary already does above — this is the "that part already
+  // works" the goal calls out, proven here for the NEW async transport specifically.
+  test("the real asyncBunSpawn (non-blocking) also kills a sleeping member on timeout, promptly", async () => {
+    const repo = loadRepo(ROOT);
+    repo.agents.set("asyncSleeper", { ...repo.agents.get("finch")!, name: "asyncSleeper", command: ["sleep", "10"], cwd: undefined, timeout: 1 });
+    repo.teams.get("kestrel")!.members.push("asyncSleeper");
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "asyncSleeper", kind: "review" }], native: nativeMock, remote: remoteMock });
+    const start = Date.now();
+    let caught: unknown;
+    try {
+      await runner.produceAsync("asyncSleeper", "review", "checkout-flow", "storefront");
+    } catch (e) {
+      caught = e;
+    }
+    const elapsed = Date.now() - start;
+    expect((caught as Error).message).toMatch(/timed out/);
+    // Killed at the 1s timeout, not left running for the full 10s sleep — proves the timer-based kill
+    // actually fired rather than the call merely eventually resolving on its own.
+    expect(elapsed).toBeLessThan(5000);
   });
 });
 

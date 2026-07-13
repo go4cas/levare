@@ -75,6 +75,13 @@ export interface Agent {
    * spaces, quotes, metacharacters and all — stays a single argument. Never a shell string to split.
    */
   command?: string[];
+  /**
+   * How a `kind: cli` member receives its assembled §6 context (NOTES F7). `"arg"` (default): the
+   * full context substitutes `{task}` in the `command` template, exactly one argv element. `"stdin"`:
+   * the full context is written to the child's stdin instead — for a CLI that reads its prompt from
+   * stdin rather than an argv flag. Ignored for `native`/`remote` agents.
+   */
+  context_via?: "arg" | "stdin";
   cwd?: string;
   timeout?: number;
   result?: string;

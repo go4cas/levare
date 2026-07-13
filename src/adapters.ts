@@ -113,9 +113,30 @@ export interface SpawnResult {
   stderr?: string;
 }
 
+export interface CliSpawnOptions {
+  env: Record<string, string>;
+  cwd?: string;
+  timeoutMs: number;
+  /**
+   * NOTES F7: set only when the agent declares `context_via: stdin` — the full §6 context, written to
+   * the child's stdin and then closed (EOF), never left open. Absent for the default `context_via:
+   * arg` mode, in which case stdin is closed immediately with nothing written, so a CLI that
+   * unexpectedly tries to read stdin blocks on EOF rather than hanging forever waiting on a TTY that
+   * was never attached.
+   */
+  stdin?: string;
+}
+
 /** The CLI spawn boundary — wraps Bun.spawnSync so tests can drive the adapter without real procs. */
 export interface CliSpawn {
-  run(argv: string[], opts: { env: Record<string, string>; cwd?: string; timeoutMs: number }): SpawnResult;
+  run(argv: string[], opts: CliSpawnOptions): SpawnResult;
+}
+
+/** The non-blocking counterpart to `CliSpawn` (NOTES F5) — same shape, Promise-returning, backed by
+ * `Bun.spawn` (async) instead of `Bun.spawnSync`. See sdk-transport.ts's identical sync/async split
+ * for the precedent this mirrors. */
+export interface AsyncCliSpawn {
+  run(argv: string[], opts: CliSpawnOptions): Promise<SpawnResult>;
 }
 
 // Default CLI spawn: a real, synchronous Bun.spawn with a hard timeout and the allowlisted env ONLY
@@ -127,6 +148,9 @@ export const bunSpawn: CliSpawn = {
       cwd: opts.cwd,
       stdout: "pipe",
       stderr: "pipe",
+      // NOTES F7: stdin carries the context when context_via is "stdin"; otherwise "ignore" closes it
+      // immediately (never inherited, never left open) — see CliSpawnOptions.stdin's own doc.
+      stdin: opts.stdin !== undefined ? Buffer.from(opts.stdin) : "ignore",
       timeout: opts.timeoutMs,
     });
     return {
@@ -137,6 +161,54 @@ export const bunSpawn: CliSpawn = {
       timedOut: proc.exitedDueToTimeout === true,
       stderr: proc.stderr ? new TextDecoder().decode(proc.stderr) : "",
     };
+  },
+};
+
+// Kill the whole process GROUP, not just the direct child — mirrors sdk-transport.ts#killProcessTree
+// exactly (NOTES phase-7 K15): `detached: true` below puts the spawned member in its own process
+// group, and a negative pid signals the whole group at once, reaping any of the member's own children
+// too, not just the member itself.
+function killProcessGroup(pid: number): void {
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    /* already exited, or never got its own process group — nothing left to kill */
+  }
+}
+
+// The non-blocking default (NOTES F5): `Bun.spawn` + `await` instead of `Bun.spawnSync`, so the
+// caller's event loop (levare serve's single JS thread) keeps servicing OTHER concurrent requests —
+// and the daemon's own background tick — for the full duration of a member's run, exactly the
+// blocking-vs-non-blocking split sdk-transport.ts already established for the SDK worker. The timeout
+// is enforced explicitly (a setTimeout that kills the process group), matching
+// createAsyncSdkTransport's own reasoning: `exitedDueToTimeout` is documented for spawnSync, not
+// observed to be populated for async spawn in this Bun version.
+export const asyncBunSpawn: AsyncCliSpawn = {
+  async run(argv, opts) {
+    const proc = Bun.spawn(argv, {
+      env: opts.env,
+      cwd: opts.cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+      stdin: opts.stdin !== undefined ? Buffer.from(opts.stdin) : "ignore",
+      detached: true,
+    });
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      if (proc.pid) killProcessGroup(proc.pid);
+    }, opts.timeoutMs);
+    try {
+      const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+      return {
+        stdout: timedOut ? "" : stdout,
+        exitCode: proc.exitCode ?? -1,
+        timedOut,
+        stderr,
+      };
+    } finally {
+      clearTimeout(timer);
+    }
   },
 };
 
@@ -153,6 +225,9 @@ export interface AdapterRunnerOptions {
   native: NativeBoundary;
   remote: RemoteBoundary;
   spawn?: CliSpawn;
+  /** NOTES F5: the non-blocking counterpart to `spawn`, used only by `produceAsync`. Defaults to
+   * `asyncBunSpawn` (real, non-blocking `Bun.spawn`). */
+  asyncSpawn?: AsyncCliSpawn;
   /** Environment the allowlist draws from (default process.env). */
   baseEnv?: Record<string, string | undefined>;
   /**
@@ -162,16 +237,27 @@ export interface AdapterRunnerOptions {
   cliCommand?: (req: InvokeRequest) => string[];
 }
 
-// Substitute the agent.command argv template. {task} = the flow step's kind/label; {feature_repo} =
-// the project's checkout dir. Each template element maps to EXACTLY ONE argv element: the placeholder
-// is replaced in place and the resulting element is kept whole — a substituted value containing
-// spaces, quotes, or shell metacharacters stays a single argument and is never re-split. The command
-// is handed to shell-less Bun.spawnSync(argv), so no element is ever interpreted by a shell.
+// Substitute the agent.command argv template. {task} = the FULL §6-assembled context (NOTES F7) —
+// the same recipe a native member's system prompt carries (agent body, skills, knowledge, team
+// charter+learnings, project house rules, the task string, and consumed-artifact paths) — never just
+// the bare flow step label; a foreign CLI member is a first-class member, not a word-guessing game.
+// {feature_repo} = the project's checkout dir. Each template element maps to EXACTLY ONE argv element:
+// the placeholder is replaced in place and the resulting element is kept whole — a substituted value
+// containing spaces, quotes, or shell metacharacters stays a single argument and is never re-split.
+// The command is handed to a shell-less spawn(argv), so no element is ever interpreted by a shell.
 function defaultCliCommand(req: InvokeRequest): string[] {
   const template = req.agent.command;
   if (!template || template.length === 0) throw new AdapterError(`cli agent '${req.member}' has no command template`);
   const feature = req.agent.cwd ?? ".";
-  return template.map((element) => element.replace(/\{task\}/g, req.kind).replace(/\{feature_repo\}/g, feature));
+  return template.map((element) => element.replace(/\{task\}/g, req.context).replace(/\{feature_repo\}/g, feature));
+}
+
+// Which of the two ways (NOTES F7) `agent.context_via` says a CLI member receives its context.
+// Defaults to "arg" — the pre-F7 shape (substituted into argv via {task}) — so an agent definition
+// that never declares the field keeps behaving exactly as before, just with the FULL context instead
+// of the bare step label now landing in that argv slot.
+function contextVia(agent: Agent): "arg" | "stdin" {
+  return agent.context_via === "stdin" ? "stdin" : "arg";
 }
 
 /**
@@ -227,11 +313,13 @@ export class AdapterRunner implements MemberRunner {
   private readonly repo: Repo;
   private readonly opts: AdapterRunnerOptions;
   private readonly spawn: CliSpawn;
+  private readonly asyncSpawn: AsyncCliSpawn;
 
   constructor(repo: Repo, opts: AdapterRunnerOptions) {
     this.repo = repo;
     this.opts = opts;
     this.spawn = opts.spawn ?? bunSpawn;
+    this.asyncSpawn = opts.asyncSpawn ?? asyncBunSpawn;
   }
 
   /** Derived from the agent definitions on disk (invariant 2); `opts.capabilities` overrides only in tests. */
@@ -239,14 +327,12 @@ export class AdapterRunner implements MemberRunner {
     return this.opts.capabilities ?? repoCapabilities(this.repo);
   }
 
+  /** The blocking boundary (§6, phase 3): used by the phase-2 batch Runner (`levare replay`), which
+   * drives a full scripted decision walk synchronously and is never reachable from a live `levare
+   * serve` request path (invariant 10's native/remote deferral; the CLI kind's real, live spawn goes
+   * through `produceAsync` instead — see NOTES F5). */
   produce(member: string, kind: string, unit: string, project: string): { doc: string; receipt: Receipt } {
-    const agent = this.repo.agents.get(member);
-    if (!agent) throw new AdapterError(`no agent definition for member '${member}'`);
-
-    const context = this.assemble(member, unit, project);
-    const env = buildMemberEnv(this.repo, member, this.opts.baseEnv);
-    const req: InvokeRequest = { agent, member, kind, unit, project, context, env, tools: allowedTools(agent) };
-
+    const { agent, req } = this.prepare(member, kind, unit, project);
     let doc: string;
     switch (agent.kind) {
       case "native":
@@ -261,33 +347,100 @@ export class AdapterRunner implements MemberRunner {
       default:
         throw new AdapterError(`unknown agent kind '${(agent as Agent).kind}' for '${member}'`);
     }
+    return this.finalize(doc);
+  }
 
+  /**
+   * NOTES F5: the non-blocking boundary — what `levare serve`'s live daemon/gateops path drives
+   * (see replay.ts#productionAdapterRunner). Identical recipe to `produce` (same context assembly, env
+   * scoping, receipt normalization — one implementation, not a fork), but a `kind: cli` member's spawn
+   * is genuinely async (`asyncSpawn`/`asyncBunSpawn`, Bun.spawn + await) instead of blocking the
+   * caller's thread for the member's entire run. Native/remote stay synchronous underneath (they are
+   * mocked boundaries, not live — invariant 10) but are still awaited here uniformly.
+   */
+  async produceAsync(member: string, kind: string, unit: string, project: string): Promise<{ doc: string; receipt: Receipt }> {
+    const { agent, req } = this.prepare(member, kind, unit, project);
+    let doc: string;
+    switch (agent.kind) {
+      case "native":
+        doc = this.opts.native.invoke(req).doc;
+        break;
+      case "remote":
+        doc = this.opts.remote.call(req).doc;
+        break;
+      case "cli":
+        doc = await this.runCliAsync(agent, req);
+        break;
+      default:
+        throw new AdapterError(`unknown agent kind '${(agent as Agent).kind}' for '${member}'`);
+    }
+    return this.finalize(doc);
+  }
+
+  // Shared setup for both produce/produceAsync: resolve the agent, assemble its §6 context, scope its
+  // env, and build the InvokeRequest every adapter kind reads from.
+  private prepare(member: string, kind: string, unit: string, project: string): { agent: Agent; req: InvokeRequest } {
+    const agent = this.repo.agents.get(member);
+    if (!agent) throw new AdapterError(`no agent definition for member '${member}'`);
+    const context = this.assemble(member, unit, project);
+    const env = buildMemberEnv(this.repo, member, this.opts.baseEnv);
+    const req: InvokeRequest = { agent, member, kind, unit, project, context, env, tools: allowedTools(agent) };
+    return { agent, req };
+  }
+
+  private finalize(doc: string): { doc: string; receipt: Receipt } {
     const receipt = normalizeReceipt(readUsage(doc), this.opts.pricing);
     return { doc, receipt };
   }
 
-  private runCli(agent: Agent, req: InvokeRequest): string {
+  // Shared argv/cwd/stdin derivation for both the sync and async CLI spawn paths.
+  private cliInvocation(agent: Agent, req: InvokeRequest): { argv: string[]; cwd: string | undefined; timeoutMs: number; stdin: string | undefined } {
     const argv = (this.opts.cliCommand ?? defaultCliCommand)(req);
     const timeoutMs = (agent.timeout ?? 600) * 1000;
     // A `cwd` template that still holds an unresolved `{…}` (no feature repo bound this run) is not a
     // real directory — spawn in the default cwd rather than fail on a bogus path.
     const cwd = agent.cwd && !agent.cwd.includes("{") ? agent.cwd : undefined;
+    // NOTES F7: context_via: stdin writes the full context to the child's stdin (and closes it);
+    // context_via: arg (default) leaves stdin unset here — the CliSpawn boundary closes it regardless
+    // (see CliSpawnOptions.stdin), so a CLI that unexpectedly reads stdin sees immediate EOF, never a
+    // hang waiting on input that will never arrive.
+    const stdin = contextVia(agent) === "stdin" ? req.context : undefined;
+    return { argv, cwd, timeoutMs, stdin };
+  }
+
+  // Shared timeout/exit-code → AdapterError translation for both CLI spawn paths (NOTES F3: argv +
+  // stderr tail attached either way).
+  private cliResultToDoc(member: string, agent: Agent, argv: string[], result: SpawnResult): string {
+    const tail = truncateTail(result.stderr ?? "", 2000);
+    const stderrSuffix = tail ? `\nstderr (last ${tail.length} chars):\n${tail}` : "";
+    if (result.timedOut) {
+      throw new AdapterError(`cli member '${member}' timed out after ${agent.timeout ?? 600}s (argv: ${JSON.stringify(argv)})${stderrSuffix}`);
+    }
+    if (result.exitCode !== 0) {
+      throw new AdapterError(`cli member '${member}' exited ${result.exitCode} (argv: ${JSON.stringify(argv)})${stderrSuffix}`);
+    }
+    return result.stdout;
+  }
+
+  private runCli(agent: Agent, req: InvokeRequest): string {
+    const { argv, cwd, timeoutMs, stdin } = this.cliInvocation(agent, req);
     // NOTES F3: pre-flight ONLY guards the real `bunSpawn` boundary — the one that actually hands argv
     // to the OS and can fail with an opaque, contextless nonzero exit. A test-injected `CliSpawn` is a
     // stand-in for arbitrary behaviour (including deliberately-fake argv[0]s like "codex" that this
     // sandbox never installs) and never touches the filesystem or PATH, so it is never subject to the
     // failure mode this guards against.
     if (this.spawn === bunSpawn) preflightCli(req.member, argv, cwd, req.env.PATH);
-    const result = this.spawn.run(argv, { env: req.env, cwd, timeoutMs });
-    const tail = truncateTail(result.stderr ?? "", 2000);
-    const stderrSuffix = tail ? `\nstderr (last ${tail.length} chars):\n${tail}` : "";
-    if (result.timedOut) {
-      throw new AdapterError(`cli member '${req.member}' timed out after ${agent.timeout ?? 600}s (argv: ${JSON.stringify(argv)})${stderrSuffix}`);
-    }
-    if (result.exitCode !== 0) {
-      throw new AdapterError(`cli member '${req.member}' exited ${result.exitCode} (argv: ${JSON.stringify(argv)})${stderrSuffix}`);
-    }
-    return result.stdout;
+    const result = this.spawn.run(argv, { env: req.env, cwd, timeoutMs, stdin });
+    return this.cliResultToDoc(req.member, agent, argv, result);
+  }
+
+  // NOTES F5: the async counterpart to `runCli` — same argv/preflight/error handling, but the spawn
+  // itself never blocks the caller's event loop (see asyncBunSpawn).
+  private async runCliAsync(agent: Agent, req: InvokeRequest): Promise<string> {
+    const { argv, cwd, timeoutMs, stdin } = this.cliInvocation(agent, req);
+    if (this.asyncSpawn === asyncBunSpawn) preflightCli(req.member, argv, cwd, req.env.PATH);
+    const result = await this.asyncSpawn.run(argv, { env: req.env, cwd, timeoutMs, stdin });
+    return this.cliResultToDoc(req.member, agent, argv, result);
   }
 
   // Assemble the §6 context. An empty consumed set ("no consumable produced yet") is a normal, silent

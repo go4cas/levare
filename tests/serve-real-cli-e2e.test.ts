@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync, cpSync, writeFileSync, readFileSync, chmodSync } f
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { loadRepo, repoCapabilities } from "../src/repo.ts";
+import { assembleContext } from "../src/context.ts";
 
 // NOTES F4 — the live-dogfood defect this file exists to pin down for good: `daemon.ts` and
 // `board/gateops.ts` both defaulted their production `memberRunner` to `stubAdapterRunner`
@@ -69,9 +71,12 @@ describe("`./levare serve` spawns a CLI member's REAL command, never the fixture
     cpSync(join(REPO_ROOT, "fixtures/golden"), root, { recursive: true });
 
     // A real, trivial executable standing in for a real CLI member (the goal's own example: a real
-    // command like `gemini`). It ignores nothing — it records the EXACT argv it was invoked with (so
-    // the test can assert on real observed argv, never an internal flag) and prints a real, valid
-    // `product-brief` artifact to stdout, with a body marker no fixture stub could ever produce.
+    // command like `gemini`). It ignores nothing — it captures argv[1] (the {task}-substituted
+    // element) VERBATIM, byte-for-byte, to the capture file (`printf '%s'`, no trailing newline, no
+    // interpretation — NOTES F7: argv[1] is now the full multi-line §6 context, not a single word, so
+    // this must survive embedded newlines intact for the byte-for-byte comparison below) and prints a
+    // real, valid `product-brief` artifact to stdout, with a body marker no fixture stub could ever
+    // produce.
     scriptDir = mkdtempSync(join(tmpdir(), "levare-real-cli-script-"));
     scriptPath = join(scriptDir, "real-member.sh");
     capturePath = join(scriptDir, "argv-capture.txt");
@@ -79,7 +84,7 @@ describe("`./levare serve` spawns a CLI member's REAL command, never the fixture
       scriptPath,
       [
         "#!/bin/sh",
-        'printf \'%s\\n\' "$0" "$1" "$2" > "$2"',
+        'printf \'%s\' "$1" > "$2"',
         "cat <<'DOC'",
         "---",
         "kind: product-brief",
@@ -158,16 +163,25 @@ describe("`./levare serve` spawns a CLI member's REAL command, never the fixture
     const body = (await res.json()) as { ok: boolean };
     expect(body.ok).toBe(true);
 
-    // (1) The actual argv the real script observed — proves `defaultCliCommand`'s `{task}`
-    // substitution ran, not the stub's `[member, kind, "--unit", unit, "--project", project]` shape.
-    const capture = readFileSync(capturePath, "utf8").trim().split("\n");
-    expect(capture[0]).toBe(scriptPath); // argv[0] — the agent's OWN declared command, never STUB_CLI.
-    expect(capture[1]).toBe("product-brief"); // {task} → the resolved kind.
-    expect(capture.join(" ")).not.toContain("--unit");
-    expect(capture.join(" ")).not.toContain("--project");
-    expect(capture.join(" ")).not.toContain("member-stub");
+    // (1) NOTES F7 — argv[1] (the real script's own capture of $1) is the FULL §6-assembled context,
+    // never the bare resolved kind/step label. Computed independently (the same recipe `levare
+    // context`'s dry-run prints) and compared byte-for-byte — this is the real, live production path
+    // (AdapterRunner.produceAsync → defaultCliCommand), not a mock.
+    const captured = readFileSync(capturePath, "utf8");
+    const repo = loadRepo(root);
+    const expectedContext = assembleContext(repo, { root, agent: "wren", unit: "loyalty-flow", capabilities: repoCapabilities(repo) });
+    expect(captured).toBe(expectedContext);
+    expect(captured).not.toBe("product-brief"); // the pre-F7 defect: {task} was the bare resolved kind.
+    expect(captured).toContain("── 1. agent · wren");
+    expect(captured).toContain("── 6. task ──");
 
-    // (2) The artifact actually landed on disk is byte-for-byte what the real script emitted.
+    // (2) `levare context wren --unit loyalty-flow --dry-run` must print EXACTLY what the real CLI
+    // member actually received — the same invariant already held for native members.
+    const dryRun = spawnSync("./levare", ["context", "wren", "--unit", "loyalty-flow", "--root", root, "--dry-run"], { cwd: REPO_ROOT, encoding: "utf8" });
+    expect(dryRun.status).toBe(0);
+    expect(dryRun.stdout).toBe(captured);
+
+    // (3) The artifact actually landed on disk is byte-for-byte what the real script emitted.
     const artifactPath = join(root, "work/storefront/loyalty-flow/product-brief-loyalty-flow-v1.md");
     const doc = readFileSync(artifactPath, "utf8");
     expect(doc).toContain("# REAL-CLI-MEMBER-RAN");

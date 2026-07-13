@@ -157,6 +157,9 @@ const AGENT_SCHEMA: Schema = {
     knowledge: { type: "str[]", required: false },
     // cli — argv template as a structured array; each element is one argv slot (§5, no shell split).
     command: { type: "str[]", required: false },
+    // How a cli member receives its assembled context (NOTES F7): `{task}` substitution (default) or
+    // the child's stdin. Ignored for native/remote.
+    context_via: { type: "enum", required: false, enum: ["arg", "stdin"] },
     cwd: { type: "str", required: false },
     timeout: { type: "num", required: false },
     result: { type: "str", required: false },
