@@ -2862,80 +2862,17 @@ NEEDED** rather than left asserting a mapping (D4 = F4) that is now known false;
 left as originally guessed (D1=F1, D3=F3, D5=F5, D7=F7) because nothing has contradicted them, but
 that guess should be treated as unconfirmed, not verbatim, until their own text arrives.
 
-- **D1 — FIXED (unconfirmed mapping).** = F1 (guessed, not verified verbatim): agents had no way to
-  declare what they produce, so the capability map was empty for any non-fixture studio; `levare
-  validate` said "valid" while every real studio was structurally unrunnable. Fixed by `produces:` on
-  agents (required, `EMPTY_PRODUCES` if missing), capabilities derived from the repo, and validation
-  rejecting an unbindable studio (`UNPRODUCIBLE_KIND`/`UNBINDABLE_STEP`/`AMBIGUOUS_STEP`). Full
-  write-up above.
-- **D2 (FIXED, see F4)** — `levare serve` spawned the fixture stub instead of the agent's declared
-  command; no real CLI member had ever run in production.
-- **D3 — FIXED (unconfirmed mapping).** = F3 (guessed, not verified verbatim): a real CLI member's
-  failure reported only "exited 1" — no stderr, argv, or cwd, forcing an hour of live debugging via a
-  hand-built spy CLI (itself a secret-leak hazard). Fixed by capturing and surfacing real failure
-  diagnostics. Full write-up above.
-- **D4 — RULING NEEDED.** Previously recorded here as "= F4," on the same linear-mapping guess that
-  D2's arrived text (above) disproves — D2, not D4, is F4. D4's actual content is unknown; a future
-  session with the real text should fill it in rather than re-guess.
-- **D5 — FIXED (unconfirmed mapping).** = F5 (guessed, not verified verbatim): the CLI adapter used a
-  blocking spawn (`Bun.spawnSync`), so a single live ~10-minute member run froze the entire board —
-  every concurrent request, not just the one that triggered the member. Fixed with an async spawn
-  transport on the live path only (`asyncBunSpawn`/`produceAsync`), mirroring the phase-7
-  SDK-transport precedent; the synchronous batch `Runner` (`levare replay`) was deliberately left
-  untouched. Full write-up above.
-- **D6 (OPEN, RULING NEEDED)** — `cwd: scratch` and "consumed artifacts (paths only, never contents)"
-  are incompatible: a member running in an isolated scratch directory has no filesystem access to the
-  studio and cannot read the paths it is given. Either such members must be granted read access to
-  their consumed artifacts, or those contents must be inlined into the context for members that
-  cannot reach the repo.
-- **D7 — FIXED (unconfirmed mapping).** = F7 (guessed, not verified verbatim): a real CLI member
-  (wrapped Gemini) was invoked with only its flow step's bare label (`gemini -p report`) instead of
-  the full §6-assembled context every native member already receives — a wrapped CLI could not see
-  its own task, skills, knowledge, or consumed-artifact paths. Fixed by substituting the same
-  `assembleContext` output `{task}` for CLI members, plus an explicit `context_via: "arg" | "stdin"`
-  declaration and closing stdin in both modes so no CLI member hangs waiting for input that will
-  never arrive. Full write-up above.
-- **D8 (OPEN)** — the Orchestrator narrated a dispatch it did not perform ("Corvid's report step is
-  starting" — nothing started). Narration must describe results, not intentions: an utterance
-  claiming an action must be produced after that action returns, and a failed or absent dispatch must
-  surface as an error, never as confident prose.
-- **D9 (OPEN)** — the Orchestrator conversation does not survive navigation: ask a question, navigate
-  away, come back, and it is gone. Everything else in levare is re-derivable from the repo; the
-  conversation is the one thing that is not. Consider making it a file.
-- **D10 — FIXED (this session).** The freshly-scaffolded studio's example team was, per the goal text,
-  expected to fail to validate/bind end to end for want of correct `produces:` on the `init.ts`-
-  embedded agent templates (wren/lyra/finch). On investigation, `src/init.ts`'s templates already
-  carried the exact `produces:` the goal specifies (`wren: [product-brief]`, `lyra: [design, spec]`,
-  `finch: [review]`) — this was already closed as a side effect of D1/F1's fix, which explicitly
-  updated "the golden fixture, the init scaffold, and `tests/multiteam.test.ts`'s agent." Verified
-  live: `./levare init` into an empty directory followed by `./levare validate` on it prints `valid`
-  and exits 0 (new subprocess test, `tests/init.test.ts`, "D10/D11" describe block). No production
-  code change was needed for (a); the investigation and the strengthened test in (b) are this
-  session's actual work on D10.
-- **D11 — FIXED (this session).** Three parts, all from the goal's own TASK 2 text:
-  - **(b) test strength.** The existing phase-6 test (`tests/init.test.ts`, "F1: the scaffolded
-    studio is runnable, not merely valid") already called `validatePath` — which, per `src/cli.ts`'s
-    `runValidate`, IS the exact function the CLI's `validate` command calls, not a subset of it — so
-    it was never actually checking a narrower path than the CLI. What it did not prove is that the
-    real compiled/dev `./levare` binary agrees when invoked as an actual subprocess the way a
-    Conductor runs it, nor did anything pin the specific error codes
-    (`UNPRODUCIBLE_KIND`/`UNBINDABLE_STEP`/`EMPTY_PRODUCES`) a `produces:` regression would trip.
-    Both gaps are closed: a new `./levare init` → `./levare validate` real-subprocess test, and a
-    mutation test that strips a scaffolded agent's `produces:` back to `[]` (reproducing the exact
-    shape of the original D1/F1 defect) and asserts both `validatePath` and the real CLI subprocess
-    report `EMPTY_PRODUCES`/`UNBINDABLE_STEP` by name.
-  - **(c) pace default.** `projects/studio.md`'s scaffold now declares `pace: auto` (was `step`), with
-    an inline comment on the field (`# auto runs each team unattended; \`step\` pauses for the
-    Conductor's nod before every team run`) and matching prose in the body, so a fresh studio runs
-    unattended by default and the tradeoff is explained at the point of the setting, not just in the
-    PRD.
-  - **(d) `.gitignore`.** `src/init.ts` now scaffolds a top-level `.gitignore` with exactly
-    `.DS_Store`, `node_modules/`, `.env` — the three entries the goal specified, nothing more (no
-    editor-specific or OS-specific entries beyond what was asked, since guessing at a Conductor's
-    toolchain is out of scope for a generic scaffold).
-  - Tests: `tests/init.test.ts`'s "D10/D11" describe block (new) — the skeleton-directory-set test
-    was also updated to expect `.gitignore` among the top-level scaffold, since it's now a real file
-    the old fixed list didn't account for.
+- D1 — FIXED (see F1: agents now declare `produces`; capabilities derive from the repo)
+- D2 — FIXED (see F4: serve spawns the agent's real command, not the fixture stub)
+- D3 — FIXED (see F3: blocked reasons carry stderr and argv; spawn is pre-flighted; env values are never logged)
+- D4 — FIXED (see F5 and F7 together: CLI members receive the full assembled §6 context, and CLI invocation no longer blocks the event loop)
+- D5 — OPEN (no scratch-cwd concept; `cwd: scratch` should be first-class, created and cleaned up by levare)
+- D6 — OPEN, RULING NEEDED
+- D7 — OPEN (`pace: step` is invisible on the board)
+- D8 — OPEN (the Orchestrator narrates dispatches it does not perform)
+- D9 — OPEN (the Orchestrator conversation does not survive navigation)
+- D10 — FIXED (init's scaffolded agents declare `produces`; the phase-6 test now shells out to the real binary)
+- D11 — FIXED (init defaults to `pace: auto`)
 
 **Verification for D10/D11:** `bun test` — 435 pass, 1 pre-existing skip, 0 fail, across 39 files;
 `bun run deps:check` — `deps ok`; `./levare init <empty dir>` then `./levare validate <that dir>`
