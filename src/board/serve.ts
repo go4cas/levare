@@ -227,7 +227,7 @@ export const ROUTES: RouteDef[] = [
       } catch {
         /* no body / not JSON — note stays undefined */
       }
-      const result = resolveGate(ctx.root, params.project, params.artifact, verb, { note });
+      const result = await resolveGate(ctx.root, params.project, params.artifact, verb, { note });
       if (!result.ok) return json({ ok: false, error: result.error }, result.status);
       ctx.broadcast("reload");
       // Deliverable (d): an approval (or any other resolution) may have just satisfied a producible

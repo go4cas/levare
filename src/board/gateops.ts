@@ -17,12 +17,12 @@ import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { loadRepo, type Repo } from "../repo.ts";
 import { validateArtifactSource } from "../validate.ts";
-import { bumpVersion, type MemberRunner, type Verb } from "../runner.ts";
+import { bumpVersion, type Verb } from "../runner.ts";
 import { productionAdapterRunner } from "../replay.ts";
 import { loopMembershipFor, responsibleTeamFor, unmetAfter, patchFrontmatter, upsertFrontmatterField } from "../gates.ts";
 import { locateArtifactFile } from "./locate.ts";
 import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL } from "../git.ts";
-import { advanceUnit } from "../dagwalk.ts";
+import { advanceUnit, type AsyncMemberRunner } from "../dagwalk.ts";
 import type { Artifact, WorkUnit } from "../types.ts";
 
 export { CONDUCTOR_NAME, CONDUCTOR_EMAIL };
@@ -47,18 +47,18 @@ export interface ResolveOpts {
    * AdapterRunner, with a CLI member's REAL declared command spawned (native/remote stay behind the
    * still-mocked SDK/MCP boundaries, K5's own separate, documented deferral). `stubAdapterRunner`
    * (replay.ts) must never be reachable from here — see daemon.ts's identical note. */
-  memberRunner?: MemberRunner;
+  memberRunner?: AsyncMemberRunner;
 }
 
 /** Resolve one gate verb against `target` (an artifact id, or — for start/notyet/rescope — a unit id). */
-export function resolveGate(root: string, project: string, target: string, verb: Verb, opts: ResolveOpts = {}): GateOpResult {
+export async function resolveGate(root: string, project: string, target: string, verb: Verb, opts: ResolveOpts = {}): Promise<GateOpResult> {
   const today = opts.today ?? new Date().toISOString().slice(0, 10);
   const repo = loadRepo(root);
   const memberRunner = opts.memberRunner ?? productionAdapterRunner(repo);
   const unit = repo.units.find((u) => u.project === project && repo.artifacts.get(`${project}/${u.unit}`)?.has(target));
 
   if (verb === "start" || verb === "notyet" || verb === "rescope") {
-    return resolveStartGate(root, repo, project, target, verb, memberRunner);
+    return await resolveStartGate(root, repo, project, target, verb, memberRunner);
   }
   if (!unit) return { ok: false, status: 404, error: `no open gate for artifact '${target}' in project '${project}'` };
 
@@ -79,7 +79,7 @@ export function resolveGate(root: string, project: string, target: string, verb:
 
   if (verb === "approve") return doApprove(root, located.file, target, today, opts.note, extra);
   if (verb === "reject") return doReject(root, located.file, target, opts.note, extra);
-  if (verb === "request") return doRequest(root, unit.dir, located.file, art, opts.note, memberRunner, extra);
+  if (verb === "request") return await doRequest(root, unit.dir, located.file, art, opts.note, memberRunner, extra);
   return { ok: false, status: 400, error: `verb '${verb}' is not valid for an artifact gate` };
 }
 
@@ -123,15 +123,15 @@ function doReject(root: string, file: string, id: string, note: string | undefin
   return { ok: true, commit, changedFiles: files };
 }
 
-function doRequest(
+async function doRequest(
   root: string,
   unitDir: string,
   file: string,
   art: { id: string; kind: string; produced_by: string; unit: string; project: string },
   note: string | undefined,
-  memberRunner: MemberRunner,
+  memberRunner: AsyncMemberRunner,
   extraFiles: string[],
-): GateOpResult {
+): Promise<GateOpResult> {
   if (!note || !note.trim()) return { ok: false, status: 400, error: "request-changes requires a note" };
   const member = art.produced_by.split("/")[1];
   const hasCap = memberRunner.capabilities().some((c) => c.member === member && c.kind === art.kind);
@@ -144,7 +144,7 @@ function doRequest(
   // E4: re-invoke through the real MemberRunner/AdapterRunner boundary — context assembly, env
   // scoping, and a normalized usage receipt all run for real, behind the still-mocked native/CLI
   // boundaries (invariant 10) — rather than reaching directly for the stub's `render()`.
-  const { doc: baseDoc } = memberRunner.produce(member, art.kind, art.unit, art.project);
+  const { doc: baseDoc } = await memberRunner.produce(member, art.kind, art.unit, art.project);
   const baseId = idOfDoc(baseDoc);
   const newId = bumpVersion(baseId, nextRound);
   const newDoc = patchFrontmatter(baseDoc, { id: newId, supersedes: art.id });
@@ -201,18 +201,18 @@ function applyLoopCompanionApproval(
   return located.file;
 }
 
-function resolveStartGate(
+async function resolveStartGate(
   root: string,
   repo: Repo,
   project: string,
   unitId: string,
   verb: "start" | "notyet" | "rescope",
-  memberRunner: MemberRunner,
-): GateOpResult {
+  memberRunner: AsyncMemberRunner,
+): Promise<GateOpResult> {
   const unit = repo.units.find((u) => u.project === project && u.unit === unitId);
   if (!unit) return { ok: false, status: 404, error: `no unit '${unitId}' in project '${project}'` };
   if (verb === "notyet") return { ok: true, commit: "", changedFiles: [] }; // purely informational; nothing to persist
-  if (verb === "start") return doStart(root, repo, unit, memberRunner);
+  if (verb === "start") return await doStart(root, repo, unit, memberRunner);
   // rescope: no artifact to flip; a unit with an unmet-then-met after: has no separate persisted
   // "queued" status (NOTES A6), so rescoping simply records the decision — nothing to commit either.
   return { ok: true, commit: "", changedFiles: [] };
@@ -236,13 +236,13 @@ function resolveStartGate(
 // NOTES.md's phase-8 section). `verb: "start"` is kept so the commit MESSAGE still records that this
 // production followed an explicit start click, distinguishing it from a later autonomous advance —
 // only the identity was ever wrong.
-function doStart(root: string, repo: Repo, unit: WorkUnit, memberRunner: MemberRunner): GateOpResult {
+async function doStart(root: string, repo: Repo, unit: WorkUnit, memberRunner: AsyncMemberRunner): Promise<GateOpResult> {
   const unmet = unmetAfter(repo, unit);
   if (unmet.length > 0) return { ok: false, status: 409, error: `unit '${unit.unit}' still has unmet after: [${unmet.join(", ")}]` };
   const team = responsibleTeamFor(repo, unit);
   if (!team) return { ok: false, status: 409, error: `no team produces kinds for unit type '${unit.type}'` };
 
-  const result = advanceUnit(root, repo, unit, memberRunner, { startAuthorized: true, verb: "start" });
+  const result = await advanceUnit(root, repo, unit, memberRunner, { startAuthorized: true, verb: "start" });
   if (result.outcome === "nothing") {
     return { ok: false, status: 409, error: `unit '${unit.unit}' has nothing left for team '${team.name}' to produce` };
   }

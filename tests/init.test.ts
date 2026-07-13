@@ -203,7 +203,7 @@ describe("initStudio — git init + the founding commit", () => {
 // from its own agents, every step of its example team's flow resolves, and a unit opened against it
 // actually produces its first artifact through the walk.
 describe("F1: the scaffolded studio is runnable, not merely valid", () => {
-  test("its example team binds every flow step to a member, and a unit produces its first artifact", () => {
+  test("its example team binds every flow step to a member, and a unit produces its first artifact", async () => {
     const root = tmpRoot();
     scaffoldStudio(root);
     expect(validatePath(root).ok).toBe(true);
@@ -234,7 +234,7 @@ describe("F1: the scaffolded studio is runnable, not merely valid", () => {
 
     const withUnit = loadRepo(root);
     const unit = withUnit.units.find((u) => u.unit === "pilot")!;
-    const result = advanceUnit(root, withUnit, unit, stubAdapterRunner(withUnit), {
+    const result = await advanceUnit(root, withUnit, unit, stubAdapterRunner(withUnit), {
       startAuthorized: true,
       commit: () => "no-git", // the scaffold-only test root has no git history; the walk's write is what matters
     });

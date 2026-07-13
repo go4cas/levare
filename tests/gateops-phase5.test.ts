@@ -151,7 +151,7 @@ Approved with one note: name the idempotency key column in the spec.
 `;
 
 describe("C2/C7: board approval of a loop-first artifact also resolves its live companion", () => {
-  test("approving spec-checkout-flow-v1 also approves an in-review review-checkout-flow-v1, in one commit", () => {
+  test("approving spec-checkout-flow-v1 also approves an in-review review-checkout-flow-v1, in one commit", async () => {
     const root = seedScratchRepo();
     try {
       const reviewFile = join(root, "work/storefront/checkout-flow/review-checkout-flow-v1.md");
@@ -160,7 +160,7 @@ describe("C2/C7: board approval of a loop-first artifact also resolves its live 
       git(root, ["commit", "-q", "-m", "seed a live loop round's review artifact"]);
 
       const before = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
-      const result = resolveGate(root, "storefront", "spec-checkout-flow-v1", "approve", { today: "2026-07-11" });
+      const result = await resolveGate(root, "storefront", "spec-checkout-flow-v1", "approve", { today: "2026-07-11" });
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.changedFiles).toContain(reviewFile);
@@ -182,10 +182,10 @@ describe("C2/C7: board approval of a loop-first artifact also resolves its live 
     }
   });
 
-  test("without a live companion on disk (the ordinary golden fixture), approval touches only the target artifact", () => {
+  test("without a live companion on disk (the ordinary golden fixture), approval touches only the target artifact", async () => {
     const root = seedScratchRepo();
     try {
-      const result = resolveGate(root, "storefront", "spec-checkout-flow-v1", "approve", { today: "2026-07-11" });
+      const result = await resolveGate(root, "storefront", "spec-checkout-flow-v1", "approve", { today: "2026-07-11" });
       expect(result.ok).toBe(true);
       if (result.ok) expect(result.changedFiles).toEqual([join(root, "work/storefront/checkout-flow/spec-checkout-flow-v1.md")]);
     } finally {

@@ -107,13 +107,13 @@ function breakBriefBinding(): void {
 }
 
 describe("an unbindable flow step blocks the unit, with the reason visible", () => {
-  test("advanceUnit blocks the unit on disk with the resolution error as its reason", () => {
+  test("advanceUnit blocks the unit on disk with the resolution error as its reason", async () => {
     breakBriefBinding();
     const repo = loadRepo(root, { validate: false });
     const unit = repo.units.find((u) => u.unit === "loyalty-flow")!;
     const runner = stubAdapterRunner(repo);
 
-    const result = advanceUnit(root, repo, unit, runner, { startAuthorized: true });
+    const result = await advanceUnit(root, repo, unit, runner, { startAuthorized: true });
     expect(result.outcome).toBe("unbindable");
     if (result.outcome !== "unbindable") throw new Error("unreachable");
     expect(result.reason).toContain("no member of team 'kestrel' can produce a kind for flow step 'brief'");
@@ -131,11 +131,11 @@ describe("an unbindable flow step blocks the unit, with the reason visible", () 
     expect(after.artifacts.get("storefront/loyalty-flow")?.size ?? 0).toBe(0);
   });
 
-  test("the blocked unit surfaces as a gate on the board, carrying the reason", () => {
+  test("the blocked unit surfaces as a gate on the board, carrying the reason", async () => {
     breakBriefBinding();
     const repo = loadRepo(root, { validate: false });
     const unit = repo.units.find((u) => u.unit === "loyalty-flow")!;
-    advanceUnit(root, repo, unit, stubAdapterRunner(repo), { startAuthorized: true });
+    await advanceUnit(root, repo, unit, stubAdapterRunner(repo), { startAuthorized: true });
 
     const after = loadRepo(root, { validate: false });
     const gate = openGates(after).find((g) => g.type === "blocked" && g.unit === "loyalty-flow");
@@ -149,7 +149,7 @@ describe("an unbindable flow step blocks the unit, with the reason visible", () 
     expect(html).toContain("flow step 'brief'"); // the reason itself, on the card
   });
 
-  test("the daemon BLOCKS a unit whose step cannot bind at runtime — the pre-F1 silent halt is gone", () => {
+  test("the daemon BLOCKS a unit whose step cannot bind at runtime — the pre-F1 silent halt is gone", async () => {
     // The runtime path, on a studio that VALIDATES: the member boundary reports no capability for the
     // step (an adapter that cannot reach the member, a stub, a capability map narrowed at the
     // boundary). Validation cannot pre-empt this one — it is exactly where the pre-F1 code caught the
@@ -164,7 +164,7 @@ describe("an unbindable flow step blocks the unit, with the reason visible", () 
       },
     };
     const daemon = new Daemon(root, { memberRunner: () => blindRunner });
-    const entry = daemon.tick().entries.find((e) => e.unit === "loyalty-flow")!;
+    const entry = (await daemon.tick()).entries.find((e) => e.unit === "loyalty-flow")!;
     expect(entry.outcome.outcome).toBe("unbindable");
     if (entry.outcome.outcome !== "unbindable") throw new Error("unreachable");
     expect(entry.outcome.reason).toContain("no member of team 'kestrel' can produce a kind for flow step 'brief'");
@@ -175,17 +175,17 @@ describe("an unbindable flow step blocks the unit, with the reason visible", () 
     expect(unitMd).toContain("no member of team 'kestrel' can produce a kind for flow step 'brief'");
 
     // And the next tick does not re-fail in a loop: the unit is blocked, so the walk skips it.
-    const next = daemon.tick().entries.find((e) => e.unit === "loyalty-flow");
+    const next = (await daemon.tick()).entries.find((e) => e.unit === "loyalty-flow");
     expect(next?.outcome.outcome).toBe("nothing");
   });
 
-  test("a studio that cannot bind never loads at all: the daemon refuses the tick and says why", () => {
+  test("a studio that cannot bind never loads at all: the daemon refuses the tick and says why", async () => {
     // Belt and braces on top of the runtime block: since F1 an unbindable studio fails validation, so
     // the daemon's own `loadRepo` rejects it before any unit is walked — and records why, rather than
     // ticking over an unrunnable repo forever.
     breakBriefBinding();
     const daemon = new Daemon(root, { memberRunner: (r) => stubAdapterRunner(r) });
-    expect(daemon.tick().entries).toEqual([]);
+    expect((await daemon.tick()).entries).toEqual([]);
     const last = daemon.recentActivity().at(-1)!;
     expect(last.outcome.outcome).toBe("halted");
     if (last.outcome.outcome !== "halted") throw new Error("unreachable");

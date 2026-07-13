@@ -63,50 +63,50 @@ afterEach(() => {
 });
 
 describe("(a) the daemon walks between gates and halts at every gate", () => {
-  test("loyalty-flow: start gate never auto-starts; approving each gate advances exactly one step, which halts as the next gate", () => {
+  test("loyalty-flow: start gate never auto-starts; approving each gate advances exactly one step, which halts as the next gate", async () => {
     const unitDir = join(root, "work/storefront/loyalty-flow");
     const { runner, calls } = countingRunner(root);
     const daemon = new Daemon(root, { memberRunner: () => runner });
 
     // Invariant 1: a satisfied-but-unauthorized start gate is never crossed by the autonomous walk,
     // no matter how many times it ticks.
-    for (let i = 0; i < 3; i++) daemon.tick();
+    for (let i = 0; i < 3; i++) await daemon.tick();
     expect(calls).toEqual([]);
     expect(readdirSync(unitDir)).toEqual(["unit.md"]);
 
     // The Conductor authorizes the start gate (the ONE call allowed to cross it — board/gateops.ts).
-    const started = resolveGate(root, "storefront", "loyalty-flow", "start", { memberRunner: runner, today: "2026-07-12" });
+    const started = await resolveGate(root, "storefront", "loyalty-flow", "start", { memberRunner: runner, today: "2026-07-12" });
     expect(started.ok).toBe(true);
     expect(calls).toEqual([{ member: "wren", kind: "product-brief" }]);
     const brief = readFileSync(join(unitDir, "product-brief-loyalty-flow-v1.md"), "utf8");
     expect(brief).toContain("status: in-review");
 
     // Halts at the gate the start just reached: repeated ticks produce nothing further.
-    for (let i = 0; i < 3; i++) daemon.tick();
+    for (let i = 0; i < 3; i++) await daemon.tick();
     expect(calls).toEqual([{ member: "wren", kind: "product-brief" }]);
 
     // Conductor approves → daemon advances exactly one more step (design), then halts again.
     const approve: Verb = "approve";
-    const approved1 = resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", approve, { memberRunner: runner, today: "2026-07-12" });
+    const approved1 = await resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", approve, { memberRunner: runner, today: "2026-07-12" });
     expect(approved1.ok).toBe(true);
     expect(calls).toEqual([{ member: "wren", kind: "product-brief" }]); // approval itself never invokes a member.
 
-    let result = daemon.tick();
+    let result = await daemon.tick();
     expect(calls).toEqual([{ member: "wren", kind: "product-brief" }, { member: "lyra", kind: "design" }]);
     expect(existsSync(join(unitDir, "design-loyalty-flow-v1.md"))).toBe(true);
     let entry = result.entries.find((e) => e.unit === "loyalty-flow")!;
     expect(entry.outcome.outcome).toBe("produced");
 
     // Halts at design's gate.
-    result = daemon.tick();
+    result = await daemon.tick();
     entry = result.entries.find((e) => e.unit === "loyalty-flow")!;
     expect(entry.outcome.outcome).toBe("halted");
     expect(calls.length).toBe(2);
 
     // Approve design → the loop's first member (spec) is produced, then the walk halts there too —
     // never producing spec's companion review automatically (documented scope boundary, dagwalk.ts).
-    resolveGate(root, "storefront", "design-loyalty-flow-v1", approve, { memberRunner: runner, today: "2026-07-12" });
-    result = daemon.tick();
+    await resolveGate(root, "storefront", "design-loyalty-flow-v1", approve, { memberRunner: runner, today: "2026-07-12" });
+    result = await daemon.tick();
     expect(calls).toEqual([
       { member: "wren", kind: "product-brief" },
       { member: "lyra", kind: "design" },
@@ -120,7 +120,7 @@ describe("(a) the daemon walks between gates and halts at every gate", () => {
     // Invariant 1, the hard part: the daemon NEVER resolves the gate it just raised — spec sits at
     // in-review indefinitely, and the daemon never invents a review artifact for it, no matter how
     // many times it ticks.
-    for (let i = 0; i < 5; i++) daemon.tick();
+    for (let i = 0; i < 5; i++) await daemon.tick();
     expect(calls.length).toBe(3);
     const spec = readFileSync(join(unitDir, "spec-loyalty-flow-v1.md"), "utf8");
     expect(spec).toContain("status: in-review");
@@ -146,12 +146,12 @@ describe("(a) the daemon walks between gates and halts at every gate", () => {
 });
 
 describe("(g) commit authorship reflects who acted, not who triggered (gate-review fix)", () => {
-  test("a gate resolution (no member invoked) commits as the Conductor; a member-produced artifact — however it was triggered — commits as levare-runner", () => {
+  test("a gate resolution (no member invoked) commits as the Conductor; a member-produced artifact — however it was triggered — commits as levare-runner", async () => {
     // (1) A plain gate resolution: no member runs, the Conductor's own frontmatter flip is the sole
     // content of the commit.
-    const started = resolveGate(root, "storefront", "loyalty-flow", "start" as Verb, { today: "2026-07-12" });
+    const started = await resolveGate(root, "storefront", "loyalty-flow", "start" as Verb, { today: "2026-07-12" });
     expect(started.ok).toBe(true);
-    const approveCommit = resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
+    const approveCommit = await resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
     expect(approveCommit.ok).toBe(true);
     const approveAuthor = commitAuthor(root, (approveCommit as { commit: string }).commit);
     expect(approveAuthor).toEqual({ name: "cas", email: "cas@levare.local" });
@@ -166,7 +166,7 @@ describe("(g) commit authorship reflects who acted, not who triggered (gate-revi
     // (3) A daemon-driven, fully autonomous production (no verb, no direct click at all): the same
     // identity as (2) — confirming the rule is about WHO WROTE the content, not which code path ran.
     const daemon = new Daemon(root);
-    const result = daemon.tick(); // advances loyalty-flow past the now-approved product-brief → design
+    const result = await daemon.tick(); // advances loyalty-flow past the now-approved product-brief → design
     const designEntry = result.entries.find((e) => e.unit === "loyalty-flow" && e.outcome.outcome === "produced")!;
     const daemonAuthor = commitAuthor(root, (designEntry.outcome as { commit: string }).commit);
     expect(daemonAuthor).toEqual({ name: "levare-runner", email: "runner@levare.local" });
@@ -180,7 +180,7 @@ function commitAuthor(root: string, sha: string): { name: string; email: string 
 }
 
 describe("(b) EVERY unit's first flow step raises a start gate — no auto-start path (ruling C8)", () => {
-  test("a freshly-declared active unit with no after: raises a start gate; the daemon never crosses it on its own", () => {
+  test("a freshly-declared active unit with no after: raises a start gate; the daemon never crosses it on its own", async () => {
     const unitDir = join(root, "work/storefront/widget-tweak");
     mkdirSync(unitDir, { recursive: true });
     writeFileSync(
@@ -191,12 +191,12 @@ describe("(b) EVERY unit's first flow step raises a start gate — no auto-start
     const daemon = new Daemon(root, { memberRunner: () => runner });
     // No `after:` at all — still a start gate, not a licence to begin (invariant 1): a hand-written
     // or injected unit.md causes NO member invocation, only a start gate, no matter how many ticks.
-    for (let i = 0; i < 3; i++) daemon.tick();
+    for (let i = 0; i < 3; i++) await daemon.tick();
     expect(calls).toEqual([]);
     expect(readdirSync(unitDir)).toEqual(["unit.md"]);
   });
 
-  test("once the Conductor resolves the start gate, the daemon advances the unit normally on later ticks", () => {
+  test("once the Conductor resolves the start gate, the daemon advances the unit normally on later ticks", async () => {
     const unitDir = join(root, "work/storefront/widget-tweak");
     mkdirSync(unitDir, { recursive: true });
     writeFileSync(
@@ -205,29 +205,29 @@ describe("(b) EVERY unit's first flow step raises a start gate — no auto-start
     );
 
     // The Conductor's own explicit click is the only thing allowed to cross the start gate.
-    const started = resolveGate(root, "storefront", "widget-tweak", "start" as Verb, { today: "2026-07-12" });
+    const started = await resolveGate(root, "storefront", "widget-tweak", "start" as Verb, { today: "2026-07-12" });
     expect(started.ok).toBe(true);
     expect(existsSync(join(unitDir, "product-brief-widget-tweak-v1.md"))).toBe(true);
-    resolveGate(root, "storefront", "product-brief-widget-tweak-v1", "approve" as Verb, { today: "2026-07-12" });
+    await resolveGate(root, "storefront", "product-brief-widget-tweak-v1", "approve" as Verb, { today: "2026-07-12" });
 
     // Past the start gate, the daemon advances the unit exactly like any other flow step, with no
     // further authorization required.
     const { runner, calls } = countingRunner(root);
     const daemon = new Daemon(root, { memberRunner: () => runner });
-    daemon.tick();
+    await daemon.tick();
     expect(calls).toEqual([{ member: "lyra", kind: "design" }]);
     expect(existsSync(join(unitDir, "design-widget-tweak-v1.md"))).toBe(true);
     // Halts at design's gate — a second tick does not chase further without an approval.
-    daemon.tick();
+    await daemon.tick();
     expect(calls.length).toBe(1);
   });
 });
 
 describe("(c) 'Members running' is a true projection of in-flight invocations", () => {
-  test("running() reflects exactly the window a member call is in flight, and clears after", () => {
+  test("running() reflects exactly the window a member call is in flight, and clears after", async () => {
     // Get loyalty-flow past its start gate first (not itself under observation here).
-    resolveGate(root, "storefront", "loyalty-flow", "start", { today: "2026-07-12" });
-    resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
+    await resolveGate(root, "storefront", "loyalty-flow", "start", { today: "2026-07-12" });
+    await resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
 
     let sawRunning: ReturnType<Daemon["running"]> | null = null;
     const inner = stubAdapterRunner(loadRepo(root));
@@ -241,7 +241,7 @@ describe("(c) 'Members running' is a true projection of in-flight invocations", 
       }),
     });
     expect(daemon.running()).toEqual([]);
-    daemon.tick(); // advances loyalty-flow to `design`
+    await daemon.tick(); // advances loyalty-flow to `design`
     expect(sawRunning).not.toBeNull();
     expect(sawRunning).toEqual([{ project: "storefront", unit: "loyalty-flow", member: "lyra", kind: "design", startedAt: sawRunning![0].startedAt }]);
     // Cleared the instant production finishes.
@@ -250,9 +250,9 @@ describe("(c) 'Members running' is a true projection of in-flight invocations", 
 });
 
 describe("(d) failures never crash the daemon or stall silently — they surface as a blocked artifact", () => {
-  test("a member that throws produces a `blocked` artifact instead of crashing the tick, and is never retried", () => {
-    resolveGate(root, "storefront", "loyalty-flow", "start", { today: "2026-07-12" });
-    resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
+  test("a member that throws produces a `blocked` artifact instead of crashing the tick, and is never retried", async () => {
+    await resolveGate(root, "storefront", "loyalty-flow", "start", { today: "2026-07-12" });
+    await resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
 
     let calls = 0;
     const daemon = new Daemon(root, {
@@ -268,7 +268,7 @@ describe("(d) failures never crash the daemon or stall silently — they surface
       }),
     });
 
-    const r1 = daemon.tick();
+    const r1 = await daemon.tick();
     expect(calls).toBe(1);
     const entry = r1.entries.find((e) => e.unit === "loyalty-flow")!;
     expect(entry.outcome.outcome).toBe("blocked");
@@ -278,7 +278,7 @@ describe("(d) failures never crash the daemon or stall silently — they surface
     expect(blocked).toContain("simulated member timeout");
 
     // The daemon is still alive and keeps ticking normally — a member failure never crashes it.
-    const r2 = daemon.tick();
+    const r2 = await daemon.tick();
     expect(r2.entries.length).toBeGreaterThan(0);
     // Never retried: the blocked artifact occupies design's slot, so the daemon halts there instead.
     expect(calls).toBe(1);
@@ -286,19 +286,19 @@ describe("(d) failures never crash the daemon or stall silently — they surface
 });
 
 describe("(e) concurrency safety: a single-threaded work queue", () => {
-  test("many rapid ticks never invoke a member twice for the same producible kind", () => {
-    resolveGate(root, "storefront", "loyalty-flow", "start", { today: "2026-07-12" });
-    resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
+  test("many rapid ticks never invoke a member twice for the same producible kind", async () => {
+    await resolveGate(root, "storefront", "loyalty-flow", "start", { today: "2026-07-12" });
+    await resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
 
     const { runner, calls } = countingRunner(root);
     const daemon = new Daemon(root, { memberRunner: () => runner });
     // 30 rapid repeated ticks — simulating a burst of repo-change signals — must produce `design`
     // exactly once (it halts there; spec is behind an unresolved gate).
-    for (let i = 0; i < 30; i++) daemon.tick();
+    for (let i = 0; i < 30; i++) await daemon.tick();
     expect(calls).toEqual([{ member: "lyra", kind: "design" }]);
   });
 
-  test("tick() refuses to run re-entrantly (the mutex itself), rather than interleaving", () => {
+  test("tick() refuses to run re-entrantly (the mutex itself), rather than interleaving", async () => {
     // A member call that itself (synchronously) tries to trigger another tick — the one genuine
     // reentrancy hazard possible with today's fully-synchronous MemberRunner boundary — must be
     // refused by the same single-flight guard the watcher-driven loop relies on, not silently allowed
@@ -309,8 +309,8 @@ describe("(e) concurrency safety: a single-threaded work queue", () => {
     const unitDir = join(root, "work/storefront/widget-tweak");
     mkdirSync(unitDir, { recursive: true });
     writeFileSync(join(unitDir, "unit.md"), "---\ntype: feature\nstatus: active\n---\n\n# widget-tweak\n\nReentrancy test fixture unit.\n");
-    resolveGate(root, "storefront", "widget-tweak", "start" as Verb, { today: "2026-07-12" });
-    resolveGate(root, "storefront", "product-brief-widget-tweak-v1", "approve" as Verb, { today: "2026-07-12" });
+    await resolveGate(root, "storefront", "widget-tweak", "start" as Verb, { today: "2026-07-12" });
+    await resolveGate(root, "storefront", "product-brief-widget-tweak-v1", "approve" as Verb, { today: "2026-07-12" });
 
     let sawReentrantThrow = false;
     const inner = new Daemon(root, {
@@ -319,9 +319,9 @@ describe("(e) concurrency safety: a single-threaded work queue", () => {
         // approved on disk, so it's never re-produced) — otherwise resolveStep would fail to resolve
         // that earlier step at all and mask the case under test (mirrors test (d)'s own note).
         capabilities: () => [{ member: "wren", kind: "product-brief" }, { member: "lyra", kind: "design" }],
-        produce: (member, kind, unit, project) => {
+        produce: async (member, kind, unit, project) => {
           try {
-            inner.tick();
+            await inner.tick();
           } catch (e) {
             sawReentrantThrow = /already in progress/.test(String(e));
           }
@@ -329,24 +329,24 @@ describe("(e) concurrency safety: a single-threaded work queue", () => {
         },
       }),
     });
-    inner.tick();
+    await inner.tick();
     expect(sawReentrantThrow).toBe(true);
   });
 });
 
 describe("(f) budget halts stop the walk without crashing or silently dropping the reason", () => {
-  test("a unit already over budget halts with a visible reason instead of producing further", () => {
+  test("a unit already over budget halts with a visible reason instead of producing further", async () => {
     const unitDir = join(root, "work/storefront/loyalty-flow");
-    resolveGate(root, "storefront", "loyalty-flow", "start", { today: "2026-07-12" });
+    await resolveGate(root, "storefront", "loyalty-flow", "start", { today: "2026-07-12" });
     // product-brief's canned usage.usd is 0.06 (fixtures/stubs/member-stub.ts) — set a budget below
     // that so the very next production attempt is already over it.
     const unitSrc = readFileSync(join(unitDir, "unit.md"), "utf8").replace("budget: 15.00", "budget: 0.01");
     writeFileSync(join(unitDir, "unit.md"), unitSrc);
-    resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
+    await resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
 
     const { runner, calls } = countingRunner(root);
     const daemon = new Daemon(root, { memberRunner: () => runner });
-    const result = daemon.tick();
+    const result = await daemon.tick();
     expect(calls).toEqual([]); // never invoked — the budget check runs before production.
     const entry = result.entries.find((e) => e.unit === "loyalty-flow")!;
     expect(entry.outcome.outcome).toBe("budget-gate");
@@ -364,32 +364,32 @@ describe("(f) budget halts stop the walk without crashing or silently dropping t
 
 // Create a fresh storefront feature unit with a given budget, get it past its start gate, and approve
 // its product-brief — leaving the unit walkable and $0.06 already spent (one brief). Returns its dir.
-function seedFeatureUnit(root: string, name: string, budget: number): string {
+async function seedFeatureUnit(root: string, name: string, budget: number): Promise<string> {
   const unitDir = join(root, "work/storefront", name);
   mkdirSync(unitDir, { recursive: true });
   writeFileSync(
     join(unitDir, "unit.md"),
     `---\ntype: feature\nstatus: active\nproject: storefront\nunit: ${name}\nbudget: ${budget.toFixed(2)}\n---\n\n# ${name}\n\nBudget-gate test fixture unit.\n`,
   );
-  const started = resolveGate(root, "storefront", name, "start" as Verb, { today: "2026-07-12" });
+  const started = await resolveGate(root, "storefront", name, "start" as Verb, { today: "2026-07-12" });
   if (!started.ok) throw new Error(`seed start failed: ${(started as { error: string }).error}`);
-  const approved = resolveGate(root, "storefront", `product-brief-${name}-v1`, "approve" as Verb, { today: "2026-07-12" });
+  const approved = await resolveGate(root, "storefront", `product-brief-${name}-v1`, "approve" as Verb, { today: "2026-07-12" });
   if (!approved.ok) throw new Error(`seed approve failed: ${(approved as { error: string }).error}`);
   return unitDir;
 }
 
 describe("(h) C3 extended: a budget gate halts ONLY its own unit; other units in the project keep advancing", () => {
-  test("the over-budget unit sits at its gate and never advances until resolved; a sibling unit advances normally throughout", () => {
+  test("the over-budget unit sits at its gate and never advances until resolved; a sibling unit advances normally throughout", async () => {
     // over-budget: $0.06 already spent (its approved brief) against a $0.01 budget → next walk is a gate.
-    const overDir = seedFeatureUnit(root, "over-unit", 0.01);
+    const overDir = await seedFeatureUnit(root, "over-unit", 0.01);
     // solvent: same project, a budget far above its spend → nothing stops it advancing.
-    const solventDir = seedFeatureUnit(root, "solvent-unit", 15.0);
+    const solventDir = await seedFeatureUnit(root, "solvent-unit", 15.0);
 
     const daemon = new Daemon(root);
 
     // First tick: the over-budget unit halts AT its budget gate (produces nothing); the solvent unit
     // advances one step (design) — a per-unit halt, never a global stop.
-    const r1 = daemon.tick();
+    const r1 = await daemon.tick();
     expect(r1.entries.find((e) => e.unit === "over-unit")!.outcome.outcome).toBe("budget-gate");
     expect(r1.entries.find((e) => e.unit === "solvent-unit")!.outcome.outcome).toBe("produced");
     expect(existsSync(join(overDir, "design-over-unit-v1.md"))).toBe(false);
@@ -399,7 +399,7 @@ describe("(h) C3 extended: a budget gate halts ONLY its own unit; other units in
     // Many more ticks: the over-budget unit STILL never advances (no design file ever appears) — the
     // daemon does not cross its budget gate on its own, no matter how many times it ticks (the exact
     // shape of the start-gate invariant, applied to the budget gate).
-    for (let i = 0; i < 5; i++) daemon.tick();
+    for (let i = 0; i < 5; i++) await daemon.tick();
     expect(existsSync(join(overDir, "design-over-unit-v1.md"))).toBe(false);
     // The solvent unit, meanwhile, reached and halted at its own (flow) gate — it advanced freely.
     expect(existsSync(join(solventDir, "design-solvent-unit-v1.md"))).toBe(true);
@@ -408,19 +408,19 @@ describe("(h) C3 extended: a budget gate halts ONLY its own unit; other units in
     // was the budget gate, not some unrelated block.
     const resolved = daemon.resolveBudget("storefront", "over-unit", "continue");
     expect(resolved.ok).toBe(true);
-    daemon.tick();
+    await daemon.tick();
     expect(existsSync(join(overDir, "design-over-unit-v1.md"))).toBe(true);
   });
 });
 
 describe("(i) C3 extended: `continue` suppresses re-raising until a new threshold; `raise` lifts the effective budget", () => {
-  test("continue lets the walk resume and the gate re-raises only when spend crosses a NEW threshold; raise updates the effective budget for the run", () => {
+  test("continue lets the walk resume and the gate re-raises only when spend crosses a NEW threshold; raise updates the effective budget for the run", async () => {
     // --- continue path ---
     // brief spent $0.06 against a $0.05 budget → over budget immediately.
-    const contDir = seedFeatureUnit(root, "cont-unit", 0.05);
+    const contDir = await seedFeatureUnit(root, "cont-unit", 0.05);
     const daemon = new Daemon(root);
 
-    const c1 = daemon.tick();
+    const c1 = await daemon.tick();
     expect(c1.entries.find((e) => e.unit === "cont-unit")!.outcome.outcome).toBe("budget-gate");
     const gate1 = daemon.budgetGates().find((g) => g.unit === "cont-unit")!;
     expect(gate1.spent).toBeCloseTo(0.06, 5);
@@ -428,20 +428,20 @@ describe("(i) C3 extended: `continue` suppresses re-raising until a new threshol
     // continue acknowledges $0.06 — the next tick is NOT re-raised at the same spend; the unit advances
     // one step (design), pushing spend to $0.16.
     expect(daemon.resolveBudget("storefront", "cont-unit", "continue").ok).toBe(true);
-    const c2 = daemon.tick();
+    const c2 = await daemon.tick();
     expect(c2.entries.find((e) => e.unit === "cont-unit")!.outcome.outcome).toBe("produced");
     expect(existsSync(join(contDir, "design-cont-unit-v1.md"))).toBe(true);
     expect(daemon.budgetGates().some((g) => g.unit === "cont-unit")).toBe(false);
 
     // The NEW spend level ($0.16) crosses beyond the acknowledged $0.06 → the gate re-raises. So
     // `continue` suppressed re-raising ONLY until a new threshold, exactly as C3's memory rule requires.
-    const c3 = daemon.tick();
+    const c3 = await daemon.tick();
     expect(c3.entries.find((e) => e.unit === "cont-unit")!.outcome.outcome).toBe("budget-gate");
     expect(daemon.budgetGates().find((g) => g.unit === "cont-unit")!.spent).toBeCloseTo(0.16, 5);
 
     // --- raise path ---
-    const raiseDir = seedFeatureUnit(root, "raise-unit", 0.05);
-    const r1 = daemon.tick();
+    const raiseDir = await seedFeatureUnit(root, "raise-unit", 0.05);
+    const r1 = await daemon.tick();
     expect(r1.entries.find((e) => e.unit === "raise-unit")!.outcome.outcome).toBe("budget-gate");
     // No effective budget lifted yet — the unit is over its declared $0.05.
     expect(daemon.effectiveBudget("storefront", "raise-unit")).toBeUndefined();
@@ -453,24 +453,24 @@ describe("(i) C3 extended: `continue` suppresses re-raising until a new threshol
     expect(eff!).toBeGreaterThan(0.05); // strictly above the original declared budget — it moved.
 
     // With the effective budget lifted to $0.06, the unit is no longer over budget and advances.
-    const r2 = daemon.tick();
+    const r2 = await daemon.tick();
     expect(r2.entries.find((e) => e.unit === "raise-unit")!.outcome.outcome).toBe("produced");
     expect(existsSync(join(raiseDir, "design-raise-unit-v1.md"))).toBe(true);
   });
 });
 
 describe("(j) C3 extended: `stop` pauses the unit so the daemon skips it thereafter", () => {
-  test("resolving a budget gate with stop pauses the unit on disk; the daemon no longer walks it", () => {
-    const dir = seedFeatureUnit(root, "stop-unit", 0.05);
+  test("resolving a budget gate with stop pauses the unit on disk; the daemon no longer walks it", async () => {
+    const dir = await seedFeatureUnit(root, "stop-unit", 0.05);
     const daemon = new Daemon(root);
 
-    expect(daemon.tick().entries.find((e) => e.unit === "stop-unit")!.outcome.outcome).toBe("budget-gate");
+    expect((await daemon.tick()).entries.find((e) => e.unit === "stop-unit")!.outcome.outcome).toBe("budget-gate");
     expect(daemon.resolveBudget("storefront", "stop-unit", "stop").ok).toBe(true);
 
     // Persisted to disk (files are the truth): the unit is paused, and a paused unit is invisible to
     // the walk — no design is ever produced.
     expect(readFileSync(join(dir, "unit.md"), "utf8")).toContain("status: paused");
-    for (let i = 0; i < 3; i++) daemon.tick();
+    for (let i = 0; i < 3; i++) await daemon.tick();
     expect(existsSync(join(dir, "design-stop-unit-v1.md"))).toBe(false);
     // The gate is cleared — a stopped unit is not still "awaiting the Conductor".
     expect(daemon.budgetGates().some((g) => g.unit === "stop-unit")).toBe(false);

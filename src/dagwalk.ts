@@ -32,10 +32,26 @@ import { join } from "node:path";
 import { validateArtifactSource } from "./validate.ts";
 import { parseArtifactDoc } from "./repo.ts";
 import type { Repo } from "./repo.ts";
-import { RunnerError, timeboxSeconds, bumpVersion, type MemberRunner } from "./runner.ts";
+import { RunnerError, timeboxSeconds, bumpVersion } from "./runner.ts";
 import { responsibleTeamsFor, resolveStep, unmetAfter, patchFrontmatter, upsertFrontmatterField } from "./gates.ts";
 import { runnerCommit } from "./git.ts";
-import type { Artifact, FlowLoop, Team, WorkUnit } from "./types.ts";
+import type { Artifact, FlowLoop, Receipt, Team, WorkUnit } from "./types.ts";
+
+// ---------------------------------------------------------------------------
+// NOTES F5: the live path's member boundary — genuinely async-capable, so a `kind: cli` member's real
+// spawn (asyncBunSpawn, adapters.ts) never blocks `levare serve`'s event loop for the duration of its
+// run. `produce()`'s return type is a union (a plain result OR a promise of one) rather than a strict
+// `Promise<...>` so every existing SYNCHRONOUS `MemberRunner` (runner.ts) — the phase-2 stubs, test
+// doubles, `stubAdapterRunner` — satisfies this interface unchanged (a sync return is a valid member of
+// the union); only the real, live `AdapterRunner.produceAsync` (replay.ts#productionAdapterRunner)
+// actually returns a genuine, non-blocking Promise. `advanceUnit`/`produceOne` below `await` either
+// shape uniformly. This is the one seam that's async (mirroring sdk-transport.ts's SdkTransport vs
+// AsyncSdkTransport split) — the Runner's own phase-2 batch walk (runner.ts) is untouched and stays
+// fully synchronous.
+export interface AsyncMemberRunner {
+  capabilities(): Array<{ member: string; kind: string }>;
+  produce(member: string, kind: string, unit: string, project: string): { doc: string; receipt?: Receipt } | Promise<{ doc: string; receipt?: Receipt }>;
+}
 
 // ---------------------------------------------------------------------------
 // Pure flow-position derivation (no I/O) — the piece under direct unit test.
@@ -193,7 +209,7 @@ export interface AdvanceOptions {
  * artifact instead, itself committed so it is visible in the repo, not a silent stall) or an
  * unauthorized start gate (returned as `halted`, not an error).
  */
-export function advanceUnit(root: string, repo: Repo, unit: WorkUnit, memberRunner: MemberRunner, opts: AdvanceOptions = {}): AdvanceResult {
+export async function advanceUnit(root: string, repo: Repo, unit: WorkUnit, memberRunner: AsyncMemberRunner, opts: AdvanceOptions = {}): Promise<AdvanceResult> {
   if (unit.status !== "active") return { outcome: "nothing" };
 
   const unmet = unmetAfter(repo, unit);
@@ -254,7 +270,7 @@ export function advanceUnit(root: string, repo: Repo, unit: WorkUnit, memberRunn
     if (action.type === "unbindable") return blockUnit(root, unit, team, action.reason, action.stepLabel, opts);
     if (action.type === "produce") {
       opts.onBeforeProduce?.(action.member, action.kind);
-      return produceOne(root, unit, team, action.member, action.kind, memberRunner, opts);
+      return await produceOne(root, unit, team, action.member, action.kind, memberRunner, opts);
     }
     // action.type === "nothing": this team's flow is fully satisfied — hand off to the next team.
   }
@@ -305,15 +321,15 @@ function spentWallS(repo: Repo, unit: WorkUnit): number {
   return sum;
 }
 
-function produceOne(
+async function produceOne(
   root: string,
   unit: WorkUnit,
   team: Team,
   member: string,
   kind: string,
-  memberRunner: MemberRunner,
+  memberRunner: AsyncMemberRunner,
   opts: AdvanceOptions,
-): AdvanceResult {
+): Promise<AdvanceResult> {
   const today = opts.today ?? new Date().toISOString().slice(0, 10);
   const commitFn = opts.commit ?? runnerCommit;
   const verb = opts.verb ?? "advance";
@@ -328,7 +344,9 @@ function produceOne(
 
   let baseDoc: string;
   try {
-    ({ doc: baseDoc } = memberRunner.produce(member, kind, unit.unit, unit.project));
+    // NOTES F5: awaits either a plain result (every sync test double/stub) or a genuine, non-blocking
+    // Promise (the real live AdapterRunner.produceAsync's CLI path) — see AsyncMemberRunner's own doc.
+    ({ doc: baseDoc } = await memberRunner.produce(member, kind, unit.unit, unit.project));
   } catch (e) {
     return writeBlocked(root, unit, team, member, kind, newId, e, today, commitFn, verb);
   }

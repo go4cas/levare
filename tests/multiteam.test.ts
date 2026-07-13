@@ -162,10 +162,10 @@ describe("[ruling C4] a unit hands from a shaping team to a build team (per-kind
     expect(nextAction(repo, unit, kestrel, multiTeamRunner().capabilities()).type).toBe("nothing");
   });
 
-  test("the per-kind walk hands off: the build team produces `code` on disk, authored as forge", () => {
+  test("the per-kind walk hands off: the build team produces `code` on disk, authored as forge", async () => {
     const repo = loadRepo(root);
     const unit = repo.units.find((u) => u.unit === "build-me")!;
-    const result = advanceUnit(root, repo, unit, multiTeamRunner(), { startAuthorized: true, today: "2026-07-11" });
+    const result = await advanceUnit(root, repo, unit, multiTeamRunner(), { startAuthorized: true, today: "2026-07-11" });
 
     // Under the OLD single-team walk this would be { outcome: "nothing" }. Under C4 the walk hands the
     // unit to forge and produces `code`.

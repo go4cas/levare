@@ -511,7 +511,7 @@ export async function handle(text: string, ctx: OrchestratorContext, boundary: O
       if (!project) return { reply: `I can't find an open gate for '${intent.target}'.`, intent, result: null };
       // Ruling C7: identical to the POST /gates/:project/:artifact/:verb route — same function, same
       // mutation, same commit shape, whichever surface received the click.
-      const result = resolveGate(ctx.root, project, intent.target, intent.verb, { note: intent.note, today });
+      const result = await resolveGate(ctx.root, project, intent.target, intent.verb, { note: intent.note, today });
       const reply = result.ok
         ? `Done — ${intent.verb} recorded on ${intent.target}.`
         : `Couldn't ${intent.verb} ${intent.target}: ${result.error}`;

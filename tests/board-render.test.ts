@@ -292,7 +292,7 @@ describe("run screen — score rail node markers survive a real gate resolution"
     scratchRoot = undefined;
   });
 
-  test("every score step (approved, gate, and artifact-less queued) has exactly one node marker, both before and after approving the open gate", () => {
+  test("every score step (approved, gate, and artifact-less queued) has exactly one node marker, both before and after approving the open gate", async () => {
     scratchRoot = seedScratchRepo();
     const before = renderRun(loadRepo(scratchRoot), "storefront", "checkout-flow", scratchRoot, now);
     const beforeScore = scoreBlock(before);
@@ -309,7 +309,7 @@ describe("run screen — score rail node markers survive a real gate resolution"
 
     // The actual failing path: a real gate resolution against the real repo (not a hand-built one),
     // then a fresh re-derive from disk — exactly what the board's GET handler does on the next request.
-    const result = resolveGate(scratchRoot, "storefront", "spec-checkout-flow-v1", "approve", { today: "2026-07-11" });
+    const result = await resolveGate(scratchRoot, "storefront", "spec-checkout-flow-v1", "approve", { today: "2026-07-11" });
     expect(result.ok).toBe(true);
 
     const after = renderRun(loadRepo(scratchRoot), "storefront", "checkout-flow", scratchRoot, now);

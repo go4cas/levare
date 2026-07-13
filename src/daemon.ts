@@ -19,11 +19,10 @@
 import { watch, readFileSync, writeFileSync, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import { loadRepo, type Repo } from "./repo.ts";
-import { advanceUnit, type AdvanceResult } from "./dagwalk.ts";
+import { advanceUnit, type AdvanceResult, type AsyncMemberRunner } from "./dagwalk.ts";
 import { patchFrontmatter } from "./gates.ts";
 import { conductorCommit } from "./git.ts";
 import { productionAdapterRunner } from "./replay.ts";
-import type { MemberRunner } from "./runner.ts";
 
 export interface DaemonInvocation {
   project: string;
@@ -70,7 +69,7 @@ export interface DaemonOptions {
    * `stubAdapterRunner` (replay.ts) must never be reachable from here — that was F4's own defect: a
    * live CLI member was silently invoking the phase-2 replay stub instead of its own command. Inject
    * an override only from a test that explicitly wants the stub. */
-  memberRunner?: (repo: Repo) => MemberRunner;
+  memberRunner?: (repo: Repo) => AsyncMemberRunner;
   /** Debounce window between a repo change and a tick, ms (mirrors board/serve.ts's own 80ms). */
   debounceMs?: number;
   /** Called once per completed tick — test/observability hook, never required for correctness. */
@@ -83,7 +82,7 @@ const MAX_LOG = 200;
 
 export class Daemon {
   private readonly root: string;
-  private readonly memberRunnerFor: (repo: Repo) => MemberRunner;
+  private readonly memberRunnerFor: (repo: Repo) => AsyncMemberRunner;
   private readonly debounceMs: number;
   private readonly onTick?: (r: DaemonTickResult) => void;
   private readonly now: () => string;
@@ -154,42 +153,51 @@ export class Daemon {
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
-      this.runTick();
+      // NOTES F5: fire-and-forget — a timer callback can't be awaited, and it shouldn't be: `runTick`
+      // itself is what stays non-blocking now (a `kind: cli` member's real spawn no longer freezes
+      // this thread for its whole run — see adapters.ts#asyncBunSpawn). `tickOnce` never throws
+      // uncaught (every failure path already downgrades to a `halted`/`blocked` outcome), so nothing
+      // here needs a `.catch`.
+      void this.runTick();
     }, delayMs);
   }
 
-  private runTick(): void {
+  private async runTick(): Promise<void> {
     if (this.tickRunning) {
       this.tickQueued = true;
       return;
     }
     this.tickRunning = true;
     try {
-      const result = this.tickOnce();
+      const result = await this.tickOnce();
       this.onTick?.(result);
     } finally {
       this.tickRunning = false;
       if (this.tickQueued && !this.stopped) {
         this.tickQueued = false;
-        this.runTick();
+        void this.runTick();
       }
     }
   }
 
-  /** Synchronous, single-flight: one full pass over every active unit. Throws if a tick is already in
-   * progress (the same single-threaded-queue guarantee the watcher-driven path enforces on itself, so
-   * a test forcing a tick can never interleave with one already running). */
-  tick(): DaemonTickResult {
+  /**
+   * One full pass over every active unit. Throws if a tick is already in progress (the same
+   * single-threaded-queue guarantee the watcher-driven path enforces on itself, so a test forcing a
+   * tick can never interleave with one already running). NOTES F5: `Promise`-returning, not blocking —
+   * a `kind: cli` member's real spawn inside this pass never freezes the caller's event loop; `await`
+   * this exactly where the old synchronous return value used to be read directly.
+   */
+  async tick(): Promise<DaemonTickResult> {
     if (this.tickRunning) throw new Error("daemon: a tick is already in progress");
     this.tickRunning = true;
     try {
-      return this.tickOnce();
+      return await this.tickOnce();
     } finally {
       this.tickRunning = false;
     }
   }
 
-  private tickOnce(): DaemonTickResult {
+  private async tickOnce(): Promise<DaemonTickResult> {
     this.tickCounter++;
     const entries: DaemonTickEntry[] = [];
     let repo: Repo;
@@ -214,7 +222,7 @@ export class Daemon {
       const key = `${unit.project}/${unit.unit}`;
       let outcome: AdvanceResult;
       try {
-        outcome = advanceUnit(this.root, repo, unit, memberRunner, {
+        outcome = await advanceUnit(this.root, repo, unit, memberRunner, {
           budget: { eff: this.budgetEff.get(key), ack: this.budgetAck.get(key) },
           onBeforeProduce: (member, kind) => {
             this.inFlight.push({ project: unit.project, unit: unit.unit, member, kind, startedAt: this.now() });

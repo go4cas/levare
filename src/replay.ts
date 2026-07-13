@@ -12,7 +12,8 @@ import { join } from "node:path";
 import { CAPABILITIES, render } from "../fixtures/stubs/member-stub.ts";
 import { loadRepo } from "./repo.ts";
 import { Runner, type Decision, type DecisionSource, type Gate, type MemberRunner, type RunEvent, type RunResult, type Verb } from "./runner.ts";
-import { AdapterRunner, bunSpawn, type InvokeRequest, type NativeBoundary, type RemoteBoundary } from "./adapters.ts";
+import { AdapterRunner, bunSpawn, asyncBunSpawn, type InvokeRequest, type NativeBoundary, type RemoteBoundary } from "./adapters.ts";
+import type { AsyncMemberRunner } from "./dagwalk.ts";
 import { loadPricing } from "./pricing.ts";
 import { formatReceipt } from "./receipts.ts";
 import type { Repo } from "./repo.ts";
@@ -81,14 +82,25 @@ export function stubAdapterRunner(repo: Repo): AdapterRunner {
  * through this function spawns its REAL command — never the fixture stub — which is the entire point:
  * before F4, `stubAdapterRunner` (above) was the only constructor in this codebase and doubled as the
  * silent production default, so every live CLI member was actually invoking the phase-2 replay stub.
+ *
+ * NOTES F5: returns an `AsyncMemberRunner`, not a bare `AdapterRunner` — `produce()` here routes to
+ * `AdapterRunner.produceAsync`, whose `kind: cli` path spawns non-blockingly (`asyncBunSpawn`, real
+ * `Bun.spawn` + await) so the live daemon/gateops path this function feeds never freezes `levare
+ * serve`'s event loop for the duration of a member's run (the defect a real 10-minute Gemini call
+ * exposed). `stubAdapterRunner` above stays the phase-2 batch Runner's synchronous boundary, untouched.
  */
-export function productionAdapterRunner(repo: Repo): AdapterRunner {
-  return new AdapterRunner(repo, {
+export function productionAdapterRunner(repo: Repo): AsyncMemberRunner {
+  const runner = new AdapterRunner(repo, {
     pricing: loadPricing(repo.root),
     native: stubNative,
     remote: stubRemote,
     spawn: bunSpawn,
+    asyncSpawn: asyncBunSpawn,
   });
+  return {
+    capabilities: () => runner.capabilities(),
+    produce: (member, kind, unit, project) => runner.produceAsync(member, kind, unit, project),
+  };
 }
 
 interface ScriptEntry {

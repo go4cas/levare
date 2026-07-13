@@ -54,12 +54,12 @@ describe("F3: a real failing CLI member's stderr reaches the blocked reason, and
   const secretValue = "SECRET_VALUE_9f3a2b1c7d4e";
   const stderrMarker = "lyra-cli: house-style lint failed on 3 files";
 
-  beforeEach(() => {
+  beforeEach(async () => {
     root = seedScratchRepo();
     // loyalty-flow's first step (`brief`, wren) is produced and approved through the ordinary golden
     // stub path — untouched — so the walk reaches `design` exactly as the existing daemon tests do.
-    resolveGate(root, "storefront", "loyalty-flow", "start", { today: "2026-07-12" });
-    resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
+    await resolveGate(root, "storefront", "loyalty-flow", "start", { today: "2026-07-12" });
+    await resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
 
     // Now turn lyra (the SECOND step, `design`) into a real CLI member: a genuine subprocess that
     // writes ordinary failure text to stderr and exits non-zero, and is granted the `github`
@@ -93,7 +93,7 @@ describe("F3: a real failing CLI member's stderr reaches the blocked reason, and
     rmSync(root, { recursive: true, force: true });
   });
 
-  test("blocked artifact + daemon console carry the real stderr; the secret's value appears nowhere", () => {
+  test("blocked artifact + daemon console carry the real stderr; the secret's value appears nowhere", async () => {
     const logs: string[] = [];
     const originalError = console.error;
     console.error = (...args: unknown[]) => {
@@ -113,7 +113,7 @@ describe("F3: a real failing CLI member's stderr reaches the blocked reason, and
           }),
       });
 
-      const result = daemon.tick();
+      const result = await daemon.tick();
       const entry = result.entries.find((e) => e.unit === "loyalty-flow")!;
       expect(entry.outcome.outcome).toBe("blocked");
       if (entry.outcome.outcome !== "blocked") throw new Error("unreachable");

@@ -81,7 +81,7 @@ describe("board with a daemon attached projects its real in-flight/completed sta
     });
     const board = createBoard(root, { daemon });
 
-    daemon.tick();
+    await daemon.tick();
     expect(mid).not.toBeNull();
     expect(mid!).toContain('data-runningstat="1"');
     expect(mid!).toContain("lyra");
@@ -112,7 +112,7 @@ describe("board with a daemon attached projects its real in-flight/completed sta
     // (design) to disk — the observable outcome a working notify() exists to bring forward.
     const designFile = join(root, "work", "storefront", "loyalty-flow", "design-loyalty-flow-v1.md");
     expect(existsSync(designFile)).toBe(false);
-    daemon.tick();
+    await daemon.tick();
     expect(existsSync(designFile)).toBe(true);
     // And the daemon — not the Conductor — authored it (invariant-2 audit trail; see daemon.test.ts).
     const author = spawnSync("git", ["-C", root, "log", "-1", "--format=%an|%ae", "--", designFile], { encoding: "utf8" }).stdout.trim();

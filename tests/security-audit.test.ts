@@ -218,7 +218,7 @@ describe("[surface 5/1 · HIGH · FIXED — ruling C8] daemon autostart without 
     rmSync(root, { recursive: true, force: true });
   });
 
-  test("PREVENTED: daemon must NOT invoke a member for an injected active/no-after unit with no Conductor approval", () => {
+  test("PREVENTED: daemon must NOT invoke a member for an injected active/no-after unit with no Conductor approval", async () => {
     // A non-Conductor path drops a brand-new active unit — no after:, no artifacts, no gate, no click.
     // This is exactly the "foreign or hand-written unit.md" scenario: it must cause NO member
     // invocation, only a start gate.
@@ -244,7 +244,7 @@ describe("[surface 5/1 · HIGH · FIXED — ruling C8] daemon autostart without 
     });
     try {
       // Multiple ticks: the start gate must never be crossed by the autonomous walk, ever.
-      for (let i = 0; i < 3; i++) daemon.tick();
+      for (let i = 0; i < 3; i++) await daemon.tick();
     } finally {
       daemon.stop();
     }
@@ -275,12 +275,12 @@ describe("[surface 7/10 · HIGH · FIXED — A7] approved artifact mutated in a 
     rmSync(root, { recursive: true, force: true });
   });
 
-  test("PREVENTED: validate rejects an approved artifact whose content changed in a later commit", () => {
+  test("PREVENTED: validate rejects an approved artifact whose content changed in a later commit", async () => {
     const specAbs = join(root, SPEC_REL);
     // Approve through the REAL gate path — this is what records `approved_commit` (A7). doApprove
     // commits the approval as the Conductor, so HEAD now sits at the approval; a naive HEAD-diff would
     // report the artifact unchanged forever after.
-    const r = resolveGate(root, "storefront", "spec-checkout-flow-v1", "approve", { today: "2026-07-11" });
+    const r = await resolveGate(root, "storefront", "spec-checkout-flow-v1", "approve", { today: "2026-07-11" });
     expect(r.ok).toBe(true);
     const approved = readFileSync(specAbs, "utf8");
     expect(approved).toContain("status: approved");
