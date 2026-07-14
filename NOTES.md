@@ -3048,3 +3048,130 @@ can verify — NOTES K12) that `INTERPRET_TASK_PREFIX` states `"briefing"` is ex
 that a factual/situational question must classify `"unknown"`. `bun test` — 457 pass, 1 pre-existing
 skip, 0 fail, across 41 files; `levare replay fixtures/golden --stubs` — still byte-for-byte against
 `expected.json`; `deps:check` — `deps ok`.
+
+# NOTES — ruling C11: environment and Orchestrator state must be honest and visible
+
+**Part 1 — deleted, not demoted: the deterministic Orchestrator boundary.** `orchestrator.ts` used to
+export `deterministicBoundary`, a small regex grammar (`GATE_VERB_RE`, `CAPTURE_IDEA_RE`, etc.) that
+stood in for the real model whenever no `ANTHROPIC_API_KEY` was present — selected automatically by
+`selectOrchestratorBoundary` (orchestrator-boundary.ts). Its `converse()` answered every free-form
+message with `Noted: "<text>". Nothing changes state until you act on a gate.` — levare's own voice,
+without being levare. A live Conductor session was fooled by this line twice while documenting it (the
+goal that opened this ruling names this explicitly). The fix is deletion, not a rename or a "demoted to
+test-only" downgrade: `deterministicBoundary` and its five regexes are gone from `orchestrator.ts`
+entirely; `handle()`'s `boundary` parameter lost its default and is now required — there is no path
+left where `handle()` can run without a real, explicit boundary. `selectOrchestratorBoundary` now
+returns `OrchestratorBoundary | null` — `null` meaning "unavailable", never a stand-in object — and
+`board/serve.ts`'s `POST /orchestrator/message` route checks for `null` before calling `handle()` at
+all: when unavailable, it returns `{ok:false, disabled:true, reason, envVar}` at 503, never invoking the
+boundary or fabricating a reply. A genuine transport failure AFTER selection (credential + binary both
+resolved, but the live SDK call itself failed — network, timeout, model error) is now a real error
+surfaced as one (`{ok:false, error}` at 502) — the old "degrade to the deterministic boundary and say
+'answering in offline mode'" path is gone along with the boundary it degraded to. `sdk-transport.ts`'s
+log lines and code comments referencing "deterministic offline boundary"/"offline mode" were reworded
+to describe the actual current behavior (unavailable → disabled panel, not a fallback voice).
+
+**Part 2 — the Orchestrator panel stays visible, disabled.** `render.ts#orchestratorPanel` (new) is now
+the single place every screen's `<aside class="orch">` is built. When `OrchestratorStatus.available` is
+false, it renders `<aside class="orch is-disabled">` with the exact required copy ("Orchestrator
+unavailable — no ANTHROPIC_API_KEY. The board, the registry, and every gate still work: you can
+approve, reject, and the runner will advance. Set a key to talk.") and a disabled composer
+(`composer({disabled:true})` — a `disabled` input, no submit listener attached client-side in `app.js`
+either, belt-and-suspenders with the server-side route check). A real defect surfaced while wiring this
+up: the run view's open-gate CTA card (`gateCardHtml(..., {cta:true})`) was the ONLY place that unit's
+gate rendered on the page, and it lived entirely inside the orch panel's body — so a naive "suppress the
+body when disabled" would have hidden the one actionable gate on the page, directly contradicting the
+disabled note's own promise that "every gate still works." `orchestratorPanel` therefore takes the
+narrated briefing prose and any actionable content (gate cards) as two SEPARATE parameters
+(`briefingHtml`, `actionableHtml`) — only the former is suppressed when disabled, because a gate card's
+verbs POST straight to the board's existing write routes with no LLM involved at all.
+
+**Part 3 — a whole-studio status indicator, distinct from per-connector health.** `orchestrator-
+status.ts` (new) is the single source of `OrchestratorStatus` (`available`, `reason`, `envVar`),
+computed from the same cached `checkSdkPreconditionsCached` the real boundary selection already uses —
+so "the badge says on" and "the route actually answers" can never disagree. Three surfaces consume it:
+(1) `render.ts#orchestratorIndicator` — a `<details>`/`<summary>` badge reusing the EXISTING canonical
+state-palette dot classes (`status-dot is-ok` / `is-idle`, the same vocabulary the rail's Connectors
+rows already used) rather than a new color; it appears twice in the DOM (the mobilebar, visible <1080px,
+and the rail's new `.railhead` row, visible ≥1080px) so exactly one copy is ever visible at any
+viewport width — no new header element was invented. Clicking it opens a popover (native `<details>`,
+no JS) naming the reason, the env var, and that the board/gates/runner are unaffected. (2)
+`render.ts#orchestratorRailLine` — a plain, non-interactive row in the rail, `<h3>Orchestrator</h3>`
+alongside the existing Connectors section, using the identical dot-and-status markup. (3)
+`doctor.ts#formatDoctor`/`runDoctor` gained an optional `orchestrator?: OrchestratorStatus` parameter,
+printed as `orchestrator: on|off · <reason>` ahead of the connector report; `cli.ts#runDoctorCmd` passes
+`resolveOrchestratorStatus(process.env)`. All six render functions (`renderStudio/Project/Run/Registry/
+Artifact/Idea`) gained a trailing `status: OrchestratorStatus = resolveOrchestratorStatus()` parameter,
+mirroring the existing `now: Date = new Date()` default-injection pattern — board/serve.ts's call sites
+needed no changes at all.
+
+**Part 4 — per-studio `.env`, loaded honestly, refused when tracked.** `dotenv.ts` (new):
+`parseDotenv` (hand-rolled `KEY=VALUE` parsing — no dependency, matching `deps:check`'s
+SDK-only allowlist), `loadDotenvFile(root)`, and `applyStudioEnv(root, target = process.env)` — the
+last loads `<root>/.env` into `target`, a variable already present and non-empty in `target` always
+winning (a CI/shell-exported credential is never shadowed by a stray studio `.env`), and returns a
+`Map<name, 'dotenv'|'shell'>` provenance record. `cli.ts#runServeCmd`/`runDoctorCmd` call
+`applyStudioEnv(root)` (default target = the real `process.env`) at the top, before anything else reads
+the environment — "on startup" exactly as the goal specified. This changes NOTHING about connector
+scoping: `env.ts#buildMemberEnv`'s allowlist still reads from whatever `process.env`-like object it's
+given, regardless of whether a variable arrived via shell export or `.env` — a member without the
+granting connector still cannot see a variable `.env` only just added (proven directly in
+`tests/dotenv.test.ts`, which loads a `.env`-supplied `GEMINI_API_KEY` into a scratch env object and
+asserts an ungranted agent's `buildMemberEnv` output omits it, while a granted agent's includes it).
+`doctor.ts#diagnose` gained an optional `provenance` parameter threaded through to each `ConnectorHealth
+.env[].provenance`, printed by `formatDoctor` as `present (dotenv)` / `present (shell)`. `validate.ts`
+gained `validateEnvNotTracked` (hard rule a): when a target directory is a git repo and `.env` exists at
+its root, `git ls-files --error-unmatch .env` (exit 0 iff tracked) decides; a tracked `.env` is a new
+`ENV_FILE_TRACKED` validation error naming the file and the remediation (`git rm --cached .env`, add to
+`.gitignore`, rotate the credential) — fail-closed, the same posture the immutability check already
+established for git-backed checks. No global `~/.levare/env` was added, per the goal's explicit
+constraint: credentials are per-studio; a key in a shell profile would defeat connector scoping entirely
+by making everything visible to every studio and every member.
+
+**Tests.** `tests/orchestrator-no-deterministic-boundary.test.ts` (new) — statically greps every `.ts`
+file under `src/` for the string `deterministicBoundary` and asserts none matches; asserts
+`orchestrator.ts` exports no such value; asserts `selectOrchestratorBoundary({})` returns `null`.
+`tests/orchestrator.test.ts` was reworked around a new `intentBoundary(intent)` test helper — a minimal
+`OrchestratorBoundary` whose `interpret()` returns a fixed, pre-classified `Intent` — so `handle()`'s
+own dispatch (gate resolution, capture-idea, open-unit, stats) is tested independent of any text-parsing
+grammar (real classification is the SDK boundary's job now, covered in `orchestrator-sdk.test.ts`'s
+prompt-content assertions); the two tests that asserted `deterministicBoundary.interpret()`'s own regex
+classification were removed outright (there is nothing left to classify). `tests/orchestrator-sdk.test.ts`
+and `tests/board-serve.test.ts` updated every `selectOrchestratorBoundary`/route assertion from
+`toBe(deterministicBoundary)`/"200 offline-mode" to `toBeNull()`/"503 disabled" or "502 real error",
+matching the new contract exactly. `tests/board-render.test.ts` gained a full describe block asserting
+"orchestrator: on"/"orchestrator: off" render correctly on all six screens (studio/project/run/registry/
+artifact/idea) given an explicit `OrchestratorStatus`, that the disabled panel still shows its note and
+disabled composer, and — the defect this ruling caught — that the run view's gate card survives a
+disabled Orchestrator. `tests/env-tracked.test.ts` (new) — a hermetic scratch git repo (same posture as
+`immutability.test.ts`) proves a committed `.env` fails validation with `ENV_FILE_TRACKED` naming the
+file, that `levare validate` exits 1 and reports it on the CLI, and that an untracked (gitignored) `.env`
+is not an error. `tests/dotenv.test.ts` (new) — `parseDotenv` parsing rules, `applyStudioEnv`'s
+shell-wins-over-dotenv precedence and provenance map, and the acceptance scenario above (member scoping
+survives `.env`-sourced credentials). `tests/doctor.test.ts` gained provenance and orchestrator-status
+formatting tests, plus an end-to-end `levare doctor` CLI assertion. `fixtures/doctor/expected.txt`
+updated to include the now-always-present `(shell)` provenance suffix.
+
+**Verification.** `bun test` — 493 pass, 1 pre-existing skip, 0 fail, across 44 files (up from 385/1/12F/2E
+mid-change, 452/1/2F immediately after Part 1–3, to green); `levare replay fixtures/golden --stubs` —
+final artifact statuses still byte-for-byte against `expected.json`; `deps:check` — `deps ok`; a live
+`./levare serve fixtures/golden --read-only` smoke test confirmed `orchestrator: off` renders in both
+the mobilebar and the rail, the panel shows `is-disabled`, and the rail carries the new Orchestrator
+line — all with no `ANTHROPIC_API_KEY` set, exactly the environment this whole ruling is about.
+
+**Scoping calls, recorded rather than asked about (per the standing constraint).** `handle()`'s existing
+empty-message short-circuit (`"Say more and I'll fold it into the next briefing."`, returned without
+ever calling `converse()`) was left unchanged — it fires for both an available and unavailable boundary,
+is orthogonal to the credential-fallback deception this ruling targets (nothing about it depends on
+whether the SDK boundary exists), and removing it would only push the identical UX decision ("what do we
+say about blank input") onto every future caller with no real behavior change. The client's network-
+failure fallback line in `app.js` (fires only when `fetch()` itself throws — a real connectivity
+failure, never a fabricated Orchestrator answer) was reworded from "Noted. I'll fold that into the next
+brief…" to "Could not reach the board — check your connection and try again." to avoid echoing the
+deleted boundary's phrasing, and is now rendered through a distinct `showError()` path (red, labeled
+"error") rather than `showReply()` ("reply") — the same "never dress up a non-answer as a real one"
+principle Part 1 applied server-side, applied client-side too. `applyStudioEnv` is called explicitly
+from `runServeCmd`/`runDoctorCmd` in `cli.ts`, not from `board/serve.ts#serve()` itself or globally at
+`main()`'s top — the two CLI entry points the goal names by name ("`levare serve` (and every command
+that needs credentials)"); `runContextCmd` was left unchanged since `levare context` is a dry preview
+that never actually spawns the SDK, so it does not "need credentials" in the sense the goal means.
