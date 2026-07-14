@@ -7,6 +7,8 @@ import { createBoard } from "../src/board/serve.ts";
 import { resolveGate } from "../src/board/gateops.ts";
 import { runNewProjectSkill } from "../src/orchestrator.ts";
 import { validatePath } from "../src/validate.ts";
+import { stubAdapterRunner } from "../src/replay.ts";
+import { loadRepo } from "../src/repo.ts";
 
 // (e) new-project skill end-to-end, (f) `start` invokes the flow instead of 501, and the C2/C7 loop
 // companion-approval rule applied through the board's single gate-resolution path.
@@ -44,7 +46,9 @@ describe("(f) POST /gates/:project/:unit/start invokes the flow", () => {
   test("starting loyalty-flow's satisfied start gate produces the flow's first artifact, not a 501", async () => {
     const root = seedScratchRepo();
     try {
-      const board = createBoard(root);
+      // wren (loyalty-flow's `brief` step) is `kind: native` — mocked here (NOTES F8) so this gate-
+      // mechanics test doesn't need a live ANTHROPIC_API_KEY.
+      const board = createBoard(root, { memberRunner: stubAdapterRunner(loadRepo(root)) });
       const res = await board.fetch(req("/gates/storefront/loyalty-flow/start", { method: "POST" }));
       board.close();
       expect(res.status).toBe(200);
@@ -92,7 +96,7 @@ describe("(f) POST /gates/:project/:unit/start invokes the flow", () => {
       // loyalty-flow's `start` produces a SECOND product-brief artifact in the SAME project
       // ("storefront") via the same (member, kind) — wren:product-brief — the exact shape that
       // collided before this fix (both would-be ids were the stub's fixed "product-brief-v1").
-      const board = createBoard(root);
+      const board = createBoard(root, { memberRunner: stubAdapterRunner(loadRepo(root)) });
       const res = await board.fetch(req("/gates/storefront/loyalty-flow/start", { method: "POST" }));
       board.close();
       expect(res.status).toBe(200);

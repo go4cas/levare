@@ -149,7 +149,7 @@ describe("(g) commit authorship reflects who acted, not who triggered (gate-revi
   test("a gate resolution (no member invoked) commits as the Conductor; a member-produced artifact — however it was triggered — commits as levare-runner", async () => {
     // (1) A plain gate resolution: no member runs, the Conductor's own frontmatter flip is the sole
     // content of the commit.
-    const started = await resolveGate(root, "storefront", "loyalty-flow", "start" as Verb, { today: "2026-07-12" });
+    const started = await resolveGate(root, "storefront", "loyalty-flow", "start" as Verb, { memberRunner: stubAdapterRunner(loadRepo(root)), today: "2026-07-12" });
     expect(started.ok).toBe(true);
     const approveCommit = await resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
     expect(approveCommit.ok).toBe(true);
@@ -165,7 +165,7 @@ describe("(g) commit authorship reflects who acted, not who triggered (gate-revi
 
     // (3) A daemon-driven, fully autonomous production (no verb, no direct click at all): the same
     // identity as (2) — confirming the rule is about WHO WROTE the content, not which code path ran.
-    const daemon = new Daemon(root);
+    const daemon = new Daemon(root, { memberRunner: stubAdapterRunner });
     const result = await daemon.tick(); // advances loyalty-flow past the now-approved product-brief → design
     const designEntry = result.entries.find((e) => e.unit === "loyalty-flow" && e.outcome.outcome === "produced")!;
     const daemonAuthor = commitAuthor(root, (designEntry.outcome as { commit: string }).commit);
@@ -205,7 +205,7 @@ describe("(b) EVERY unit's first flow step raises a start gate — no auto-start
     );
 
     // The Conductor's own explicit click is the only thing allowed to cross the start gate.
-    const started = await resolveGate(root, "storefront", "widget-tweak", "start" as Verb, { today: "2026-07-12" });
+    const started = await resolveGate(root, "storefront", "widget-tweak", "start" as Verb, { memberRunner: stubAdapterRunner(loadRepo(root)), today: "2026-07-12" });
     expect(started.ok).toBe(true);
     expect(existsSync(join(unitDir, "product-brief-widget-tweak-v1.md"))).toBe(true);
     await resolveGate(root, "storefront", "product-brief-widget-tweak-v1", "approve" as Verb, { today: "2026-07-12" });
@@ -226,7 +226,7 @@ describe("(b) EVERY unit's first flow step raises a start gate — no auto-start
 describe("(c) 'Members running' is a true projection of in-flight invocations", () => {
   test("running() reflects exactly the window a member call is in flight, and clears after", async () => {
     // Get loyalty-flow past its start gate first (not itself under observation here).
-    await resolveGate(root, "storefront", "loyalty-flow", "start", { today: "2026-07-12" });
+    await resolveGate(root, "storefront", "loyalty-flow", "start", { memberRunner: stubAdapterRunner(loadRepo(root)), today: "2026-07-12" });
     await resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
 
     let sawRunning: ReturnType<Daemon["running"]> | null = null;
@@ -251,7 +251,7 @@ describe("(c) 'Members running' is a true projection of in-flight invocations", 
 
 describe("(d) failures never crash the daemon or stall silently — they surface as a blocked artifact", () => {
   test("a member that throws produces a `blocked` artifact instead of crashing the tick, and is never retried", async () => {
-    await resolveGate(root, "storefront", "loyalty-flow", "start", { today: "2026-07-12" });
+    await resolveGate(root, "storefront", "loyalty-flow", "start", { memberRunner: stubAdapterRunner(loadRepo(root)), today: "2026-07-12" });
     await resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
 
     let calls = 0;
@@ -287,7 +287,7 @@ describe("(d) failures never crash the daemon or stall silently — they surface
 
 describe("(e) concurrency safety: a single-threaded work queue", () => {
   test("many rapid ticks never invoke a member twice for the same producible kind", async () => {
-    await resolveGate(root, "storefront", "loyalty-flow", "start", { today: "2026-07-12" });
+    await resolveGate(root, "storefront", "loyalty-flow", "start", { memberRunner: stubAdapterRunner(loadRepo(root)), today: "2026-07-12" });
     await resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
 
     const { runner, calls } = countingRunner(root);
@@ -309,7 +309,7 @@ describe("(e) concurrency safety: a single-threaded work queue", () => {
     const unitDir = join(root, "work/storefront/widget-tweak");
     mkdirSync(unitDir, { recursive: true });
     writeFileSync(join(unitDir, "unit.md"), "---\ntype: feature\nstatus: active\n---\n\n# widget-tweak\n\nReentrancy test fixture unit.\n");
-    await resolveGate(root, "storefront", "widget-tweak", "start" as Verb, { today: "2026-07-12" });
+    await resolveGate(root, "storefront", "widget-tweak", "start" as Verb, { memberRunner: stubAdapterRunner(loadRepo(root)), today: "2026-07-12" });
     await resolveGate(root, "storefront", "product-brief-widget-tweak-v1", "approve" as Verb, { today: "2026-07-12" });
 
     let sawReentrantThrow = false;
@@ -337,7 +337,7 @@ describe("(e) concurrency safety: a single-threaded work queue", () => {
 describe("(f) budget halts stop the walk without crashing or silently dropping the reason", () => {
   test("a unit already over budget halts with a visible reason instead of producing further", async () => {
     const unitDir = join(root, "work/storefront/loyalty-flow");
-    await resolveGate(root, "storefront", "loyalty-flow", "start", { today: "2026-07-12" });
+    await resolveGate(root, "storefront", "loyalty-flow", "start", { memberRunner: stubAdapterRunner(loadRepo(root)), today: "2026-07-12" });
     // product-brief's canned usage.usd is 0.06 (fixtures/stubs/member-stub.ts) — set a budget below
     // that so the very next production attempt is already over it.
     const unitSrc = readFileSync(join(unitDir, "unit.md"), "utf8").replace("budget: 15.00", "budget: 0.01");
@@ -371,7 +371,7 @@ async function seedFeatureUnit(root: string, name: string, budget: number): Prom
     join(unitDir, "unit.md"),
     `---\ntype: feature\nstatus: active\nproject: storefront\nunit: ${name}\nbudget: ${budget.toFixed(2)}\n---\n\n# ${name}\n\nBudget-gate test fixture unit.\n`,
   );
-  const started = await resolveGate(root, "storefront", name, "start" as Verb, { today: "2026-07-12" });
+  const started = await resolveGate(root, "storefront", name, "start" as Verb, { memberRunner: stubAdapterRunner(loadRepo(root)), today: "2026-07-12" });
   if (!started.ok) throw new Error(`seed start failed: ${(started as { error: string }).error}`);
   const approved = await resolveGate(root, "storefront", `product-brief-${name}-v1`, "approve" as Verb, { today: "2026-07-12" });
   if (!approved.ok) throw new Error(`seed approve failed: ${(approved as { error: string }).error}`);
@@ -385,7 +385,7 @@ describe("(h) C3 extended: a budget gate halts ONLY its own unit; other units in
     // solvent: same project, a budget far above its spend → nothing stops it advancing.
     const solventDir = await seedFeatureUnit(root, "solvent-unit", 15.0);
 
-    const daemon = new Daemon(root);
+    const daemon = new Daemon(root, { memberRunner: stubAdapterRunner });
 
     // First tick: the over-budget unit halts AT its budget gate (produces nothing); the solvent unit
     // advances one step (design) — a per-unit halt, never a global stop.
@@ -418,7 +418,7 @@ describe("(i) C3 extended: `continue` suppresses re-raising until a new threshol
     // --- continue path ---
     // brief spent $0.06 against a $0.05 budget → over budget immediately.
     const contDir = await seedFeatureUnit(root, "cont-unit", 0.05);
-    const daemon = new Daemon(root);
+    const daemon = new Daemon(root, { memberRunner: stubAdapterRunner });
 
     const c1 = await daemon.tick();
     expect(c1.entries.find((e) => e.unit === "cont-unit")!.outcome.outcome).toBe("budget-gate");
@@ -462,7 +462,7 @@ describe("(i) C3 extended: `continue` suppresses re-raising until a new threshol
 describe("(j) C3 extended: `stop` pauses the unit so the daemon skips it thereafter", () => {
   test("resolving a budget gate with stop pauses the unit on disk; the daemon no longer walks it", async () => {
     const dir = await seedFeatureUnit(root, "stop-unit", 0.05);
-    const daemon = new Daemon(root);
+    const daemon = new Daemon(root, { memberRunner: stubAdapterRunner });
 
     expect((await daemon.tick()).entries.find((e) => e.unit === "stop-unit")!.outcome.outcome).toBe("budget-gate");
     expect(daemon.resolveBudget("storefront", "stop-unit", "stop").ok).toBe(true);

@@ -10,6 +10,7 @@ import { join, extname, dirname, resolve, sep } from "node:path";
 import { loadRepo, type Repo } from "../repo.ts";
 import { renderStudio, renderProject, renderRun, renderRegistry, renderArtifact, renderIdea } from "./render.ts";
 import { resolveGate } from "./gateops.ts";
+import type { AsyncMemberRunner } from "../dagwalk.ts";
 import { validatePath } from "../validate.ts";
 import type { Verb } from "../runner.ts";
 import { conductorCommit, CONDUCTOR_NAME } from "../git.ts";
@@ -43,6 +44,10 @@ export interface BoardCtx {
    * simulated platform/arch or an empty scratch require-root, rather than bypassing selection
    * entirely with a hand-rolled boundary (NOTES phase-7 K13). */
   orchestratorSelectOpts?: SelectOrchestratorBoundaryOptions;
+  /** Override the `resolveGate()` call's own default (`productionAdapterRunner`) — production never
+   * sets this; tests use it to drive a gate resolution (e.g. a `start` verb) through a controllable
+   * `AsyncMemberRunner`, mirroring `orchestratorBoundary` above exactly (NOTES F8). */
+  memberRunner?: AsyncMemberRunner;
   /** Phase 8, deliverable c: when set, "Members running" / "Running now" (render.ts#renderStudio)
    * become a true projection of this daemon's in-flight invocations. Absent in every pre-phase-8 test
    * that constructs a board directly (createBoard's default), which is why those screens keep
@@ -228,7 +233,7 @@ export const ROUTES: RouteDef[] = [
       } catch {
         /* no body / not JSON — note stays undefined */
       }
-      const result = await resolveGate(ctx.root, params.project, params.artifact, verb, { note });
+      const result = await resolveGate(ctx.root, params.project, params.artifact, verb, { note, memberRunner: ctx.memberRunner });
       if (!result.ok) return json({ ok: false, error: result.error }, result.status);
       ctx.broadcast("reload");
       // Deliverable (d): an approval (or any other resolution) may have just satisfied a producible
@@ -485,6 +490,7 @@ export function createBoard(
     orchestratorBoundary?: OrchestratorBoundary;
     orchestratorSelectOpts?: SelectOrchestratorBoundaryOptions;
     daemon?: Daemon;
+    memberRunner?: AsyncMemberRunner;
   } = {},
 ): Board {
   const readOnly = opts.readOnly ?? isUnderFixtures(root);
@@ -494,6 +500,7 @@ export function createBoard(
     orchestratorBoundary: opts.orchestratorBoundary,
     orchestratorSelectOpts: opts.orchestratorSelectOpts,
     daemon: opts.daemon,
+    memberRunner: opts.memberRunner,
     broadcast: (msg) => {
       for (const sub of subscribersOf(ctx)) sub.send(msg);
     },

@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { createBoard } from "../src/board/serve.ts";
 import { createSdkOrchestratorBoundary } from "../src/orchestrator-boundary.ts";
 import type { AsyncSdkTransport } from "../src/sdk-transport.ts";
+import { stubAdapterRunner } from "../src/replay.ts";
+import { loadRepo } from "../src/repo.ts";
 
 // Phase-4 acceptance (PRD §11): "an integration test POSTs approve on the fixture's open gate and
 // asserts the artifact file shows approved_by and `git log -1` shows the commit." Exercised against
@@ -174,7 +176,10 @@ describe("levare serve — POST /gates reject and request", () => {
 
   beforeAll(() => {
     root = seedScratchRepo();
-    board = createBoard(root);
+    // spec-checkout-flow-v1 is produced by lyra (kind: native) — request-changes re-invokes it
+    // (board/gateops.ts#doRequest) through the real MemberRunner boundary; mocked here (NOTES F8) so
+    // this gate-mechanics test doesn't need a live ANTHROPIC_API_KEY.
+    board = createBoard(root, { memberRunner: stubAdapterRunner(loadRepo(root)) });
   });
   afterAll(() => {
     board.close();

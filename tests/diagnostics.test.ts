@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Daemon } from "../src/daemon.ts";
 import { resolveGate } from "../src/board/gateops.ts";
-import { repoCapabilities } from "../src/repo.ts";
+import { stubAdapterRunner } from "../src/replay.ts";
+import { repoCapabilities, loadRepo } from "../src/repo.ts";
 import { loadPricing } from "../src/pricing.ts";
 import { AdapterRunner, type NativeBoundary, type RemoteBoundary } from "../src/adapters.ts";
 import type { Verb } from "../src/runner.ts";
@@ -58,7 +59,7 @@ describe("F3: a real failing CLI member's stderr reaches the blocked reason, and
     root = seedScratchRepo();
     // loyalty-flow's first step (`brief`, wren) is produced and approved through the ordinary golden
     // stub path — untouched — so the walk reaches `design` exactly as the existing daemon tests do.
-    await resolveGate(root, "storefront", "loyalty-flow", "start", { today: "2026-07-12" });
+    await resolveGate(root, "storefront", "loyalty-flow", "start", { memberRunner: stubAdapterRunner(loadRepo(root)), today: "2026-07-12" });
     await resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
 
     // Now turn lyra (the SECOND step, `design`) into a real CLI member: a genuine subprocess that

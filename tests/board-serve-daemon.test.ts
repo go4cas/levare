@@ -7,6 +7,7 @@ import { createBoard } from "../src/board/serve.ts";
 import { Daemon } from "../src/daemon.ts";
 import { renderStudio } from "../src/board/render.ts";
 import { stubAdapterRunner } from "../src/replay.ts";
+import { loadRepo } from "../src/repo.ts";
 
 // Phase 8, deliverable (c): "Members running" / "Running now" are a true projection of the daemon's
 // in-flight invocations, retiring NOTES E2 — exercised here through the actual board wiring
@@ -59,7 +60,7 @@ describe("board with a daemon attached projects its real in-flight/completed sta
     // C8: every unit's first production still needs an explicit Conductor start regardless of
     // `after:` — get it past that start gate and its brief approved first (over HTTP, the board's own
     // write surface), then the daemon can advance it on its own for the step under observation here.
-    const preBoard = createBoard(root);
+    const preBoard = createBoard(root, { memberRunner: stubAdapterRunner(loadRepo(root)) });
     await preBoard.fetch(req("/gates/storefront/loyalty-flow/start", { method: "POST" }));
     await preBoard.fetch(req("/gates/storefront/product-brief-loyalty-flow-v1/approve", { method: "POST" }));
     preBoard.close();
@@ -100,8 +101,8 @@ describe("board with a daemon attached projects its real in-flight/completed sta
     // daemon should be able to advance the unit rather than sit idle. Assert that effect against the
     // filesystem (a real member-produced artifact, authored by the runner), not the invocation of a
     // method — a no-op notify() would pass an invocation-counter but fail this.
-    const daemon = new Daemon(root);
-    const board = createBoard(root, { daemon });
+    const daemon = new Daemon(root, { memberRunner: stubAdapterRunner });
+    const board = createBoard(root, { daemon, memberRunner: stubAdapterRunner(loadRepo(root)) });
 
     // Start over HTTP (doStart produces the brief in-review), then approve the brief over HTTP — the
     // route handler calls ctx.daemon.notify() on each. Both are the board's own write surface.
