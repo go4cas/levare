@@ -60,6 +60,46 @@ export function buildQueryOptions(req: SdkWorkerRequest) {
   };
 }
 
+/**
+ * NOTES F11: the model that ACTUALLY produced a response — derived from the result message's own
+ * `modelUsage`, cross-checked against `respondingModel` (tracked by the caller from each streamed
+ * `assistant` message's own `message.model`, a `BetaMessage` field), never guessed from `modelUsage`'s
+ * key order.
+ *
+ * Proven live: a single `query()` call can report MULTIPLE models in `modelUsage` — an internal
+ * auxiliary call (observed: automatic memory recall) ran on `claude-haiku-4-5-20251001` alongside the
+ * actual response, which correctly ran on the requested `claude-sonnet-5` — with no signal in that
+ * object's key order about which one generated `result.result`. The prior code took
+ * `Object.entries(modelUsage)[0]` on the (false) assumption that "every call passes exactly one
+ * explicit model" (recorded as a since-corrected comment right at that line) — plain JS object key
+ * order is insertion order, not significance order, and an unrelated auxiliary call inserted its key
+ * FIRST in the reproduced case. `respondingModel` — the LAST assistant turn's own model, the one whose
+ * content the result message actually reports — is the fix; `modelUsage[0]` stays only as a fallback
+ * for the (untested-live, believed impossible) case where no `assistant` message was ever seen.
+ *
+ * `tokens_in`/`tokens_out`/`usd` still SUM every entry in `modelUsage` — that is correct: the member
+ * genuinely cost that much regardless of which internal call spent which tokens. Only the reported
+ * MODEL NAME needed fixing, not the cost accounting.
+ *
+ * Factored out (rather than left inline in `main()`'s loop) specifically so a test can feed a
+ * synthetic multi-model `modelUsage` object and assert the correct model wins, without spawning a
+ * real subprocess or mocking the SDK's own `query()` async generator — see
+ * tests/sdk-worker-receipt.test.ts.
+ */
+export function deriveReceipt(message: { modelUsage?: Record<string, { inputTokens?: number; outputTokens?: number }>; duration_ms?: number; total_cost_usd?: number }, respondingModel: string | null, reqModel?: string): Receipt {
+  const modelUsage = Object.entries(message.modelUsage ?? {});
+  const tokensIn = modelUsage.length ? modelUsage.reduce((sum, [, u]) => sum + (u.inputTokens ?? 0), 0) : null;
+  const tokensOut = modelUsage.length ? modelUsage.reduce((sum, [, u]) => sum + (u.outputTokens ?? 0), 0) : null;
+  return {
+    model: respondingModel ?? modelUsage[0]?.[0] ?? reqModel ?? null,
+    tokens_in: tokensIn,
+    tokens_out: tokensOut,
+    wall_clock_s: typeof message.duration_ms === "number" ? message.duration_ms / 1000 : null,
+    usd: typeof message.total_cost_usd === "number" ? message.total_cost_usd : null,
+    unreported: modelUsage.length === 0 && typeof message.total_cost_usd !== "number",
+  };
+}
+
 async function main(): Promise<void> {
   const input = await Bun.stdin.text();
   let req: SdkWorkerRequest;
@@ -76,29 +116,24 @@ async function main(): Promise<void> {
     let receipt: Receipt | undefined;
     let sawSuccess = false;
     let failure: string | undefined;
+    // NOTES F11: see `deriveReceipt`'s own doc for why this is tracked from `assistant` messages
+    // rather than trusted to `modelUsage`'s key order.
+    let respondingModel: string | null = null;
     for await (const message of query({
       prompt: req.prompt,
       options: buildQueryOptions(req),
     })) {
+      if (message.type === "assistant" && typeof message.message?.model === "string") {
+        respondingModel = message.message.model;
+      }
       if (message.type === "result") {
         if (message.subtype === "success") {
           sawSuccess = true;
           resultText = message.result;
           structuredOutput = message.structured_output;
           // §10: record what the SDK itself reports — real cost and token counts — rather than ever
-          // estimating (NOTES phase-7 K16). `modelUsage` is a per-model breakdown; summed across
-          // entries (in practice always one, since every call passes exactly one explicit `model`).
-          const modelUsage = Object.entries(message.modelUsage ?? {});
-          const tokensIn = modelUsage.length ? modelUsage.reduce((sum, [, u]) => sum + (u.inputTokens ?? 0), 0) : null;
-          const tokensOut = modelUsage.length ? modelUsage.reduce((sum, [, u]) => sum + (u.outputTokens ?? 0), 0) : null;
-          receipt = {
-            model: modelUsage[0]?.[0] ?? req.model ?? null,
-            tokens_in: tokensIn,
-            tokens_out: tokensOut,
-            wall_clock_s: typeof message.duration_ms === "number" ? message.duration_ms / 1000 : null,
-            usd: typeof message.total_cost_usd === "number" ? message.total_cost_usd : null,
-            unreported: modelUsage.length === 0 && typeof message.total_cost_usd !== "number",
-          };
+          // estimating (NOTES phase-7 K16).
+          receipt = deriveReceipt(message, respondingModel, req.model);
         } else {
           const errs = "errors" in message && Array.isArray(message.errors) ? message.errors.join("; ") : undefined;
           failure = `sdk query did not succeed (${message.subtype})${errs ? `: ${errs}` : ""}`;
