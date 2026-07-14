@@ -28,7 +28,7 @@
 import { existsSync, statSync, accessSync, constants as fsConstants } from "node:fs";
 import { isAbsolute, join as pathJoin } from "node:path";
 import { normalizeReceipt } from "./receipts.ts";
-import { buildMemberEnv, teamOf } from "./env.ts";
+import { buildMemberEnv, teamOf, subscriptionConnector } from "./env.ts";
 import { allowedTools } from "./guardrails.ts";
 import { assembleContext, unitArtifactPaths } from "./context.ts";
 import { asyncSdkTransport, bunSdkTransport, resolveNativeBinary, type AsyncSdkTransport, type SdkTransport } from "./sdk-transport.ts";
@@ -487,7 +487,14 @@ export class AdapterRunner implements MemberRunner {
   private author(req: InvokeRequest, raw: string, receipt?: Receipt): { doc: string; receipt: Receipt } {
     const content = stripFrontmatter(raw);
     if (!content) throw new AdapterError(`member '${req.member}' produced no usable content`);
-    const finalReceipt = receipt ?? normalizeReceipt(null, this.opts.pricing);
+    let finalReceipt = receipt ?? normalizeReceipt(null, this.opts.pricing);
+    // NOTES C13: a subscription-authenticated member's cost is flat-rate, not per-token — pricing it
+    // from the token table would be a fiction. `usd` is forced null and the plan is named in its
+    // place; token counts (when the member's boundary reported them) pass through unchanged.
+    if (!finalReceipt.unreported) {
+      const sub = subscriptionConnector(this.repo, req.member);
+      if (sub) finalReceipt = { ...finalReceipt, usd: null, plan: sub.plan ?? sub.name };
+    }
     // NOTES F11 part 2: the SDK can silently substitute its own default model when a call doesn't run
     // on the one requested — no error, no warning, the call simply succeeds on a different model
     // (proven live: an auxiliary internal call inside a single query() ran on a model the agent never
@@ -534,6 +541,7 @@ export class AdapterRunner implements MemberRunner {
         `  usd: ${finalReceipt.usd ?? "null"}`,
         `  wall_clock_s: ${finalReceipt.wall_clock_s ?? "null"}`,
       );
+      if (finalReceipt.plan) lines.push(`  plan: ${finalReceipt.plan}`);
     }
     lines.push("---", "");
     return { doc: lines.join("\n") + content + "\n", receipt: finalReceipt };

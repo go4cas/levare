@@ -35,6 +35,16 @@ export function grantedConnectors(repo: Repo, member: string): Connector[] {
 }
 
 /**
+ * NOTES C13: the `auth: subscription` connector granted to a member, if any. Its `env` is empty by
+ * construction (validated), so `buildMemberEnv` below already has nothing extra to allowlist for
+ * it — this exists purely so callers that need to know a member is subscription-authenticated
+ * (receipt cost accounting, doctor) can ask without re-deriving the grant themselves.
+ */
+export function subscriptionConnector(repo: Repo, member: string): Connector | undefined {
+  return grantedConnectors(repo, member).find((c) => c.auth === "subscription");
+}
+
+/**
  * Build the allowlisted environment for a member's spawned process. Contains exactly: the baseline
  * vars that are present in `base`, plus the env vars named by the member's granted connectors that
  * are present in `base`. Nothing else from `base` is carried through.

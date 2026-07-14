@@ -178,6 +178,77 @@ describe("native adapter (mocked SDK boundary)", () => {
   });
 });
 
+// NOTES C13: a subscription-authenticated member's cost is flat-rate, not per-token — pricing it
+// from the table would be a fiction. `author()` forces usd null and names the plan instead; token
+// counts the boundary reports still pass through unchanged. Built off the golden repo (Repo is plain
+// data, safe to mutate in a test) rather than a from-scratch repo, so team/unit/project resolution
+// (assembleContext) keeps working without re-deriving all of it.
+describe("C13: subscription-authenticated members price at usd: null, with the plan noted", () => {
+  function subscriptionRepo() {
+    const repo = loadRepo(ROOT);
+    repo.connectors.set("codex-subscription", {
+      name: "codex-subscription",
+      kind: "cli",
+      command: "codex",
+      env: [],
+      auth: "subscription",
+      plan: "ChatGPT Plus — flat monthly rate",
+    });
+    const lyra = repo.agents.get("lyra")!;
+    repo.agents.set("lyra", { ...lyra, connectors: ["codex-subscription"] });
+    return repo;
+  }
+
+  test("usd is forced null and the plan is noted, even though the boundary reported a priceable model and its own usd", () => {
+    const repo = subscriptionRepo();
+    // lyra's own declared model (fixtures/golden/agents/lyra.md) — matches so the unrelated F11
+    // model-mismatch guard doesn't interfere with what this test is actually checking.
+    const receipt = { model: "claude-sonnet-5", tokens_in: 4200, tokens_out: 900, wall_clock_s: 60, usd: 12.34, unreported: false };
+    const native: NativeBoundary = { invoke: (r) => ({ doc: render(r.member, r.kind, r.unit, r.project), receipt }) };
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native, remote: remoteMock });
+    const { receipt: got, doc } = runner.produce("lyra", "spec", "checkout-flow", "storefront");
+    expect(got.usd).toBe(null);
+    expect(got.plan).toBe("ChatGPT Plus — flat monthly rate");
+    // Token counts the boundary reported still pass through — only usd is overridden.
+    expect(got.tokens_in).toBe(4200);
+    expect(got.tokens_out).toBe(900);
+    expect(doc).toContain("usd: null");
+    expect(doc).toContain("plan: ChatGPT Plus");
+  });
+
+  test("a subscription member's model is not rejected as unpriceable — usd is null by the auth mode, not treated as a pricing failure", () => {
+    const repo = subscriptionRepo();
+    expect(pricing.has("codex-cli-5")).toBe(false); // genuinely absent from knowledge/model-pricing.md
+    const lyra = repo.agents.get("lyra")!;
+    repo.agents.set("lyra", { ...lyra, model: "codex-cli-5" });
+    const receipt = { model: "codex-cli-5", tokens_in: 100, tokens_out: 50, wall_clock_s: 5, usd: null, unreported: false };
+    const native: NativeBoundary = { invoke: (r) => ({ doc: render(r.member, r.kind, r.unit, r.project), receipt }) };
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native, remote: remoteMock });
+    const { receipt: got } = runner.produce("lyra", "spec", "checkout-flow", "storefront");
+    expect(got.usd).toBe(null);
+    expect(got.plan).toBe("ChatGPT Plus — flat monthly rate");
+  });
+
+  test("a fully unreported receipt is left alone — no plan noted on pure silence", () => {
+    const repo = subscriptionRepo();
+    const native: NativeBoundary = { invoke: (r) => ({ doc: render(r.member, r.kind, r.unit, r.project) }) }; // no receipt at all
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native, remote: remoteMock });
+    const { receipt } = runner.produce("lyra", "spec", "checkout-flow", "storefront");
+    expect(receipt.unreported).toBe(true);
+    expect(receipt.plan).toBeUndefined();
+  });
+
+  test("a member granted no subscription connector is unaffected — priced normally, no plan noted", () => {
+    const repo = loadRepo(ROOT); // lyra grants no connector here
+    const receipt = { model: "claude-sonnet-5", tokens_in: 100, tokens_out: 50, wall_clock_s: 2, usd: 999, unreported: false };
+    const native: NativeBoundary = { invoke: (r) => ({ doc: render(r.member, r.kind, r.unit, r.project), receipt }) };
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native, remote: remoteMock });
+    const { receipt: got } = runner.produce("lyra", "spec", "checkout-flow", "storefront");
+    expect(got.usd).not.toBe(null); // priced normally from the table, member's own usd still ignored
+    expect(got.plan).toBeUndefined();
+  });
+});
+
 describe("cli adapter (against the fixture stub)", () => {
   test("spawns the stub and records an `unreported` receipt for the silent Codex member", () => {
     const repo = loadRepo(ROOT);
