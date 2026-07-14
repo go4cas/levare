@@ -384,6 +384,59 @@ function truncateTail(s: string, maxLen: number): string {
   return trimmed.length <= maxLen ? trimmed : trimmed.slice(-maxLen);
 }
 
+function lastNonEmptyLine(s: string): string {
+  const lines = s.split("\n").map((l) => l.trim()).filter(Boolean);
+  return lines.length ? lines[lines.length - 1] : "";
+}
+
+// NOTES F21: many CLIs report a failure as structured JSON rather than plain text — when a stream
+// parses as one and carries a recognizable error/message field, that field IS the diagnosis, more
+// precise than a raw byte tail. `null` for anything that isn't parseable JSON with such a field —
+// never a partial/best-effort read pretending to be a full one.
+function vendorStructuredError(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed || (!trimmed.startsWith("{") && !trimmed.startsWith("["))) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    const err = parsed?.error;
+    if (typeof err === "string") return err;
+    if (err && typeof err === "object" && typeof (err as Record<string, unknown>).message === "string") {
+      return (err as Record<string, unknown>).message as string;
+    }
+    if (typeof parsed?.message === "string") return parsed.message;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+// NOTES F21: the diagnosis a Conductor actually needs when a CLI member fails — surfaced first and
+// prominently, ahead of anything else a failure message reports. The pre-fix message led with the
+// argv the member was invoked with, which for a real studio can carry the member's ENTIRE §6 context
+// substituted into `{task}` — often thousands of characters — before the stderr tail ever appeared;
+// on a card that shows only a bounded preview, the Conductor saw levare's own echoed prompt and never
+// the real error at all (the live defect this closes). Tried in order: the vendor's own structured
+// error (many CLIs emit JSON on failure), the tail of stderr, the last non-empty line of stdout (some
+// CLIs write their error there instead of stderr) — "(no output captured)" only when the process
+// genuinely reported nothing at all.
+function diagnoseCliFailure(result: SpawnResult): string {
+  const stderr = result.stderr ?? "";
+  const structured = vendorStructuredError(stderr) ?? vendorStructuredError(result.stdout ?? "");
+  if (structured) return structured;
+  const tail = truncateTail(stderr, 2000);
+  if (tail) return tail;
+  const lastLine = lastNonEmptyLine(result.stdout ?? "");
+  if (lastLine) return lastLine;
+  return "(no output captured)";
+}
+
+// Each argv element, capped — kept as a secondary "what actually ran" reference, never the primary
+// diagnosis (see diagnoseCliFailure above): a real `{task}`-substituted element can be thousands of
+// characters, and dumping it whole here would recreate the exact defect this file's F21 fix closes.
+function summarizeArgv(argv: string[], maxElementLen = 200): string {
+  return JSON.stringify(argv.map((a) => (a.length > maxElementLen ? `${a.slice(0, maxElementLen)}…(${a.length} chars total)` : a)));
+}
+
 // NOTES F17: a wrapped CLI's own reported usage. Unlike a native member (a real SDK call that always
 // reports structured usage, or genuinely reports nothing), a foreign CLI's token accounting — when it
 // reports any at all — typically comes back as a plain trailer line rather than structured data, e.g.
@@ -610,13 +663,13 @@ export class AdapterRunner implements MemberRunner {
   // stdout reports (see `extractCliUsageTrailer`) and returns it alongside the (trailer-stripped) doc
   // content — `tokensUsed` is null, not zero, when nothing parseable was found.
   private cliResultToDoc(member: string, agent: Agent, argv: string[], result: SpawnResult): { content: string; tokensUsed: number | null } {
-    const tail = truncateTail(result.stderr ?? "", 2000);
-    const stderrSuffix = tail ? `\nstderr (last ${tail.length} chars):\n${tail}` : "";
     if (result.timedOut) {
-      throw new AdapterError(`cli member '${member}' timed out after ${agent.timeout ?? 600}s (argv: ${JSON.stringify(argv)})${stderrSuffix}`);
+      throw new AdapterError(
+        `cli member '${member}' timed out after ${agent.timeout ?? 600}s: ${diagnoseCliFailure(result)} (argv: ${summarizeArgv(argv)})`,
+      );
     }
     if (result.exitCode !== 0) {
-      throw new AdapterError(`cli member '${member}' exited ${result.exitCode} (argv: ${JSON.stringify(argv)})${stderrSuffix}`);
+      throw new AdapterError(`cli member '${member}' exited ${result.exitCode}: ${diagnoseCliFailure(result)} (argv: ${summarizeArgv(argv)})`);
     }
     return extractCliUsageTrailer(result.stdout);
   }

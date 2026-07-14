@@ -381,6 +381,96 @@ describe("cli adapter (against the fixture stub)", () => {
   });
 
   // -------------------------------------------------------------------------
+  // NOTES F21: the diagnosis, not the echoed prompt, must be the prominent thing in a CLI failure.
+  // `{task}` substitutes the FULL §6 context into argv — thousands of characters in a real studio —
+  // and the pre-fix message led with `(argv: ...)` before the stderr tail ever appeared: on a blocked
+  // card showing only a bounded preview, the Conductor saw levare's own echoed prompt and never the
+  // real error. These tests drive `cliCommand` to return a template with a huge substituted element
+  // (mirroring `defaultCliCommand`'s real `{task}` substitution, which these tests otherwise bypass
+  // via `stubCliCommand`), and assert the diagnosis reaches the front of the message, never buried or
+  // truncated away by the echoed context ahead of it.
+  // -------------------------------------------------------------------------
+
+  const hugeTaskCliCommand = (r: InvokeRequest) => ["codex", "review", "--input", r.context, "--repo", "."];
+
+  test("a huge substituted argv element never buries the real stderr diagnosis", () => {
+    const repo = loadRepo(ROOT);
+    const huge = "CONTEXT ".repeat(2000); // ~16k chars — far larger than any bounded card preview.
+    const failing: CliSpawn = { run: () => ({ stdout: "", exitCode: 1, timedOut: false, stderr: "authentication expired: run `codex login`\n" }) };
+    const runner = new AdapterRunner(repo, {
+      pricing,
+      capabilities: [{ member: "finch", kind: "review" }],
+      native: nativeMock,
+      remote: remoteMock,
+      spawn: failing,
+      cliCommand: (r) => hugeTaskCliCommand({ ...r, context: huge }),
+    });
+    let caught: unknown;
+    try {
+      runner.produce("finch", "review", "checkout-flow", "storefront");
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(AdapterError);
+    const msg = (caught as Error).message;
+    // The diagnosis is present, AND it comes before the (still-summarized, capped) argv reference —
+    // never pushed out of a bounded preview by the huge context element.
+    expect(msg).toContain("authentication expired: run `codex login`");
+    const diagnosisAt = msg.indexOf("authentication expired");
+    const argvAt = msg.indexOf("(argv:");
+    expect(diagnosisAt).toBeGreaterThan(-1);
+    expect(argvAt).toBeGreaterThan(-1);
+    expect(diagnosisAt).toBeLessThan(argvAt);
+    // The huge context element is capped, not dumped whole — the message stays well under the raw
+    // context's own ~16k length.
+    expect(msg.length).toBeLessThan(huge.length);
+  });
+
+  test("a CLI's own structured JSON error is preferred over a raw stderr tail", () => {
+    const repo = loadRepo(ROOT);
+    const failing: CliSpawn = {
+      run: () => ({ stdout: "", exitCode: 1, timedOut: false, stderr: JSON.stringify({ error: { message: "rate limit exceeded, retry after 60s" } }) }),
+    };
+    const runner = new AdapterRunner(repo, {
+      pricing,
+      capabilities: [{ member: "finch", kind: "review" }],
+      native: nativeMock,
+      remote: remoteMock,
+      spawn: failing,
+      cliCommand: stubCliCommand,
+    });
+    let caught: unknown;
+    try {
+      runner.produce("finch", "review", "checkout-flow", "storefront");
+    } catch (e) {
+      caught = e;
+    }
+    const msg = (caught as Error).message;
+    expect(msg).toContain("rate limit exceeded, retry after 60s");
+  });
+
+  test("empty stderr falls back to the last non-empty stdout line, never a bare 'exited N'", () => {
+    const repo = loadRepo(ROOT);
+    const failing: CliSpawn = { run: () => ({ stdout: "starting up...\nerror: quota exhausted for this billing period\n", exitCode: 1, timedOut: false, stderr: "" }) };
+    const runner = new AdapterRunner(repo, {
+      pricing,
+      capabilities: [{ member: "finch", kind: "review" }],
+      native: nativeMock,
+      remote: remoteMock,
+      spawn: failing,
+      cliCommand: stubCliCommand,
+    });
+    let caught: unknown;
+    try {
+      runner.produce("finch", "review", "checkout-flow", "storefront");
+    } catch (e) {
+      caught = e;
+    }
+    const msg = (caught as Error).message;
+    expect(msg).toContain("error: quota exhausted for this billing period");
+  });
+
+  // -------------------------------------------------------------------------
   // NOTES F3: pre-flight the spawn. This guards ONLY the real `bunSpawn` boundary — the one that
   // actually hands argv to the OS and can fail with an opaque, contextless nonzero exit (or, for a bad
   // cwd, a bare filesystem error with no member context at all). A test-injected `CliSpawn` (used
