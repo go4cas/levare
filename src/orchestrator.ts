@@ -83,6 +83,17 @@ export interface Briefing {
   gates: OpenGate[];
   /** Units whose `after:` just became satisfied — "what unblocked". */
   unblocked: OpenGate[];
+  /**
+   * NOTES F18: units the walk could not advance at all — a flow step (or, distinctly, the unit's
+   * ENTIRE type) binds to no member in the studio. Kept apart from `gates` (which are artifact-shaped
+   * approve/reject/request decisions) because a blocked unit is not waiting on a Conductor DECISION;
+   * it is waiting on the STUDIO being fixed. `buildBriefing` previously filtered `openGates()`'s own
+   * output down to `type === "artifact"` only, so a blocked unit — even though `board/derive.ts`
+   * already listed it as an open gate, and the board itself already rendered it — silently never
+   * reached the Orchestrator's briefing at all: the one thing in the whole product that told a
+   * Conductor "nothing needs you right now" while a unit sat blocked, reason on disk, unread.
+   */
+  blocked: OpenGate[];
   doctor: ConnectorHealth[];
   warnings: ConnectorHealth[];
   text: string;
@@ -94,19 +105,21 @@ export function buildBriefing(repo: Repo, env: EnvProbe, probe: CliProbe): Brief
     .filter((g): g is OpenGate & { artifact: NonNullable<OpenGate["artifact"]> } => g.type === "artifact" && !!g.artifact)
     .sort((a, b) => a.artifact.created.localeCompare(b.artifact.created));
   const unblocked = all.filter((g) => g.type === "start");
+  const blocked = all.filter((g) => g.type === "blocked");
   const doctor = diagnose([...repo.connectors.values()], env, probe);
   const warnings = doctor.filter((d) => d.status !== "ok");
 
   const lines: string[] = [];
-  if (gates.length === 0 && unblocked.length === 0) {
+  if (gates.length === 0 && unblocked.length === 0 && blocked.length === 0) {
     lines.push("Nothing needs you right now.");
   } else {
     if (gates.length) lines.push(`${gates.length} gate${gates.length === 1 ? "" : "s"} on you, oldest first: ${gates.map((g) => g.target).join(", ")}.`);
+    if (blocked.length) lines.push(`${blocked.length} unit${blocked.length === 1 ? "" : "s"} blocked, studio needs fixing: ${blocked.map((g) => `${g.unit} (${g.reason})`).join("; ")}.`);
     if (unblocked.length) lines.push(`Unblocked and ready to start: ${unblocked.map((g) => g.unit).join(", ")}.`);
   }
   lines.push(warnings.length ? `Doctor: ${warnings.map((w) => `${w.name} ${w.status}`).join(", ")}.` : `Doctor: all ${doctor.length} connector${doctor.length === 1 ? "" : "s"} ok.`);
 
-  return { gates, unblocked, doctor, warnings, text: lines.join(" ") };
+  return { gates, unblocked, blocked, doctor, warnings, text: lines.join(" ") };
 }
 
 // ---------------------------------------------------------------------------

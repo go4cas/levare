@@ -308,7 +308,25 @@ export async function advanceUnit(root: string, repo: Repo, unit: WorkUnit, memb
   // handoff §6 describes); the first team with a producible action produces it; an open gate in any
   // team halts the whole walk (a later team's inputs depend on an earlier team's approved output).
   const teams = responsibleTeamsFor(repo, unit);
-  if (teams.length === 0) return { outcome: "nothing" };
+  if (teams.length === 0) {
+    // NOTES F18: distinct from a step that binds to no member WITHIN a responsible team
+    // (`unbindable`, above) — here no team in the whole studio produces anything this unit's type
+    // needs at all, so `responsibleTeamsFor` never finds a team to even try. The pre-fix behaviour
+    // was the defect: silently returning `nothing` forever, indistinguishable on the board and in the
+    // Orchestrator's briefing from "this unit is simply not due for anything right now". Block it
+    // LOUDLY instead, naming the specific missing kind, exactly like the `unbindable` case does for a
+    // narrower binding failure — a Conductor reading the board must never have to guess why a unit
+    // never moves.
+    const type = repo.types.get(unit.type);
+    const expects = type?.expects ?? [];
+    if (expects.length > 0) {
+      const producedAnywhere = new Set<string>();
+      for (const t of repo.teams.values()) for (const k of t.produces) producedAnywhere.add(k);
+      const missing = expects.find((k) => !producedAnywhere.has(k)) ?? expects[0];
+      return blockUnit(root, unit, null, `${unit.type} needs \`${missing}\`; no team in this studio produces it`, missing, opts);
+    }
+    return { outcome: "nothing" };
+  }
 
   const caps = memberRunner.capabilities();
   for (const team of teams) {
@@ -342,7 +360,7 @@ export async function advanceUnit(root: string, repo: Repo, unit: WorkUnit, memb
 function blockUnit(
   root: string,
   unit: WorkUnit,
-  team: Team,
+  team: Team | null,
   reason: string,
   stepLabel: string,
   opts: AdvanceOptions,
@@ -353,7 +371,11 @@ function blockUnit(
   let patched = patchFrontmatter(src, { status: "blocked" });
   patched = upsertFrontmatterField(patched, "blocked_reason", reason);
   writeFileSync(file, patched);
-  const commit = commitFn(root, [file], `block ${unit.unit}: team ${team.name} cannot bind flow step '${stepLabel}': ${reason.slice(0, 120)}`);
+  // NOTES F18: `team` is null when no team in the studio is even responsible for this unit at all
+  // (the walk never got as far as trying to bind a step within one) — the commit message says so
+  // rather than naming a team that was never in play.
+  const cause = team ? `team ${team.name} cannot bind flow step '${stepLabel}'` : `no team produces '${stepLabel}'`;
+  const commit = commitFn(root, [file], `block ${unit.unit}: ${cause}: ${reason.slice(0, 120)}`);
   return { outcome: "unbindable", reason, stepLabel, file, commit };
 }
 

@@ -3919,3 +3919,43 @@ block) — the pre-existing, legitimate case.
 **Verification.** `bun test` — 577 pass (up from 566 at C14), 1 pre-existing skip, 0 fail, across 48
 files (new: `tests/loop-critic-context.test.ts`); `levare replay fixtures/golden --stubs` — final
 artifact statuses still byte-for-byte against `expected.json`; `deps:check` — `deps ok`.
+
+## F18. A unit whose next required kind is produced by no team in the studio sat `active` forever — the walk knew and said nothing
+
+**Found live, three separate times.** A unit's type `expects` a kind (e.g. `design`) that no team in
+the studio declares in its own `produces:` — not because a team tried and failed to bind it (that is
+the pre-existing F1 `unbindable` case), but because no team's `flow:` ever attempts that kind at all,
+so `validate.ts#validateStudioBindings` — which only inspects declared flow steps — has nothing to
+catch. The unit sat `active`, the board showed no gate, the Orchestrator's briefing said "Nothing needs
+you right now", and both were right about what they were looking at — the walk itself never told
+anyone what it knew.
+
+**Root cause.** `dagwalk.ts#advanceUnit`: `gates.ts#responsibleTeamsFor(repo, unit)` returns every team
+whose `produces` intersects the unit type's `expects`; when NO team produces anything the type expects,
+it returns `[]`, and `advanceUnit` short-circuited straight to `{ outcome: "nothing" }` — the same
+"nothing to do right now" outcome a unit between gates legitimately returns. Silence and misconfiguration
+were the same return value.
+
+**The fix.** `advanceUnit`'s `teams.length === 0` branch now finds the specific missing kind (the first
+of the type's `expects` with no producer anywhere in the studio) and blocks the unit exactly like the
+F1 `unbindable` path does — same `blockUnit` helper, now accepting `team: Team | null` (null here, since
+no team was ever in play to name) — writing `status: blocked` + `blocked_reason: "<type> needs
+`<kind>`; no team in this studio produces it"` to `unit.md`, committed, surfaced by `board/derive.ts
+#openGates` (already blocked-unit-aware since F1 — no change needed there) and rendered by the board
+(ditto). The one place that WAS still silent: `orchestrator.ts#buildBriefing` filtered `openGates()`'s
+own output down to `type === "artifact"` only for its `gates` list — a blocked unit (type `"blocked"`)
+never reached the Orchestrator at all, regardless of whether F1 or F18 raised it. `Briefing` gained a
+`blocked: OpenGate[]` field (`openGates().filter(g => g.type === "blocked")`), included in the
+"Nothing needs you right now" short-circuit and rendered as its own line naming each blocked unit and
+its reason.
+
+**Tests.** New `tests/f18-unadvanceable.test.ts`: a scratch studio (type `research` overridden to
+`expects: [design]`, one team `core` that produces only `note` and whose flow never references
+`design`) validates clean (the gap this ruling closes is a runtime one, not a studio-definition error);
+`advanceUnit` blocks the unit naming the missing kind and that no team produces it; the block surfaces
+as a `type: "blocked"` gate on the board, rendered with the reason on the card; `buildBriefing`'s
+`blocked` list and its `text` name the unit and reason instead of claiming nothing needs the Conductor.
+
+**Verification.** `bun test` — 581 pass, 1 pre-existing skip, 0 fail, across 50 files (new:
+`tests/f18-unadvanceable.test.ts`); `levare replay fixtures/golden --stubs` unaffected (this ruling
+touches only the live daemon/board/Orchestrator path, never the phase-2 batch Runner).
