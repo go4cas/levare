@@ -20,6 +20,7 @@ import {
   createAsyncSdkNativeBoundary,
   type InvokeRequest,
   type NativeBoundary,
+  type AsyncNativeBoundary,
   type RemoteBoundary,
 } from "./adapters.ts";
 import type { AsyncMemberRunner } from "./dagwalk.ts";
@@ -113,18 +114,36 @@ export function stubAdapterRunner(repo: Repo): AdapterRunner {
  * reintroduce). `stubAdapterRunner` above stays the phase-2 batch Runner's synchronous, mocked
  * boundary, untouched.
  */
-export function productionAdapterRunner(repo: Repo): AsyncMemberRunner {
+export interface ProductionAdapterOverrides {
+  /**
+   * Test-only: substitute the native boundary so a hermetic test can dispatch a `kind: native` loop
+   * member (e.g. the author half of an author/critic pair) without a real SDK call, while still
+   * exercising the actual `productionAdapterRunner` wiring — not a hand-rolled stand-in — since ruling
+   * F15's defect (a dropped `extraConsumes` argument) lived in THIS function's own return value, not
+   * in dagwalk.ts or AdapterRunner, both of which already threaded it correctly. Every real call site
+   * (daemon.ts, board/gateops.ts) leaves this unset.
+   */
+  native?: NativeBoundary;
+  asyncNative?: AsyncNativeBoundary;
+}
+
+export function productionAdapterRunner(repo: Repo, overrides: ProductionAdapterOverrides = {}): AsyncMemberRunner {
   const runner = new AdapterRunner(repo, {
     pricing: loadPricing(repo.root),
-    native: createSdkNativeBoundary(),
-    asyncNative: createAsyncSdkNativeBoundary(),
+    native: overrides.native ?? createSdkNativeBoundary(),
+    asyncNative: overrides.asyncNative ?? createAsyncSdkNativeBoundary(),
     remote: stubRemote,
     spawn: bunSpawn,
     asyncSpawn: asyncBunSpawn,
   });
   return {
     capabilities: () => runner.capabilities(),
-    produce: (member, kind, unit, project) => runner.produceAsync(member, kind, unit, project),
+    // NOTES F15: `extraConsumes` (ruling C14 — a loop critic's own consumed-artifact seam) MUST reach
+    // `AdapterRunner.produceAsync` unchanged; a wrapper that drops the trailing argument silently
+    // strands every live loop critic with an empty consumed set, regardless of how carefully
+    // dagwalk.ts/adapters.ts thread it — this was the actual live defect (a contract-valid review
+    // whose entire content was "no product brief was provided to review").
+    produce: (member, kind, unit, project, extraConsumes) => runner.produceAsync(member, kind, unit, project, extraConsumes),
   };
 }
 
