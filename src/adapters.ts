@@ -384,6 +384,24 @@ function truncateTail(s: string, maxLen: number): string {
   return trimmed.length <= maxLen ? trimmed : trimmed.slice(-maxLen);
 }
 
+// NOTES F17: a wrapped CLI's own reported usage. Unlike a native member (a real SDK call that always
+// reports structured usage, or genuinely reports nothing), a foreign CLI's token accounting — when it
+// reports any at all — typically comes back as a plain trailer line rather than structured data, e.g.
+// Codex's own "tokens used: 2745". Parsed off the member's raw stdout and stripped from the kept
+// content before it's authored into the artifact body (ruling C12: the member's output is content, not
+// schema — a usage trailer is no more part of the document than a frontmatter fence the member emitted
+// on its own initiative). Returns `tokensUsed: null` when nothing matched — "reported nothing
+// parseable this run", not "definitely zero" — see `AdapterRunner#author`'s own null-vs-silence
+// handling for a subscription member.
+const CLI_TOKENS_TRAILER_RE = /^[ \t]*tokens used:[ \t]*(\d+)[ \t]*$/im;
+function extractCliUsageTrailer(raw: string): { content: string; tokensUsed: number | null } {
+  const m = CLI_TOKENS_TRAILER_RE.exec(raw);
+  if (!m) return { content: raw, tokensUsed: null };
+  const tokensUsed = Number(m[1]);
+  const content = (raw.slice(0, m.index) + raw.slice(m.index + m[0].length)).replace(/\n{3,}/g, "\n\n");
+  return { content, tokensUsed };
+}
+
 /**
  * The phase-3 MemberRunner: resolves each member to its adapter, assembles context, scopes env, runs
  * it, and normalizes the receipt. Returns { doc, receipt } — the Runner validates the doc and records
@@ -425,9 +443,12 @@ export class AdapterRunner implements MemberRunner {
       case "remote":
         raw = this.opts.remote.call(req).doc;
         break;
-      case "cli":
-        raw = this.runCli(agent, req);
+      case "cli": {
+        const { content, tokensUsed } = this.runCli(agent, req);
+        raw = content;
+        receipt = this.cliReceipt(agent, tokensUsed);
         break;
+      }
       default:
         throw new AdapterError(`unknown agent kind '${(agent as Agent).kind}' for '${member}'`);
     }
@@ -456,9 +477,12 @@ export class AdapterRunner implements MemberRunner {
       case "remote":
         raw = this.opts.remote.call(req).doc;
         break;
-      case "cli":
-        raw = await this.runCliAsync(agent, req);
+      case "cli": {
+        const { content, tokensUsed } = await this.runCliAsync(agent, req);
+        raw = content;
+        receipt = this.cliReceipt(agent, tokensUsed);
         break;
+      }
       default:
         throw new AdapterError(`unknown agent kind '${(agent as Agent).kind}' for '${member}'`);
     }
@@ -476,6 +500,16 @@ export class AdapterRunner implements MemberRunner {
     return { agent, req };
   }
 
+  // NOTES F17: build a Receipt from a CLI's own parsed token trailer (extractCliUsageTrailer), when it
+  // reported one — `agent.model` is the studio's own declaration (a CLI never reports its model in the
+  // trailer), so pricing can still resolve it from the table when known. `undefined` when the CLI
+  // reported nothing parseable, letting `author()`'s own `receipt ?? normalizeReceipt(null, ...)`
+  // fallback take over exactly as before.
+  private cliReceipt(agent: Agent, tokensUsed: number | null): Receipt | undefined {
+    if (tokensUsed === null) return undefined;
+    return normalizeReceipt({ model: agent.model ?? null, tokens_in: null, tokens_out: tokensUsed, wall_clock_s: null, usd: null }, this.opts.pricing);
+  }
+
   // Ruling C12: levare authors the artifact. `raw` is whatever the boundary returned — plain content,
   // or content the member wrapped in a frontmatter fence of its own (stripped below, never read). The
   // wrapper is built entirely from facts this runner already knows; the member's own account of them
@@ -488,12 +522,20 @@ export class AdapterRunner implements MemberRunner {
     const content = stripFrontmatter(raw);
     if (!content) throw new AdapterError(`member '${req.member}' produced no usable content`);
     let finalReceipt = receipt ?? normalizeReceipt(null, this.opts.pricing);
-    // NOTES C13: a subscription-authenticated member's cost is flat-rate, not per-token — pricing it
-    // from the token table would be a fiction. `usd` is forced null and the plan is named in its
+    // NOTES C13/F17: a subscription-authenticated member's cost is flat-rate, not per-token — pricing
+    // it from the token table would be a fiction. `usd` is forced null and the plan is named in its
     // place; token counts (when the member's boundary reported them) pass through unchanged.
-    if (!finalReceipt.unreported) {
-      const sub = subscriptionConnector(this.repo, req.member);
-      if (sub) finalReceipt = { ...finalReceipt, usd: null, plan: sub.plan ?? sub.name };
+    //
+    // F17: for a `kind: cli` subscription member specifically, the receipt is never simply OMITTED —
+    // even when the CLI reported nothing parseable this run, the studio already knows this member's
+    // auth mode and plan, so recording nothing at all would be indistinguishable from "ran for free".
+    // Scoped to `cli`: a native member's boundary is the real SDK, which either reports real usage or
+    // is genuinely, unconditionally silent (a test-only shape `normalizeReceipt`'s own `unreported`
+    // already names honestly) — that silence is a different, still-legitimate case, left unchanged.
+    const sub = subscriptionConnector(this.repo, req.member);
+    if (sub) {
+      if (finalReceipt.unreported && req.agent.kind === "cli") finalReceipt = { ...finalReceipt, unreported: false };
+      if (!finalReceipt.unreported) finalReceipt = { ...finalReceipt, usd: null, plan: sub.plan ?? sub.name };
     }
     // NOTES F11 part 2: the SDK can silently substitute its own default model when a call doesn't run
     // on the one requested — no error, no warning, the call simply succeeds on a different model
@@ -564,8 +606,10 @@ export class AdapterRunner implements MemberRunner {
   }
 
   // Shared timeout/exit-code → AdapterError translation for both CLI spawn paths (NOTES F3: argv +
-  // stderr tail attached either way).
-  private cliResultToDoc(member: string, agent: Agent, argv: string[], result: SpawnResult): string {
+  // stderr tail attached either way). NOTES F17: also parses whatever token usage the CLI's own
+  // stdout reports (see `extractCliUsageTrailer`) and returns it alongside the (trailer-stripped) doc
+  // content — `tokensUsed` is null, not zero, when nothing parseable was found.
+  private cliResultToDoc(member: string, agent: Agent, argv: string[], result: SpawnResult): { content: string; tokensUsed: number | null } {
     const tail = truncateTail(result.stderr ?? "", 2000);
     const stderrSuffix = tail ? `\nstderr (last ${tail.length} chars):\n${tail}` : "";
     if (result.timedOut) {
@@ -574,10 +618,10 @@ export class AdapterRunner implements MemberRunner {
     if (result.exitCode !== 0) {
       throw new AdapterError(`cli member '${member}' exited ${result.exitCode} (argv: ${JSON.stringify(argv)})${stderrSuffix}`);
     }
-    return result.stdout;
+    return extractCliUsageTrailer(result.stdout);
   }
 
-  private runCli(agent: Agent, req: InvokeRequest): string {
+  private runCli(agent: Agent, req: InvokeRequest): { content: string; tokensUsed: number | null } {
     const { argv, cwd, timeoutMs, stdin } = this.cliInvocation(agent, req);
     // NOTES F3: pre-flight ONLY guards the real `bunSpawn` boundary — the one that actually hands argv
     // to the OS and can fail with an opaque, contextless nonzero exit. A test-injected `CliSpawn` is a
@@ -591,7 +635,7 @@ export class AdapterRunner implements MemberRunner {
 
   // NOTES F5: the async counterpart to `runCli` — same argv/preflight/error handling, but the spawn
   // itself never blocks the caller's event loop (see asyncBunSpawn).
-  private async runCliAsync(agent: Agent, req: InvokeRequest): Promise<string> {
+  private async runCliAsync(agent: Agent, req: InvokeRequest): Promise<{ content: string; tokensUsed: number | null }> {
     const { argv, cwd, timeoutMs, stdin } = this.cliInvocation(agent, req);
     if (this.asyncSpawn === asyncBunSpawn) preflightCli(req.member, argv, cwd, req.env.PATH);
     const result = await this.asyncSpawn.run(argv, { env: req.env, cwd, timeoutMs, stdin });

@@ -3788,3 +3788,134 @@ its old "never producing spec's companion review" assertion — the literal defe
 fixtures/golden --stubs` — final artifact statuses still byte-for-byte against `expected.json`
 (unchanged: the batch engine's own `runLoop` was already correct, per the goal's own root-cause
 finding); `deps:check` — `deps ok`.
+
+## F15/F16/F17. The first live two-vendor loop — a Claude native author and a wrapped Codex CLI critic —
+## surfaced three defects in the seam between C9, C13, and C14
+
+**Found live.** A team `press` (scribe → product-brief, corvid → review, `flow: [loop: {between:
+[product-brief, review], until: review.approved, max_rounds: 3, on_exhaust: gate}, gate: human]`)
+started a real unit. Corvid (a wrapped Codex CLI, `auth: subscription`, `context_artifacts: inline`)
+ran and produced a contract-valid artifact whose entire content was a bug report: *"No product brief
+was provided to review... This is blocking... CHANGES REQUESTED."* The critic was right — and it
+found the bug by doing exactly what it was built to do. Its own artifact carried `consumes: []` and no
+`usage:` block at all. Both loop artifacts also sat open on the board simultaneously.
+
+### F15 (CRITICAL) — the loop's critic received no consumed artifact on the live path
+
+**Root cause.** C14 added `extraConsumes` so a loop's critic could consume the author's still-in-review
+artifact; `dagwalk.ts` and `AdapterRunner` (adapters.ts) already threaded it correctly end to end. The
+break was narrower and dumber: `replay.ts#productionAdapterRunner` — the ACTUAL wiring `daemon.ts` and
+`board/gateops.ts` use in production — built its returned `produce()` closure over only 4 of the 5
+parameters `AsyncMemberRunner.produce` declares, silently dropping `extraConsumes` before it ever
+reached `AdapterRunner.produceAsync`. Every unit test exercising the seam drove `AdapterRunner`
+directly or a hand-rolled `AsyncMemberRunner`, so nothing ever drove the real wrapper end to end.
+
+**The fix.** One line: `produce: (member, kind, unit, project, extraConsumes) =>
+runner.produceAsync(member, kind, unit, project, extraConsumes)`. `productionAdapterRunner` also gained
+an optional `{native, asyncNative}` override (unused by every real call site) so a test can dispatch a
+loop's critic through the ACTUAL wrapper — not a stand-in that would pass by construction — without a
+real SDK call for the loop's native author half.
+
+**Tests.** New `tests/loop-critic-context.test.ts`: a scratch `press` studio (scribe native, corvid a
+REAL, unmocked `cat` subprocess — ruling C9's own test technique) dispatched through
+`productionAdapterRunner` itself, in both `context_artifacts` modes. Asserts on what corvid actually
+received (its own stdout — ruling C12, the artifact's body verbatim): `inline` contains the author's
+artifact body word-for-word; `paths` contains its root-relative path and NOT the body; both modes
+record the author's artifact in the produced review's own `consumes:`. Confirmed against a manual
+revert of the fix (both cases fail loudly, not silently).
+
+### F16 — both loop artifacts raised their own gate, and resolving the wrong one wedged the unit
+
+**Root cause.** `board/derive.ts#openGates` lists every `in-review` artifact as an open gate with no
+loop awareness — once C14 started dispatching both loop members, both sat `in-review` at once and both
+showed up as independently-clickable gates, contradicting C14's own ruling ("the Conductor's gate comes
+at the loop's OUTCOME... never on each internal turn"). Worse, `board/gateops.ts#applyLoopCompanionApproval`
+(the C2 cascade — resolving one loop artifact also resolves its companion) was hardcoded to fire only
+when the resolved artifact was the loop's "first" (author) role — true for kestrel's own `until:
+spec.approved`, false for an author/critic loop gated on its SECOND member (`until: review.approved`,
+the live incident's exact shape). Resolving the non-cascading artifact directly left its companion
+permanently `in-review`; `until: review.approved` could then never become true because nothing ever
+touches `review` again, and nothing said so.
+
+**The ruling.** While a loop is in progress, only the artifact its `until` condition actually names may
+gate; its companion never independently gates, riding on the until-named artifact's own resolution
+regardless of which role (first/author or second/critic) is actually the gate. levare must never permit
+a definably-unsatisfiable `until` — an `until` naming a kind neither loop member can produce fails at
+`levare validate`, loudly, never discovered live.
+
+1. **`gates.ts`**: `loopUntilKind(loop)` (the kind `until` names) and `isLoopCompanionKind(team, kind,
+   capabilities)` (is `kind` the loop's OTHER member, relative to `until` — not relative to role) —
+   shared by both visibility and resolution.
+2. **`board/derive.ts#openGates`**: never lists an artifact for which `isLoopCompanionKind` is true.
+3. **`board/gateops.ts#resolveGate`**: refuses (409, naming the real gate) a direct verb on a loop's
+   companion artifact — defense in depth beyond board visibility, since nothing stops a direct API call
+   from naming an artifact the board never shows.
+4. **`applyLoopCompanionApproval`**: cascades whenever the resolved artifact is the until-named one
+   (`!isLoopCompanionKind`), not only when its role happens to be "first" — the same C2 semantics,
+   correctly generalized.
+5. **`doRequest`**: max_rounds/on_exhaust applies whenever a loop membership is found at all (every
+   membership reaching this point IS the gate, by #3's guard), not only role `"first"`. "Request
+   changes" always re-invokes the loop's AUTHOR (`between[0]`) for a new round, resolved via
+   `resolveStep` and superseded via `latestLiveArtifact` (dagwalk.ts) — even when the artifact actually
+   resolved is the critic's, since re-running the critic on an unrevised input would be meaningless.
+   The resolved gate artifact itself is deliberately left untouched (still `in-review`) rather than
+   marked "approved": marking it approved would satisfy `until: review.approved` immediately off the
+   STALE round while the new round is still unresolved — the identical wedge this ruling exists to
+   close, self-inflicted. The walk's own next tick resolves it for real: `dagwalk.ts` finds it as the
+   prior round's still-live companion the instant the new round's critic artifact is produced, and
+   supersedes it there with its own proper `supersedes:` edge — the same path every other round already
+   takes, not a second one.
+6. **`validate.ts#validateStudioBindings`**: a new check alongside `UNBINDABLE_STEP` —
+   `LOOP_UNTIL_UNREACHABLE` — a loop's `until` must resolve to one of its own two `between` members'
+   kinds; naming any other kind is a studio definition error, not a live surprise.
+
+**Tests.** `tests/loop-c14.test.ts`'s original "press" scenario — which approved the AUTHOR's brief
+directly under `until: review.approved` and asserted the (buggy) cascade — rewritten: approving the
+brief directly is now refused (409, naming the real gate); approving `review` (the actual until-named
+gate) correctly cascades to the brief. New cases: `openGates` lists ONLY the until-named artifact once
+a round completes, never both; `request` on the critic's gate re-invokes the AUTHOR, superseding its
+prior round and producing a new one, with the critic's own next-round artifact produced in lockstep on
+the following tick. New `fixtures/rejections/loop-until-unreachable` + `tests/validate.test.ts` "F16"
+block: `until` naming neither loop member fails `LOOP_UNTIL_UNREACHABLE` naming the team/loop/what
+`until` resolved to; `until` naming either the first OR the second member validates clean (the check is
+not hardcoded to "first" any more than the runtime fix is).
+
+### F17 — a subscription CLI member's usage receipt was omitted entirely, not merely underpriced
+
+**Root cause.** `AdapterRunner`'s `cli` case never populated a `receipt` at all — only `native`
+populated one from its boundary's reply — so a CLI member's receipt was always
+`normalizeReceipt(null, pricing)` (`unreported: true`), regardless of what the CLI's own stdout
+actually said. `author()`'s C13 subscription override (`usd: null`, `plan` noted) was itself gated on
+`!finalReceipt.unreported`, so it silently never fired for any CLI member — the whole class of member
+C13 was written for. Nothing parsed what a wrapped CLI reports; ruling C13's own "usd: null, plan
+noted, tokens pass through" was unreachable code for this adapter kind.
+
+**The fix.**
+1. **Parse it.** `extractCliUsageTrailer(raw)` (adapters.ts) recognizes a plain trailer line — `tokens
+   used: N`, matching Codex's own reported form verbatim — strips it from the kept content (ruling C12:
+   a usage trailer is no more part of the document than a frontmatter fence the member emitted on its
+   own initiative) and returns the parsed count. `AdapterRunner#cliReceipt` turns a non-null count into
+   a real `Receipt` via `normalizeReceipt` (the agent's own declared `model:`, since a CLI doesn't
+   report its model in the trailer); `runCli`/`runCliAsync`/`cliResultToDoc` now return `{content,
+   tokensUsed}` instead of a bare string, and both `produce`/`produceAsync`'s `cli` case feed the parsed
+   receipt through exactly like `native`'s boundary-reported one.
+2. **Never omit it, for a subscription CLI.** `author()`'s subscription override now forces
+   `unreported: false` before applying `usd: null`/`plan`, but ONLY for `req.agent.kind === "cli"` — a
+   native member's boundary is the real SDK, genuinely either reporting usage or silent in a way that
+   stays legitimate (and a pre-existing test asserts exactly that "a fully unreported receipt is left
+   alone" case, unaffected). A `kind: cli` subscription member now ALWAYS carries a `usage:` block: real
+   parsed tokens when the CLI reported any, all-null fields when it reported nothing parseable — an
+   artifact with no receipt is indistinguishable from one that cost nothing, never again.
+
+**Tests.** New "F17" describe block in `tests/adapters.test.ts` (a `cannedCliSpawn` stand-in returning
+arbitrary stdout, mirroring a real wrapped CLI's plain-text trailer rather than the fixture stub's
+canned `usage:` block): a CLI's `tokens used: N` trailer is parsed into the receipt and stripped from
+the artifact body; a subscription CLI member's receipt carries the parsed tokens, `usd: null`, and the
+plan, all visible in the authored frontmatter; a subscription CLI member reporting nothing parseable
+still carries a full `usage:` block (nulls, plan noted) rather than omitting it; a non-subscription CLI
+member reporting nothing parseable is byte-for-byte unaffected (still `unreported`, still no `usage:`
+block) — the pre-existing, legitimate case.
+
+**Verification.** `bun test` — 577 pass (up from 566 at C14), 1 pre-existing skip, 0 fail, across 48
+files (new: `tests/loop-critic-context.test.ts`); `levare replay fixtures/golden --stubs` — final
+artifact statuses still byte-for-byte against `expected.json`; `deps:check` — `deps ok`.

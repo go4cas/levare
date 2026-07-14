@@ -480,6 +480,108 @@ describe("cli adapter (against the fixture stub)", () => {
   });
 });
 
+// NOTES F17: a wrapped CLI's own reported usage — most report token counts as a plain trailer line
+// rather than structured data (the Codex CLI's own "tokens used: 2745", quoted verbatim in the live
+// finding), not the fixture stub's JSON-ish canned `usage:` block. `cannedCliSpawn` stands in for that
+// real CLI, returning arbitrary stdout the test controls directly.
+function cannedCliSpawn(stdout: string): CliSpawn {
+  return { run: (): SpawnResult => ({ stdout, exitCode: 0, timedOut: false }) };
+}
+
+describe("F17: a CLI member's own reported tokens are parsed, never discarded, and a subscription member's receipt is never simply omitted", () => {
+  function subscriptionRepo() {
+    const repo = loadRepo(ROOT);
+    repo.connectors.set("codex-subscription", {
+      name: "codex-subscription",
+      kind: "cli",
+      command: "codex",
+      env: [],
+      auth: "subscription",
+      plan: "ChatGPT Plus — flat monthly rate",
+    });
+    const finch = repo.agents.get("finch")!;
+    repo.agents.set("finch", { ...finch, connectors: ["codex-subscription"] });
+    return repo;
+  }
+
+  test("a CLI's own \"tokens used: N\" trailer is parsed into the receipt and stripped from the artifact body", () => {
+    const repo = loadRepo(ROOT); // finch grants no subscription connector here
+    const runner = new AdapterRunner(repo, {
+      pricing,
+      capabilities: [{ member: "finch", kind: "review" }],
+      native: nativeMock,
+      remote: remoteMock,
+      spawn: cannedCliSpawn("# Review\n\nLooks solid overall.\n\ntokens used: 2745\n"),
+      cliCommand: stubCliCommand,
+    });
+    const { doc, receipt } = runner.produce("finch", "review", "checkout-flow", "storefront");
+    expect(receipt.unreported).toBe(false);
+    expect(receipt.tokens_out).toBe(2745);
+    expect(doc).toContain("Looks solid overall.");
+    expect(doc).not.toContain("tokens used");
+  });
+
+  test("a subscription CLI member's receipt carries the CLI's reported tokens, usd: null, and the plan", () => {
+    const repo = subscriptionRepo();
+    const runner = new AdapterRunner(repo, {
+      pricing,
+      capabilities: [{ member: "finch", kind: "review" }],
+      native: nativeMock,
+      remote: remoteMock,
+      spawn: cannedCliSpawn("# Review\n\nCHANGES REQUESTED: no product brief was provided to review.\n\ntokens used: 2745\n"),
+      cliCommand: stubCliCommand,
+    });
+    const { doc, receipt } = runner.produce("finch", "review", "checkout-flow", "storefront");
+    expect(receipt.unreported).toBe(false);
+    expect(receipt.tokens_out).toBe(2745);
+    expect(receipt.usd).toBe(null);
+    expect(receipt.plan).toBe("ChatGPT Plus — flat monthly rate");
+    expect(doc).toContain("usage:");
+    expect(doc).toContain("tokens_out: 2745");
+    expect(doc).toContain("usd: null");
+    expect(doc).toContain("plan: ChatGPT Plus");
+    expect(doc).not.toContain("tokens used");
+  });
+
+  test("a subscription CLI member reporting nothing parseable still gets a receipt — nulls, never an omitted usage block", () => {
+    const repo = subscriptionRepo();
+    const runner = new AdapterRunner(repo, {
+      pricing,
+      capabilities: [{ member: "finch", kind: "review" }],
+      native: nativeMock,
+      remote: remoteMock,
+      spawn: cannedCliSpawn("# Review\n\nNo usage figures reported this run.\n"),
+      cliCommand: stubCliCommand,
+    });
+    const { doc, receipt } = runner.produce("finch", "review", "checkout-flow", "storefront");
+    // An artifact with no receipt at all is indistinguishable from one that cost nothing — never again.
+    expect(receipt.unreported).toBe(false);
+    expect(receipt.tokens_in).toBe(null);
+    expect(receipt.tokens_out).toBe(null);
+    expect(receipt.model).toBe(null);
+    expect(receipt.usd).toBe(null);
+    expect(receipt.plan).toBe("ChatGPT Plus — flat monthly rate");
+    expect(doc).toContain("usage:");
+    expect(doc).toContain("plan: ChatGPT Plus");
+  });
+
+  test("a non-subscription CLI member reporting nothing parseable is unaffected — unreported, no usage block, exactly as before", () => {
+    const repo = loadRepo(ROOT);
+    const runner = new AdapterRunner(repo, {
+      pricing,
+      capabilities: [{ member: "finch", kind: "review" }],
+      native: nativeMock,
+      remote: remoteMock,
+      spawn: cannedCliSpawn("# Review\n\nNo usage figures reported this run.\n"),
+      cliCommand: stubCliCommand,
+    });
+    const { doc, receipt } = runner.produce("finch", "review", "checkout-flow", "storefront");
+    expect(receipt.unreported).toBe(true);
+    expect(receipt.plan).toBeUndefined();
+    expect(doc).not.toContain("usage:");
+  });
+});
+
 describe("remote adapter (mocked MCP)", () => {
   test("routes a remote agent through the MCP boundary and normalizes the receipt", () => {
     const repo = loadRepo(ROOT);
