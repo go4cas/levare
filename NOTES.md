@@ -3399,13 +3399,51 @@ smoke check against the golden fixture confirmed the dispatching markup renders 
 
 **Finding, proven live.** Agent `scribe` declared `model: claude-sonnet-4-5`; two consecutive native
 invocations both actually ran on `claude-haiku-4-5-20251001` (visible in the artifacts' own usage
-receipts). `model:` was a field a studio author wrote and levare simply never checked against or acted
-on for every kind except the one that already happened to be correct — the native SDK call path
-(`adapters.ts#nativeWorkerRequest` → `sdk-worker.ts#buildQueryOptions`) had, since NOTES phase-7 K1,
-always passed `model: req.agent.model` straight through to the SDK's own `model?: string` option (never
-a hardcoded default), and `tests/native-sdk-boundary.test.ts` already asserted the transport receives
-the agent's own declared model. That half was correct and already covered; what was genuinely missing,
-audited fresh against this goal, were four real gaps:
+receipts).
+
+**First pass at this entry was wrong, and the record says so plainly.** The first version of this
+finding claimed "the native SDK call path... always passed `model: req.agent.model` straight through
+to the SDK's own `model?: string` option... that half was correct and already covered" — verified only
+by reading `adapters.ts#nativeWorkerRequest` and `sdk-worker.ts#buildQueryOptions` and confirming the
+field is threaded through, plus the existing mocked assertion that `calls[0].model` equals the declared
+model. That check proves the REQUEST carries the declared model; it says nothing about whether the
+RESPONSE is parsed correctly, and a fully mocked transport can never exercise that at all — the actual
+defect lived in response parsing, downstream of every test that existed at the time. Told the artifact
+on disk disproved the claim, the live SDK path was reproduced directly (bypassing every mock: a real
+`bunSdkTransport.run()` call, the real bundled `claude` binary, real credentials) — see the finding
+below. The lesson, not just the fix: "the request carries X" and "the response reports X" are different
+claims, and a claim about a live, real API path is not verified by reading source and reasoning about
+it — only by actually running it, exactly what should have happened before the first version of this
+entry was written.
+
+**The real root cause, found by live reproduction.** A single `query()` call can report USAGE ACROSS
+MULTIPLE MODELS in one result message. Reproduced directly (`bunSdkTransport.run()` with a real
+`ANTHROPIC_API_KEY`-authenticated `claude` binary, `model: "claude-sonnet-5"`): the result's
+`modelUsage` object came back as `{"claude-haiku-4-5-20251001": {...}, "claude-sonnet-5": {...}}` — an
+internal auxiliary call (observed: automatic memory recall, a Claude Code feature that reads
+`memory_paths` before answering) ran on Haiku, and the PRIMARY response — the actual assistant message,
+confirmed via its own `message.model` field in the raw stream — correctly ran on the requested
+Sonnet 5. `sdk-worker.ts`'s old receipt construction took `Object.entries(modelUsage)[0]` on the
+documented-but-false assumption "in practice always one, since every call passes exactly one explicit
+model" — plain JS object key order is INSERTION order, not significance order, and in the reproduced
+case the auxiliary call's key was inserted first. The receipt therefore named whichever model happened
+to insert first, which is exactly the "haiku" symptom: not a request-plumbing bug, not an SDK model
+override, not levare failing to pass `model:` at all — a response-parsing bug picking an arbitrary key
+out of a multi-entry object.
+
+**Fix.** `sdk-worker.ts` now tracks `respondingModel` from each streamed `assistant` message's own
+`message.model` (a field the SDK's `BetaMessage` type carries per-turn) and uses THAT — the model that
+actually produced `result.result` — as the receipt's model, falling back to `modelUsage[0]` only when no
+assistant message was ever seen at all. Token/cost accounting is unchanged (still summed across every
+entry in `modelUsage` — the member genuinely cost that, regardless of which internal call spent which
+tokens; only the reported MODEL NAME needed fixing). The receipt-building logic was factored out into an
+exported, pure `deriveReceipt(message, respondingModel, reqModel)` specifically so this could be unit
+tested with a synthetic multi-model `modelUsage` object (the exact shape observed live) rather than only
+ever re-verified by another live call — see `tests/sdk-worker-receipt.test.ts`. Re-ran the live
+reproduction after the fix, three times, against the real SDK: `receipt.model` correctly reports
+`claude-sonnet-5` every time.
+
+Four further gaps, audited fresh against this goal once the root cause above was actually understood:
 
 1. **A CLI member's declared model never reached the vendor CLI at all.** `defaultCliCommand`
    (adapters.ts) substituted `{task}`/`{feature_repo}` into the command template but had no `{model}`
@@ -3450,6 +3488,22 @@ audited fresh against this goal, were four real gaps:
    just never passed to `selectOrchestratorBoundary`). Optional throughout — every pre-F11 caller/test
    that constructs `createSdkOrchestratorBoundary()` with no `root` keeps falling back to
    `DEFAULT_MODEL` exactly as before this field existed.
+5. **No guard existed for the SDK silently running a call on a model other than the one requested.**
+   The root-cause fix above closes the specific reproduced mechanism (a hidden auxiliary call polluting
+   `modelUsage`'s key order), but the SDK's own documented behavior is that a call can succeed on a
+   substituted model with no error and no warning at all — the receipt-parsing fix removes one way that
+   can happen, not the whole class. levare's only honest defence is comparing what it ASKED FOR against
+   what its OWN receipt reports, every time, and treating a mismatch as a hard failure rather than a
+   quiet in-review artifact. `AdapterRunner#author` (adapters.ts) now checks, for every `kind: native`
+   member whose agent declares a `model:`: if the boundary's receipt is not `unreported` and its `model`
+   differs from the agent's declared one, throw an `AdapterError` naming BOTH models, before any content
+   is authored. This reuses `dagwalk.ts#produceOne`'s EXISTING member-failure handling (the same path a
+   timeout, a validation error, or any other `AdapterError` already takes) — no new artifact-blocking
+   mechanism, no new schema field: the failure becomes a `status: blocked` artifact via the same
+   `writeBlocked()` every other member failure already produces, its body naming the error verbatim
+   (both models, by construction of the thrown message). CLI/remote members are unaffected — per ruling
+   C12 their receipts are never self-reported/trusted in the first place, so there is nothing honest to
+   compare a declared model against for those kinds.
 
 **`levare init`'s scaffold declared `claude-sonnet` — not a real model ID, and it fails on every new
 studio's first native run.** This was the live symptom the goal named directly. Fixed at the source:
@@ -3476,25 +3530,53 @@ today, and there is nothing to fix there without first building a real MCP call,
 for this goal. When a real MCP boundary lands, its request shape should be audited against this same
 "declared model reaches the wire" standard `native`/`cli` now both meet.
 
-**Verification.** `bun test` — 535 pass, 1 pre-existing skip, 0 fail, across 45 files (up from 518/1/0 at
-C12/F10): `tests/adapters.test.ts` gained a `{model}` CLI-substitution describe block (present-model
-substitutes; absent-model substitutes to `""`, never a literal `{model}`) and an AdapterRunner-level
-end-to-end case (the agent's declared model reaches the native boundary's request AND the produced
-artifact's `usage:` block names that same model). `tests/native-sdk-boundary.test.ts` already covered
-the boundary-level half (unchanged, no new gap there). `tests/validate.test.ts` gained an F11 describe
-block: `UNKNOWN_MODEL` for an unknown agent model (naming agent + model + file) and for an unknown
-studio `orchestrator_model`; both validate clean on a known model; fail-open with no
-`knowledge/model-pricing.md` at all; `MODEL_PLACEHOLDER_MISSING` for a CLI agent with a model but no
-`{model}` in its command, clean when the placeholder is present, and never triggered when no model is
-declared at all. `tests/orchestrator-sdk.test.ts` gained a precedence describe block: no studio.md/no
-override → `DEFAULT_MODEL`; `studio.md` alone → the studio's declaration; `LEVARE_ORCHESTRATOR_MODEL`
-set → the override wins over the studio; an explicit `model` option wins over both; no `root` at all
-(every pre-F11 caller) → unchanged fallback behavior. `tests/init.test.ts` gained a test asserting the
-scaffold's own agents AND its `studio.md` are all in the known-model set, plus zero `UNKNOWN_MODEL`
-errors from a full `validatePath`. `tests/serve-native-e2e.test.ts` and `tests/context.test.ts`/
-`fixtures/context/lyra.txt` were updated for the golden fixture's `claude-sonnet` → `claude-sonnet-5`
-rename (frozen fixtures and hardcoded model-string assertions, not new behavior); `tests/receipts.test.ts`
-was updated for the real pricing-table model IDs. `levare replay fixtures/golden --stubs` — final
-artifact statuses byte-for-byte against `expected.json`; `deps:check` — `deps ok`; a manual `levare init`
-smoke test in a scratch directory confirmed the scaffolded studio validates clean and its `studio.md`
-carries a real, known `orchestrator_model`.
+**Live reproduction commands, kept for the next time this needs re-verifying against the real SDK**
+(none of these touch the repo; they were run against a scratch `/tmp` script, not committed):
+```
+echo '{"prompt":"say ok, nothing else","model":"claude-sonnet-5"}' | bun src/sdk-worker.ts
+# before the fix: {"receipt":{"model":"claude-haiku-4-5-20251001",...}}  (WRONG)
+# after the fix:  {"receipt":{"model":"claude-sonnet-5",...}}            (correct)
+```
+Reproducing this requires a real `ANTHROPIC_API_KEY` or an authenticated `~/.claude` profile — CI/`bun
+test` never does this; the regression coverage below (`tests/sdk-worker-receipt.test.ts`) exercises the
+same code path with a synthetic multi-model `modelUsage` object instead, so the fix stays verified
+without needing live credentials on every run.
+
+**Verification.** `bun test` — 544 pass, 1 pre-existing skip, 0 fail, across 46 files (up from 518/1/0 at
+C12/F10). New: `tests/sdk-worker-receipt.test.ts` — the actual regression test for the real bug, feeding
+`deriveReceipt` a synthetic `modelUsage` with the auxiliary model's key inserted BEFORE the responding
+model's key (the exact shape reproduced live) and asserting the responding model wins, not the first
+key; a single-model case is unaffected; a `respondingModel`-absent fallback still resolves sanely.
+`tests/adapters.test.ts` gained a `{model}` CLI-substitution describe block (present-model substitutes;
+absent-model substitutes to `""`, never a literal `{model}`); an AdapterRunner-level end-to-end case
+proving the agent's declared model reaches the native boundary's request AND the produced artifact's
+`usage:` block names that same model; and a "requested vs. actual" guard describe block —
+`produce()`/`produceAsync()` both throw `AdapterError` naming both models on a mismatch, an unreported
+receipt is never treated as a mismatch (nothing to compare), and a matching model never triggers it.
+`tests/daemon.test.ts` gained an end-to-end case (a REAL `AdapterRunner` — not a raw throw — backed by a
+native boundary that reports a different model than declared): `resolveGate(..., "start")` fails with
+both models named in the error, the artifact written to disk is `status: blocked` and its body names
+both models, and a subsequent daemon tick leaves it untouched (never silently retried). `tests/
+native-sdk-boundary.test.ts` continues to cover the request-plumbing half (unchanged — that half was
+never the actual defect). `tests/validate.test.ts` gained an F11 describe block: `UNKNOWN_MODEL` for an
+unknown agent model (naming agent + model + file) and for an unknown studio `orchestrator_model`; both
+validate clean on a known model; fail-open with no `knowledge/model-pricing.md` at all;
+`MODEL_PLACEHOLDER_MISSING` for a CLI agent with a model but no `{model}` in its command, clean when the
+placeholder is present, and never triggered when no model is declared at all. `tests/
+orchestrator-sdk.test.ts` gained a precedence describe block: no studio.md/no override → `DEFAULT_MODEL`;
+`studio.md` alone → the studio's declaration; `LEVARE_ORCHESTRATOR_MODEL` set → the override wins over
+the studio; an explicit `model` option wins over both; no `root` at all (every pre-F11 caller) →
+unchanged fallback behavior. `tests/init.test.ts` gained a test asserting the scaffold's own agents AND
+its `studio.md` are all in the known-model set, plus zero `UNKNOWN_MODEL` errors from a full
+`validatePath`. `fixtures/stubs/member-stub.ts`'s CANNED receipts (`wren:product-brief`, `lyra:design`,
+`lyra:spec`) were updated from the old fictitious `claude-sonnet` to `claude-sonnet-5` — matching the
+golden fixture's own agents, and specifically because the new requested-vs-actual guard (item 5 above)
+would otherwise legitimately fire against the stub's own now-stale canned model, breaking the many
+existing tests (`daemon.test.ts`, `gates.test.ts`, `runner.test.ts`, `replay.test.ts`,
+`gateops-phase5.test.ts`) that drive production through `stubAdapterRunner`. `tests/
+serve-native-e2e.test.ts` and `tests/context.test.ts`/`fixtures/context/lyra.txt` were updated for the
+golden fixture's `claude-sonnet` → `claude-sonnet-5` rename (frozen fixtures and hardcoded model-string
+assertions); `tests/receipts.test.ts` was updated for the real pricing-table model IDs. `levare replay
+fixtures/golden --stubs` — final artifact statuses byte-for-byte against `expected.json`; `deps:check` —
+`deps ok`; a manual `levare init` smoke test in a scratch directory confirmed the scaffolded studio
+validates clean and its `studio.md` carries a real, known `orchestrator_model`.
