@@ -3580,3 +3580,98 @@ assertions); `tests/receipts.test.ts` was updated for the real pricing-table mod
 fixtures/golden --stubs` — final artifact statuses byte-for-byte against `expected.json`; `deps:check` —
 `deps ok`; a manual `levare init` smoke test in a scratch directory confirmed the scaffolded studio
 validates clean and its `studio.md` carries a real, known `orchestrator_model`.
+
+## C13. Connectors declare how they authenticate — `env` was the only mode, and a subscription CLI defeated the scoping model through a hole, not a grant
+
+**Finding.** Wrapping a real foreign CLI (OpenAI Codex) as a team member surfaced a gap invariant 11
+never accounted for. `codex` doesn't read a credential from an env var — `codex login` writes a session
+to `~/.codex`, and every subsequent invocation authenticates from that file. levare's connector model
+(pre-C13) assumed every credential is an env var: a connector names the var *names* it needs, and the
+Runner's allowlist (`env.ts#buildMemberEnv`) injects exactly those into a granted member's process,
+nothing else. A subscription-authenticated CLI has nothing to declare there — and worse, it works
+anyway, because `ENV_BASELINE` grants every member `HOME` (so a wrapped CLI can find its own config/
+cache, per D5), and `codex` finds its session file at `$HOME/.codex` regardless of whether any
+connector was ever granted. The credential reaches the member through a hole in the scoping model, not
+through a grant levare made a decision about. That makes the security claim in invariant 11 (§2) —
+"a member sees exactly the credentials its connectors grant" — **false** for this whole class of tool:
+every member able to spawn `codex` can use the login, granted or not, and `levare doctor`/the registry
+gave no indication anything was ungoverned.
+
+**The ruling.** Support both modes; declare which one is in use; be honest, everywhere, about what is
+actually enforced.
+
+1. **Connectors declare `auth: env | subscription`** (`types.ts#Connector.auth`, `ConnectorAuth`),
+   defaulting to `env` when absent — every connector defined before this ruling is unchanged.
+   - `auth: env` requires a non-empty `env:` — unchanged behaviour, and still the only mode where
+     levare's grant IS the enforcement.
+   - `auth: subscription` requires `env:` be empty or absent — there is nothing for levare to inject
+     or scope. An optional `plan:` names the subscription for cost accounting (item 2).
+   - Both misdeclarations (a subscription connector naming env vars; an env connector naming none)
+     are **definition errors**, caught by `validate.ts#validateConnectorAuth` (`EMPTY_ENV`,
+     `SUBSCRIPTION_WITH_ENV`), wired into `validateSingleFile` alongside the existing agent-variant
+     check — the same "name what's wrong, don't discover it live" posture as C8/F1/F11.
+2. **Cost.** A subscription-authenticated member's usage receipt records **`usd: null`**, never `0` —
+   pricing a flat-rate plan per token would be a cost-accounting fiction, and receipts.ts's own rule
+   (silence is never dressed up as a free run) extends naturally to "flat-rate is never dressed up as
+   metered." `plan:` is named in the receipt's place instead (`Receipt.plan`). Token counts, where the
+   boundary reports them, still pass through unchanged — only `usd` is overridden.
+   `AdapterRunner#author` (adapters.ts) does the override, via the new `env.ts#subscriptionConnector`
+   lookup, right after `normalizeReceipt` and before the F11 model-mismatch guard (which is unaffected
+   — it compares `model`, not `usd`). `validate.ts#validateKnownModels`'s `UNKNOWN_MODEL` check is
+   exempted for any agent granted (directly or via its team) an `auth: subscription` connector
+   (`subscriptionAuthAgents`, hand-parsed off disk like every other cross-entity check in that file,
+   not via `repo.ts#loadRepo`) — a subscription CLI's model is unpriceable BY DEFINITION, not by an
+   accounting gap, so it must never be flagged as if it were one. **Pre-existing PRD/type-comment
+   language said subscription members "price at 0" — that was wrong on the same grounds `usd: null`
+   exists for `unpriceable` models generally (a `$0` reads as "ran for free"); corrected everywhere
+   found (`types.ts#Receipt.plan`'s comment, PRD §10).**
+3. **Visibility.** `levare doctor` (`doctor.ts`) reports every connector's `auth` mode
+   (`ConnectorHealth.auth`) and, for `auth: subscription`, a `warning` field carrying the exact
+   sentence: *"levare cannot scope this credential — any member that can spawn `<command>` can use
+   this login. The grant is documentation, not enforcement."* `formatDoctor` prints an `auth: <mode>`
+   line per connector (with `plan` inline when set) and a `⚠` line for the warning — never silent. The
+   registry's connector card (`board/render.ts`) shows the same `auth` row, plus the same warning text
+   inline for a subscription connector — the board must never let a subscription connector's card read
+   as "levare has this scoped" when it doesn't.
+4. **Docs.** `docs/levare-prd.md`: invariant 11 (§2) restated precisely — *levare scopes ENVIRONMENT
+   credentials; a CLI that authenticates itself from disk is outside that boundary* — with the same
+   "prefer `auth: env`, grant `auth: subscription` only to trusted members" guidance the ruling asked
+   for. §5's Connectors entity and §6's Guardrails/Doctor paragraphs updated to match. §10 (cost
+   tracking) corrected from "price at 0" to `usd: null`.
+
+**Stated plainly, because it is the whole point of this ruling: with `auth: subscription`, the grant
+is documentation of intent, not enforcement.** levare cannot scope a credential a CLI reads off its own
+disk — nothing short of running the member in a sandboxed environment with its own isolated `$HOME` (or
+a tool-specific override — Codex reads `CODEX_HOME`) would change that, and building that per-member
+isolation is deferred to the capability-layer work (the same future phase that would let levare give
+each member its own filesystem view, not just its own env). This ruling's job was narrower and more
+urgent: stop the false claim, name the real boundary, and make every surface that reports on a
+connector (`doctor`, the registry) say so.
+
+**Verification.** `bun test` — 562 pass, 1 pre-existing skip, 0 fail, across 46 files (up from 544/1/0
+at F11). New coverage: `tests/validate.test.ts` gained a "C13: connector auth mode" describe block —
+a subscription connector with `env: []` (and with `env:` absent entirely) validates clean;
+`auth: subscription` with a non-empty `env:` fails `SUBSCRIPTION_WITH_ENV`; the default/explicit
+`auth: env` with an empty `env:` fails `EMPTY_ENV`; an `env` connector naming a var still validates
+clean (unchanged); an unrecognised `auth:` value fails the ordinary `BAD_ENUM` check, not silently
+accepted. The existing F11 describe block gained two cases: an agent granted an `auth: subscription`
+connector is exempt from `UNKNOWN_MODEL` on its own declared, unpriced model; an agent granted nothing
+is still subject to the check (the exemption follows the grant, not the mere existence of a
+subscription connector elsewhere in the studio). `tests/adapters.test.ts` gained a "C13" describe
+block built off the golden repo (mutating its plain-data `Connector`/`Agent` maps in-memory, same
+technique other adapter tests already use for capability overrides): `usd` is forced `null` and `plan`
+is noted even when the boundary reports a priceable model and its own non-null `usd`, with token
+counts passing through unchanged and both facts visible in the authored artifact's frontmatter; a
+subscription member's genuinely-unpriced model is not treated as a pricing failure; a fully unreported
+receipt is left alone (no `plan` noted on pure silence — nothing to attribute a plan to); a member
+granted no subscription connector is priced exactly as before. `tests/doctor.test.ts` gained a "reports
+auth mode, and warns plainly for auth: subscription" describe block: every connector's health record
+carries its `auth` mode; a subscription connector carries the exact warning sentence naming its
+command, `env`/other connectors carry none; a subscription connector with nothing to check env-wise is
+trivially `ok`; `formatDoctor` prints both the `auth:`/plan line and the `⚠` warning line for a
+subscription connector, and a plain `auth: env` line with no warning for the unchanged connectors.
+`fixtures/doctor/expected.txt` (the byte-for-byte frozen fixture) updated for the new `auth: env` line
+on both existing golden connectors — neither is `auth: subscription`, so no warning line appears there.
+`levare replay fixtures/golden --stubs` — final artifact statuses still byte-for-byte against
+`expected.json` (the golden fixture's two connectors and finch's Codex wrapper are untouched by this
+ruling — finch still grants no connector, unreported receipt unchanged); `deps:check` — `deps ok`.
