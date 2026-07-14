@@ -10,6 +10,8 @@ import { loadRepo, repoCapabilities } from "../src/repo.ts";
 import { resolveStep } from "../src/gates.ts";
 import { advanceUnit } from "../src/dagwalk.ts";
 import { stubAdapterRunner } from "../src/replay.ts";
+import { loadPricing } from "../src/pricing.ts";
+import { parseFrontmatter } from "../src/yaml.ts";
 
 // Phase 6 deliverable (a): `levare init` scaffolds an empty directory into a working studio — the
 // skeleton, the five type templates, one example team with its agents, a sample skill, a
@@ -41,6 +43,7 @@ describe("scaffoldStudio", () => {
       "knowledge",
       "projects",
       "skills",
+      "studio.md",
       "teams",
       "types",
       "work",
@@ -81,6 +84,29 @@ describe("scaffoldStudio", () => {
     const result = validatePath(root);
     expect(result.errors).toEqual([]);
     expect(result.ok).toBe(true);
+  });
+
+  // NOTES F11: `levare init` used to scaffold `model: claude-sonnet`, which is not a real model ID and
+  // fails on a new studio's first native run. This asserts the scaffold's own agents AND its
+  // studio-level orchestrator declaration name real, current, PRICED model IDs — the same known-model
+  // set `validatePath`'s UNKNOWN_MODEL check enforces, read straight from the scaffold's own
+  // knowledge/model-pricing.md rather than duplicated here.
+  test("scaffolded agents and the studio's orchestrator_model are all in the known-model set", () => {
+    const root = tmpRoot();
+    scaffoldStudio(root);
+    const pricing = loadPricing(root);
+    expect(pricing.size).toBeGreaterThan(0);
+    for (const agentFile of ["agents/wren.md", "agents/lyra.md"]) {
+      const { data } = parseFrontmatter(readFileSync(join(root, agentFile), "utf8"));
+      expect(typeof data.model).toBe("string");
+      expect(pricing.has(data.model as string)).toBe(true);
+    }
+    const { data: studio } = parseFrontmatter(readFileSync(join(root, "studio.md"), "utf8"));
+    expect(typeof studio.orchestrator_model).toBe("string");
+    expect(pricing.has(studio.orchestrator_model as string)).toBe(true);
+    // The whole-studio validator agrees: zero UNKNOWN_MODEL errors.
+    const result = validatePath(root);
+    expect(result.errors.filter((e) => e.code === "UNKNOWN_MODEL")).toEqual([]);
   });
 
   test("never overwrites: re-running init after an edit leaves the edited file untouched", () => {

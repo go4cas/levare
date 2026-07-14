@@ -1,7 +1,7 @@
 context · kestrel/lyra · storefront/checkout-flow · step spec → spec
 recipe: agent · skills · knowledge · team charter+learnings · project house rules · task · consumed paths
 
-── 1. agent · lyra (native, claude-sonnet) ──
+── 1. agent · lyra (native, claude-sonnet-5) ──
 You are Lyra, a flow designer and spec author. Given a product brief, design the user
 flow and draft an implementation spec precise enough for a build team to execute
 without further questions. If a decision is genuinely ambiguous, exit blocked with the

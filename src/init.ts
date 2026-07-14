@@ -144,7 +144,7 @@ const AGENT_WREN = `---
 name: wren
 kind: native
 produces: [product-brief]
-model: claude-sonnet
+model: claude-sonnet-5
 skills: [product-brief]
 tools: [read, write]
 knowledge: [house-style]
@@ -161,7 +161,7 @@ const AGENT_LYRA = `---
 name: lyra
 kind: native
 produces: [design, spec]
-model: claude-sonnet
+model: claude-sonnet-5
 skills: [flow-design, spec-writing]
 tools: [read, write]
 knowledge: [house-style]
@@ -368,10 +368,34 @@ tags: [cost, reference]
 USD-per-million-token estimates used to price usage receipts (§10). Subscription-plan
 members price at 0 with the plan noted; unpriceable receipts record \`usd: null\`.
 
-| model          | tokens_in (/M) | tokens_out (/M) |
-| -------------- | -------------- | --------------- |
-| claude-sonnet  | 3.00           | 15.00           |
-| claude-opus    | 15.00          | 75.00           |
+This table is also the KNOWN-MODEL set (NOTES F11): \`levare validate\` rejects any agent or
+studio declaration naming a model not listed here (\`UNKNOWN_MODEL\`) — an unpriceable model
+means silently wrong cost accounting, so a model that cannot be priced cannot be declared.
+
+| model             | tokens_in (/M) | tokens_out (/M) |
+| ----------------- | --------------- | --------------- |
+| claude-opus-4-8   | 5.00            | 25.00           |
+| claude-sonnet-5   | 3.00            | 15.00           |
+| claude-haiku-4-5  | 1.00            | 5.00            |
+| claude-sonnet-4-5 | 3.00            | 15.00           |
+| claude-opus-4-1   | 15.00           | 75.00           |
+`;
+
+// The studio-level settings file (NOTES F11): a root singleton, distinct from \`projects/studio.md\`
+// (a Project pointer). \`orchestrator_model\` is the registry field the Orchestrator's model resolves
+// from — \`LEVARE_ORCHESTRATOR_MODEL\` still overrides it at runtime, but this file is the source of
+// truth, validated against \`knowledge/model-pricing.md\`'s known-model set exactly like an agent's own
+// \`model:\` field. Optional: an absent file (or absent field) falls back to the built-in cheap default.
+const STUDIO_SETTINGS = `---
+orchestrator_model: claude-sonnet-5
+---
+
+# Studio settings
+
+Declarations that apply to the whole studio, not any one project. \`orchestrator_model\`
+names the model the Orchestrator (§7) uses for chat, intent classification, and
+briefings — edit it here rather than exporting \`LEVARE_ORCHESTRATOR_MODEL\`, which stays
+available as a runtime override but is no longer the source of truth.
 `;
 
 const PROJECT_STUDIO = `---
@@ -397,6 +421,7 @@ node_modules/
 
 const FILES: Template[] = [
   { path: "README.md", content: README },
+  { path: "studio.md", content: STUDIO_SETTINGS },
   { path: ".gitignore", content: GITIGNORE },
   { path: ".devcontainer/devcontainer.json", content: DEVCONTAINER },
   { path: "teams/kestrel.md", content: TEAM_KESTREL },

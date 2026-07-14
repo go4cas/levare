@@ -2,7 +2,7 @@
 name: lyra
 kind: native
 produces: [design, spec]
-model: claude-sonnet
+model: claude-sonnet-5
 skills: [flow-design, spec-writing]
 tools: [read, write]
 knowledge: [house-style]

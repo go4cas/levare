@@ -10,14 +10,14 @@ describe("pricing table (knowledge/model-pricing.md)", () => {
   const pricing = loadPricing("fixtures/golden");
 
   test("parses the model rows and skips header/separator", () => {
-    expect(pricing.get("claude-sonnet")).toEqual({ in_per_m: 3.0, out_per_m: 15.0 });
-    expect(pricing.get("claude-opus")).toEqual({ in_per_m: 15.0, out_per_m: 75.0 });
+    expect(pricing.get("claude-sonnet-5")).toEqual({ in_per_m: 3.0, out_per_m: 15.0 });
+    expect(pricing.get("claude-opus-4-1")).toEqual({ in_per_m: 15.0, out_per_m: 75.0 });
     expect(pricing.has("model")).toBe(false); // header row is not a rate
   });
 
   test("priceUsd estimates from reported tokens, rounded to cents", () => {
     // 8200/M * 3.00 + 2100/M * 15.00 = 0.0246 + 0.0315 = 0.0561 → 0.06
-    expect(priceUsd("claude-sonnet", 8200, 2100, pricing)).toBe(0.06);
+    expect(priceUsd("claude-sonnet-5", 8200, 2100, pricing)).toBe(0.06);
   });
 
   test("an unknown model is unpriceable → null, never a guess", () => {
@@ -26,7 +26,7 @@ describe("pricing table (knowledge/model-pricing.md)", () => {
   });
 
   test("no reported tokens → null", () => {
-    expect(priceUsd("claude-sonnet", null, null, pricing)).toBe(null);
+    expect(priceUsd("claude-sonnet-5", null, null, pricing)).toBe(null);
   });
 
   test("parsePricing tolerates extra whitespace and pipe framing", () => {
@@ -39,7 +39,7 @@ describe("normalizeReceipt (§10)", () => {
   const pricing = loadPricing("fixtures/golden");
 
   test("a reported usage block is normalized and USD is derived from the table", () => {
-    const usage: Usage = { model: "claude-sonnet", tokens_in: 8200, tokens_out: 2100, usd: 999, wall_clock_s: 95 };
+    const usage: Usage = { model: "claude-sonnet-5", tokens_in: 8200, tokens_out: 2100, usd: 999, wall_clock_s: 95 };
     const r = normalizeReceipt(usage, pricing);
     expect(r.unreported).toBe(false);
     expect(r.wall_clock_s).toBe(95);
@@ -66,8 +66,8 @@ describe("normalizeReceipt (§10)", () => {
 
   test("formatReceipt renders unreported plainly and priced figures quietly", () => {
     expect(formatReceipt(normalizeReceipt(null, pricing))).toBe("usage: unreported");
-    const priced = formatReceipt(normalizeReceipt({ model: "claude-sonnet", tokens_in: 8200, tokens_out: 2100, usd: null, wall_clock_s: 95 }, pricing));
+    const priced = formatReceipt(normalizeReceipt({ model: "claude-sonnet-5", tokens_in: 8200, tokens_out: 2100, usd: null, wall_clock_s: 95 }, pricing));
     expect(priced).toContain("$0.06");
-    expect(priced).toContain("claude-sonnet");
+    expect(priced).toContain("claude-sonnet-5");
   });
 });
