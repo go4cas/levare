@@ -305,7 +305,10 @@ export const ROUTES: RouteDef[] = [
       // NOTES C11: when no boundary is selectable (no credential, or the SDK's local preconditions
       // fail), this is NOT routed through a deterministic stand-in — that boundary no longer exists.
       // The route reports the honest disabled state and returns, never calling `handle()` at all.
-      const boundary = ctx.orchestratorBoundary ?? selectOrchestratorBoundary(process.env, ctx.orchestratorSelectOpts);
+      // NOTES F11: `root` lets the boundary resolve `studio.md#orchestrator_model` — the studio-level
+      // declaration that is now the source of truth for the Orchestrator's model (LEVARE_ORCHESTRATOR_MODEL
+      // remains a runtime override, checked first inside resolveOrchestratorModel).
+      const boundary = ctx.orchestratorBoundary ?? selectOrchestratorBoundary(process.env, { ...ctx.orchestratorSelectOpts, root: ctx.root });
       if (!boundary) {
         const status = resolveOrchestratorStatus(process.env, ctx.orchestratorSelectOpts?.precondition);
         return json({ ok: false, disabled: true, reason: status.reason, envVar: status.envVar }, 503);

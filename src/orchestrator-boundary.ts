@@ -20,7 +20,7 @@ import { readFileSync } from "node:fs";
 import type { Intent, OrchestratorBoundary } from "./orchestrator.ts";
 import type { Verb } from "./runner.ts";
 import type { Receipt } from "./types.ts";
-import { loadRepo } from "./repo.ts";
+import { loadRepo, loadStudioSettings } from "./repo.ts";
 import { buildStudioProjection } from "./orchestrator-projection.ts";
 import {
   asyncSdkTransport,
@@ -50,13 +50,23 @@ function logReceipt(call: "interpret" | "narrate" | "converse", receipt: Receipt
 
 // A live host spent $0.055 on a two-word "stats" reply — Opus, on every call, including trivial
 // intent classification, is dramatically more than that job needs (NOTES phase-7 K16). Default to a
-// much cheaper, faster model; `LEVARE_ORCHESTRATOR_MODEL` overrides it as an interim, environment-
-// based "studio-level setting" (a real registry field is the correct long-term home — see NOTES K16
-// for why that's deliberately out of scope for this fix-up cycle).
+// much cheaper, faster model when nothing else declares one.
 const DEFAULT_MODEL = "claude-sonnet-5";
 
-function resolveOrchestratorModel(env: Record<string, string | undefined>): string {
-  return env.LEVARE_ORCHESTRATOR_MODEL || DEFAULT_MODEL;
+// NOTES F11: the studio's own `studio.md#orchestrator_model` (repo.ts#loadStudioSettings) is the
+// SOURCE OF TRUTH — a registry field, re-read from disk like every other declaration (invariant 2),
+// closing the K16 deferral that left this as an env-var-only interim mechanism. `LEVARE_ORCHESTRATOR_MODEL`
+// remains a runtime OVERRIDE (e.g. a Conductor testing a different model without editing the studio),
+// checked first for exactly that reason; `DEFAULT_MODEL` is the fallback when neither declares one.
+// `root` is optional so a caller with no studio context yet (a bare `createSdkOrchestratorBoundary()`,
+// as every pre-F11 test already constructs) keeps working unchanged.
+function resolveOrchestratorModel(env: Record<string, string | undefined>, root?: string): string {
+  if (env.LEVARE_ORCHESTRATOR_MODEL) return env.LEVARE_ORCHESTRATOR_MODEL;
+  if (root) {
+    const declared = loadStudioSettings(root).orchestratorModel;
+    if (declared) return declared;
+  }
+  return DEFAULT_MODEL;
 }
 
 /**
@@ -179,6 +189,11 @@ export interface SdkOrchestratorBoundaryOptions {
   transport?: AsyncSdkTransport;
   model?: string;
   systemPromptPath?: string;
+  /** The served studio's root (NOTES F11) — read once at construction time to resolve
+   * `studio.md#orchestrator_model` when `model` isn't given explicitly and no
+   * `LEVARE_ORCHESTRATOR_MODEL` override is set. Optional: omitted in tests/callers with no studio
+   * context, which then fall back to `DEFAULT_MODEL` exactly as before this field existed. */
+  root?: string;
   /** Environment the transport's spawned worker draws from (default process.env). Never logged. */
   env?: Record<string, string | undefined>;
   timeoutMs?: number;
@@ -200,7 +215,7 @@ export function createSdkOrchestratorBoundary(opts: SdkOrchestratorBoundaryOptio
   const transport = opts.transport ?? asyncSdkTransport;
   const systemPrompt = loadOrchestratorPromptSource(opts.systemPromptPath);
   const env = opts.env ?? process.env;
-  const model = opts.model ?? resolveOrchestratorModel(env);
+  const model = opts.model ?? resolveOrchestratorModel(env, opts.root);
   // Well under a minute (NOTES phase-7 K15) — an Orchestrator chat reply is a conversational round
   // trip, not a long-running member task; a live successful call took ~9s. Any caller's own outer
   // timeout must stay comfortably LONGER than this, never shorter — the reverse is what let a hung

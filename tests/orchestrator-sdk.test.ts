@@ -94,6 +94,72 @@ describe("the Orchestrator's system prompt is loaded from disk verbatim", () => 
 });
 
 // ---------------------------------------------------------------------------
+// NOTES F11: the Orchestrator's model is a studio-level declaration (`studio.md#orchestrator_model`),
+// not an environment variable — `LEVARE_ORCHESTRATOR_MODEL` remains a runtime OVERRIDE, checked first,
+// but the studio's own file is the source of truth when no override is set.
+// ---------------------------------------------------------------------------
+
+describe("the Orchestrator's model resolves from studio.md, with LEVARE_ORCHESTRATOR_MODEL as an override (NOTES F11)", () => {
+  test("with no studio.md and no env override, the built-in cheap default is used", async () => {
+    const root = seedScratchRepo(); // fixtures/golden carries no studio.md
+    try {
+      const { transport, calls } = fakeTransport(() => ({ ok: true, result: "narrated." }));
+      const boundary = createSdkOrchestratorBoundary({ transport, root, env: {} });
+      await boundary.narrate("hi");
+      expect(calls[0].model).toBe("claude-sonnet-5"); // DEFAULT_MODEL
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("studio.md#orchestrator_model is the source of truth when no env override is set", async () => {
+    const root = seedScratchRepo();
+    writeFileSync(join(root, "studio.md"), "---\norchestrator_model: claude-opus-4-8\n---\n\n# Studio\n");
+    try {
+      const { transport, calls } = fakeTransport(() => ({ ok: true, result: "narrated." }));
+      const boundary = createSdkOrchestratorBoundary({ transport, root, env: {} });
+      await boundary.narrate("hi");
+      expect(calls[0].model).toBe("claude-opus-4-8");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("LEVARE_ORCHESTRATOR_MODEL overrides the studio's own declaration", async () => {
+    const root = seedScratchRepo();
+    writeFileSync(join(root, "studio.md"), "---\norchestrator_model: claude-opus-4-8\n---\n\n# Studio\n");
+    try {
+      const { transport, calls } = fakeTransport(() => ({ ok: true, result: "narrated." }));
+      const boundary = createSdkOrchestratorBoundary({ transport, root, env: { LEVARE_ORCHESTRATOR_MODEL: "claude-haiku-4-5" } });
+      await boundary.narrate("hi");
+      expect(calls[0].model).toBe("claude-haiku-4-5");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("an explicit `model` option still wins over both studio.md and the env override", async () => {
+    const root = seedScratchRepo();
+    writeFileSync(join(root, "studio.md"), "---\norchestrator_model: claude-opus-4-8\n---\n\n# Studio\n");
+    try {
+      const { transport, calls } = fakeTransport(() => ({ ok: true, result: "narrated." }));
+      const boundary = createSdkOrchestratorBoundary({ transport, root, model: "claude-sonnet-4-5", env: { LEVARE_ORCHESTRATOR_MODEL: "claude-haiku-4-5" } });
+      await boundary.narrate("hi");
+      expect(calls[0].model).toBe("claude-sonnet-4-5");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("no `root` given at all (pre-F11 callers) falls back to the built-in default, unchanged", async () => {
+    const { transport, calls } = fakeTransport(() => ({ ok: true, result: "narrated." }));
+    const boundary = createSdkOrchestratorBoundary({ transport, env: {} });
+    await boundary.narrate("hi");
+    expect(calls[0].model).toBe("claude-sonnet-5");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // interpret(): structured-output JSON in, a coerced Intent out
 // ---------------------------------------------------------------------------
 
