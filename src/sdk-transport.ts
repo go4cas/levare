@@ -93,8 +93,9 @@ export const SDK_WORKER_PATH = Bun.fileURLToPath(new URL("./sdk-worker.ts", impo
 /**
  * Whether the environment carries credentials the SDK can authenticate with — presence only, the
  * value itself is never read into a log, artifact, or commit (invariant 11), mirroring doctor.ts's
- * `EnvProbe` posture exactly. This is the one check that selects the real boundary vs. the
- * deterministic offline fallback.
+ * `EnvProbe` posture exactly. One of the two local preconditions `checkSdkPreconditions` checks before
+ * `selectOrchestratorBoundary` will return a real boundary at all (NOTES C11: the other outcome is
+ * `null` — unavailable — never a stand-in implementation).
  */
 export function hasAnthropicCredentials(env: Record<string, string | undefined> = process.env): boolean {
   return typeof env.ANTHROPIC_API_KEY === "string" && env.ANTHROPIC_API_KEY.length > 0;
@@ -119,12 +120,12 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 // A missing native CLI binary is knowable in milliseconds — the SDK's own resolution of it
 // (extracted directly from the shipped sdk.mjs, not guessed) is a synchronous `require.resolve` loop
 // over a handful of platform-specific package names, with no network or subprocess involved. Probing
-// this cheaply, ONCE per cache window, lets `selectOrchestratorBoundary` skip straight to the
-// deterministic offline boundary for a genuinely broken install — never spawning the worker at all —
-// instead of discovering the same fact only after a slow, per-request spawn-and-fail. A credential or
-// network problem (something this local check cannot know) still surfaces the slow way, per request,
-// exactly as it already did (K11) — this optimization only ever short-circuits a LOCAL, static
-// precondition, never second-guesses a live call that might simply be slow.
+// this cheaply, ONCE per cache window, lets `selectOrchestratorBoundary` report "unavailable" for a
+// genuinely broken install — never spawning the worker at all — instead of discovering the same fact
+// only after a slow, per-request spawn-and-fail. A credential or network problem (something this local
+// check cannot know) still surfaces the slow way, per request, exactly as it already did (K11) — this
+// optimization only ever short-circuits a LOCAL, static precondition, never second-guesses a live call
+// that might simply be slow.
 
 const SDK_PACKAGE_NAME = "@anthropic-ai/claude-agent-sdk";
 
@@ -217,7 +218,7 @@ export function checkSdkPreconditionsCached(
   if (preconditionCache && preconditionCache.expiresAt > now) return preconditionCache.check;
   const check = checkSdkPreconditions(env, opts);
   if (!check.viable && lastLoggedViable !== false) {
-    console.error(`levare: Orchestrator SDK unavailable (${check.reason}) — using the deterministic offline boundary until this resolves.`);
+    console.error(`levare: Orchestrator unavailable (${check.reason}) — the panel will show disabled until this resolves.`);
   }
   lastLoggedViable = check.viable;
   preconditionCache = { check, expiresAt: now + PRECONDITION_CACHE_TTL_MS };

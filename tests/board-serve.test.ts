@@ -257,7 +257,10 @@ describe("levare serve — POST /registry validate → write → commit", () => 
 });
 
 describe("levare serve — POST /orchestrator/message", () => {
-  test("acknowledges without mutating repo state", async () => {
+  // NOTES C11: with no ANTHROPIC_API_KEY (the case for this whole test suite — see the top-of-file
+  // hermetic env), there is no deterministic stand-in boundary to answer in the Orchestrator's voice
+  // any more. The route reports the honest disabled state and touches nothing.
+  test("with no credential, the route reports a disabled state — never a canned reply — and mutates nothing", async () => {
     const root = seedScratchRepo();
     const board = createBoard(root);
     try {
@@ -269,9 +272,13 @@ describe("levare serve — POST /orchestrator/message", () => {
           body: JSON.stringify({ text: "what needs me?" }),
         }),
       );
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(503);
       const body = await res.json();
-      expect(typeof body.reply).toBe("string");
+      expect(body.ok).toBe(false);
+      expect(body.disabled).toBe(true);
+      expect(body.reply).toBeUndefined(); // never a fabricated reply
+      expect(typeof body.reason).toBe("string");
+      expect(body.envVar).toBe("ANTHROPIC_API_KEY");
       const after = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
       expect(after).toBe(before);
     } finally {
@@ -281,12 +288,11 @@ describe("levare serve — POST /orchestrator/message", () => {
   });
 
   // The board is a projection of files; the Orchestrator's SDK voice is an enhancement on top of it
-  // (§7), never a dependency the write surface can fail on. A live run showed this route returning
-  // 500 the moment the SDK boundary was unavailable (missing native binary, no credential, timeout,
-  // transport error) — this is the regression test: the route must degrade to the offline
-  // deterministic boundary and answer 200 with a visible, honest note, never a hard failure and never
-  // a silent downgrade with no explanation.
-  test("a broken SDK boundary degrades to 200 offline-mode, never a 500 — and the board still renders", async () => {
+  // (§7), never a dependency the write surface can fail on. NOTES C11: a genuine transport failure
+  // AFTER the boundary was selected (credential + binary both resolved, but the live call itself
+  // failed) is a real error, surfaced as one — never dressed up as an Orchestrator reply, and never
+  // silently downgraded to a deterministic canned voice (that voice no longer exists at all).
+  test("a broken SDK boundary surfaces as a real error, never a fabricated reply — and the board still renders", async () => {
     const root = seedScratchRepo();
     // The real createSdkOrchestratorBoundary, driven by a deliberately broken transport (a stand-in
     // for the live-gate finding: "Native CLI binary for darwin-arm64 not found") — exercises the
@@ -306,15 +312,11 @@ describe("levare serve — POST /orchestrator/message", () => {
           body: JSON.stringify({ text: "stats" }),
         }),
       );
-      expect(res.status).toBe(200); // never a 500 — the board must degrade, not hard-fail
+      expect(res.status).toBe(502); // a real transport error — never a 500, never a masked 200
       const body = await res.json();
-      expect(body.ok).toBe(true);
-      expect(body.reply).toContain("SDK unavailable");
-      expect(body.reply).toContain("answering in offline mode");
-      expect(body.reply).toContain("Native CLI binary for darwin-arm64 not found"); // names the reason
-      // Offline mode still genuinely answers via the deterministic boundary — "stats" round-trips to
-      // the real derived metrics line, not just an apology.
-      expect(body.reply).toMatch(/gate\(s\) open/);
+      expect(body.ok).toBe(false);
+      expect(body.reply).toBeUndefined(); // never a fabricated reply standing in for the failure
+      expect(body.error).toContain("Native CLI binary for darwin-arm64 not found"); // names the reason
 
       // The board itself must still be fully functional — a broken Orchestrator boundary is not a
       // broken board.

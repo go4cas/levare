@@ -15,18 +15,39 @@ import {
   proposeKnowledgePromotion,
   resolveProposal,
   locateProjectForTarget,
-  deterministicBoundary,
+  type Intent,
+  type OrchestratorBoundary,
 } from "../src/orchestrator.ts";
 import { loadRepo, type Repo } from "../src/repo.ts";
 import type { CliProbe, EnvProbe } from "../src/doctor.ts";
 import type { Team, TypeTemplate, Project, WorkUnit, Artifact, FlowNode } from "../src/types.ts";
 
-// PRD §7 / §11 phase-5 acceptance. The Orchestrator is a Claude Agent SDK application behind a mocked
-// SDK boundary (invariant 10): the deterministic default `interpret`/`narrate` stand in for the real
-// model this phase. What's under test here is everything that must hold regardless of what the model
-// says: the briefing derives correctly from repo state, a chat gate decision round-trips to the exact
-// same mutation the board's POST route makes (ruling C7), a retro proposal never writes LEARNINGS.md
-// directly, and intent-to-unit operations produce exactly the repo change they claim to.
+// PRD §7 / §11 phase-5 acceptance. The Orchestrator is a Claude Agent SDK application behind an
+// `OrchestratorBoundary` interface (invariant 10) — `handle()`'s own dispatch (the switch, gate
+// resolution, repo operations) is what's under test here, independent of any real NLU: `intentBoundary`
+// below stands in for a real model's `interpret()` by returning a fixed, already-classified `Intent`
+// (NOTES C11 — there is no deterministic regex boundary to borrow text-parsing from any more; real
+// classification is the SDK boundary's job, covered separately in orchestrator-sdk.test.ts). What's
+// under test here: the briefing derives correctly from repo state, a chat gate decision round-trips to
+// the exact same mutation the board's POST route makes (ruling C7), a retro proposal never writes
+// LEARNINGS.md directly, and intent-to-unit operations produce exactly the repo change they claim to.
+
+/** A minimal `OrchestratorBoundary` whose `interpret()` returns a fixed, pre-classified `Intent` —
+ * lets a test drive `handle()`'s dispatch directly without depending on any text-parsing grammar. */
+function intentBoundary(intent: Intent, overrides: Partial<OrchestratorBoundary> = {}): OrchestratorBoundary {
+  return {
+    async interpret() {
+      return intent;
+    },
+    async narrate(prompt: string) {
+      return prompt;
+    },
+    async converse() {
+      throw new Error("converse() should not be called for a structured intent");
+    },
+    ...overrides,
+  };
+}
 
 const HERMETIC_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
 
@@ -130,7 +151,11 @@ describe("(b) one gate-resolution path: chat vs POST /gates", () => {
     const viaChat = seedScratchRepo();
     const viaRoute = seedScratchRepo();
     try {
-      const chatResult = await handle("approve spec-checkout-flow-v1", { root: viaChat, by: CAS_TODAY });
+      const chatResult = await handle(
+        "approve spec-checkout-flow-v1",
+        { root: viaChat, by: CAS_TODAY },
+        intentBoundary({ kind: "gate-decision", target: "spec-checkout-flow-v1", verb: "approve" }),
+      );
       expect(chatResult.result && "ok" in chatResult.result && chatResult.result.ok).toBe(true);
 
       const board = createBoard(viaRoute);
@@ -167,7 +192,11 @@ describe("(b) one gate-resolution path: chat vs POST /gates", () => {
     const root = seedScratchRepo();
     try {
       const before = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
-      const r = await handle("approve does-not-exist", { root, by: CAS_TODAY });
+      const r = await handle(
+        "approve does-not-exist",
+        { root, by: CAS_TODAY },
+        intentBoundary({ kind: "gate-decision", target: "does-not-exist", verb: "approve" }),
+      );
       expect(r.result).toBeNull();
       const after = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
       expect(after).toBe(before);
@@ -179,44 +208,30 @@ describe("(b) one gate-resolution path: chat vs POST /gates", () => {
 
 // ---------------------------------------------------------------------------
 // (b2) unknown intent routes to the boundary's own converse(), never a hard-coded string
-// (NOTES phase-7 K17 — live-gate finding: free-form messages were being silently intercepted by the
-// deterministic offline line even when a real SDK-style boundary was selected, because `handle()`'s
-// "unknown" case used to return a hard-coded string instead of ever calling the boundary.)
+// (NOTES phase-7 K17 — live-gate finding: free-form messages were being silently intercepted by a
+// hard-coded string instead of ever reaching the boundary. NOTES C11: there is now only ONE boundary
+// implementation in production — the real SDK one — so this is purely about `handle()`'s own dispatch:
+// an "unknown" intent always reaches `converse()`, never a fabricated reply.)
 // ---------------------------------------------------------------------------
 
-describe("(b2) unknown-intent dispatch calls the boundary's converse(), per boundary", () => {
-  test("a real-SDK-style boundary's unknown intent is answered by its own converse(), not the deterministic canned line", async () => {
+describe("(b2) unknown-intent dispatch calls the boundary's converse()", () => {
+  test("an unknown intent is answered by the boundary's own converse(), verbatim", async () => {
     const root = seedScratchRepo();
     try {
       const calls: Array<{ text: string; root: string }> = [];
-      const realStyleBoundary = {
-        async interpret(text: string) {
-          return { kind: "unknown" as const, text };
+      const boundary = intentBoundary(
+        { kind: "unknown", text: "what's the story with the loyalty flow?" },
+        {
+          async converse(text: string, callRoot: string) {
+            calls.push({ text, root: callRoot });
+            return `model-authored answer to: ${text}`;
+          },
         },
-        async narrate(prompt: string) {
-          return prompt;
-        },
-        async converse(text: string, callRoot: string) {
-          calls.push({ text, root: callRoot });
-          return `model-authored answer to: ${text}`;
-        },
-      };
-      const r = await handle("what's the story with the loyalty flow?", { root, by: CAS_TODAY }, realStyleBoundary);
+      );
+      const r = await handle("what's the story with the loyalty flow?", { root, by: CAS_TODAY }, boundary);
       expect(r.reply).toBe("model-authored answer to: what's the story with the loyalty flow?");
-      expect(r.reply).not.toContain("Noted:");
       expect(calls).toHaveLength(1);
       expect(calls[0]).toEqual({ text: "what's the story with the loyalty flow?", root });
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  test("the deterministic offline boundary still answers unknown intents with its own canned acknowledgment", async () => {
-    const root = seedScratchRepo();
-    try {
-      const r = await handle("what's the story with the loyalty flow?", { root, by: CAS_TODAY });
-      expect(r.intent.kind).toBe("unknown");
-      expect(r.reply).toContain('Noted: "what\'s the story with the loyalty flow?"');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -226,18 +241,15 @@ describe("(b2) unknown-intent dispatch calls the boundary's converse(), per boun
     const root = seedScratchRepo();
     try {
       let converseCalled = false;
-      const boundary = {
-        async interpret(text: string) {
-          return { kind: "unknown" as const, text };
+      const boundary = intentBoundary(
+        { kind: "unknown", text: "   " },
+        {
+          async converse(text: string) {
+            converseCalled = true;
+            return `should not be called: ${text}`;
+          },
         },
-        async narrate(prompt: string) {
-          return prompt;
-        },
-        async converse(text: string) {
-          converseCalled = true;
-          return `should not be called: ${text}`;
-        },
-      };
+      );
       const r = await handle("   ", { root, by: CAS_TODAY }, boundary);
       expect(converseCalled).toBe(false);
       expect(r.reply).toBe("Say more and I'll fold it into the next briefing.");
@@ -253,23 +265,12 @@ describe("(b2) unknown-intent dispatch calls the boundary's converse(), per boun
 // projection, ruling C10), never the narrow gate-triage view `buildBriefing` assembles. Proven live:
 // a real SDK-boundary run answered "list every idea in this studio" and "what is the pitch of the
 // todo-cli idea, word for word" with "nothing to triage" — both misclassified as briefing — while
-// answering an unambiguous message correctly from the projection in the same session.
+// answering an unambiguous message correctly from the projection in the same session. The actual
+// classification grammar is the real SDK boundary's job (its own prompt-content contract is asserted
+// in orchestrator-sdk.test.ts) — what's tested here is `handle()`'s dispatch given each intent kind.
 // ---------------------------------------------------------------------------
 
 describe("(b3) 'briefing' is explicit-triage-only; factual/situational questions reach converse()", () => {
-  test("deterministicBoundary.interpret(): explicit triage requests classify as briefing", async () => {
-    for (const text of ["what needs me", "briefing", "brief me", "what's on my plate", "whats on my plate"]) {
-      expect(await deterministicBoundary.interpret(text)).toEqual({ kind: "briefing" });
-    }
-  });
-
-  test("deterministicBoundary.interpret(): factual/situational questions never classify as briefing", async () => {
-    for (const text of ["list the ideas", "what is the pitch of the todo-cli idea, word for word", "what teams do I have", "what did that cost"]) {
-      const intent = await deterministicBoundary.interpret(text);
-      expect(intent.kind).not.toBe("briefing");
-    }
-  });
-
   test("handle(): 'list the ideas', a pitch question, a teams question, and a cost question all dispatch to converse(), answered from the projection — never the briefing path", async () => {
     const root = seedScratchRepo();
     try {
@@ -396,7 +397,11 @@ describe("(d) intent-to-unit operations", () => {
   test("open a unit of a given type creates work/<project>/<unit>/unit.md and commits", async () => {
     const root = seedScratchRepo();
     try {
-      const r = await handle("open spike unit perf-spike in storefront", { root, by: CAS_TODAY });
+      const r = await handle(
+        "open spike unit perf-spike in storefront",
+        { root, by: CAS_TODAY },
+        intentBoundary({ kind: "open-unit", project: "storefront", unit: "perf-spike", type: "spike" }),
+      );
       expect(r.result && "ok" in r.result && r.result.ok).toBe(true);
       const unitFile = join(root, "work/storefront/perf-spike/unit.md");
       expect(existsSync(unitFile)).toBe(true);
@@ -411,7 +416,11 @@ describe("(d) intent-to-unit operations", () => {
   test("capture an idea writes ideas/<name>.md and commits", async () => {
     const root = seedScratchRepo();
     try {
-      const r = await handle("capture idea: faster-checkout | Skip the confirmation step for repeat buyers. | storefront, speed", { root, by: CAS_TODAY });
+      const r = await handle(
+        "capture idea: faster-checkout | Skip the confirmation step for repeat buyers. | storefront, speed",
+        { root, by: CAS_TODAY },
+        intentBoundary({ kind: "capture-idea", name: "faster-checkout", pitch: "Skip the confirmation step for repeat buyers.", tags: ["storefront", "speed"] }),
+      );
       expect(r.result && "ok" in r.result && r.result.ok).toBe(true);
       const file = join(root, "ideas/faster-checkout.md");
       expect(existsSync(file)).toBe(true);
@@ -467,7 +476,7 @@ describe("stats", () => {
   test("a chat 'stats' message answers from the derived metrics", async () => {
     const root = seedScratchRepo();
     try {
-      const r = await handle("stats", { root, by: CAS_TODAY });
+      const r = await handle("stats", { root, by: CAS_TODAY }, intentBoundary({ kind: "stats" }));
       expect(r.intent.kind).toBe("stats");
       expect(r.reply).toMatch(/gate\(s\) open/);
     } finally {

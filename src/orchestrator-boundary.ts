@@ -18,14 +18,12 @@
 
 import { readFileSync } from "node:fs";
 import type { Intent, OrchestratorBoundary } from "./orchestrator.ts";
-import { deterministicBoundary } from "./orchestrator.ts";
 import type { Verb } from "./runner.ts";
 import type { Receipt } from "./types.ts";
 import { loadRepo } from "./repo.ts";
 import { buildStudioProjection } from "./orchestrator-projection.ts";
 import {
   asyncSdkTransport,
-  hasAnthropicCredentials,
   checkSdkPreconditionsCached,
   resolveNativeBinary,
   type AsyncSdkTransport,
@@ -298,24 +296,23 @@ export type SelectOrchestratorBoundaryOptions = Omit<SdkOrchestratorBoundaryOpti
 
 /**
  * Select the real SDK-driven boundary when the environment carries API credentials AND the SDK's own
- * local preconditions (credential + a resolvable native binary — NOTES phase-7 K13) are met, else the
- * deterministic regex boundary — the explicit offline fallback (goal: "selected automatically when no
- * API key is present in the environment"). The precondition check is fast and local (no network, no
- * subprocess): a genuinely broken install (missing binary) is detected and falls back to offline mode
- * WITHOUT ever attempting — and timing out on — a real spawn. A credential that resolves but is
- * invalid, or any other genuine runtime failure (network, credit, model error), is NOT something this
- * local check can know; those still degrade per-request exactly as they already did (K11). This is
- * the one seam `levare serve`/the CLI call; it never inspects the key's value, only its presence
+ * local preconditions (credential + a resolvable native binary — NOTES phase-7 K13) are met, else
+ * `null` — the Orchestrator is unavailable (NOTES C11: there is no deterministic stand-in boundary;
+ * "present or absent" is the whole vocabulary). The precondition check is fast and local (no network,
+ * no subprocess): a genuinely broken install (missing binary) is detected without ever attempting —
+ * and timing out on — a real spawn. A credential that resolves but is invalid, or any other genuine
+ * runtime failure (network, credit, model error), is NOT something this local check can know; those
+ * still surface per-request as a real error (board/serve.ts), never silently downgraded. This is the
+ * one seam `levare serve`/the CLI call; it never inspects the key's value, only its presence
  * (invariant 11).
  */
 export function selectOrchestratorBoundary(
   env: Record<string, string | undefined> = process.env,
   opts: SelectOrchestratorBoundaryOptions = {},
-): OrchestratorBoundary {
-  if (!hasAnthropicCredentials(env)) return deterministicBoundary;
+): OrchestratorBoundary | null {
   const { precondition, ...boundaryOpts } = opts;
   const check = checkSdkPreconditionsCached(env, precondition);
-  if (!check.viable) return deterministicBoundary;
+  if (!check.viable) return null;
   // Reuse the EXACT path the precondition probe just resolved, rather than letting
   // createSdkOrchestratorBoundary re-resolve it — "the probe says viable" and "the real call uses
   // that binary" are then provably the same value, not just the same algorithm (NOTES K14).

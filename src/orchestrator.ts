@@ -1,10 +1,19 @@
 // The Orchestrator (PRD §7): a Claude Agent SDK application whose conversation is the product's
 // single entry point. It holds no state — everything it "knows" is re-derived from the repo (files
 // are the truth, invariant 2) and from the conversation itself (a proposal it made is carried by the
-// caller, not remembered here). The SDK is not a runtime dependency this phase (invariant 10): the
-// natural-language pieces (turning free text into intent, turning a derived fact into prose) sit
-// behind an `OrchestratorBoundary` interface — mocked here exactly as adapters.ts mocks the native
-// SDK boundary — with a deterministic default implementation standing in for the real model call.
+// caller, not remembered here). The natural-language pieces (turning free text into intent, turning a
+// derived fact into prose, genuine conversation) sit behind an `OrchestratorBoundary` interface —
+// mocked in tests exactly as adapters.ts mocks the native SDK boundary — with `orchestrator-
+// boundary.ts#createSdkOrchestratorBoundary` the one real implementation.
+//
+// NOTES C11 (ruling): there used to be a second, deterministic implementation of this interface — a
+// small regex grammar standing in for the model, selected automatically whenever no
+// `ANTHROPIC_API_KEY` was present. It was deleted, not demoted. It answered in the Orchestrator's own
+// voice ("Noted: ...") without being the Orchestrator, and a live Conductor session was fooled by it
+// twice. There is no such thing as "offline mode" for a chat agent — there is the Orchestrator,
+// present or absent. When it is absent, `board/serve.ts`'s `/orchestrator/message` route returns a
+// disabled state (see `selectOrchestratorBoundary` in orchestrator-boundary.ts, now `OrchestratorBoundary
+// | null`) and the panel renders disabled (render.ts#orchestratorPanel) — it never fabricates a reply.
 //
 // Every mutating operation funnels through the same functions the board's write routes use
 // (`resolveGate` from board/gateops.ts, `conductorCommit` from git.ts) — ruling C7: a Conductor's
@@ -49,12 +58,12 @@ export interface OrchestratorBoundary {
   /**
    * Answer a free-form Conductor message that `interpret()` didn't classify into a structured
    * operation — genuinely converse, grounded in repo state (§7: "everything it knows is re-derived
-   * from the repo"), NOT a canned acknowledgment (NOTES phase-7 K17 — a live-gate fix-up: the
-   * deterministic boundary's offline fallback line was previously hard-coded into `handle()`'s
-   * dispatch itself, so it appeared even when the real SDK boundary was selected, silently
-   * intercepting every message `interpret()` couldn't force into one of the other six kinds). The
-   * deterministic boundary's own implementation IS that offline fallback line — it is now the only
-   * place that string can come from, and only when the offline boundary is genuinely selected.
+   * from the repo"), NOT a canned acknowledgment (NOTES phase-7 K17 — a live-gate fix-up: a hard-coded
+   * string used to live inside `handle()`'s own dispatch, intercepting every message `interpret()`
+   * couldn't force into one of the other six kinds, even when a real boundary was selected). NOTES
+   * C11: there is only ever one boundary implementation now — the real SDK one — so this is the sole
+   * source of a reply for an "unknown" intent; there is no second, deterministic implementation to
+   * fall back to when this one is unreachable (`handle()` is simply never called without a boundary).
    *
    * `root` is the served studio's root — required, never defaulted (ruling C10: a boundary call
    * constructed without one is an error). The real SDK boundary grants NO filesystem tools; it
@@ -64,61 +73,6 @@ export interface OrchestratorBoundary {
    */
   converse(text: string, root: string): Promise<string>;
 }
-
-const GATE_VERB_RE = /^(approve|reject|start|notyet|not[- ]yet|rescope)\s+(\S+)(?:\s*:\s*(.*)|\s+(.*))?$/i;
-const REQUEST_RE = /^request(?:[- ]changes)?\s+(\S+)\s*:?\s*(.+)$/i;
-const CAPTURE_IDEA_RE = /^capture idea:?\s*([\w-]+)\s*\|\s*([^|]+)(?:\|\s*(.+))?$/i;
-const OPEN_UNIT_RE = /^open (\w+) unit (\S+) in (\S+)(?:\s+after\s+(\S+))?$/i;
-const PROMOTE_IDEA_RE = /^promote idea (\S+) to (\S+)(?:\s+as\s+(\S+))?$/i;
-
-/** The deterministic default boundary: a small, documented pattern grammar standing in for the real
- * model's intent extraction and narration this phase. Real free-form NLU is out of scope (mocked). */
-export const deterministicBoundary: OrchestratorBoundary = {
-  async interpret(text: string): Promise<Intent> {
-    const t = text.trim();
-    // "briefing" is an explicit request for gate triage ONLY — never a default bucket for a
-    // situational or factual question about the studio (item 5 fix-up). A live host proved the
-    // real SDK boundary over-classifying "list every idea" / "what is the pitch of X" as briefing,
-    // which then answered from `buildBriefing`'s gate-only view (never the projection) and came back
-    // with "nothing to triage" instead of the real answer. This regex was already narrow enough not
-    // to have that bug itself, but is kept explicit here (rather than growing to match anything
-    // studio-shaped) as the same contract `INTERPRET_TASK_PREFIX` states for the real boundary.
-    if (/^(what needs me|briefing|brief me|what'?s on my plate)\b/i.test(t)) return { kind: "briefing" };
-
-    let m = GATE_VERB_RE.exec(t);
-    if (m) {
-      const verb = m[1].toLowerCase().replace(/[- ]/g, "") as Verb;
-      const note = (m[3] ?? m[4])?.trim();
-      return { kind: "gate-decision", target: m[2], verb, note: note || undefined };
-    }
-    m = REQUEST_RE.exec(t);
-    if (m) return { kind: "gate-decision", target: m[1], verb: "request", note: m[2].trim() };
-
-    m = CAPTURE_IDEA_RE.exec(t);
-    if (m) {
-      const tags = m[3] ? m[3].split(",").map((s) => s.trim()).filter(Boolean) : undefined;
-      return { kind: "capture-idea", name: m[1], pitch: m[2].trim(), tags };
-    }
-
-    m = OPEN_UNIT_RE.exec(t);
-    if (m) return { kind: "open-unit", type: m[1], unit: m[2], project: m[3], after: m[4] ? [m[4]] : undefined };
-
-    m = PROMOTE_IDEA_RE.exec(t);
-    if (m) return { kind: "promote-idea", idea: m[1], project: m[2], unit: m[3] || m[1] };
-
-    if (/^stats\b/i.test(t)) return { kind: "stats" };
-
-    return { kind: "unknown", text: t };
-  },
-  async narrate(prompt: string): Promise<string> {
-    return prompt;
-  },
-  // The offline fallback line, moved here verbatim from handle()'s old `unknown` case (NOTES K17) —
-  // this is the ONLY boundary that returns it now, and only when genuinely selected (no key/no binary).
-  async converse(text: string): Promise<string> {
-    return text.trim() ? `Noted: "${text.trim()}". Nothing changes state until you act on a gate.` : "Say more and I'll fold it into the next briefing.";
-  },
-};
 
 // ---------------------------------------------------------------------------
 // Briefing (§7: "opens every session with a scope-appropriate briefing")
@@ -508,7 +462,7 @@ export function locateProjectForTarget(repo: Repo, target: string): string | und
 // itself — which case runs, which repo operation it calls, in what order, what it returns — is
 // byte-for-byte the same switch as before; every line below differs from the prior synchronous
 // version only by an added `await`.
-export async function handle(text: string, ctx: OrchestratorContext, boundary: OrchestratorBoundary = deterministicBoundary): Promise<HandleResult> {
+export async function handle(text: string, ctx: OrchestratorContext, boundary: OrchestratorBoundary): Promise<HandleResult> {
   const intent = await boundary.interpret(text);
   const today = ctx.by.match(/\d{4}-\d{2}-\d{2}/)?.[0];
 
@@ -551,15 +505,11 @@ export async function handle(text: string, ctx: OrchestratorContext, boundary: O
     }
     case "unknown":
     default:
-      // NOTES phase-7 K17 (a live-gate fix-up): this used to be a hard-coded string, appearing
-      // regardless of which boundary was selected — silently intercepting every free-form message the
-      // real SDK boundary correctly classified as "not a structured operation" before the model ever
-      // got a chance to actually answer it. `converse()` is the real boundary's genuine conversational
-      // path (no tools — grounded in a re-derived studio projection, ruling C10); the deterministic
-      // boundary's own `converse()`
-      // implementation is the ONLY source of the canned line now, so it can only appear when the
-      // offline boundary is genuinely selected. An empty message never reaches the model at all —
-      // there is nothing to converse about.
+      // `converse()` is the boundary's genuine conversational path (no tools — grounded in a
+      // re-derived studio projection, ruling C10) — the only source of a reply here (NOTES C11: there
+      // is no second, deterministic boundary standing in when this one is unreachable; `handle()` is
+      // only ever called with the real boundary, never a fallback). An empty message never reaches the
+      // model at all — there is nothing to converse about.
       if (!text.trim()) return { reply: "Say more and I'll fold it into the next briefing.", intent, result: null };
       return { reply: await boundary.converse(text, ctx.root), intent, result: null };
   }

@@ -13,8 +13,9 @@ import { resolveGate } from "./gateops.ts";
 import { validatePath } from "../validate.ts";
 import type { Verb } from "../runner.ts";
 import { conductorCommit, CONDUCTOR_NAME } from "../git.ts";
-import { handle as orchestratorHandle, deterministicBoundary, type HandleResult, type OrchestratorBoundary } from "../orchestrator.ts";
+import { handle as orchestratorHandle, type HandleResult, type OrchestratorBoundary } from "../orchestrator.ts";
 import { selectOrchestratorBoundary, type SelectOrchestratorBoundaryOptions } from "../orchestrator-boundary.ts";
+import { resolveOrchestratorStatus } from "../orchestrator-status.ts";
 import { isStudioInitialized, renderOnboarding } from "./onboarding.ts";
 import { Daemon } from "../daemon.ts";
 
@@ -291,35 +292,34 @@ export const ROUTES: RouteDef[] = [
       }
       // PRD §7: the Orchestrator holds no state — every call re-derives from the repo. `handle` is
       // the same entry point a scripted/chat driver uses in tests; a gate-decision message round-trips
-      // to the identical `resolveGate` mutation the POST /gates route uses (ruling C7). The boundary
-      // itself is the real SDK when ANTHROPIC_API_KEY is present, else the deterministic offline
-      // fallback (phase 7) — selected fresh per request so a key added mid-session takes effect
-      // without a restart, and never logged either way (invariant 11). `handle` is async because the
-      // real boundary is an I/O call (a non-blocking spawn — NOTES phase-7 K9); this `await` is the
-      // ONLY thing that changed here — the route's own dispatch is untouched. `ctx.orchestratorBoundary`
-      // is a test-only override (unset in production, where `selectOrchestratorBoundary()` always runs).
-      const today = new Date().toISOString().slice(0, 10);
+      // to the identical `resolveGate` mutation the POST /gates route uses (ruling C7). The boundary is
+      // selected fresh per request so a key added mid-session takes effect without a restart, and
+      // never logged either way (invariant 11). `ctx.orchestratorBoundary` is a test-only override
+      // (unset in production, where `selectOrchestratorBoundary()` always runs).
+      //
+      // NOTES C11: when no boundary is selectable (no credential, or the SDK's local preconditions
+      // fail), this is NOT routed through a deterministic stand-in — that boundary no longer exists.
+      // The route reports the honest disabled state and returns, never calling `handle()` at all.
       const boundary = ctx.orchestratorBoundary ?? selectOrchestratorBoundary(process.env, ctx.orchestratorSelectOpts);
+      if (!boundary) {
+        const status = resolveOrchestratorStatus(process.env, ctx.orchestratorSelectOpts?.precondition);
+        return json({ ok: false, disabled: true, reason: status.reason, envVar: status.envVar }, 503);
+      }
+      const today = new Date().toISOString().slice(0, 10);
       const orchestratorCtx = { root: ctx.root, by: `${CONDUCTOR_NAME} ${today}` };
       // The board is a projection of files; the Orchestrator's SDK voice is an enhancement on top of
-      // it (§7), never a dependency the write surface can fail on. `interpret()` is right to throw
-      // loudly when the SDK transport itself is unavailable (missing binary, no credential, timeout,
-      // transport error — orchestrator-boundary.ts's OrchestratorSdkError, NOTES phase-7 K8) — a
-      // transport error must never impersonate an intent. But that loudness belongs at the boundary,
-      // not at this route: a Conductor asking the board a question must never see a 500 because an
-      // unrelated credential/binary problem exists. On any boundary failure, degrade to the same
-      // deterministic offline boundary phase 7 already uses when no key is present at all, and say so
-      // plainly in the reply — an honest, visible note, never a silent downgrade.
+      // it (§7), never a dependency the write surface can fail on. A genuine transport failure at this
+      // point (the boundary WAS selectable — credential + binary both resolved — but the live call
+      // itself failed: network, timeout, a model error) is a real error, surfaced as one — never
+      // dressed up as an Orchestrator reply, and never silently downgraded to a canned voice.
       let reply: string;
       let result: HandleResult["result"];
       try {
         ({ reply, result } = await orchestratorHandle(text, orchestratorCtx, boundary));
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
-        console.error(`levare: Orchestrator SDK unavailable for this request, answering in offline mode: ${reason}`);
-        const offline = await orchestratorHandle(text, orchestratorCtx, deterministicBoundary);
-        reply = `SDK unavailable (${reason}); answering in offline mode. ${offline.reply}`;
-        result = offline.result;
+        console.error(`levare: Orchestrator SDK call failed: ${reason}`);
+        return json({ ok: false, error: reason }, 502);
       }
       if (result && "ok" in result && result.ok && result.commit) {
         ctx.broadcast("reload");

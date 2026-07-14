@@ -3,7 +3,6 @@ import { readFileSync, mkdtempSync, rmSync, cpSync, writeFileSync, mkdirSync } f
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deterministicBoundary } from "../src/orchestrator.ts";
 import {
   createSdkOrchestratorBoundary,
   selectOrchestratorBoundary,
@@ -379,22 +378,24 @@ describe("createSdkOrchestratorBoundary#converse (mocked transport)", () => {
 // boundary selection: real SDK vs. deterministic offline fallback
 // ---------------------------------------------------------------------------
 
+// NOTES C11: there is no second, deterministic boundary implementation any more — "unavailable" is
+// `null`, not a stand-in object with its own behavior.
 describe("selectOrchestratorBoundary — key-present vs. key-absent", () => {
-  test("no ANTHROPIC_API_KEY → exactly the deterministic boundary (identity, not just behavior)", () => {
+  test("no ANTHROPIC_API_KEY → null (the Orchestrator is unavailable, not a fallback voice)", () => {
     const boundary = selectOrchestratorBoundary({});
-    expect(boundary).toBe(deterministicBoundary);
+    expect(boundary).toBeNull();
   });
 
   test("empty-string ANTHROPIC_API_KEY is treated as absent", () => {
     const boundary = selectOrchestratorBoundary({ ANTHROPIC_API_KEY: "" });
-    expect(boundary).toBe(deterministicBoundary);
+    expect(boundary).toBeNull();
   });
 
   test("ANTHROPIC_API_KEY present → the real SDK-driven boundary, proven by it actually invoking the transport", async () => {
     const { transport, calls } = fakeTransport(() => ({ ok: true, result: "{}", structuredOutput: { kind: "stats" } }));
     const boundary = selectOrchestratorBoundary({ ANTHROPIC_API_KEY: "sk-ant-test-not-real" }, { transport });
-    expect(boundary).not.toBe(deterministicBoundary);
-    const intent = await boundary.interpret("stats");
+    expect(boundary).not.toBeNull();
+    const intent = await boundary!.interpret("stats");
     expect(intent).toEqual({ kind: "stats" });
     expect(calls).toHaveLength(1); // proves this call actually went through the (fake) SDK transport
   });
@@ -564,7 +565,7 @@ describe("checkSdkPreconditionsCached — probed once, not on every call", () =>
 });
 
 describe("selectOrchestratorBoundary — the fast-fail precondition, end to end", () => {
-  test("credential present but the binary is unresolvable → deterministicBoundary, WITHOUT ever touching the injected transport", () => {
+  test("credential present but the binary is unresolvable → null, WITHOUT ever touching the injected transport", () => {
     const dir = mkdtempSync(join(tmpdir(), "levare-empty-require-root-"));
     try {
       let transportCalled = false;
@@ -578,7 +579,7 @@ describe("selectOrchestratorBoundary — the fast-fail precondition, end to end"
         { ANTHROPIC_API_KEY: "sk-ant-test" },
         { transport: neverCalledTransport, precondition: { requireFrom: join(dir, "scratch.ts") } },
       );
-      expect(boundary).toBe(deterministicBoundary);
+      expect(boundary).toBeNull();
       expect(transportCalled).toBe(false); // proves this short-circuited before any spawn attempt
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -588,8 +589,8 @@ describe("selectOrchestratorBoundary — the fast-fail precondition, end to end"
   test("credential present and binary resolvable → the real SDK boundary, transport reachable", async () => {
     const { transport, calls } = fakeTransport(() => ({ ok: true, result: "{}", structuredOutput: { kind: "stats" } }));
     const boundary = selectOrchestratorBoundary({ ANTHROPIC_API_KEY: "sk-ant-test" }, { transport });
-    expect(boundary).not.toBe(deterministicBoundary);
-    await boundary.interpret("stats");
+    expect(boundary).not.toBeNull();
+    await boundary!.interpret("stats");
     expect(calls).toHaveLength(1);
   });
 });
@@ -640,7 +641,7 @@ describe("pathToClaudeCodeExecutable is resolved explicitly and threaded to ever
 });
 
 describe("the missing-binary case is fast end to end (the acceptance criterion itself)", () => {
-  test("POST /orchestrator/message returns 200 in well under a second, not at the timeout boundary", async () => {
+  test("POST /orchestrator/message reports disabled in well under a second, not at the timeout boundary", async () => {
     const { createBoard } = await import("../src/board/serve.ts");
     const dir = mkdtempSync(join(tmpdir(), "levare-fast-fail-board-"));
     const scratchDir = mkdtempSync(join(tmpdir(), "levare-empty-require-root-"));
@@ -664,7 +665,12 @@ describe("the missing-binary case is fast end to end (the acceptance criterion i
         // is exercised directly above; this end-to-end pass additionally confirms the route itself
         // never introduces its own slow path (e.g. an accidental extra spawn) on top of selection.
         const elapsed = Date.now() - start;
-        expect(res.status).toBe(200);
+        // NOTES C11: no credential + a broken precondition → the route reports the disabled state
+        // (503), never a 200 with a fabricated reply — the fast-fail acceptance criterion is unchanged,
+        // only the status this now honestly reports.
+        expect(res.status).toBe(503);
+        const body = await res.json();
+        expect(body.disabled).toBe(true);
         expect(elapsed).toBeLessThan(1000);
       } finally {
         board.close();
