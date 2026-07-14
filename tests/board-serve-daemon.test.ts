@@ -121,3 +121,42 @@ describe("board with a daemon attached projects its real in-flight/completed sta
     board.close();
   });
 });
+
+// NOTES F10 defect 3: a Conductor's own `start`/`request-changes` click drives production directly
+// (board/gateops.ts#doStart/#doRequest), inside the SAME request — a completely separate code path
+// from the daemon's own autonomous tick tested above. Before this fix, NOTHING registered that
+// dispatch anywhere: `daemon.running()` (and so the board's "Members running"/gate-dispatching render)
+// stayed at its honest-looking-but-wrong zero for the entire window a real model call was thinking,
+// even though a member was, in fact, actively running.
+describe("a Conductor-triggered start/request-changes is visible in the daemon's running() projection while in flight", () => {
+  test("POST /gates/.../start registers with the daemon before the member call returns, and clears it after", async () => {
+    let mid: string | null = null;
+    let sawRunningDuringDispatch = false;
+    const daemon = new Daemon(root, { memberRunner: stubAdapterRunner });
+    const memberRunner = {
+      capabilities: () => stubAdapterRunner(loadRepo(root)).capabilities(),
+      produce: async (member: string, kind: string, unit: string, project: string) => {
+        // The exact moment the board's gate route is inside the member call — asserted the same way
+        // the daemon-tick test above asserts its own in-flight window.
+        sawRunningDuringDispatch = daemon.running().some((r) => r.project === "storefront" && r.unit === "loyalty-flow" && r.member === "wren");
+        mid = renderStudio(loadRepo(root), root, new Date(), daemon.running());
+        return stubAdapterRunner(loadRepo(root)).produce(member, kind, unit, project);
+      },
+    };
+    const board = createBoard(root, { daemon, memberRunner });
+
+    const res = await board.fetch(req("/gates/storefront/loyalty-flow/start", { method: "POST" }));
+    expect(res.status).toBe(200);
+
+    expect(sawRunningDuringDispatch).toBe(true);
+    expect(mid).not.toBeNull();
+    expect(mid!).toContain('data-runningstat="1"');
+    expect(mid!).toContain("is-dispatching");
+
+    // After the request completes, the invocation is cleared — never left dangling.
+    expect(daemon.running()).toEqual([]);
+    const after = await board.fetch(req("/studio"));
+    expect(await after.text()).toContain('data-runningstat="0"');
+    board.close();
+  });
+});

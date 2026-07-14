@@ -88,6 +88,61 @@ describe("studio screen", () => {
   });
 });
 
+// NOTES F10 defect 3: clicking Start left the board completely static for however long a real model
+// call takes — "Members running" only ever populated from the daemon's OWN autonomous tick, which a
+// Conductor-triggered start never went through. The board must acknowledge the click immediately: the
+// instant the daemon's `running()` projection carries an in-flight invocation for a unit, that unit's
+// gate card renders as dispatching (the quiet pending indicator already built for the Orchestrator
+// composer — assets/styles.css's `.msg--pending .msg__dots`, reused verbatim, no new spinner) instead
+// of showing Start/Not yet/Re-scope as if nothing were happening.
+describe("a gate card renders an immediate dispatching state while its unit is in flight (NOTES F10 defect 3)", () => {
+  test("loyalty-flow's open start gate shows Start/Not yet/Re-scope with no running invocations", () => {
+    const html = renderStudio(repo, root, now, []);
+    const cardMatch = html.match(/<article class="gate gate--start"[\s\S]*?<\/article>/);
+    expect(cardMatch).not.toBeNull();
+    expect(cardMatch![0]).toContain('data-verb="start"');
+    expect(cardMatch![0]).not.toContain("is-dispatching");
+    expect(cardMatch![0]).not.toContain("msg--pending");
+  });
+
+  test("loyalty-flow's start gate shows a dispatching state instead of Start/Not yet/Re-scope the instant it's in the daemon's running() projection", () => {
+    const running = [{ project: "storefront", unit: "loyalty-flow", member: "wren", kind: "product-brief", startedAt: now.toISOString() }];
+    const html = renderStudio(repo, root, now, running);
+    const cardMatch = html.match(/<article class="gate gate--start is-dispatching"[\s\S]*?<\/article>/);
+    expect(cardMatch).not.toBeNull();
+    const card = cardMatch![0];
+    expect(card).not.toContain('data-verb="start"');
+    expect(card).not.toContain('data-verb="notyet"');
+    expect(card).not.toContain('data-verb="rescope"');
+    expect(card).toContain("msg--pending");
+    expect(card).toContain("dispatching wren");
+    expect(card).toContain("dispatching</span>"); // the badge, honest — never claims "start gate" as if idle
+  });
+
+  test("an in-flight invocation for a DIFFERENT unit leaves this gate's Start button untouched", () => {
+    const running = [{ project: "storefront", unit: "some-other-unit", member: "wren", kind: "product-brief", startedAt: now.toISOString() }];
+    const html = renderStudio(repo, root, now, running);
+    const cardMatch = html.match(/<article class="gate gate--start"[\s\S]*?<\/article>/);
+    expect(cardMatch).not.toBeNull();
+    expect(cardMatch![0]).toContain('data-verb="start"');
+    expect(cardMatch![0]).not.toContain("is-dispatching");
+  });
+
+  test("the project and run screens render the same dispatching state for an in-flight review gate", () => {
+    const running = [{ project: "storefront", unit: "checkout-flow", member: "lyra", kind: "spec", startedAt: now.toISOString() }];
+    const projectHtml = renderProject(repo, "storefront", root, now, running);
+    const runHtml = renderRun(repo, "storefront", "checkout-flow", root, now, running);
+    for (const html of [projectHtml, runHtml]) {
+      expect(html).toContain("is-dispatching");
+      expect(html).toContain("msg--pending");
+      expect(html).toContain("dispatching lyra");
+      expect(html).not.toContain('data-verb="approve"');
+      expect(html).not.toContain('data-verb="request"');
+      expect(html).not.toContain('data-verb="reject"');
+    }
+  });
+});
+
 describe("projectStatusChip — gate count wins, then active, else idle", () => {
   test("an open gate always wins, regardless of activity", () => {
     expect(projectStatusChip(2, true, 3)).toBe('<span class="chip is-gate">2 gates</span>');
@@ -747,8 +802,8 @@ describe("the header status indicator shows the Orchestrator's real state, on ev
 
   const screensWith = (status: OrchestratorStatus): Array<[string, string]> => [
     ["studio", renderStudio(repo, root, now, [], status)],
-    ["project", renderProject(repo, "storefront", root, now, status)],
-    ["run", renderRun(repo, "storefront", "checkout-flow", root, now, status)],
+    ["project", renderProject(repo, "storefront", root, now, [], status)],
+    ["run", renderRun(repo, "storefront", "checkout-flow", root, now, [], status)],
     ["registry", renderRegistry(repo, root, undefined, status)],
     ["artifact", renderArtifact(repo, "storefront", "checkout-flow", "spec-checkout-flow-v1", root, now, status)],
     ["idea", renderIdea(repo, root, "loyalty-program", status)],
@@ -780,7 +835,7 @@ describe("the header status indicator shows the Orchestrator's real state, on ev
   });
 
   test("when off, the run view's open gate still renders — a disabled Orchestrator never hides an actionable gate", () => {
-    const html = renderRun(repo, "storefront", "checkout-flow", root, now, OFF);
+    const html = renderRun(repo, "storefront", "checkout-flow", root, now, [], OFF);
     expect(html).toContain('class="orch is-disabled"');
     expect(html).toContain('class="gate gate--cta"');
     expect(html).toContain('data-verb="approve"');

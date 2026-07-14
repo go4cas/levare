@@ -255,27 +255,52 @@ function railNav(repo: Repo, extras: RegistryExtras, derivText: string, status: 
 // summon templates, and the run-view Orchestrator panel.
 // ---------------------------------------------------------------------------
 
-function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: boolean } = {}): string {
+// NOTES F10 defect 3: an unmistakably HONEST, non-spinner-theatre "this is dispatching right now"
+// state — reused verbatim from the quiet pending indicator already built for the Orchestrator composer
+// (assets/styles.css's `.msg--pending .msg__dots`, unchanged here) rather than inventing a new
+// animation. Swapped in for a gate's verb row the instant the daemon's `running()` projection shows an
+// invocation in flight for that unit (board/render.ts callers below), so the board acknowledges a
+// Start/Request-changes click immediately instead of sitting static for however long the member takes.
+function dispatchingHtml(member: string, kind: string): string {
+  return `<div class="gate__verbs gate__verbs--pending">
+        <span class="msg msg--pending" style="display:inline-flex;align-items:center;gap:8px"><span class="msg__dots"><span></span><span></span><span></span></span></span>
+        <span class="gate__dispatching">dispatching ${esc(member)} &middot; ${esc(kind)}&hellip;</span>
+      </div>`;
+}
+
+// The daemon's live in-flight projection (running()), narrowed to a single gate's own unit — a gate
+// whose unit has a matching invocation is being produced RIGHT NOW, so the board renders it as
+// dispatching instead of an actionable card (NOTES F10 defect 3).
+function dispatchingFor(running: DaemonInvocation[], gate: OpenGate): { member: string; kind: string } | undefined {
+  const inv = running.find((r) => r.project === gate.project && r.unit === gate.unit);
+  return inv ? { member: inv.member, kind: inv.kind } : undefined;
+}
+
+function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: boolean; dispatching?: { member: string; kind: string } } = {}): string {
   const unit = repo.units.find((u) => u.project === gate.project && u.unit === gate.unit);
   const type = unit ? repo.types.get(unit.type) : undefined;
   const glyph = type?.glyph ?? "&#9702;";
+  const dispatching = opts.dispatching;
 
   if (gate.type === "start") {
-    return `<article class="gate gate--start" data-gate-project="${esc(gate.project)}" data-gate-target="${esc(gate.unit)}">
+    const startVerbs = dispatching
+      ? dispatchingHtml(dispatching.member, dispatching.kind)
+      : `<div class="gate__verbs">
+        <button class="verb is-primary" data-verb="start">Start</button>
+        <button class="verb is-secondary" data-verb="notyet">Not yet</button>
+        <button class="verb" data-verb="rescope">Re-scope</button>
+      </div>`;
+    return `<article class="gate gate--start${dispatching ? " is-dispatching" : ""}" data-gate-project="${esc(gate.project)}" data-gate-target="${esc(gate.unit)}">
       <div class="gate__top">
         <span class="gate__marker" aria-hidden="true">${glyph}</span>
         <div class="gate__body">
           <div class="gate__name-row">${tokenLink(gate.project, gate.unit, gate.unit)}<span class="gate__producer">${esc(type?.name ?? "")}</span></div>
-          <p class="gate__ctx">Queued work unit awaiting your beat to begin.</p>
+          <p class="gate__ctx">${dispatching ? "Dispatching now &mdash; the unit is being produced." : "Queued work unit awaiting your beat to begin."}</p>
           <div class="gate__meta"><span>&#8592; ${esc(gate.project)}/${esc(gate.unit)}</span></div>
         </div>
-        <span class="gate__badge is-start">start gate</span>
+        <span class="gate__badge is-start">${dispatching ? "dispatching" : "start gate"}</span>
       </div>
-      <div class="gate__verbs">
-        <button class="verb is-primary" data-verb="start">Start</button>
-        <button class="verb is-secondary" data-verb="notyet">Not yet</button>
-        <button class="verb" data-verb="rescope">Re-scope</button>
-      </div>
+      ${startVerbs}
     </article>`;
   }
 
@@ -306,14 +331,16 @@ function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: boole
   const cost = costLabel(art.usage);
   const nameRow = `<div class="gate__name-row">${artifactTokenLink(gate.project, gate.unit, art.id, artifactFileName(art))}<span class="gate__producer">member/<b>${esc(gate.member ?? "")}</b></span></div>`;
   const meta = `<div class="gate__meta"><span>${esc(age)}</span>${cost ? `<span class="cost">${cost}</span>` : ""}</div>`;
-  const verbs = `<div class="gate__verbs">
+  const verbs = dispatching
+    ? dispatchingHtml(dispatching.member, dispatching.kind)
+    : `<div class="gate__verbs">
         <button class="verb is-primary" data-verb="approve">Approve</button>
         <button class="verb is-secondary" data-verb="request">Request changes</button>
         <button class="verb is-danger" data-verb="reject">Reject</button>
       </div>`;
 
   if (opts.cta) {
-    return `<article class="gate gate--cta" data-gate-project="${esc(gate.project)}" data-gate-target="${esc(art.id)}">
+    return `<article class="gate gate--cta${dispatching ? " is-dispatching" : ""}" data-gate-project="${esc(gate.project)}" data-gate-target="${esc(art.id)}">
       <div class="gate__banner"><span class="dia" aria-hidden="true"></span><span class="t">Gate &middot; ${esc(gate.label)} review</span></div>
       <div class="gate__inner">
         ${nameRow}
@@ -324,7 +351,7 @@ function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: boole
       </div>
     </article>`;
   }
-  return `<article class="gate" data-gate-project="${esc(gate.project)}" data-gate-target="${esc(art.id)}">
+  return `<article class="gate${dispatching ? " is-dispatching" : ""}" data-gate-project="${esc(gate.project)}" data-gate-target="${esc(art.id)}">
     <div class="gate__top">
       <span class="gate__marker" aria-hidden="true">${glyph}</span>
       <div class="gate__body">
@@ -414,7 +441,7 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date(), r
   const rail = railNav(repo, extras, "derived from work/ on every request", status);
 
   const gateCards = gates.length
-    ? gates.map((g) => gateCardHtml(repo, g, now)).join("\n")
+    ? gates.map((g) => gateCardHtml(repo, g, now, { dispatching: dispatchingFor(running, g) })).join("\n")
     : `<p style="color:var(--fg-mute);font-size:13.5px">Nothing needs you right now.</p>`;
 
   const projectCards = [...repo.projects.values()]
@@ -487,7 +514,7 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date(), r
 // PROJECT
 // ---------------------------------------------------------------------------
 
-export function renderProject(repo: Repo, projectName: string, root: string, now: Date = new Date(), status: OrchestratorStatus = resolveOrchestratorStatus()): string {
+export function renderProject(repo: Repo, projectName: string, root: string, now: Date = new Date(), running: DaemonInvocation[] = [], status: OrchestratorStatus = resolveOrchestratorStatus()): string {
   const project = repo.projects.get(projectName);
   if (!project) throw new Error(`unknown project '${projectName}'`);
   const units = repo.units.filter((u) => u.project === projectName);
@@ -562,7 +589,7 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
     .join("\n");
 
   const templates = gates
-    .map((g) => `<template id="tpl-gate-${esc(g.target)}">${gateCardHtml(repo, g, now, { cta: true })}</template>`)
+    .map((g) => `<template id="tpl-gate-${esc(g.target)}">${gateCardHtml(repo, g, now, { cta: true, dispatching: dispatchingFor(running, g) })}</template>`)
     .join("\n");
 
   const reviewMedian = medianReviewRounds(repo, projectName);
@@ -593,7 +620,7 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
 // RUN
 // ---------------------------------------------------------------------------
 
-export function renderRun(repo: Repo, project: string, unitId: string, root: string, now: Date = new Date(), status: OrchestratorStatus = resolveOrchestratorStatus()): string {
+export function renderRun(repo: Repo, project: string, unitId: string, root: string, now: Date = new Date(), running: DaemonInvocation[] = [], status: OrchestratorStatus = resolveOrchestratorStatus()): string {
   const unit = repo.units.find((u) => u.project === project && u.unit === unitId);
   if (!unit) throw new Error(`unknown unit '${project}/${unitId}'`);
   const type = repo.types.get(unit.type);
@@ -657,7 +684,7 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
     </section>
   </main>`;
 
-  const gateHtml = gates.map((g) => gateCardHtml(repo, g, now, { cta: true })).join("\n");
+  const gateHtml = gates.map((g) => gateCardHtml(repo, g, now, { cta: true, dispatching: dispatchingFor(running, g) })).join("\n");
   const briefingBody = `<div class="msg"><div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
       <p class="msg__body">${gates.length ? `${esc(gates[0].label)} is ready for review below.` : "No open gate on this unit right now."}</p></div>`;
   const orch = orchestratorPanel("run", status, briefingBody, gateHtml);

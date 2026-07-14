@@ -76,17 +76,32 @@
       var map = {
         approve: ['approved', 'is-ok'],
         reject:  ['rejected', 'is-danger'],
-        start:   ['started', 'is-ok'],
         notyet:  ['not yet', 'is-neutral'],
         send:    ['changes sent', 'is-neutral']
       };
-      var m = map[verb];
-      if (!m) return;
       var realVerb = verb === 'send' ? (card._pendingVerb || 'request') : verb;
       var note = verb === 'send' && card._note ? card._note.querySelector('.gate__note').value : undefined;
       postGate(card, realVerb, note);
+      // `start` (and `send`, which re-invokes the producer) dispatch a real member call that can take
+      // seconds to minutes — an immediate "started"/"changes sent" resolved-line would be a premature
+      // claim of completion. Show the quiet pending state instead (NOTES F10 defect 3) and let the
+      // SSE-driven reload replace it with the server's real post-production render; every other verb
+      // resolves synchronously server-side, so its immediate optimistic label stays accurate.
+      if (realVerb === 'start' || realVerb === 'request') { markDispatching(card); return; }
+      var m = map[verb];
+      if (!m) return;
       resolveGate(card, m[0], m[1]);
     });
+
+    function markDispatching(card) {
+      card.classList.add('is-resolved', 'is-dispatching');
+      card.classList.remove('gate--start', 'gate--cta');
+      card.innerHTML =
+        '<span class="resolved-line" style="display:flex;align-items:center;gap:11px;width:100%">' +
+          '<span class="msg msg--pending" style="display:inline-flex"><span class="msg__dots"><span></span><span></span><span></span></span></span>' +
+          '<span class="gate__dispatching">dispatching…</span>' +
+        '</span>';
+    }
 
     function openNote(card, verb) {
       card._pendingVerb = verb;

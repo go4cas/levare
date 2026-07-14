@@ -281,6 +281,29 @@ export class Daemon {
     return [...this.inFlight];
   }
 
+  /**
+   * NOTES F10 defect 3: the SAME `inFlight` projection `running()` reads, opened up for a production
+   * that happens OUTSIDE this daemon's own tick loop — a Conductor's `start`/`request-changes` click
+   * (board/gateops.ts#doStart/#doRequest) drives `advanceUnit`/`memberRunner.produce` directly, in the
+   * same request that resolves the gate, and previously never registered as "running" anywhere: the
+   * board stayed static for the whole model call, then jumped straight to the finished result. Callers
+   * register the invocation the instant they know what they're about to dispatch (before awaiting the
+   * member) and end it in a `finally`, mirroring exactly what `tickOnce`'s own `onBeforeProduce`/
+   * `finally` pair already does for the daemon's own autonomous walk.
+   */
+  beginInvocation(inv: { project: string; unit: string; member: string; kind: string }): DaemonInvocation {
+    const entry: DaemonInvocation = { ...inv, startedAt: this.now() };
+    this.inFlight.push(entry);
+    return entry;
+  }
+
+  /** Ends an invocation `beginInvocation` started — a no-op if it's already gone (defensive; never
+   * throws on a double-end). */
+  endInvocation(entry: DaemonInvocation): void {
+    const i = this.inFlight.indexOf(entry);
+    if (i >= 0) this.inFlight.splice(i, 1);
+  }
+
   /** Every produced/blocked/halted/nothing outcome from the daemon's own recent ticks (deliverable f
    * — "never a silent stall": a budget/timebox halt or a member failure is always in here, not just
    * swallowed). Bounded to the most recent entries. */

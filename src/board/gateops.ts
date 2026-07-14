@@ -23,6 +23,7 @@ import { loopMembershipFor, responsibleTeamFor, unmetAfter, patchFrontmatter, up
 import { locateArtifactFile } from "./locate.ts";
 import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL } from "../git.ts";
 import { advanceUnit, type AsyncMemberRunner } from "../dagwalk.ts";
+import type { Daemon } from "../daemon.ts";
 import type { Artifact, WorkUnit } from "../types.ts";
 
 export { CONDUCTOR_NAME, CONDUCTOR_EMAIL };
@@ -48,6 +49,12 @@ export interface ResolveOpts {
    * still-mocked SDK/MCP boundaries, K5's own separate, documented deferral). `stubAdapterRunner`
    * (replay.ts) must never be reachable from here — see daemon.ts's identical note. */
   memberRunner?: AsyncMemberRunner;
+  /** NOTES F10 defect 3: when set, a `start`/`request` verb that dispatches a member registers the
+   * invocation with this daemon's `running()` projection for the synchronous window it's in flight —
+   * so the board can show it as dispatching immediately, not only once the daemon's own tick catches
+   * it later. Absent in every context with no live daemon (read-only board, most tests) — nothing
+   * registers, exactly the pre-existing behavior. */
+  daemon?: Daemon;
 }
 
 /** Resolve one gate verb against `target` (an artifact id, or — for start/notyet/rescope — a unit id). */
@@ -58,7 +65,7 @@ export async function resolveGate(root: string, project: string, target: string,
   const unit = repo.units.find((u) => u.project === project && repo.artifacts.get(`${project}/${u.unit}`)?.has(target));
 
   if (verb === "start" || verb === "notyet" || verb === "rescope") {
-    return await resolveStartGate(root, repo, project, target, verb, memberRunner);
+    return await resolveStartGate(root, repo, project, target, verb, memberRunner, opts.daemon);
   }
   if (!unit) return { ok: false, status: 404, error: `no open gate for artifact '${target}' in project '${project}'` };
 
@@ -79,7 +86,7 @@ export async function resolveGate(root: string, project: string, target: string,
 
   if (verb === "approve") return doApprove(root, located.file, target, today, opts.note, extra);
   if (verb === "reject") return doReject(root, located.file, target, opts.note, extra);
-  if (verb === "request") return await doRequest(root, unit.dir, located.file, art, opts.note, memberRunner, extra);
+  if (verb === "request") return await doRequest(root, unit.dir, located.file, art, opts.note, memberRunner, extra, opts.daemon);
   return { ok: false, status: 400, error: `verb '${verb}' is not valid for an artifact gate` };
 }
 
@@ -131,6 +138,7 @@ async function doRequest(
   note: string | undefined,
   memberRunner: AsyncMemberRunner,
   extraFiles: string[],
+  daemon?: Daemon,
 ): Promise<GateOpResult> {
   if (!note || !note.trim()) return { ok: false, status: 400, error: "request-changes requires a note" };
   const member = art.produced_by.split("/")[1];
@@ -144,7 +152,15 @@ async function doRequest(
   // E4: re-invoke through the real MemberRunner/AdapterRunner boundary — context assembly, env
   // scoping, and a normalized usage receipt all run for real, behind the still-mocked native/CLI
   // boundaries (invariant 10) — rather than reaching directly for the stub's `render()`.
-  const { doc: baseDoc } = await memberRunner.produce(member, art.kind, art.unit, art.project);
+  // NOTES F10 defect 3: registered with the daemon's inFlight projection for the synchronous window
+  // this call is dispatched, so the board can show it as dispatching immediately (see `beginInvocation`).
+  const invocation = daemon?.beginInvocation({ project: art.project, unit: art.unit, member, kind: art.kind });
+  let baseDoc: string;
+  try {
+    ({ doc: baseDoc } = await memberRunner.produce(member, art.kind, art.unit, art.project));
+  } finally {
+    if (invocation) daemon!.endInvocation(invocation);
+  }
   const baseId = idOfDoc(baseDoc);
   const newId = bumpVersion(baseId, nextRound);
   const newDoc = patchFrontmatter(baseDoc, { id: newId, supersedes: art.id });
@@ -208,11 +224,12 @@ async function resolveStartGate(
   unitId: string,
   verb: "start" | "notyet" | "rescope",
   memberRunner: AsyncMemberRunner,
+  daemon?: Daemon,
 ): Promise<GateOpResult> {
   const unit = repo.units.find((u) => u.project === project && u.unit === unitId);
   if (!unit) return { ok: false, status: 404, error: `no unit '${unitId}' in project '${project}'` };
   if (verb === "notyet") return { ok: true, commit: "", changedFiles: [] }; // purely informational; nothing to persist
-  if (verb === "start") return await doStart(root, repo, unit, memberRunner);
+  if (verb === "start") return await doStart(root, repo, unit, memberRunner, daemon);
   // rescope: no artifact to flip; a unit with an unmet-then-met after: has no separate persisted
   // "queued" status (NOTES A6), so rescoping simply records the decision — nothing to commit either.
   return { ok: true, commit: "", changedFiles: [] };
@@ -236,13 +253,26 @@ async function resolveStartGate(
 // NOTES.md's phase-8 section). `verb: "start"` is kept so the commit MESSAGE still records that this
 // production followed an explicit start click, distinguishing it from a later autonomous advance —
 // only the identity was ever wrong.
-async function doStart(root: string, repo: Repo, unit: WorkUnit, memberRunner: AsyncMemberRunner): Promise<GateOpResult> {
+async function doStart(root: string, repo: Repo, unit: WorkUnit, memberRunner: AsyncMemberRunner, daemon?: Daemon): Promise<GateOpResult> {
   const unmet = unmetAfter(repo, unit);
   if (unmet.length > 0) return { ok: false, status: 409, error: `unit '${unit.unit}' still has unmet after: [${unmet.join(", ")}]` };
   const team = responsibleTeamFor(repo, unit);
   if (!team) return { ok: false, status: 409, error: `no team produces kinds for unit type '${unit.type}'` };
 
-  const result = await advanceUnit(root, repo, unit, memberRunner, { startAuthorized: true, verb: "start" });
+  // NOTES F10 defect 3: registers the invocation with the daemon's inFlight projection the instant
+  // advanceUnit resolves what it's about to produce — the SAME window `daemon.ts#tickOnce`'s own
+  // `onBeforeProduce` brackets for its own autonomous walk, so a Conductor-triggered start is visible
+  // exactly like a daemon-tick-driven one, not invisible the whole time a real model call is thinking.
+  let invocation: { project: string; unit: string; member: string; kind: string; startedAt: string } | undefined;
+  const result = await advanceUnit(root, repo, unit, memberRunner, {
+    startAuthorized: true,
+    verb: "start",
+    onBeforeProduce: (member, kind) => {
+      invocation = daemon?.beginInvocation({ project: unit.project, unit: unit.unit, member, kind });
+    },
+  }).finally(() => {
+    if (invocation && daemon) daemon.endInvocation(invocation);
+  });
   if (result.outcome === "nothing") {
     return { ok: false, status: 409, error: `unit '${unit.unit}' has nothing left for team '${team.name}' to produce` };
   }

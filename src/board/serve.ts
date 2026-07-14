@@ -162,14 +162,14 @@ export const ROUTES: RouteDef[] = [
     pattern: "/project/:name",
     mutating: false,
     page: true,
-    handler: (_req, params, ctx) => html(renderProject(withRepo(ctx.root), params.name, ctx.root)),
+    handler: (_req, params, ctx) => html(renderProject(withRepo(ctx.root), params.name, ctx.root, undefined, ctx.daemon?.running() ?? [])),
   },
   {
     method: "GET",
     pattern: "/run/:project/:unit",
     mutating: false,
     page: true,
-    handler: (_req, params, ctx) => html(renderRun(withRepo(ctx.root), params.project, params.unit, ctx.root)),
+    handler: (_req, params, ctx) => html(renderRun(withRepo(ctx.root), params.project, params.unit, ctx.root, undefined, ctx.daemon?.running() ?? [])),
   },
   {
     method: "GET",
@@ -233,7 +233,7 @@ export const ROUTES: RouteDef[] = [
       } catch {
         /* no body / not JSON — note stays undefined */
       }
-      const result = await resolveGate(ctx.root, params.project, params.artifact, verb, { note, memberRunner: ctx.memberRunner });
+      const result = await resolveGate(ctx.root, params.project, params.artifact, verb, { note, memberRunner: ctx.memberRunner, daemon: ctx.daemon });
       if (!result.ok) return json({ ok: false, error: result.error }, result.status);
       ctx.broadcast("reload");
       // Deliverable (d): an approval (or any other resolution) may have just satisfied a producible
