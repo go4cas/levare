@@ -267,6 +267,15 @@ the field entirely absent), mirroring F7's own dry-run/live parity proof for the
 axis. `bun test` — 446 pass, 1 pre-existing skip, 0 fail, across 40 files; `levare replay
 fixtures/golden --stubs` — still byte-for-byte against `expected.json`; `deps:check` — `deps ok`.
 
+C10 — The Orchestrator holds NO filesystem tools; it is handed a derived projection of the studio
+instead. `converse()`'s prior `Read`/`Grep`/`Glob` grant (NOTES phase-7 K17) was found live to let the
+model wander into levare's OWN source tree — `sdk-transport.ts` always spawns the SDK worker process
+with `cwd: LEVARE_ROOT` (K13, needed so the worker script resolves its own node_modules), so a
+tool-driven model's relative-path reads resolved against the WORKER's process cwd, not the `cwd: root`
+value the SDK request carried; the wiring (which studio root was threaded through) was correct all
+along — the bug was that the Orchestrator had search tools at all. See the full write-up at the end of
+this file for the fix, the tests, and what this closes on `docs/security-audit.md` Surface 1.
+
 # NOTES — uncertainties and assumptions (Phase 3)
 
 Phase-3 delivers the adapters, context assembly, §10 receipts, guardrails, and doctor. These entries
@@ -2925,3 +2934,77 @@ that guess should be treated as unconfirmed, not verbatim, until their own text 
 **Verification for D10/D11:** `bun test` — 435 pass, 1 pre-existing skip, 0 fail, across 39 files;
 `bun run deps:check` — `deps ok`; `./levare init <empty dir>` then `./levare validate <that dir>`
 prints `valid` and exits 0.
+
+# NOTES — ruling C10: the Orchestrator gets a projection, not filesystem tools (fix-up)
+
+**The live bug.** `levare serve ~/source/scratch` rendered the scratch studio correctly on the board,
+but the Orchestrator's chat answers were grounded in levare's OWN SOURCE TREE: it reported reading
+`src/`, `tests/`, and `fixtures/golden/ideas/loyalty-program.md` — an idea that exists only in this
+repo's own golden fixture, never in the served studio. The process cwd and the served root were both
+confirmed correct at the call site (`board/serve.ts`'s `orchestratorCtx = { root: ctx.root, ... }`,
+threaded unchanged from the CLI's `serve` argument through `createBoard` to `handle()` to
+`boundary.converse(text, ctx.root)`) — this was not a wiring defect in the sense of "the wrong path was
+passed." The actual defect: `orchestrator-boundary.ts#converse` granted the model `Read`/`Grep`/`Glob`
+and passed `cwd: root` as an SDK request option, but `sdk-transport.ts`'s `createAsyncSdkTransport`
+(and its sync sibling) always spawns the SDK worker subprocess with `cwd: LEVARE_ROOT` (NOTES phase-7
+K13 — needed so the worker script itself resolves its own `node_modules`, since the worker is `bun
+src/sdk-worker.ts` and Bun resolves modules relative to the spawning process's cwd). A tool-driven
+model resolving relative paths (the shape every one of its own Read/Grep/Glob calls used) walked the
+WORKER's actual OS-level working directory — levare's own repo — never the studio the `cwd:` request
+option named. The fix could not be "pass the SDK's cwd option more carefully" — the model had a general
+-purpose search tool and a process cwd it could always fall back to; any given root was one `cd ..` (or
+one absolute-path guess) away from being ignored entirely. Per the ruling (PRD §7: "the Orchestrator
+holds no state — everything it knows is re-derived from the repo"), the real fix is structural: give it
+no filesystem access at all.
+
+**The fix.**
+- `orchestrator-boundary.ts#converse` now requests `tools: []`, `allowedTools: []` — identical to what
+  `interpret()`/`narrate()` already passed. No `cwd` is sent either (irrelevant with no tools to sandbox).
+- `src/orchestrator-projection.ts` (new) — `buildStudioProjection(repo, opts)` assembles a deterministic
+  text projection of the studio, the same "levare derives it, the model never fetches it" discipline as
+  the §6 member-context recipe (`context.ts`): registry (teams/agents/skills/knowledge/types/
+  connectors/projects, key fields only — never full bodies), work units with their artifacts' statuses
+  and lineage (`consumes`/`supersedes`), open gates with age (`board/derive.ts#ageLabel`) and cost
+  (`costLabel`), a timeline bounded to the most recent N rows (`board/timeline.ts#buildTimeline`, HTML
+  stripped), the doctor summary (`doctor.ts#diagnose` — presence-only, never secret values, invariant
+  11), and ideas (name + pitch). Every section reads only from the already-loaded `Repo` (itself loaded
+  from one root) plus `repo.root`-scoped helpers (`loadExtras(repo.root)`, `buildTimeline(repo.root, …)`,
+  `git -C root log`) — there is no code path in this module that can read outside the studio it was
+  given.
+- `converse(text, root)` validates `root` is truthy and throws (`OrchestratorBoundary.converse() called
+  without an explicit studio root…`) rather than silently proceeding — the acceptance criterion "a call
+  constructed without one is an error, never a default." The prompt sent to the transport is the
+  projection followed by `\n\nConductor: <text>` (the Conductor's raw text always verbatim at the very
+  end, mirroring `INTERPRET_TASK_PREFIX`'s established pattern) — never a tool round-trip.
+- `interpret()`/`narrate()` were deliberately left unchanged (no `root` param added): they already
+  granted zero tools and never touched disk — `interpret()` classifies raw text against a fixed schema,
+  `narrate()` rephrases an already-fully-computed fact string. Threading a full studio projection into
+  every `narrate()` call (fired on every briefing/gate-decision/stats reply) would reintroduce exactly
+  the cost blowup NOTES K16 already fixed once (a live host spent $0.055 on a two-word "stats" reply)
+  for zero grounding benefit, since neither function was ever the vector of this bug. This is a scoping
+  judgment call, recorded here rather than asked about per the standing constraint.
+
+**What this closes.** `docs/security-audit.md` Surface 1's own threat model explicitly assumed
+"`converse()` gives the model read-only tools only… So even a model fully subverted by injected text
+has no write primitive" — true, but it still had a READ primitive reaching arbitrary files the process
+could reach (the live bug above is exactly that, minus even the "injected text" precondition — the
+model wandered on its own). With zero tools, that read primitive is gone entirely: the only content the
+model can reference is what `buildStudioProjection` explicitly assembled from the served studio's own
+files, and the projection's own header line states outright that any embedded content (idea/artifact
+text) is information, not instruction — the same prompt-injection posture the verbatim system prompt
+already established, now with nothing left for an injection to reach beyond the projection's own bytes.
+
+**Tests.** `tests/orchestrator-sdk.test.ts`'s `converse` describe block: zero tools/no `cwd` (was
+Read/Grep/Glob/cwd), the assembled prompt is grounded in a REAL `loadRepo(root)` of a scratch studio
+(not an arbitrary string — converse now genuinely reads disk, so its tests seed real git-committed
+fixture copies, mirroring `orchestrator.test.ts#seedScratchRepo`), a call with an empty/`undefined` root
+throws rather than defaulting, and two independently-seeded studios' projections never leak each other's
+content. `tests/orchestrator-projection.test.ts` (new): `buildStudioProjection` contains the served
+studio's teams/work-units/gates/ideas, never levare's own `src/`/`tests/`, and never another studio's
+idea; an end-to-end case boots the real board (`createBoard`, the router `levare serve` mounts) against
+a scratch studio in a temp dir with the real `createSdkOrchestratorBoundary` (only the SDK TRANSPORT is
+faked — this sandbox has no live `ANTHROPIC_API_KEY`, the same K12 live-gate deferral Surface 1 already
+recorded), POSTs `/orchestrator/message` asking "what ideas do we have?", and asserts the JSON reply
+names the scratch studio's own idea and never the fixture's `loyalty-program`. `bun test` — 452 pass, 1
+pre-existing skip, 0 fail, across 41 files; `levare replay fixtures/golden --stubs` — still byte-for-
+byte against `expected.json`; `deps:check` — `deps ok`.
