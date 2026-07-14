@@ -315,6 +315,7 @@ export function validatePath(target: string): ValidationResult {
   if (st.isDirectory()) {
     validateStudioBindings(target, errors);
     validateAgentContextScope(target, errors);
+    validateEnvNotTracked(target, errors);
   }
 
   // Cross-artifact checks over everything discovered.
@@ -793,6 +794,34 @@ function validateAgentContextScope(root: string, errors: ValidationError[]): voi
         `agent '${agentName}' has cwd '${cwd}' outside the studio root '${root}' and does not declare ` +
         `'context_artifacts: inline'; such a member can never read what it consumes at that path (ruling C9)`,
       file,
+    });
+  }
+}
+
+/**
+ * NOTES C11 part 4 (hard rule a): a committed `.env` in a studio that will be shared is a catastrophe
+ * — every credential in it becomes visible to anyone who clones the repo, forever, even after the file
+ * is later removed (it stays in history). This fails closed: any `.env` tracked by git at the studio
+ * root is a validation error, naming the file and why, rather than a warning that's easy to ignore.
+ * Only meaningful when the target is itself a git repo (gitToplevel below returns null otherwise —
+ * nothing to check against, same fail-open posture as the immutability check's own S0 state).
+ */
+function validateEnvNotTracked(root: string, errors: ValidationError[]): void {
+  const envFile = join(root, ".env");
+  if (!existsSync(envFile)) return;
+  const toplevel = gitToplevel(root);
+  if (!toplevel) return;
+  const rel = relative(toplevel, canonical(envFile));
+  // `git ls-files --error-unmatch <path>` exits 0 iff the path IS tracked (present in the index) —
+  // the same primitive gitImmutabilityCheck already relies on for "is this file in git at all".
+  const r = spawnSync("git", ["-C", toplevel, "ls-files", "--error-unmatch", rel], { encoding: "utf8" });
+  if (r.status === 0) {
+    errors.push({
+      code: "ENV_FILE_TRACKED",
+      message:
+        `.env is tracked by git — a committed credential in a studio that will be shared is a catastrophe. ` +
+        `Remove it from git (git rm --cached .env), add .env to .gitignore, and rotate any credential it held.`,
+      file: envFile,
     });
   }
 }

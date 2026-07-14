@@ -9,6 +9,8 @@
 // env probe and the CLI probe; the CLI wires process.env presence and Bun.which.
 
 import type { Connector } from "./types.ts";
+import type { EnvProvenance } from "./dotenv.ts";
+import type { OrchestratorStatus } from "./orchestrator-status.ts";
 
 /** Presence-only view of the environment — never exposes values (invariant 11). */
 export interface EnvProbe {
@@ -21,7 +23,11 @@ export type CliProbe = (command: string) => "found" | "not-found";
 export interface ConnectorHealth {
   name: string;
   kind: "mcp" | "cli";
-  env: Array<{ name: string; present: boolean }>;
+  // NOTES C11 part 4: `provenance` names WHERE a present variable came from — '.env' or the shell —
+  // so "why does this work on my machine and not in CI" has a visible answer. `undefined` when the
+  // caller didn't pass a provenance map (every pre-C11 call site; presence-only, as before) or the
+  // variable is absent.
+  env: Array<{ name: string; present: boolean; provenance?: EnvProvenance }>;
   status: "ok" | "missing-env";
   /** For cli connectors: the command and whether it resolves on PATH. */
   cli?: { command: string; probe: "found" | "not-found" };
@@ -29,11 +35,14 @@ export interface ConnectorHealth {
   mcp?: { server: string };
 }
 
-export function diagnose(connectors: Connector[], env: EnvProbe, probe: CliProbe): ConnectorHealth[] {
+export function diagnose(connectors: Connector[], env: EnvProbe, probe: CliProbe, provenance?: Map<string, EnvProvenance>): ConnectorHealth[] {
   return [...connectors]
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((c) => {
-      const envChecks = c.env.map((name) => ({ name, present: env.has(name) }));
+      const envChecks = c.env.map((name) => {
+        const present = env.has(name);
+        return { name, present, provenance: present ? (provenance?.get(name) ?? "shell") : undefined };
+      });
       const status: ConnectorHealth["status"] = envChecks.every((e) => e.present) ? "ok" : "missing-env";
       const health: ConnectorHealth = { name: c.name, kind: c.kind, env: envChecks, status };
       if (c.kind === "cli" && c.command) health.cli = { command: c.command, probe: probe(c.command) };
@@ -42,14 +51,22 @@ export function diagnose(connectors: Connector[], env: EnvProbe, probe: CliProbe
     });
 }
 
-/** Render the health report as the exact text `levare doctor` prints. */
-export function formatDoctor(health: ConnectorHealth[]): string {
+/** Render the health report as the exact text `levare doctor` prints. `orchestrator`, when given,
+ * prints the Orchestrator boundary's own on/off state ahead of the connector report (NOTES C11 part
+ * 3: "report the Orchestrator's boundary in `levare doctor`") — the same status the board's header
+ * indicator shows, computed by the same function (orchestrator-status.ts), so the two can never
+ * disagree about whether the Orchestrator is reachable. */
+export function formatDoctor(health: ConnectorHealth[], orchestrator?: OrchestratorStatus): string {
   const out: string[] = [];
+  if (orchestrator) {
+    out.push(`orchestrator: ${orchestrator.available ? "on" : "off"} · ${orchestrator.reason}`);
+    out.push("");
+  }
   out.push(`levare doctor · ${health.length} connector${health.length === 1 ? "" : "s"}`);
   for (const h of health) {
     out.push("");
     out.push(`${h.name} · ${h.kind}`);
-    for (const e of h.env) out.push(`  env ${e.name} ${e.present ? "present" : "missing"}`);
+    for (const e of h.env) out.push(`  env ${e.name} ${e.present ? `present (${e.provenance})` : "missing"}`);
     if (h.cli) out.push(`  cli ${h.cli.command} ${h.cli.probe === "found" ? "on PATH" : "not found on PATH"}`);
     if (h.mcp) out.push(`  mcp ${h.mcp.server}`);
     out.push(`  → ${h.status}`);
@@ -57,6 +74,6 @@ export function formatDoctor(health: ConnectorHealth[]): string {
   return out.join("\n") + "\n";
 }
 
-export function runDoctor(connectors: Connector[], env: EnvProbe, probe: CliProbe): string {
-  return formatDoctor(diagnose(connectors, env, probe));
+export function runDoctor(connectors: Connector[], env: EnvProbe, probe: CliProbe, provenance?: Map<string, EnvProvenance>, orchestrator?: OrchestratorStatus): string {
+  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator);
 }

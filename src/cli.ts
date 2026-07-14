@@ -8,6 +8,8 @@ import { assembleContext } from "./context.ts";
 import { runDoctor } from "./doctor.ts";
 import { serve } from "./board/serve.ts";
 import { initStudio, GIT_IDENTITY_NOTE } from "./init.ts";
+import { applyStudioEnv } from "./dotenv.ts";
+import { resolveOrchestratorStatus } from "./orchestrator-status.ts";
 
 // Until the studio repo root is populated, the fixture golden tree stands in as the studio (NOTES
 // A1); context/doctor default their root there. `--root <path>` overrides.
@@ -72,14 +74,20 @@ export function runContextCmd(rest: string[]): number {
   }
 }
 
-// `levare doctor [root]` — walk connectors, report env presence + CLI/MCP reachability (§6).
+// `levare doctor [root]` — walk connectors, report env presence + CLI/MCP reachability (§6), the
+// Orchestrator's own boundary state, and where each present variable came from (.env or shell).
 export function runDoctorCmd(rest: string[]): number {
   const root = rest.find((a) => !a.startsWith("-")) ?? DEFAULT_ROOT;
   try {
+    // NOTES C11 part 4: `.env` at the studio root loads into this process's own env BEFORE anything
+    // below reads it — the same "on startup" contract `runServeCmd` follows — so doctor reports
+    // exactly the environment a `levare serve` launched right after it would actually see.
+    const provenance = applyStudioEnv(root);
     const repo = loadRepo(root);
     const env = { has: (name: string) => typeof process.env[name] === "string" && process.env[name] !== "" };
     const probe = (command: string): "found" | "not-found" => (Bun.which(command) ? "found" : "not-found");
-    process.stdout.write(runDoctor([...repo.connectors.values()], env, probe));
+    const orchestrator = resolveOrchestratorStatus(process.env);
+    process.stdout.write(runDoctor([...repo.connectors.values()], env, probe, provenance, orchestrator));
     return 0;
   } catch (e) {
     console.error(String(e instanceof Error ? e.message : e));
@@ -137,6 +145,11 @@ function wrap(text: string, width: number): string[] {
 // (nothing for it to legitimately write). `--no-daemon` disables it on an otherwise-writable root too.
 export function runServeCmd(rest: string[]): number {
   const root = rest.find((a) => !a.startsWith("-")) ?? DEFAULT_ROOT;
+  // NOTES C11 part 4: load `<root>/.env` into this process's own environment on startup — exactly as
+  // if the operator had exported those variables in their shell. The connector allowlist (env.ts) is
+  // unaffected: it scopes from process.env regardless of how a variable got there, so a member without
+  // a grant still can't see a var this only just added.
+  applyStudioEnv(root);
   const port = Number(flag(rest, "--port") ?? 4173);
   // --read-only forces write routes off for any path; without it, a path under fixtures/ is
   // read-only by default (structural, not a rule to remember — see NOTES E14) and any other path

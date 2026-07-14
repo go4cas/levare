@@ -1,7 +1,7 @@
 levare doctor · 2 connectors
 
 github · cli
-  env GITHUB_TOKEN present
+  env GITHUB_TOKEN present (shell)
   cli gh not found on PATH
   → ok
 
