@@ -15,6 +15,7 @@ import {
   type ArtifactStatus,
   type Connector,
   type Project,
+  type StudioSettings,
   type Team,
   type TypeTemplate,
   type Usage,
@@ -32,6 +33,8 @@ export interface Repo {
   units: WorkUnit[];
   /** Artifacts keyed by `${project}/${unit}` → id → artifact (the on-disk starting state). */
   artifacts: Map<string, Map<string, Artifact>>;
+  /** Studio-level settings (NOTES F11), read from the root `studio.md` singleton when present. */
+  studio: StudioSettings;
 }
 
 export class RepoError extends Error {}
@@ -55,8 +58,22 @@ export function loadRepo(root: string, { validate = true }: { validate?: boolean
   const projects = loadEntities(join(root, "projects"), toProject);
   const connectors = loadEntities(join(root, "connectors"), toConnector);
   const { units, artifacts } = loadWork(join(root, "work"));
+  const studio = loadStudioSettings(root);
 
-  return { root, teams, agents, types, projects, connectors, units, artifacts };
+  return { root, teams, agents, types, projects, connectors, units, artifacts, studio };
+}
+
+// ---------------------------------------------------------------------------
+// studio.md — the root singleton carrying studio-level declarations (NOTES F11)
+// ---------------------------------------------------------------------------
+
+/** Read the root `studio.md` singleton, if present. Absent file → `{}` (no declarations), the
+ * same "files are the truth, nothing invented" posture every other loader in this module takes. */
+export function loadStudioSettings(root: string): StudioSettings {
+  const file = join(root, "studio.md");
+  if (!existsSync(file)) return {};
+  const { data } = parseFrontmatter(readFileSync(file, "utf8"));
+  return { orchestratorModel: optStr(data.orchestrator_model) };
 }
 
 /**

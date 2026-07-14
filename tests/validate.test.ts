@@ -307,3 +307,132 @@ describe("PRD v1.1: `mode:` was removed from the team schema (invariant 7)", () 
     expect(r.errors.some((e) => e.code === "UNKNOWN_KEY" && e.message.includes("mode"))).toBe(false);
   });
 });
+
+// NOTES F11: `model:` was decorative — declared but never enforced, and never validated. This closes
+// the validation half: a model levare cannot price cannot be declared, named at `levare validate` time
+// (never discovered live), and a CLI agent whose command template can never actually receive its
+// declared model is refused the same way.
+describe("F11: known-model validation — a model that cannot be priced cannot be declared", () => {
+  function buildStudio(opts: {
+    agentModel?: string;
+    agentKind?: "native" | "cli";
+    command?: string;
+    studioModel?: string;
+    withPricing?: boolean;
+  }): string {
+    const dir = mkdtempSync(join(tmpdir(), "levare-known-model-"));
+    mkdirSync(join(dir, "agents"), { recursive: true });
+    if (opts.withPricing !== false) {
+      mkdirSync(join(dir, "knowledge"), { recursive: true });
+      writeFileSync(
+        join(dir, "knowledge", "model-pricing.md"),
+        ["---", "name: model-pricing", "---", "", "| model | tokens_in (/M) | tokens_out (/M) |", "| --- | --- | --- |", "| claude-sonnet-5 | 3.00 | 15.00 |", ""].join("\n"),
+      );
+    }
+    const kind = opts.agentKind ?? "native";
+    const lines = ["---", "name: scribe", `kind: ${kind}`, "produces: [report]"];
+    if (opts.agentModel !== undefined) lines.push(`model: ${opts.agentModel}`);
+    if (kind === "cli") {
+      lines.push(`command: [${opts.command ?? "codex, review"}]`, 'result: "emits a report"');
+    }
+    lines.push("style:", "  avatar: Sc", "---", "", "Scribe.", "");
+    writeFileSync(join(dir, "agents", "scribe.md"), lines.join("\n"));
+    if (opts.studioModel !== undefined) {
+      writeFileSync(join(dir, "studio.md"), `---\norchestrator_model: ${opts.studioModel}\n---\n\n# Studio\n`);
+    }
+    return dir;
+  }
+
+  test("an agent declaring an unknown model fails validation with UNKNOWN_MODEL, naming the agent and the model", () => {
+    const dir = buildStudio({ agentModel: "claude-sonnet" }); // not in the known set
+    try {
+      const r = validatePath(dir);
+      expect(r.ok).toBe(false);
+      const err = r.errors.find((e) => e.code === "UNKNOWN_MODEL");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("scribe");
+      expect(err!.message).toContain("claude-sonnet");
+      expect(err!.file).toContain("agents/scribe.md");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an agent declaring a known, priced model validates clean", () => {
+    const dir = buildStudio({ agentModel: "claude-sonnet-5" });
+    try {
+      const r = validatePath(dir);
+      expect(r.errors.map((e) => e.code)).not.toContain("UNKNOWN_MODEL");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("with no knowledge/model-pricing.md at all, model validation fails open (nothing to check against)", () => {
+    const dir = buildStudio({ agentModel: "totally-made-up-model", withPricing: false });
+    try {
+      const r = validatePath(dir);
+      expect(r.errors.map((e) => e.code)).not.toContain("UNKNOWN_MODEL");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the studio's orchestrator_model is validated the same way — unknown model fails UNKNOWN_MODEL naming studio.md", () => {
+    const dir = buildStudio({ agentModel: "claude-sonnet-5", studioModel: "gpt-nonsense" });
+    try {
+      const r = validatePath(dir);
+      expect(r.ok).toBe(false);
+      const err = r.errors.find((e) => e.code === "UNKNOWN_MODEL" && e.file.endsWith("studio.md"));
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("gpt-nonsense");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the studio's orchestrator_model in the known set validates clean", () => {
+    const dir = buildStudio({ agentModel: "claude-sonnet-5", studioModel: "claude-sonnet-5" });
+    try {
+      const r = validatePath(dir);
+      expect(r.errors.map((e) => e.code)).not.toContain("UNKNOWN_MODEL");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a cli agent declaring a model with no {model} placeholder in its command template fails MODEL_PLACEHOLDER_MISSING", () => {
+    const dir = buildStudio({ agentKind: "cli", agentModel: "claude-sonnet-5", command: "codex, review, --input, '{task}'" });
+    try {
+      const r = validatePath(dir);
+      expect(r.ok).toBe(false);
+      const err = r.errors.find((e) => e.code === "MODEL_PLACEHOLDER_MISSING");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("scribe");
+      expect(err!.message).toContain("claude-sonnet-5");
+      expect(err!.file).toContain("agents/scribe.md");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a cli agent whose command template DOES carry {model} validates clean on that front", () => {
+    const dir = buildStudio({ agentKind: "cli", agentModel: "claude-sonnet-5", command: "codex, review, --model, '{model}'" });
+    try {
+      const r = validatePath(dir);
+      expect(r.errors.map((e) => e.code)).not.toContain("MODEL_PLACEHOLDER_MISSING");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a cli agent declaring no model at all is never subject to MODEL_PLACEHOLDER_MISSING", () => {
+    const dir = buildStudio({ agentKind: "cli", command: "codex, review, --input, '{task}'" });
+    try {
+      const r = validatePath(dir);
+      expect(r.errors.map((e) => e.code)).not.toContain("MODEL_PLACEHOLDER_MISSING");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

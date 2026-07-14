@@ -10,6 +10,7 @@ import { readdirSync, readFileSync, statSync, existsSync, realpathSync } from "n
 import { join, relative, dirname, basename, sep, isAbsolute, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseFrontmatter, YamlError, type YamlValue } from "./yaml.ts";
+import { loadPricing, type Pricing } from "./pricing.ts";
 
 export interface ValidationError {
   code: string;
@@ -242,6 +243,17 @@ const SKILL_SCHEMA: Schema = {
   },
 };
 
+// The root `studio.md` singleton (NOTES F11) — studio-level declarations, distinct from a
+// `projects/*.md` product pointer. Currently one field: the Orchestrator's declared model, which
+// `validateKnownModels` below checks against `knowledge/model-pricing.md` exactly like an agent's own
+// `model:` field.
+const STUDIO_SCHEMA: Schema = {
+  name: "studio",
+  fields: {
+    orchestrator_model: { type: "str", required: false },
+  },
+};
+
 const IDEA_SCHEMA: Schema = {
   name: "idea",
   fields: {
@@ -320,6 +332,7 @@ export function validatePath(target: string): ValidationResult {
     validateResponsibleTeam(target, errors);
     validateAgentContextScope(target, errors);
     validateEnvNotTracked(target, errors);
+    validateKnownModels(target, errors);
   }
 
   // Cross-artifact checks over everything discovered.
@@ -340,6 +353,9 @@ function classify(relPath: string): Kind {
   // Team LEARNINGS.md notes (`<team>.learnings.md`) are plain markdown injected into context, not
   // schema entities — skip them wherever they sit so the validator doesn't demand team frontmatter.
   if (base.endsWith(".learnings.md")) return { schema: null, isArtifact: false, isUnit: false };
+  // The root `studio.md` singleton (NOTES F11) — a bare top-level file, never nested in a registry
+  // folder, so it must be matched before the `map[top]` lookup below (which only recognizes folders).
+  if (parts.length === 1 && base === "studio.md") return { schema: STUDIO_SCHEMA, isArtifact: false, isUnit: false };
   if (top === "work") {
     if (base === "unit.md") return { schema: WORK_UNIT_SCHEMA, isArtifact: false, isUnit: true };
     if (base === "ledger.ndjson") return { schema: null, isArtifact: false, isUnit: false };
@@ -631,7 +647,91 @@ function validateAgentVariant(data: Record<string, YamlValue>, file: string, err
   else if (data.kind === "cli") {
     need("command");
     need("result");
+    // NOTES F11: a CLI member's declared model is only enforceable if the Runner can actually hand
+    // it to the vendor CLI — that means substituting it into the command template via a `{model}`
+    // placeholder (adapters.ts#defaultCliCommand). A `model:` with no `{model}` anywhere in `command`
+    // is a declaration that can never reach the vendor: a lie, caught here rather than discovered as
+    // a silent no-op at run time.
+    if (typeof data.model === "string" && Array.isArray(data.command)) {
+      const hasPlaceholder = data.command.some((c) => typeof c === "string" && c.includes("{model}"));
+      if (!hasPlaceholder) {
+        errors.push({
+          code: "MODEL_PLACEHOLDER_MISSING",
+          message: `agent '${String(data.name)}' declares kind: cli and model: '${data.model}', but its command template has no '{model}' placeholder — a declared model that cannot reach the vendor is a lie`,
+          file,
+        });
+      }
+    }
   } else if (data.kind === "remote") need("server");
+}
+
+// ---------------------------------------------------------------------------
+// Known-model validation (NOTES F11) — a model that cannot be priced cannot be declared
+// ---------------------------------------------------------------------------
+//
+// `knowledge/model-pricing.md` is the single known-model set: the same table `pricing.ts` reads to
+// price a usage receipt's USD estimate. An agent (any kind) or the studio's own `orchestrator_model`
+// naming a model absent from that table is rejected here, at validation time — never discovered live,
+// as an unpriceable receipt or (worse) a silently-substituted default model on a member the Conductor
+// specifically chose for its capability.
+//
+// Fail-open when the table itself is absent or empty (consistent with this validator's other
+// unverifiable-state postures, e.g. the git-immutability check's S0/S1): a target with no pricing
+// table at all has nothing to check a declared model against, and a subtree fixture that never
+// declares a knowledge/ directory (most rejection fixtures, most ad hoc test studios) is not making a
+// pricing claim this check could meaningfully validate.
+
+/** Every agent name → its declared `model:`, when present, from `agents/*.md`. */
+function declaredAgentModels(agentsDir: string): Array<{ agentName: string; model: string; file: string }> {
+  const out: Array<{ agentName: string; model: string; file: string }> = [];
+  if (!existsSync(agentsDir)) return out;
+  for (const name of readdirSync(agentsDir).sort()) {
+    if (!name.endsWith(".md") || name.endsWith(".learnings.md")) continue;
+    const file = join(agentsDir, name);
+    let data: Record<string, YamlValue>;
+    try {
+      ({ data } = parseFrontmatter(readFileSync(file, "utf8")));
+    } catch {
+      continue; // its own PARSE_ERROR was already recorded by the per-file pass.
+    }
+    if (typeof data.model === "string") {
+      const agentName = typeof data.name === "string" ? data.name : basename(name, ".md");
+      out.push({ agentName, model: data.model, file });
+    }
+  }
+  return out;
+}
+
+function validateKnownModels(root: string, errors: ValidationError[]): void {
+  const pricing: Pricing = loadPricing(root);
+  if (pricing.size === 0) return; // no pricing table to check against — fail open.
+
+  for (const { agentName, model, file } of declaredAgentModels(join(root, "agents"))) {
+    if (!pricing.has(model)) {
+      errors.push({
+        code: "UNKNOWN_MODEL",
+        message: `agent '${agentName}' declares model '${model}', which is not in knowledge/model-pricing.md's known-model set — an unpriceable model means silently wrong cost accounting`,
+        file,
+      });
+    }
+  }
+
+  const studioFile = join(root, "studio.md");
+  if (existsSync(studioFile)) {
+    let data: Record<string, YamlValue>;
+    try {
+      ({ data } = parseFrontmatter(readFileSync(studioFile, "utf8")));
+    } catch {
+      data = {};
+    }
+    if (typeof data.orchestrator_model === "string" && !pricing.has(data.orchestrator_model)) {
+      errors.push({
+        code: "UNKNOWN_MODEL",
+        message: `studio declares orchestrator_model '${data.orchestrator_model}', which is not in knowledge/model-pricing.md's known-model set — an unpriceable model means silently wrong cost accounting`,
+        file: studioFile,
+      });
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

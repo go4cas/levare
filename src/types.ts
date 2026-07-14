@@ -106,6 +106,15 @@ export interface Agent {
 
 // A connector definition (§5): names the env var *names* a granted member receives; values never
 // live in the repo (invariant 11). `kind: cli` wraps a command; `kind: mcp` names an MCP server.
+// Studio-level settings (NOTES F11): a root singleton (`studio.md`), distinct from `projects/*.md`
+// (product pointers). Currently carries only the Orchestrator's declared model — the registry field
+// that replaces `LEVARE_ORCHESTRATOR_MODEL` as the source of truth (the env var remains a runtime
+// override). Optional throughout: an absent file, or an absent field, means "no studio-level
+// declaration" and callers fall back to their own built-in default.
+export interface StudioSettings {
+  orchestratorModel?: string;
+}
+
 export interface Connector {
   name: string;
   kind: "mcp" | "cli";
