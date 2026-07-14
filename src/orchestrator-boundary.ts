@@ -105,9 +105,28 @@ const INTENT_SCHEMA: Record<string, unknown> = {
 // a first-class, EXPECTED answer, not a failure to avoid. This framing wraps the USER-TURN content
 // only — the verbatim system prompt (docs/orchestrator-prompt.md) is never touched — matching K3's
 // established pattern of varying only the per-call task, never the fixed voice/register prompt.
+//
+// A later live host showed a second, distinct misclassification (item 5 fix-up): "list every idea in
+// this studio" and "what is the pitch of the todo-cli idea, word for word" both came back as
+// "briefing" — which then answers from `buildBriefing`'s gate-triage view (never the full studio
+// projection) and genuinely cannot answer either question, producing "nothing to triage" instead of
+// the real answer the SAME Orchestrator gave correctly on an unambiguous message. "briefing" is cheap
+// for the model to reach (it needs no extra fields, unlike every other structured kind) and the prior
+// prompt never said it was narrow — this paragraph is the fix: state explicitly what "briefing" is
+// and is not, and that "unknown" (→ `converse()`, grounded in the full projection) is the correct
+// answer for any factual or situational question, not a fallback of last resort.
 const INTERPRET_TASK_PREFIX =
-  "Classify the Conductor's message below into exactly one structured intent per the schema. " +
-  'If it is a question, a vague or batch instruction (e.g. "approve everything", "just do the usual"), ' +
+  "Classify the Conductor's message below into exactly one structured intent per the schema.\n\n" +
+  '"briefing" means ONLY an explicit request for gate triage — e.g. "what needs me", "brief me", ' +
+  '"what\'s on my plate" — nothing else. Any question about the studio\'s own content (what teams, ' +
+  "agents, or ideas exist; what a unit or artifact consumes, costs, or is about; what something is " +
+  'word for word; any other request to recall or explain studio state) is NOT a briefing: respond ' +
+  'with kind: "unknown" so it reaches the full conversational answer, grounded in the complete ' +
+  "studio projection — a narrow gate-triage summary cannot answer it, and answering it as a briefing " +
+  'means answering "nothing to triage" to a question that had a real answer. When genuinely unsure ' +
+  'whether a message is a triage request or a factual question, prefer "unknown": an unrequested ' +
+  "triage is noise, an unanswered question is a failure.\n\n" +
+  'If it is a vague or batch instruction (e.g. "approve everything", "just do the usual"), ' +
   "ambiguous between two different operations, or something your own instructions say to decline or " +
   'ask about, respond with kind: "unknown" — do not guess a specific operation you are not confident ' +
   "about; a wrong guess that mutates the repo is worse than asking again.\n\nConductor: ";

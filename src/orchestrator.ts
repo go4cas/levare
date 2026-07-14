@@ -76,7 +76,14 @@ const PROMOTE_IDEA_RE = /^promote idea (\S+) to (\S+)(?:\s+as\s+(\S+))?$/i;
 export const deterministicBoundary: OrchestratorBoundary = {
   async interpret(text: string): Promise<Intent> {
     const t = text.trim();
-    if (/^(what needs me|briefing|brief me)\b/i.test(t)) return { kind: "briefing" };
+    // "briefing" is an explicit request for gate triage ONLY — never a default bucket for a
+    // situational or factual question about the studio (item 5 fix-up). A live host proved the
+    // real SDK boundary over-classifying "list every idea" / "what is the pitch of X" as briefing,
+    // which then answered from `buildBriefing`'s gate-only view (never the projection) and came back
+    // with "nothing to triage" instead of the real answer. This regex was already narrow enough not
+    // to have that bug itself, but is kept explicit here (rather than growing to match anything
+    // studio-shaped) as the same contract `INTERPRET_TASK_PREFIX` states for the real boundary.
+    if (/^(what needs me|briefing|brief me|what'?s on my plate)\b/i.test(t)) return { kind: "briefing" };
 
     let m = GATE_VERB_RE.exec(t);
     if (m) {

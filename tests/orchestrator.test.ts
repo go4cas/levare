@@ -15,6 +15,7 @@ import {
   proposeKnowledgePromotion,
   resolveProposal,
   locateProjectForTarget,
+  deterministicBoundary,
 } from "../src/orchestrator.ts";
 import { loadRepo, type Repo } from "../src/repo.ts";
 import type { CliProbe, EnvProbe } from "../src/doctor.ts";
@@ -240,6 +241,83 @@ describe("(b2) unknown-intent dispatch calls the boundary's converse(), per boun
       const r = await handle("   ", { root, by: CAS_TODAY }, boundary);
       expect(converseCalled).toBe(false);
       expect(r.reply).toBe("Say more and I'll fold it into the next briefing.");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (b3) intent-routing fix-up (item 5): "briefing" means an explicit triage request ONLY — a
+// situational/factual question about the studio must reach converse() (grounded in the full
+// projection, ruling C10), never the narrow gate-triage view `buildBriefing` assembles. Proven live:
+// a real SDK-boundary run answered "list every idea in this studio" and "what is the pitch of the
+// todo-cli idea, word for word" with "nothing to triage" — both misclassified as briefing — while
+// answering an unambiguous message correctly from the projection in the same session.
+// ---------------------------------------------------------------------------
+
+describe("(b3) 'briefing' is explicit-triage-only; factual/situational questions reach converse()", () => {
+  test("deterministicBoundary.interpret(): explicit triage requests classify as briefing", async () => {
+    for (const text of ["what needs me", "briefing", "brief me", "what's on my plate", "whats on my plate"]) {
+      expect(await deterministicBoundary.interpret(text)).toEqual({ kind: "briefing" });
+    }
+  });
+
+  test("deterministicBoundary.interpret(): factual/situational questions never classify as briefing", async () => {
+    for (const text of ["list the ideas", "what is the pitch of the todo-cli idea, word for word", "what teams do I have", "what did that cost"]) {
+      const intent = await deterministicBoundary.interpret(text);
+      expect(intent.kind).not.toBe("briefing");
+    }
+  });
+
+  test("handle(): 'list the ideas', a pitch question, a teams question, and a cost question all dispatch to converse(), answered from the projection — never the briefing path", async () => {
+    const root = seedScratchRepo();
+    try {
+      for (const text of ["list the ideas", "what is the pitch of the todo-cli idea, word for word", "what teams do I have", "what did that cost"]) {
+        let converseRoot: string | undefined;
+        let narrateCalled = false;
+        const boundary = {
+          async interpret(t: string) {
+            return { kind: "unknown" as const, text: t };
+          },
+          async narrate(prompt: string) {
+            narrateCalled = true;
+            return prompt;
+          },
+          async converse(t: string, callRoot: string) {
+            converseRoot = callRoot;
+            return `answered from the projection: ${t}`;
+          },
+        };
+        const r = await handle(text, { root, by: CAS_TODAY }, boundary);
+        expect(converseRoot).toBe(root); // converse() — and only converse() — was reached, with the served root
+        expect(narrateCalled).toBe(false); // never routed through the briefing/narrate path
+        expect(r.reply).toBe(`answered from the projection: ${text}`);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("handle(): an explicit triage request still reaches buildBriefing(), never converse()", async () => {
+    const root = seedScratchRepo();
+    try {
+      let converseCalled = false;
+      const boundary = {
+        async interpret(t: string) {
+          return t.trim() === "what needs me" ? ({ kind: "briefing" as const }) : ({ kind: "unknown" as const, text: t });
+        },
+        async narrate(prompt: string) {
+          return prompt;
+        },
+        async converse(t: string) {
+          converseCalled = true;
+          return `should not be called: ${t}`;
+        },
+      };
+      const r = await handle("what needs me", { root, by: CAS_TODAY }, boundary);
+      expect(converseCalled).toBe(false);
+      expect(r.intent.kind).toBe("briefing");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

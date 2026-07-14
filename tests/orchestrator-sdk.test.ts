@@ -131,6 +131,26 @@ describe("createSdkOrchestratorBoundary#interpret (mocked transport)", () => {
     expect(calls[0].systemPrompt).toBe(onDiskPrompt);
   });
 
+  // Item 5 fix-up: a live host proved a second, distinct misclassification — "list every idea in
+  // this studio" and "what is the pitch of the todo-cli idea, word for word" both came back
+  // "briefing" (which answers from the gate-triage view alone, never the projection, so it answered
+  // "nothing to triage" to a question that had a real answer). "briefing" needs no extra fields,
+  // unlike every other structured kind, so it was the path of least resistance — this asserts the
+  // task-framing prompt now says explicitly that "briefing" is narrow (explicit-triage-only) and
+  // that a factual/situational question about the studio must classify as "unknown" instead, exactly
+  // mirroring the established K17 pattern of asserting the prompt states the rule, not guessing that
+  // the model will infer it unaided.
+  test("the task-framing prompt states 'briefing' is explicit-triage-only, and a factual/situational question must classify as 'unknown'", async () => {
+    const { transport, calls } = fakeTransport(() => ({ ok: true, result: "{}", structuredOutput: { kind: "unknown" } }));
+    const boundary = createSdkOrchestratorBoundary({ transport });
+    await boundary.interpret("list every idea in this studio");
+
+    expect(calls[0].prompt).toContain('"briefing" means ONLY an explicit request for gate triage');
+    expect(calls[0].prompt).toContain('respond with kind: "unknown" so it reaches the full conversational answer');
+    expect(calls[0].prompt).toContain("grounded in the complete studio projection");
+    expect(calls[0].prompt.endsWith("list every idea in this studio")).toBe(true);
+  });
+
   test("briefing/stats intents need no extra fields", async () => {
     const { transport } = fakeTransport(() => ({ ok: true, result: "{}", structuredOutput: { kind: "briefing" } }));
     expect(await createSdkOrchestratorBoundary({ transport }).interpret("what needs me")).toEqual({ kind: "briefing" });
