@@ -3175,3 +3175,101 @@ from `runServeCmd`/`runDoctorCmd` in `cli.ts`, not from `board/serve.ts#serve()`
 `main()`'s top — the two CLI entry points the goal names by name ("`levare serve` (and every command
 that needs credentials)"); `runContextCmd` was left unchanged since `levare context` is a dry preview
 that never actually spawns the SDK, so it does not "need credentials" in the sense the goal means.
+
+## F8. No native member had ever run — `productionAdapterRunner` invoked the mocked SDK boundary (the second time a fixture leaked into production; F4 was the first)
+
+**Found by the Conductor (2026-07-14):** a native agent (`scribe`, team `press`, unit `todo-cli/add-
+command`) was "invoked" and produced `product-brief-add-command-v1.md`. Its frontmatter was correct
+(`unit: add-command`, `project: todo-cli`) but its BODY was the golden fixture's checkout-flow brief
+verbatim, attributed to `kestrel/wren` — an agent not even on `scribe`'s own team — with a fabricated
+usage block (`tokens_in: 8200, tokens_out: 2100, usd: 0.06, wall_clock_s: 95`, the exact canned figures
+in `fixtures/stubs/member-stub.ts`) and zero real spend.
+
+**The defect, two parts.** (1) `replay.ts#productionAdapterRunner` — the constructor `daemon.ts` and
+`board/gateops.ts` both default to — passed `native: stubNative` (the same fixture-rendering mock
+`stubAdapterRunner` uses for `--stubs` replay). F4 had already fixed the CLI adapter to spawn a
+member's real declared command; native was left mocked, documented as a deliberate K5 deferral, but
+`kind: native` is both the schema's *default* agent kind and the one `levare init` scaffolds — so most
+studios' most common member had literally never run. (2) Two Medium findings the security audit
+(`docs/security-audit.md` Surfaces 3/8) had pre-armed as **blocking prerequisites for exactly this
+wiring**: `createSdkNativeBoundary` already scoped env via `req.env` (`buildMemberEnv`'s allowlist) and
+passed `tools`/`allowedTools` straight from the agent's declared `tools:` — correct in isolation, but
+unverified by any test at the moment native was still unreachable from a live path, and worth
+re-confirming explicitly now that it is.
+
+**The fix.** `createSdkNativeBoundary`/the new `createAsyncSdkNativeBoundary` (`adapters.ts`) are now
+what `productionAdapterRunner` wires as `AdapterRunnerOptions.native`/`asyncNative` — a native member
+is invoked through the real Claude Agent SDK with its declared model, its `tools:` allowlist (passed as
+both `tools` and `allowedTools`, so an agent declaring none gets an empty allowlist, never an implicit
+one), and its assembled §6 context, and its env is exactly `buildMemberEnv`'s allowlisted grants plus
+the forwarded `ANTHROPIC_API_KEY` platform credential — never the full `process.env`. The mocked
+boundary (`stubNative`/`stubRemote`) remains reachable only from `stubAdapterRunner` (`levare replay
+--stubs`) and explicit test injection — never production. `remote` (MCP) stays mocked, a separate,
+still-documented deferral untouched by this fix.
+
+**The usage-fabrication half of the bug.** Before this fix, EVERY adapter's receipt was derived by
+parsing the returned doc's own frontmatter `usage:` block (`adapters.ts#readUsage` → `normalizeReceipt`)
+— correct for a CLI member, which genuinely self-reports its own tool's usage in its own output, but
+meaningless for a native SDK call: a model has no way to know its own real token counts or billed cost.
+`sdk-worker.ts` already computed the SDK's OWN reported usage from the real API response
+(`message.modelUsage`, `message.total_cost_usd`, `message.duration_ms`) and returned it as
+`SdkWorkerResponse.receipt` — but `createSdkNativeBoundary` discarded it, keeping only `res.result`.
+Both boundary constructors now return `{ doc, receipt }`; `AdapterRunner#produce`/`produceAsync` thread
+that receipt through to `finalize()`, which uses it **verbatim** for a native call and falls back to
+the old doc-frontmatter-derived path only when the boundary reports none (every non-native adapter,
+and a mocked/stub native boundary in existing tests). This closes the exact fabrication the live bug
+showed: a native member's cost/tokens now come from the SDK's own report, never a canned constant.
+
+**A non-blocking counterpart was required, not optional.** `createSdkNativeBoundary`'s `invoke()` is
+synchronous (`bunSdkTransport`, `Bun.spawnSync`) — correct for the phase-2 batch `Runner`/`levare
+replay`, but wiring it directly into `produceAsync` (the live `levare serve` path) would have
+reintroduced the exact event-loop-freezing defect F5 already fixed once for the CLI adapter. NativeBoundary
+therefore gained an `AsyncNativeBoundary` sibling (`createAsyncSdkNativeBoundary`, backed by
+`asyncSdkTransport`, `Bun.spawn` + await — the same non-blocking transport `OrchestratorBoundary`
+already uses); `AdapterRunnerOptions.asyncNative` is what `produceAsync` actually calls for a `kind:
+native` member, falling back to the synchronous `native` only when no async boundary was supplied
+(fine for a mocked/stub boundary, which does no real I/O either way).
+
+**Collateral: tests that unknowingly depended on native staying mocked.** Wiring the real boundary into
+`productionAdapterRunner` broke every test that exercised `resolveGate`/`Daemon`'s own default through
+a native member (the golden fixture's `wren`/`lyra`) without explicitly injecting a `MemberRunner` —
+16 tests across `daemon.test.ts`, `diagnostics.test.ts`, `board-serve.test.ts`, `board-serve-daemon
+.test.ts`, and `gateops-phase5.test.ts`, all failing the same way (`Claude Code returned an error
+result: Not logged in`), since this sandbox has no live `ANTHROPIC_API_KEY`. None of these tests were
+about native invocation itself — they test daemon/gate/budget mechanics — so each was updated to
+explicitly inject `stubAdapterRunner(loadRepo(root))` (or, for a `Daemon` factory, `stubAdapterRunner`
+directly — it satisfies `AsyncMemberRunner` unchanged, since a sync `produce()` return is a valid
+member of that interface's union) exactly where it previously relied on the implicit mocked default.
+This required a new test-only injection seam: `BoardCtx`/`createBoard` gained an optional
+`memberRunner?: AsyncMemberRunner` (mirroring the existing `orchestratorBoundary` test-only override
+exactly — unset in production, where `resolveGate`'s own default, `productionAdapterRunner`, always
+runs), threaded into the `/gates/:project/:artifact/:verb` route's `resolveGate` call.
+
+**Tests.** `tests/native-sdk-boundary.test.ts` gained a mirrored `createAsyncSdkNativeBoundary` describe
+block (invoke/context/model/tools, `ANTHROPIC_API_KEY` forwarding without leaking an ungranted secret,
+receipt passthrough, empty-`tools:` → empty allowlist on both fields, transport-failure → `AdapterError`)
+alongside the existing sync boundary's own new receipt-passthrough and empty-tools cases.
+`tests/adapters.test.ts` gained two `AdapterRunner`-level cases: a native boundary's reported receipt is
+used verbatim by `produce()` (not re-priced from the doc/pricing table), and `produceAsync()` prefers
+`asyncNative` over `native` for a `kind: native` member (a throwing sync `native` proves it is never
+called when an async one is supplied), with the receipt passing through identically either way.
+`tests/serve-native-e2e.test.ts` (new) boots the real board (`createBoard`, the exact router `levare
+serve` mounts) against a scratch studio, resolves `wren`'s `start` gate over HTTP with only the SDK
+TRANSPORT faked (this sandbox has no live `ANTHROPIC_API_KEY` — the same K12 deferral every other SDK
+e2e test in this repo already records), and asserts: the produced artifact's body is exactly what the
+fake model returned and contains neither the golden fixture's canned checkout-flow prose nor the string
+`"checkout-flow"`; `produced_by` names the agent that actually ran (`kestrel/wren`), never a fabricated
+attribution; the spawned call's `model`/`prompt` are wren's own (naming `kestrel/wren` and `storefront/
+loyalty-flow`, never generic); a second case proves the spawned call receives ONLY wren's allowlisted
+env (a hostile base env's `GITHUB_TOKEN` — a connector wren was never granted — never reaches it, while
+the forwarded `ANTHROPIC_API_KEY` platform credential does) and ONLY its declared `tools:`; a third case
+rewires wren to declare no `tools:` at all and proves the SDK call receives an empty allowlist on both
+`tools` and `allowedTools`, end to end through the real context-assembly/env-scoping path, not just at
+the boundary-constructor level.
+
+**Verification.** `bun test` — 505 pass, 1 pre-existing skip, 0 fail, across 45 files (up from 493/1/0
+at F7); `levare replay fixtures/golden --stubs` — final artifact statuses still byte-for-byte against
+`expected.json` (the `--stubs` mocked-boundary path this fix deliberately left untouched); `deps:check`
+— `deps ok`. Both security-audit K5 pre-arms (Surfaces 3/8, `docs/security-audit.md`) are now closed:
+env scoping and the tool allowlist are enforced on the boundary that is actually live, proven by tests
+that exercise the full production path, not just the constructor in isolation.
