@@ -56,6 +56,7 @@ const REJECTIONS: Array<[string, string]> = [
   ["team-unproducible-kind", "UNPRODUCIBLE_KIND"],
   ["unbindable-step", "UNBINDABLE_STEP"],
   ["cwd-outside-studio-no-inline", "CWD_OUTSIDE_STUDIO_NO_INLINE"],
+  ["loop-until-unreachable", "LOOP_UNTIL_UNREACHABLE"],
 ];
 
 describe("rejection fixtures", () => {
@@ -129,6 +130,70 @@ describe("F1: a structurally unrunnable studio fails validation, naming what can
 
   test("the golden fixture — a studio that DOES bind end to end — still validates", () => {
     expect(validatePath("fixtures/golden").ok).toBe(true);
+  });
+});
+
+// Ruling F16: a loop must never be permitted to declare an `until` it could never satisfy — no round
+// either of its own two members ever runs could make it true, so the walk would sit at that loop
+// forever, or (the live-found worse case) silently fall through past it once both members happen to
+// resolve for unrelated reasons. This is a studio definition error, caught here, never a live surprise.
+describe("F16: a loop's `until` must name one of its own two members' kinds, or it can never be satisfied", () => {
+  test("`until` naming neither loop member fails, naming the team, the loop, and what `until` actually resolved to", () => {
+    const r = validatePath("fixtures/rejections/loop-until-unreachable");
+    expect(r.ok).toBe(false);
+    const err = r.errors.find((e) => e.code === "LOOP_UNTIL_UNREACHABLE");
+    expect(err).toBeDefined();
+    expect(err!.message).toContain("team 'press'");
+    expect(err!.message).toContain("[product-brief, review]");
+    expect(err!.message).toContain("until 'approval.approved'");
+    expect(err!.message).toContain("'approval'");
+    expect(err!.file).toContain("teams/press.md");
+  });
+
+  test("`until` naming the loop's FIRST member (kestrel's own `until: spec.approved`) validates clean", () => {
+    expect(validatePath("fixtures/golden").ok).toBe(true);
+  });
+
+  test("`until` naming the loop's SECOND member also validates clean — the check isn't hardcoded to 'first'", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-loop-until-second-"));
+    try {
+      mkdirSync(join(dir, "agents"), { recursive: true });
+      mkdirSync(join(dir, "teams"), { recursive: true });
+      writeFileSync(
+        join(dir, "agents", "scribe.md"),
+        ["---", "name: scribe", "kind: native", "produces: [product-brief]", "model: claude-sonnet-5", "style:", "  avatar: Sc", "---", "", "Drafts.", ""].join("\n"),
+      );
+      writeFileSync(
+        join(dir, "agents", "corvid.md"),
+        ["---", "name: corvid", "kind: native", "produces: [review]", "model: claude-sonnet-5", "style:", "  avatar: Co", "---", "", "Reviews.", ""].join("\n"),
+      );
+      writeFileSync(
+        join(dir, "teams", "press.md"),
+        [
+          "---",
+          "name: press",
+          "consumes: []",
+          "produces: [product-brief, review]",
+          "members: [scribe, corvid]",
+          "flow:",
+          "  - loop:",
+          "      between: [product-brief, review]",
+          "      until: review.approved",
+          "      max_rounds: 3",
+          "      on_exhaust: gate",
+          "style:",
+          "  color: '#4B2E83'",
+          "---",
+          "",
+          "# Press",
+          "",
+        ].join("\n"),
+      );
+      const r = validatePath(dir);
+      expect(r.errors.map((e) => e.code)).not.toContain("LOOP_UNTIL_UNREACHABLE");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

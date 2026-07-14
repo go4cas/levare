@@ -4,7 +4,8 @@
 
 import type { Artifact, ArtifactStatus, Team, TypeTemplate, Usage, WorkUnit } from "../types.ts";
 import type { Repo } from "../repo.ts";
-import { firstParagraph } from "../repo.ts";
+import { firstParagraph, repoCapabilities } from "../repo.ts";
+import { isLoopCompanionKind } from "../gates.ts";
 
 export function esc(s: string): string {
   return String(s)
@@ -70,6 +71,7 @@ export interface OpenGate {
  */
 export function openGates(repo: Repo): OpenGate[] {
   const gates: OpenGate[] = [];
+  const capabilities = repoCapabilities(repo);
   for (const unit of repo.units) {
     const key = `${unit.project}/${unit.unit}`;
     const artifacts = repo.artifacts.get(key);
@@ -77,13 +79,21 @@ export function openGates(repo: Repo): OpenGate[] {
       for (const art of artifacts.values()) {
         if (art.status !== "in-review") continue;
         const [teamName, member] = art.produced_by.split("/");
+        const team = repo.teams.get(teamName);
+        // Ruling F16: while a loop is in progress, only the artifact its `until` condition actually
+        // names may raise a gate — the loop's OTHER member (e.g. the author, while a critic's
+        // `until: review.approved` is what the loop is waiting on) never independently gates; its
+        // resolution rides on the until-named artifact's own gate (board/gateops.ts). Without this, a
+        // round's two artifacts both showed as open gates, and resolving the wrong one left the other
+        // stranded `in-review` forever with `until` unreachable.
+        if (team && isLoopCompanionKind(team, art.kind, capabilities)) continue;
         gates.push({
           type: "artifact",
           project: unit.project,
           unit: unit.unit,
           target: art.id,
           artifact: art,
-          team: repo.teams.get(teamName),
+          team,
           member,
           label: art.kind,
         });

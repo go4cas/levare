@@ -963,6 +963,35 @@ function validateStudioBindings(root: string, errors: ValidationError[]): void {
         });
       }
     }
+
+    // (3) Ruling F16: a loop whose `until` names a kind neither of its own two members can ever
+    // produce is unsatisfiable BY CONSTRUCTION — no round the loop ever runs could make it true, so
+    // the walk would sit at that loop forever (or, worse, silently fall through past it once its two
+    // members happen to both resolve for unrelated reasons). Caught here, at studio-definition time,
+    // the same "name what cannot bind, don't discover it live" posture as UNBINDABLE_STEP above —
+    // never a live surprise.
+    for (const node of Array.isArray(data.flow) ? data.flow : []) {
+      if (node === null || typeof node !== "object" || Array.isArray(node)) continue;
+      const m = node as Record<string, YamlValue>;
+      if (m.loop === null || typeof m.loop !== "object" || Array.isArray(m.loop)) continue;
+      const loop = m.loop as Record<string, YamlValue>;
+      const between = Array.isArray(loop.between) ? loop.between.filter((x): x is string => typeof x === "string") : [];
+      const until = typeof loop.until === "string" ? loop.until : "";
+      if (between.length !== 2 || !until) continue; // malformed shape — parseFlow/schema catch this elsewhere.
+      const untilKind = until.split(".")[0];
+      const resolvedKinds = new Set<string>();
+      for (const label of between) for (const c of caps) if (kindMatches(c.kind, label)) resolvedKinds.add(c.kind);
+      if (!resolvedKinds.has(untilKind)) {
+        errors.push({
+          code: "LOOP_UNTIL_UNREACHABLE",
+          message:
+            `team '${team}' loop between [${between.join(", ")}] has until '${until}', but '${untilKind}' matches neither loop ` +
+            `member's resolved kind (${[...resolvedKinds].join(", ") || "none bound"}) — this loop could never satisfy its own ` +
+            "exit condition (ruling F16)",
+          file: path,
+        });
+      }
+    }
   }
 }
 

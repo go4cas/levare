@@ -17,6 +17,27 @@ export interface LoopMembership {
   companionKind?: string;
 }
 
+/** The kind named by a loop's `until` condition (e.g. `review.approved` → `review`). */
+export function loopUntilKind(loop: FlowLoop): string {
+  return loop.until.split(".")[0];
+}
+
+/**
+ * Ruling F16 — while a loop is in progress, only the artifact whose kind the loop's `until` condition
+ * actually names may raise a gate; its companion never independently gates, regardless of whether it
+ * happens to be the loop's "first" (author) or "second" (critic) role. Two open gates for one round —
+ * the live defect this closes — came from treating "first" as the gate unconditionally, an assumption
+ * an author/critic loop whose `until` names the CRITIC's kind (e.g. `review.approved`) violates. Used
+ * by both `board/derive.ts#openGates` (visibility: never list the companion as an open gate) and
+ * `board/gateops.ts` (resolution: the companion-approval cascade, and which member "request" re-runs,
+ * both key off this same "is `kind` the loop's real gate" question, not off role).
+ */
+export function isLoopCompanionKind(team: Team, kind: string, capabilities: Array<{ member: string; kind: string }>): boolean {
+  const membership = loopMembershipFor(team, kind, capabilities);
+  if (!membership) return false;
+  return kind !== loopUntilKind(membership.loop);
+}
+
 /**
  * Is `kind` one half of a loop in `team`'s flow? Resolves the loop's step labels to kinds the same
  * way the Runner resolves a flow step (kindMatches over the team's member capabilities), so a board

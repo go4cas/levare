@@ -19,10 +19,10 @@ import { loadRepo, type Repo } from "../repo.ts";
 import { validateArtifactSource } from "../validate.ts";
 import { bumpVersion, roundOf, type Verb } from "../runner.ts";
 import { productionAdapterRunner } from "../replay.ts";
-import { loopMembershipFor, responsibleTeamFor, unmetAfter, patchFrontmatter, upsertFrontmatterField } from "../gates.ts";
+import { loopMembershipFor, isLoopCompanionKind, loopUntilKind, resolveStep, responsibleTeamFor, unmetAfter, patchFrontmatter, upsertFrontmatterField } from "../gates.ts";
 import { locateArtifactFile } from "./locate.ts";
 import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL } from "../git.ts";
-import { advanceUnit, type AsyncMemberRunner } from "../dagwalk.ts";
+import { advanceUnit, latestLiveArtifact, type AsyncMemberRunner } from "../dagwalk.ts";
 import type { Daemon } from "../daemon.ts";
 import type { Artifact, WorkUnit } from "../types.ts";
 
@@ -77,6 +77,24 @@ export async function resolveGate(root: string, project: string, target: string,
   const located = locateArtifactFile(unit.dir, target);
   if (!located) return { ok: false, status: 404, error: `artifact file for '${target}' not found on disk` };
 
+  // Ruling F16: while a loop is in progress, only the artifact its `until` condition actually names
+  // may be resolved directly — the loop's OTHER member never independently gates (board/derive.ts's
+  // `openGates` already never lists it), and a direct API call naming it anyway is refused here too,
+  // loudly, rather than silently producing an orphaned artifact stuck `in-review` forever once `until`
+  // is satisfied by the other half (the live wedge this ruling closes).
+  const [artTeamName] = art.produced_by.split("/");
+  const artTeam = repo.teams.get(artTeamName);
+  if (artTeam) {
+    const membership = loopMembershipFor(artTeam, art.kind, memberRunner.capabilities());
+    if (membership && isLoopCompanionKind(artTeam, art.kind, memberRunner.capabilities())) {
+      return {
+        ok: false,
+        status: 409,
+        error: `'${target}' does not gate while its loop is in progress — resolve the '${loopUntilKind(membership.loop)}' artifact instead (ruling F16)`,
+      };
+    }
+  }
+
   // C2/C7: any resolution of a loop-first gate (approve, reject, OR request) resolves the round's
   // companion review artifact to approved — the Conductor accepted it as read — exactly as the
   // Runner's own `runLoop` does. Applied once, here, ahead of the verb-specific write, so the
@@ -86,7 +104,7 @@ export async function resolveGate(root: string, project: string, target: string,
 
   if (verb === "approve") return doApprove(root, located.file, target, today, opts.note, extra);
   if (verb === "reject") return doReject(root, located.file, target, opts.note, extra);
-  if (verb === "request") return await doRequest(root, repo, unit, located.file, art, opts.note, memberRunner, extra, opts.daemon);
+  if (verb === "request") return await doRequest(root, repo, unit, located.file, art, opts.note, memberRunner, extra, today, opts.daemon);
   return { ok: false, status: 400, error: `verb '${verb}' is not valid for an artifact gate` };
 }
 
@@ -139,25 +157,61 @@ async function doRequest(
   note: string | undefined,
   memberRunner: AsyncMemberRunner,
   extraFiles: string[],
+  today: string,
   daemon?: Daemon,
 ): Promise<GateOpResult> {
   const unitDir = unit.dir;
   if (!note || !note.trim()) return { ok: false, status: 400, error: "request-changes requires a note" };
-  const member = art.produced_by.split("/")[1];
-  const hasCap = memberRunner.capabilities().some((c) => c.member === member && c.kind === art.kind);
-  if (!hasCap) {
-    return { ok: false, status: 501, error: `no producer available to re-invoke '${art.produced_by}' for kind '${art.kind}'` };
-  }
 
-  // Ruling C14: max_rounds/on_exhaust. `art` may be the loop's FIRST (author) member at its FINAL
-  // round already — requesting changes again would create a round beyond max_rounds, which the
-  // ruling forbids. Mirrors runner.ts#runLoop's own exhaustion exactly (the for-loop simply never
-  // starts a round beyond max_rounds): refuse the new round here and name the round count and the
-  // last review, so the Conductor sees why — never a silent, unbounded re-request.
   const [teamName] = art.produced_by.split("/");
   const team = repo.teams.get(teamName);
   const membership = team ? loopMembershipFor(team, art.kind, memberRunner.capabilities()) : undefined;
-  if (membership?.role === "first") {
+
+  // Ruling F16: "request changes" always means "give the loop's AUTHOR another round" — regardless of
+  // which loop member is actually the gate (resolveGate's own guard, above, ensures `art` here is
+  // always the artifact the loop's `until` names). For a loop gated on its first/author member
+  // (kestrel's `until: spec.approved`), that IS `art` itself — unchanged. For one gated on its
+  // second/critic member (`until: review.approved`), re-running the CRITIC on an unrevised input would
+  // be meaningless — the AUTHOR is who re-runs, with the critic's own feedback already in `note` and,
+  // via `extraConsumes`, in its own context on the walk's next tick.
+  let reinvokeMember = art.produced_by.split("/")[1];
+  let reinvokeKind = art.kind;
+  let supersedeId = art.id;
+  let supersedeFile = file;
+  // F16: when redirected, `art` itself is deliberately left untouched (still `in-review`) — it is NOT
+  // the artifact being re-run, and the walk's own next tick resolves it for real: dagwalk.ts finds it
+  // as the prior round's still-live companion the instant the author's new round is produced, and
+  // supersedes it there with its own proper `supersedes:` edge (the identical pattern every other round
+  // already goes through). Marking it "approved" here instead would trip `until` early — `review.
+  // approved` would read satisfied off round N's own review while round N+1 is still unresolved, the
+  // exact silent-wedge shape this whole ruling exists to prevent.
+  if (membership?.role === "second") {
+    const authorLabel = membership.loop.between[0];
+    const authorResolved = resolveStep(team!, authorLabel, memberRunner.capabilities());
+    const authorArt = latestLiveArtifact(repo, unit, authorResolved.kind);
+    if (!authorArt) {
+      return { ok: false, status: 409, error: `no live '${authorResolved.kind}' artifact to re-invoke for a new round` };
+    }
+    const authorLocated = locateArtifactFile(unitDir, authorArt.id);
+    if (!authorLocated) return { ok: false, status: 404, error: `author artifact file for '${authorArt.id}' not found on disk` };
+    reinvokeMember = authorResolved.member;
+    reinvokeKind = authorResolved.kind;
+    supersedeId = authorArt.id;
+    supersedeFile = authorLocated.file;
+  }
+
+  const hasCap = memberRunner.capabilities().some((c) => c.member === reinvokeMember && c.kind === reinvokeKind);
+  if (!hasCap) {
+    return { ok: false, status: 501, error: `no producer available to re-invoke '${teamName}/${reinvokeMember}' for kind '${reinvokeKind}'` };
+  }
+
+  // Ruling C14: max_rounds/on_exhaust. `membership` is only ever set here for the artifact the loop's
+  // `until` actually names (resolveGate's own guard refuses the other one directly, F16) — so the
+  // check applies whenever a loop membership was found at all, not only when it happens to be the
+  // "first" role as before. Requesting changes at the final round would create a round beyond
+  // max_rounds, which the ruling forbids; mirrors runner.ts#runLoop's own exhaustion exactly (the
+  // for-loop simply never starts a round beyond max_rounds).
+  if (membership) {
     const round = roundOf(art.id);
     if (round >= membership.loop.maxRounds) {
       const artifacts = repo.artifacts.get(`${unit.project}/${unit.unit}`);
@@ -175,7 +229,7 @@ async function doRequest(
     }
   }
 
-  const oldRoundMatch = /-v(\d+)$/.exec(art.id);
+  const oldRoundMatch = /-v(\d+)$/.exec(supersedeId);
   const nextRound = (oldRoundMatch ? Number(oldRoundMatch[1]) : 1) + 1;
 
   // E4: re-invoke through the real MemberRunner/AdapterRunner boundary — context assembly, env
@@ -183,34 +237,44 @@ async function doRequest(
   // boundaries (invariant 10) — rather than reaching directly for the stub's `render()`.
   // NOTES F10 defect 3: registered with the daemon's inFlight projection for the synchronous window
   // this call is dispatched, so the board can show it as dispatching immediately (see `beginInvocation`).
-  const invocation = daemon?.beginInvocation({ project: art.project, unit: art.unit, member, kind: art.kind });
+  const invocation = daemon?.beginInvocation({ project: art.project, unit: art.unit, member: reinvokeMember, kind: reinvokeKind });
   let baseDoc: string;
   try {
-    ({ doc: baseDoc } = await memberRunner.produce(member, art.kind, art.unit, art.project));
+    ({ doc: baseDoc } = await memberRunner.produce(reinvokeMember, reinvokeKind, art.unit, art.project));
   } finally {
     if (invocation) daemon!.endInvocation(invocation);
   }
   const baseId = idOfDoc(baseDoc);
   const newId = bumpVersion(baseId, nextRound);
-  const newDoc = patchFrontmatter(baseDoc, { id: newId, supersedes: art.id });
+  const newDoc = patchFrontmatter(baseDoc, { id: newId, supersedes: supersedeId });
   const errs = validateArtifactSource(newDoc, `${newId}.md`, unitDir);
   if (errs.length > 0) return { ok: false, status: 422, error: `${errs[0].code}: ${errs[0].message}` };
 
-  const oldSrc = readFileSync(file, "utf8");
-  const oldPatched = patchFrontmatter(oldSrc, { status: "superseded" });
+  const oldSrc = readFileSync(supersedeFile, "utf8");
+  // F16: the artifact being superseded may already be `approved` — the loop-companion cascade
+  // (resolveGate, above) resolves the round's OTHER member to approved for every verb including
+  // request, before this runs — an approved artifact superseded without clearing `approved_by` fails
+  // the validator's own "only an approved artifact may name an approver" invariant (mirrors
+  // dagwalk.ts's identical supersede-clears-approval handling for the live walk's own loop rounds; a
+  // no-op when the old doc was already `in-review` with no approver, the pre-existing, unaffected case).
+  const oldPatched = patchFrontmatter(oldSrc, { status: "superseded", approved_by: null });
 
   const newFile = join(unitDir, `${newId}.md`);
-  writeFileSync(file, oldPatched);
+  writeFileSync(supersedeFile, oldPatched);
   writeFileSync(newFile, newDoc);
-  const files = [file, newFile, ...extraFiles];
-  const commit = conductorCommit(root, files, `request changes on ${art.id} → ${newId}\n\n${note}`);
+  const files = [supersedeFile, newFile, ...extraFiles];
+  const commit = conductorCommit(root, files, `request changes on ${supersedeId} → ${newId}\n\n${note}`);
   return { ok: true, commit, changedFiles: files };
 }
 
-// C2/C7 shared companion rule: if `art.kind` is the "first" half of some loop in its producing
-// team's flow, and a companion artifact of the loop's other kind currently sits in-review for the
-// same unit, that companion resolves to approved as part of THIS resolution — mirroring exactly what
-// the Runner's `runLoop` does inside a live walk (see runner.ts). Returns the companion's file path
+// C2/C7 shared companion rule, generalized by ruling F16: if `art.kind` is the artifact a loop's
+// `until` condition actually names (the only kind `resolveGate` ever lets reach here — its own guard
+// above refuses the other one directly), and a companion artifact of the loop's OTHER kind currently
+// sits in-review for the same unit, that companion resolves to approved as part of THIS resolution —
+// mirroring exactly what the Runner's `runLoop` does inside a live walk (see runner.ts). Previously
+// hardcoded to "the loop's first (author) member is always the gate" — false for a loop whose `until`
+// names its SECOND (critic) member, e.g. `until: review.approved`; the cascade now keys off `until`
+// itself, so it fires regardless of which role is actually the gate. Returns the companion's file path
 // when one was patched, so the caller folds it into the same commit; null when there is nothing to do
 // (no loop, or no live companion — e.g. the golden fixture's static spec gate, which has no review
 // artifact on disk yet).
@@ -226,7 +290,8 @@ function applyLoopCompanionApproval(
   const team = repo.teams.get(teamName);
   if (!team) return null;
   const membership = loopMembershipFor(team, art.kind, capabilities);
-  if (!membership || membership.role !== "first" || !membership.companionKind) return null;
+  if (!membership || !membership.companionKind) return null;
+  if (isLoopCompanionKind(team, art.kind, capabilities)) return null; // defensive — resolveGate already refuses this case.
 
   const artifacts = repo.artifacts.get(`${unit.project}/${unit.unit}`);
   if (!artifacts) return null;

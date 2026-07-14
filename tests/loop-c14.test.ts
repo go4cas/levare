@@ -8,6 +8,7 @@ import { resolveGate } from "../src/board/gateops.ts";
 import { stubAdapterRunner } from "../src/replay.ts";
 import { runReplay } from "../src/replay.ts";
 import { loadRepo } from "../src/repo.ts";
+import { openGates } from "../src/board/derive.ts";
 import type { AsyncMemberRunner } from "../src/dagwalk.ts";
 import type { Verb } from "../src/runner.ts";
 
@@ -172,7 +173,11 @@ function pressRunner(): { runner: AsyncMemberRunner; calls: Array<{ member: stri
         const doc = [
           "---",
           `kind: ${kind}`,
-          "id: placeholder",
+          // A proper `kind-unit-v1` placeholder (not a literal "placeholder") — dagwalk.ts#produceOne
+          // always overwrites this with its own derived id regardless, but board/gateops.ts#doRequest
+          // (F16's new author-redirect path) reads THIS doc's own id via `idOfDoc` to derive the next
+          // round's id, so it must already look like a real one.
+          `id: ${kind}-${unit}-v1`,
           `unit: ${unit}`,
           `project: ${project}`,
           "status: in-review",
@@ -229,12 +234,23 @@ describe("C14: the live walk dispatches BOTH loop members", () => {
       expect(tick2.entries.find((e) => e.unit === "announcement")!.outcome.outcome).toBe("halted");
       expect(calls.length).toBe(2); // no third invocation while the round awaits the Conductor.
 
-      // The Conductor approves the AUTHOR's gate. Ruling C2/C14: this resolves the companion (review)
-      // too, in the same commit — `until: review.approved` is now satisfied.
-      const approved = await resolveGate(root, "acme", "product-brief-announcement-v1", "approve" as Verb, { memberRunner: runner, today: "2026-07-14" });
+      // Ruling F16: `until: review.approved` names the CRITIC's kind, not the author's — the author's
+      // own brief does not gate during the loop, and a direct attempt to resolve it is refused, never
+      // silently accepted (which would leave `review` an orphaned, permanently in-review gate once
+      // `until` is satisfied by something that never happened).
+      const wrongTarget = await resolveGate(root, "acme", "product-brief-announcement-v1", "approve" as Verb, { memberRunner: runner, today: "2026-07-14" });
+      expect(wrongTarget.ok).toBe(false);
+      if (wrongTarget.ok) return;
+      expect(wrongTarget.status).toBe(409);
+      expect(wrongTarget.error).toContain("does not gate");
+      expect(wrongTarget.error).toContain("review");
+
+      // The Conductor approves the actual gate — the CRITIC's review, the artifact `until` names.
+      // Ruling C2/F16: this resolves the companion (the author's brief) too, in the same commit.
+      const approved = await resolveGate(root, "acme", "review-announcement-v1", "approve" as Verb, { memberRunner: runner, today: "2026-07-14" });
       expect(approved.ok).toBe(true);
-      const reviewAfter = readFileSync(join(unitDir, "review-announcement-v1.md"), "utf8");
-      expect(reviewAfter).toContain("status: approved");
+      const briefAfter = readFileSync(join(unitDir, "product-brief-announcement-v1.md"), "utf8");
+      expect(briefAfter).toContain("status: approved");
 
       // The walk continues PAST the loop to the trailing `gate: human` (a structural marker only —
       // nothing left for the team to produce): the unit's flow is now fully satisfied, not halted.
@@ -347,6 +363,71 @@ describe("C14: the batch Runner (runner.ts) and the live dagwalk walk agree on m
       await liveDaemon.tick(); // walk continues past the (now-satisfied) loop; nothing left to produce.
 
       expect(liveSequence).toEqual(batchSequence);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("F16: only the artifact a loop's `until` names gates — never both loop members at once", () => {
+  test("once a round completes, openGates lists ONLY the critic's review, never the author's brief too", async () => {
+    const root = seedPressStudio();
+    try {
+      const { runner } = pressRunner();
+      const daemon = new Daemon(root, { memberRunner: () => runner });
+
+      await resolveGate(root, "acme", "announcement", "start", { memberRunner: runner, today: "2026-07-14" });
+      await daemon.tick(); // corvid's review, same round
+
+      const repo = loadRepo(root);
+      const gates = openGates(repo).filter((g) => g.unit === "announcement" && g.type === "artifact");
+      // The live defect this closes: BOTH product-brief-announcement-v1 AND review-announcement-v1 sat
+      // in-review after this exact sequence, and both showed up here as independently-actionable gates.
+      expect(gates.map((g) => g.target)).toEqual(["review-announcement-v1"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("`request` on the critic's gate re-invokes the AUTHOR for a new round, not the critic again", async () => {
+    const root = seedPressStudio();
+    try {
+      const { runner, calls } = pressRunner();
+      const unitDir = join(root, "work/acme/announcement");
+      const daemon = new Daemon(root, { memberRunner: () => runner });
+
+      await resolveGate(root, "acme", "announcement", "start", { memberRunner: runner, today: "2026-07-14" });
+      await daemon.tick(); // corvid's review, round 1
+      expect(calls.length).toBe(2);
+
+      const req = await resolveGate(root, "acme", "review-announcement-v1", "request" as Verb, {
+        memberRunner: runner,
+        note: "corvid: the brief is unclear, please revise",
+        today: "2026-07-14",
+      });
+      expect(req.ok).toBe(true);
+
+      // The AUTHOR (scribe) is who re-ran — never corvid re-reviewing an unrevised brief.
+      expect(calls[2]).toEqual({ member: "scribe", kind: "product-brief", extraConsumes: [] });
+      expect(existsSync(join(unitDir, "product-brief-announcement-v2.md"))).toBe(true);
+
+      // Round 1's review (the artifact actually resolved) is deliberately left untouched here — still
+      // `in-review` — never marked "approved": doing so would satisfy `until: review.approved` off
+      // round 1's own review while round 2 is still unresolved, the exact silent-wedge shape F16
+      // closes. Round 1's brief IS superseded by round 2's, with its approval cleared.
+      const review1 = readFileSync(join(unitDir, "review-announcement-v1.md"), "utf8");
+      expect(review1).toContain("status: in-review");
+      const brief1 = readFileSync(join(unitDir, "product-brief-announcement-v1.md"), "utf8");
+      expect(brief1).toContain("status: superseded");
+      expect(brief1).toContain("approved_by: null");
+
+      // The critic's own review is re-produced for round 2 on the next tick, in lockstep — which is
+      // what actually resolves round 1's review (superseded, via dagwalk.ts's own round-pairing).
+      await daemon.tick();
+      expect(calls[3]).toEqual({ member: "corvid", kind: "review", extraConsumes: ["product-brief-announcement-v2"] });
+      expect(existsSync(join(unitDir, "review-announcement-v2.md"))).toBe(true);
+      const review1After = readFileSync(join(unitDir, "review-announcement-v1.md"), "utf8");
+      expect(review1After).toContain("status: superseded");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
