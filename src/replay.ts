@@ -12,7 +12,16 @@ import { join } from "node:path";
 import { CAPABILITIES, render } from "../fixtures/stubs/member-stub.ts";
 import { loadRepo } from "./repo.ts";
 import { Runner, type Decision, type DecisionSource, type Gate, type MemberRunner, type RunEvent, type RunResult, type Verb } from "./runner.ts";
-import { AdapterRunner, bunSpawn, asyncBunSpawn, type InvokeRequest, type NativeBoundary, type RemoteBoundary } from "./adapters.ts";
+import {
+  AdapterRunner,
+  bunSpawn,
+  asyncBunSpawn,
+  createSdkNativeBoundary,
+  createAsyncSdkNativeBoundary,
+  type InvokeRequest,
+  type NativeBoundary,
+  type RemoteBoundary,
+} from "./adapters.ts";
 import type { AsyncMemberRunner } from "./dagwalk.ts";
 import { loadPricing } from "./pricing.ts";
 import { formatReceipt } from "./receipts.ts";
@@ -37,16 +46,19 @@ export class StubRunner implements MemberRunner {
 const STUB_CLI = Bun.fileURLToPath(new URL("../fixtures/stubs/member-stub.ts", import.meta.url));
 
 // Native/remote members are mocked at their boundary by rendering the same canned stub artifact —
-// this is the "native against a mocked SDK boundary" / "remote → MCP call, mocked" of §11 phase 3.
+// deliberately, for `--stubs` reproducibility (§11 phase 3), not because either boundary lacks a real
+// backing: native has one (adapters.ts#createSdkNativeBoundary, wired into production since NOTES F8);
+// remote's real MCP backing remains a documented, separate deferral (K5).
 const stubNative: NativeBoundary = { invoke: (r: InvokeRequest) => ({ doc: render(r.member, r.kind, r.unit, r.project) }) };
 const stubRemote: RemoteBoundary = { call: (r: InvokeRequest) => ({ doc: render(r.member, r.kind, r.unit, r.project) }) };
 
 /**
  * NOTES F4 — the `--stubs`-ONLY replay MemberRunner. Every real invocation goes through the real
- * AdapterRunner; native/remote members go through mocked boundaries (K5's documented, deliberate
- * deferral); the one CLI member (finch/Codex) is deliberately redirected — via the `cliCommand`
- * override below — to spawn the fixture stub CLI instead of its own declared command, so replay is
- * reproducible without a real Codex install.
+ * AdapterRunner; native/remote members go through mocked boundaries here (deliberately, so replay
+ * stays reproducible without a real API key or MCP install — see the stubs' own comment above); the
+ * one CLI member (finch/Codex) is deliberately redirected — via the `cliCommand` override below — to
+ * spawn the fixture stub CLI instead of its own declared command, so replay is reproducible without a
+ * real Codex install.
  *
  * That redirect is exactly the thing that must NEVER reach a live studio (F4: it did, for three
  * phases — `daemon.ts`/`board/gateops.ts` defaulted their production `memberRunner` to THIS function,
@@ -73,26 +85,37 @@ export function stubAdapterRunner(repo: Repo): AdapterRunner {
 }
 
 /**
- * NOTES F4 — the real production MemberRunner: what `levare serve` (via `daemon.ts`) and the board's
- * own gate resolution (`board/gateops.ts`) actually drive by default. Native/remote members still go
- * through the same mocked SDK/MCP boundaries `stubAdapterRunner` uses — K5's real-native-SDK wiring
- * remains a documented, separate deferral, untouched by this fix. The CLI adapter, however, gets NO
- * `cliCommand` override here: left unset, `AdapterRunner` falls back to its own `defaultCliCommand`,
- * which substitutes the agent's own declared `command` template into argv. A CLI member invoked
- * through this function spawns its REAL command — never the fixture stub — which is the entire point:
- * before F4, `stubAdapterRunner` (above) was the only constructor in this codebase and doubled as the
- * silent production default, so every live CLI member was actually invoking the phase-2 replay stub.
+ * NOTES F4/F8 — the real production MemberRunner: what `levare serve` (via `daemon.ts`) and the
+ * board's own gate resolution (`board/gateops.ts`) actually drive by default. As of F8, a `kind:
+ * native` member is invoked through the real Claude Agent SDK (`createSdkNativeBoundary`/
+ * `createAsyncSdkNativeBoundary`, adapters.ts) — its declared model, tool allowlist, and assembled §6
+ * context, with its artifact body and usage receipt coming from the real call — closing the last
+ * "mocked this phase" deferral for member invocation (NOTES K5). `remote` (MCP) stays behind the
+ * mocked boundary `stubAdapterRunner` also uses — a separate, still-documented deferral, untouched by
+ * this fix. The CLI adapter gets NO `cliCommand` override here: left unset, `AdapterRunner` falls back
+ * to its own `defaultCliCommand`, which substitutes the agent's own declared `command` template into
+ * argv. A CLI member invoked through this function spawns its REAL command — never the fixture stub —
+ * which is the entire point: before F4, `stubAdapterRunner` (above) was the only constructor in this
+ * codebase and doubled as the silent production default, so every live CLI member was actually
+ * invoking the phase-2 replay stub. Before F8, the same silent-stub defect held for `kind: native`:
+ * this function passed `stubNative`, so a native member's artifact body and usage were always the
+ * fixture's canned content, misattributed and priced at $0 real spend, regardless of which agent or
+ * unit actually "ran".
  *
- * NOTES F5: returns an `AsyncMemberRunner`, not a bare `AdapterRunner` — `produce()` here routes to
+ * NOTES F5/F8: returns an `AsyncMemberRunner`, not a bare `AdapterRunner` — `produce()` here routes to
  * `AdapterRunner.produceAsync`, whose `kind: cli` path spawns non-blockingly (`asyncBunSpawn`, real
- * `Bun.spawn` + await) so the live daemon/gateops path this function feeds never freezes `levare
- * serve`'s event loop for the duration of a member's run (the defect a real 10-minute Gemini call
- * exposed). `stubAdapterRunner` above stays the phase-2 batch Runner's synchronous boundary, untouched.
+ * `Bun.spawn` + await) and whose `kind: native` path calls the non-blocking `asyncNative` boundary
+ * (`asyncSdkTransport`, real `Bun.spawn` + await) — so the live daemon/gateops path this function feeds
+ * never freezes `levare serve`'s event loop for the duration of a member's run (the CLI defect a real
+ * 10-minute Gemini call exposed; the identical class of defect a native SDK call would otherwise
+ * reintroduce). `stubAdapterRunner` above stays the phase-2 batch Runner's synchronous, mocked
+ * boundary, untouched.
  */
 export function productionAdapterRunner(repo: Repo): AsyncMemberRunner {
   const runner = new AdapterRunner(repo, {
     pricing: loadPricing(repo.root),
-    native: stubNative,
+    native: createSdkNativeBoundary(),
+    asyncNative: createAsyncSdkNativeBoundary(),
     remote: stubRemote,
     spawn: bunSpawn,
     asyncSpawn: asyncBunSpawn,

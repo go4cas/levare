@@ -2,11 +2,13 @@
 // dispatched by an agent's `kind`:
 //
 //   native → a Claude Agent SDK invocation with the assembled context, tool allowlist, and
-//            granted-connector env. The SDK itself is NOT a dependency this phase; the adapter talks
-//            to a `NativeBoundary` interface, which tests mock and a later phase backs with the SDK.
+//            granted-connector env. The adapter talks to a `NativeBoundary`/`AsyncNativeBoundary`
+//            interface — tests mock it; production (replay.ts#productionAdapterRunner, NOTES F8)
+//            backs it with the real SDK via `createSdkNativeBoundary`/`createAsyncSdkNativeBoundary`.
 //   cli    → Bun.spawn of the agent's command template in `cwd`, with the allowlisted env only and
 //            the timeout enforced; the raw stdout is the artifact doc, validated at the boundary.
-//   remote → an MCP call, likewise behind a mockable `RemoteBoundary`.
+//   remote → an MCP call, likewise behind a mockable `RemoteBoundary` (still mocked in every path —
+//            a documented, separate deferral, untouched by F8).
 //
 // All three funnel their member's reported usage through normalizeReceipt (§10), so the receipt shape
 // is identical and `unreported` is recorded honestly when a member gives nothing. The doc itself is
@@ -19,7 +21,7 @@ import { normalizeReceipt } from "./receipts.ts";
 import { buildMemberEnv } from "./env.ts";
 import { allowedTools } from "./guardrails.ts";
 import { assembleContext } from "./context.ts";
-import { bunSdkTransport, resolveNativeBinary, type SdkTransport } from "./sdk-transport.ts";
+import { asyncSdkTransport, bunSdkTransport, resolveNativeBinary, type AsyncSdkTransport, type SdkTransport } from "./sdk-transport.ts";
 import { repoCapabilities } from "./repo.ts";
 import type { Pricing } from "./pricing.ts";
 import type { Repo } from "./repo.ts";
@@ -42,9 +44,19 @@ export interface InvokeRequest {
   tools: string[];
 }
 
-/** The native SDK boundary (mocked this phase). Returns the raw artifact markdown the member wrote. */
+/** The native SDK boundary — synchronous, used by the phase-2 batch `Runner` (`levare replay`) and by
+ * `stubAdapterRunner`. `receipt`, when present, is the SDK's OWN reported usage (§10, NOTES F8) — a
+ * model cannot know its real token counts/cost, so this must never be re-derived by parsing the
+ * returned doc's frontmatter; see `AdapterRunner#finalize`. */
 export interface NativeBoundary {
-  invoke(req: InvokeRequest): { doc: string };
+  invoke(req: InvokeRequest): { doc: string; receipt?: Receipt };
+}
+
+/** The non-blocking counterpart to `NativeBoundary` (NOTES F8) — same shape, Promise-returning,
+ * mirroring `CliSpawn`/`AsyncCliSpawn`'s split. What `productionAdapterRunner`'s live `produceAsync`
+ * path actually drives, so a real native SDK call never blocks `levare serve`'s event loop. */
+export interface AsyncNativeBoundary {
+  invoke(req: InvokeRequest): Promise<{ doc: string; receipt?: Receipt }>;
 }
 
 /** The remote MCP boundary (mocked this phase). */
@@ -60,21 +72,46 @@ export interface SdkNativeBoundaryOptions {
   pathToClaudeCodeExecutable?: string;
 }
 
+export interface AsyncSdkNativeBoundaryOptions {
+  transport?: AsyncSdkTransport;
+  env?: Record<string, string | undefined>;
+  timeoutMs?: number;
+  /** Test-only override for the resolved native-binary path — see `resolveNativeBinary` default below. */
+  pathToClaudeCodeExecutable?: string;
+}
+
+// Shared by both the sync and async native boundary constructors: the worker request built from an
+// InvokeRequest, and the spawn env — exactly `req.env` (the member's allowlisted grants, already
+// scoped by `buildMemberEnv` at `AdapterRunner#prepare`) plus `ANTHROPIC_API_KEY` forwarded from the
+// calling process. The platform credential is not a connector grant, but every native call needs it
+// to authenticate regardless of what the member was granted (invariant 11, D5, security-audit Surface
+// 3's now-closed K5 pre-arm). The key's value is read only to forward it into the spawn's env; it is
+// never logged, written to a file, or included in any commit.
+function nativeSpawnEnv(req: InvokeRequest, baseEnv: Record<string, string | undefined>): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...req.env };
+  if (typeof baseEnv.ANTHROPIC_API_KEY === "string") env.ANTHROPIC_API_KEY = baseEnv.ANTHROPIC_API_KEY;
+  return env;
+}
+
+function nativeWorkerRequest(req: InvokeRequest, pathToClaudeCodeExecutable: string | undefined) {
+  // Tool allowlist (security-audit Surface 3/8's now-closed K5 pre-arm): `req.tools` is
+  // `guardrails.ts#allowedTools(agent)` — exactly the agent's declared `tools:`, `[]` when it
+  // declares none. Passed as BOTH `tools` and `allowedTools` so an agent declaring no tools reaches
+  // the SDK with an empty allowlist, never an implicit/full one.
+  return { prompt: req.context, model: req.agent.model, tools: req.tools, allowedTools: req.tools, cwd: req.agent.cwd, pathToClaudeCodeExecutable };
+}
+
 /**
  * The real Claude Agent SDK backing for `NativeBoundary` (phase 7) — a synchronous call behind the
  * exact same `invoke(req): { doc: string }` shape the mocked boundary already implements, via the
- * shared transport (sdk-transport.ts) rather than threading async through the Runner/AdapterRunner
- * call chain. The member's own definition (`req.agent.body`) plus the full §6-assembled recipe is
- * already `req.context` (context.ts item 1 is "agent definition body") — no separate system prompt
- * is layered on top; the model's only instruction is the assembled context itself, and its final
- * turn IS the artifact document (never a side-effected file write — levare's own validator re-checks
- * whatever text comes back, exactly as it already re-checks a CLI/mocked member's output).
- *
- * Env scoping (invariant 11, D5): the worker subprocess runs with exactly `req.env` (the member's
- * allowlisted grants) plus `ANTHROPIC_API_KEY` forwarded from the calling process — the platform
- * credential is not a connector grant, but every native call needs it to authenticate regardless of
- * what the member was granted. The key's value is read only to forward it into the spawn's env; it
- * is never logged, written to a file, or included in any commit.
+ * shared transport (sdk-transport.ts). The member's own definition (`req.agent.body`) plus the full
+ * §6-assembled recipe is already `req.context` (context.ts item 1 is "agent definition body") — no
+ * separate system prompt is layered on top; the model's only instruction is the assembled context
+ * itself, and its final turn IS the artifact document (never a side-effected file write — levare's
+ * own validator re-checks whatever text comes back, exactly as it already re-checks a CLI/mocked
+ * member's output). Used by the phase-2 batch `Runner` (never reachable from a live `levare serve`
+ * request path — see `AdapterRunner#produce`'s own doc) and by `AdapterRunnerOptions.native`, which
+ * `produceAsync` falls back to only when no `asyncNative` was supplied.
  */
 export function createSdkNativeBoundary(opts: SdkNativeBoundaryOptions = {}): NativeBoundary {
   const transport = opts.transport ?? bunSdkTransport;
@@ -82,19 +119,38 @@ export function createSdkNativeBoundary(opts: SdkNativeBoundaryOptions = {}): Na
   const timeoutMs = opts.timeoutMs ?? 600_000;
   // Resolved ONCE, explicitly — never left to the SDK's own implicit resolution inside the worker
   // (NOTES phase-7 K14: a live host showed that implicit lookup fail to find a platform binary that
-  // genuinely existed as a sibling node_modules package; the same fix applied to OrchestratorBoundary
-  // applies here for the identical reason, even though this boundary isn't wired into any live path yet).
+  // genuinely existed as a sibling node_modules package).
   const pathToClaudeCodeExecutable = opts.pathToClaudeCodeExecutable ?? resolveNativeBinary() ?? undefined;
   return {
-    invoke(req: InvokeRequest): { doc: string } {
-      const env: Record<string, string | undefined> = { ...req.env };
-      if (typeof baseEnv.ANTHROPIC_API_KEY === "string") env.ANTHROPIC_API_KEY = baseEnv.ANTHROPIC_API_KEY;
-      const res = transport.run(
-        { prompt: req.context, model: req.agent.model, tools: req.tools, allowedTools: req.tools, cwd: req.agent.cwd, pathToClaudeCodeExecutable },
-        { env, timeoutMs },
-      );
+    invoke(req: InvokeRequest): { doc: string; receipt?: Receipt } {
+      const env = nativeSpawnEnv(req, baseEnv);
+      const res = transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable), { env, timeoutMs });
       if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`);
-      return { doc: res.result };
+      return { doc: res.result, receipt: res.receipt };
+    },
+  };
+}
+
+/**
+ * NOTES F8 — the non-blocking counterpart to `createSdkNativeBoundary`: identical recipe (env scoping,
+ * tool allowlist, §6 context, resolved native binary), but the SDK call itself never blocks the
+ * caller's event loop (`asyncSdkTransport`, `Bun.spawn` + await, the same non-blocking transport
+ * `OrchestratorBoundary` already uses). This is what `productionAdapterRunner` wires as
+ * `AdapterRunnerOptions.asyncNative` — the boundary a real, live `levare serve` request actually drives
+ * for a `kind: native` member, closing the last of invariant 10's "mocked this phase" deferrals for
+ * the member-invocation path (remote/MCP remains mocked, a separate, still-documented deferral).
+ */
+export function createAsyncSdkNativeBoundary(opts: AsyncSdkNativeBoundaryOptions = {}): AsyncNativeBoundary {
+  const transport = opts.transport ?? asyncSdkTransport;
+  const baseEnv = opts.env ?? process.env;
+  const timeoutMs = opts.timeoutMs ?? 600_000;
+  const pathToClaudeCodeExecutable = opts.pathToClaudeCodeExecutable ?? resolveNativeBinary() ?? undefined;
+  return {
+    async invoke(req: InvokeRequest): Promise<{ doc: string; receipt?: Receipt }> {
+      const env = nativeSpawnEnv(req, baseEnv);
+      const res = await transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable), { env, timeoutMs });
+      if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`);
+      return { doc: res.result, receipt: res.receipt };
     },
   };
 }
@@ -228,6 +284,11 @@ export interface AdapterRunnerOptions {
   /** NOTES F5: the non-blocking counterpart to `spawn`, used only by `produceAsync`. Defaults to
    * `asyncBunSpawn` (real, non-blocking `Bun.spawn`). */
   asyncSpawn?: AsyncCliSpawn;
+  /** NOTES F8: the non-blocking counterpart to `native`, used only by `produceAsync`. When absent,
+   * `produceAsync` falls back to `native.invoke` (fine for a mocked/stub boundary, which does no real
+   * I/O); `productionAdapterRunner` always supplies a real one (`createAsyncSdkNativeBoundary`) so a
+   * live native call never blocks the event loop. */
+  asyncNative?: AsyncNativeBoundary;
   /** Environment the allowlist draws from (default process.env). */
   baseEnv?: Record<string, string | undefined>;
   /**
@@ -334,10 +395,14 @@ export class AdapterRunner implements MemberRunner {
   produce(member: string, kind: string, unit: string, project: string): { doc: string; receipt: Receipt } {
     const { agent, req } = this.prepare(member, kind, unit, project);
     let doc: string;
+    let receipt: Receipt | undefined;
     switch (agent.kind) {
-      case "native":
-        doc = this.opts.native.invoke(req).doc;
+      case "native": {
+        const res = this.opts.native.invoke(req);
+        doc = res.doc;
+        receipt = res.receipt;
         break;
+      }
       case "remote":
         doc = this.opts.remote.call(req).doc;
         break;
@@ -347,7 +412,7 @@ export class AdapterRunner implements MemberRunner {
       default:
         throw new AdapterError(`unknown agent kind '${(agent as Agent).kind}' for '${member}'`);
     }
-    return this.finalize(doc);
+    return this.finalize(doc, receipt);
   }
 
   /**
@@ -361,10 +426,14 @@ export class AdapterRunner implements MemberRunner {
   async produceAsync(member: string, kind: string, unit: string, project: string): Promise<{ doc: string; receipt: Receipt }> {
     const { agent, req } = this.prepare(member, kind, unit, project);
     let doc: string;
+    let receipt: Receipt | undefined;
     switch (agent.kind) {
-      case "native":
-        doc = this.opts.native.invoke(req).doc;
+      case "native": {
+        const res = this.opts.asyncNative ? await this.opts.asyncNative.invoke(req) : this.opts.native.invoke(req);
+        doc = res.doc;
+        receipt = res.receipt;
         break;
+      }
       case "remote":
         doc = this.opts.remote.call(req).doc;
         break;
@@ -374,7 +443,7 @@ export class AdapterRunner implements MemberRunner {
       default:
         throw new AdapterError(`unknown agent kind '${(agent as Agent).kind}' for '${member}'`);
     }
-    return this.finalize(doc);
+    return this.finalize(doc, receipt);
   }
 
   // Shared setup for both produce/produceAsync: resolve the agent, assemble its §6 context, scope its
@@ -388,9 +457,14 @@ export class AdapterRunner implements MemberRunner {
     return { agent, req };
   }
 
-  private finalize(doc: string): { doc: string; receipt: Receipt } {
-    const receipt = normalizeReceipt(readUsage(doc), this.opts.pricing);
-    return { doc, receipt };
+  // NOTES F8: `receipt`, when given, is the SDK's OWN reported usage (a native member's real token
+  // counts/cost/wall-clock, computed by sdk-worker.ts from the actual API response) — used verbatim,
+  // never re-derived. Only when absent (every non-native adapter, and a mocked/stub native boundary
+  // that doesn't report one) does this fall back to parsing the returned doc's own frontmatter
+  // `usage:` block — the pre-existing behavior, still correct for a CLI/remote member that self-
+  // reports its usage in its own output.
+  private finalize(doc: string, receipt?: Receipt): { doc: string; receipt: Receipt } {
+    return { doc, receipt: receipt ?? normalizeReceipt(readUsage(doc), this.opts.pricing) };
   }
 
   // Shared argv/cwd/stdin derivation for both the sync and async CLI spawn paths.
