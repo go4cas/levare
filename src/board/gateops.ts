@@ -17,7 +17,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { loadRepo, type Repo } from "../repo.ts";
 import { validateArtifactSource } from "../validate.ts";
-import { bumpVersion, type Verb } from "../runner.ts";
+import { bumpVersion, roundOf, type Verb } from "../runner.ts";
 import { productionAdapterRunner } from "../replay.ts";
 import { loopMembershipFor, responsibleTeamFor, unmetAfter, patchFrontmatter, upsertFrontmatterField } from "../gates.ts";
 import { locateArtifactFile } from "./locate.ts";
@@ -86,7 +86,7 @@ export async function resolveGate(root: string, project: string, target: string,
 
   if (verb === "approve") return doApprove(root, located.file, target, today, opts.note, extra);
   if (verb === "reject") return doReject(root, located.file, target, opts.note, extra);
-  if (verb === "request") return await doRequest(root, unit.dir, located.file, art, opts.note, memberRunner, extra, opts.daemon);
+  if (verb === "request") return await doRequest(root, repo, unit, located.file, art, opts.note, memberRunner, extra, opts.daemon);
   return { ok: false, status: 400, error: `verb '${verb}' is not valid for an artifact gate` };
 }
 
@@ -132,7 +132,8 @@ function doReject(root: string, file: string, id: string, note: string | undefin
 
 async function doRequest(
   root: string,
-  unitDir: string,
+  repo: Repo,
+  unit: WorkUnit,
   file: string,
   art: { id: string; kind: string; produced_by: string; unit: string; project: string },
   note: string | undefined,
@@ -140,12 +141,40 @@ async function doRequest(
   extraFiles: string[],
   daemon?: Daemon,
 ): Promise<GateOpResult> {
+  const unitDir = unit.dir;
   if (!note || !note.trim()) return { ok: false, status: 400, error: "request-changes requires a note" };
   const member = art.produced_by.split("/")[1];
   const hasCap = memberRunner.capabilities().some((c) => c.member === member && c.kind === art.kind);
   if (!hasCap) {
     return { ok: false, status: 501, error: `no producer available to re-invoke '${art.produced_by}' for kind '${art.kind}'` };
   }
+
+  // Ruling C14: max_rounds/on_exhaust. `art` may be the loop's FIRST (author) member at its FINAL
+  // round already — requesting changes again would create a round beyond max_rounds, which the
+  // ruling forbids. Mirrors runner.ts#runLoop's own exhaustion exactly (the for-loop simply never
+  // starts a round beyond max_rounds): refuse the new round here and name the round count and the
+  // last review, so the Conductor sees why — never a silent, unbounded re-request.
+  const [teamName] = art.produced_by.split("/");
+  const team = repo.teams.get(teamName);
+  const membership = team ? loopMembershipFor(team, art.kind, memberRunner.capabilities()) : undefined;
+  if (membership?.role === "first") {
+    const round = roundOf(art.id);
+    if (round >= membership.loop.maxRounds) {
+      const artifacts = repo.artifacts.get(`${unit.project}/${unit.unit}`);
+      const companion =
+        membership.companionKind && artifacts
+          ? [...artifacts.values()].filter((a) => a.kind === membership.companionKind).sort((a, b) => a.created.localeCompare(b.created)).pop()
+          : undefined;
+      return {
+        ok: false,
+        status: 409,
+        error:
+          `loop exhausted: ${art.id} is round ${round}/${membership.loop.maxRounds} without \`${membership.loop.until}\` — ` +
+          `on_exhaust: gate (last review: ${companion ? companion.id : "none"}); only approve/reject are valid now, not request`,
+      };
+    }
+  }
+
   const oldRoundMatch = /-v(\d+)$/.exec(art.id);
   const nextRound = (oldRoundMatch ? Number(oldRoundMatch[1]) : 1) + 1;
 
