@@ -3273,3 +3273,124 @@ at F7); `levare replay fixtures/golden --stubs` — final artifact statuses stil
 — `deps ok`. Both security-audit K5 pre-arms (Surfaces 3/8, `docs/security-audit.md`) are now closed:
 env scoping and the tool allowlist are enforced on the boundary that is actually live, proven by tests
 that exercise the full production path, not just the constructor in isolation.
+
+## C12/F10. Three defects from the first honest native member run: the member-authored contract, silent team resolution, and a static board on start
+
+**Found by the Conductor (2026-07-14):** the first native member run through the real SDK boundary
+(F8) exposed three separate problems in the same sitting. (1) A native member's SDK call succeeded and
+its plain-prose output was rejected by levare's own boundary validator with "document has no
+frontmatter fence" — the assembled §6 context gives a member its definition, skills, knowledge, team
+charter, house rules, task, and consumed paths, but never states the output contract, so a model that
+was never told the schema could not possibly emit it. (2) A Conductor created a `press` team (one
+member, produces `product-brief`) and started a unit whose work `press` was meant to do; `kestrel` ran
+it instead, because `kestrel` also declares `product-brief` and `gates.ts#responsibleTeamsFor`'s
+produces∩expects scoring silently picked one — never surfaced, never asked about. (3) Clicking Start
+left the board completely static for however long the model took to think; "Members running" never
+moved, because a Conductor-triggered start bypasses the daemon's tick entirely.
+
+**Ruling C12 — the member authors CONTENT; levare authors the ARTIFACT.** The fix is one ruling applied
+uniformly, not a special case for native: a member's raw return value — from `NativeBoundary.invoke`,
+`RemoteBoundary.call`, or a `kind: cli` spawn's stdout — is never trusted as a document again. It is
+content, full stop. `AdapterRunner#author` (adapters.ts, replacing the old `finalize`) strips any
+frontmatter fence the raw text happens to carry (`stripFrontmatter` — a member that guessed at the
+schema is not thereby trusted either) and wraps whatever remains in frontmatter it assembles entirely
+from facts the runner already has by construction: `kind` (the flow step's resolved kind, `req.kind`),
+`id` (`<kind>-<unit>-v1` — the SAME unit-scoped convention `dagwalk.ts#produceOne` already used for the
+live daemon path, now the ONE place that convention is decided, not duplicated), `unit`/`project`
+(dispatch coordinates), `status: in-review`, `produced_by` (`teamOf(repo, member)` — the team that
+actually ran, never a member's own claim), `consumes` (`context.ts#unitArtifactPaths`, newly exported —
+the SAME currently-approved-artifact set already handed to the member as its own context, so `consumes`
+can never drift from what was actually given), `supersedes`/`approved_by: null`, `created` (an
+injectable clock, `AdapterRunnerOptions.now`), `files: []`, and `usage` — the boundary's own reported
+`Receipt` when one was given (verbatim, per F8), `unreported` otherwise. Empty/unusable content after
+stripping throws `AdapterError`, which every existing caller (`dagwalk.ts#produceOne`,
+`board/gateops.ts#doRequest`) already converts into a blocked artifact — unchanged.
+
+**The receipt half.** `readUsage`/`coerceUsage` (adapters.ts) — the code that parsed a member's own
+frontmatter `usage:` block and priced it — is deleted outright; it was the exact mechanism the ruling
+targets ("a member reporting its own token count is a member guessing"), and with frontmatter
+universally stripped it had nothing left to read. The one caller that legitimately needs this closed:
+`replay.ts`'s `stubNative` previously relied on `render()`'s embedded `usage:` block for the golden
+fixture's canned costs (budget-gate tests, `daemon.test.ts` (h)/(i)/(j), depend on real `$` figures
+accruing). `fixtures/stubs/member-stub.ts` gained `cannedReceipt(member, kind)`, reshaping the SAME
+`CANNED` table into a `Receipt`; `stubNative` now reports it as the boundary's own receipt (exactly what
+a real native call would report), never via the doc.
+
+**Fallout: the id convention now applies to every adapter kind, including the batch Runner.** Since
+`AdapterRunner` is shared by `stubAdapterRunner` (`levare replay`) and `productionAdapterRunner` (live
+serve/daemon), the golden fixture's two ids that predated the `<kind>-<unit>-v1` convention —
+`product-brief-v1` (no unit) and `design-checkout-v1` (`checkout`, not `checkout-flow`) — changed to
+`product-brief-checkout-flow-v1`/`design-checkout-flow-v1` in the REPLAY simulation's in-memory output
+(the batch Runner never writes files; the STATIC on-disk golden fixture artifacts —
+`product-brief-v1.md`, `design-checkout-v1/` — are untouched, since dozens of other tests read them as
+fixture state, not as something replay produces). `fixtures/golden/expected.json` and
+`tests/replay.test.ts`'s own assertions were updated to the new ids; `spec-checkout-flow-v1`/
+`review-checkout-flow-v1` already matched the convention by coincidence and are unchanged.
+
+**F10 defect 2 — team ambiguity.** `validate.ts` gained `validateResponsibleTeam`: for every work unit,
+if some kind its type's `expects` names is produced by more than one team in the studio AND the unit
+does not disambiguate, `levare validate` fails with `AMBIGUOUS_PRODUCER` naming the kind and every
+candidate team. A new optional `team:` field on `WorkUnit` (types.ts, repo.ts, `WORK_UNIT_SCHEMA`) lets
+a unit name its responsible team explicitly; when present it is validated on its own terms
+(`UNKNOWN_TEAM` if it names no real team, `TEAM_CANNOT_PRODUCE` if that team can't produce anything the
+unit's type expects) rather than silently accepted. `gates.ts#responsibleTeamsFor`/`responsibleTeamFor`
+and `runner.ts`'s private mirror of the same function now check `unit.team` first and use it verbatim,
+never the produces∩expects scoring, whenever it's set — closing the exact silent-resolution gap the
+`press`/`kestrel` bug exposed.
+
+**F10 defect 3 — no feedback on Start.** The daemon's `running()`/`inFlight` projection (deliverable c,
+phase 8) only ever populated from `daemon.ts#tickOnce`'s own `onBeforeProduce` hook — the daemon's
+autonomous walk. A Conductor's `start`/`request-changes` click drives production directly
+(`board/gateops.ts#doStart`/`#doRequest`), inside the same HTTP request that resolves the gate, and
+never touched that projection at all: the board had no way to know a member was running until the
+request that started it had already finished. `Daemon` gained `beginInvocation`/`endInvocation` — the
+SAME `inFlight` array `running()` already reads, opened up for a caller outside the tick loop.
+`doStart` registers via `advanceUnit`'s existing `onBeforeProduce` hook the instant it knows what it's
+about to dispatch and ends it in a `.finally()`; `doRequest` wraps its own direct `memberRunner.produce`
+call the same way. `board/render.ts#gateCardHtml` gained a `dispatching` opt: when a gate's
+project/unit matches an entry in `running` (threaded through `renderStudio`/`renderProject`/`renderRun`,
+the last two newly accepting a `running` param), it renders a pending state — the SAME quiet dots
+already built for the Orchestrator composer (`assets/styles.css`'s `.msg--pending .msg__dots`, reused
+verbatim, no new spinner) — in place of the verb buttons, badged "dispatching" rather than "start gate".
+Client-side, `assets/app.js`'s gate-verb click handler no longer jumps straight to a "started"/"changes
+sent" resolved-line for `start`/`send` (a claim of completion nothing has earned yet); it shows the same
+pending markup immediately on click and lets the SSE-driven `reload` replace it with the server's real
+post-production render once the write actually lands. This closes the literal defect (a Start click is
+now trackable end to end, not merely optimistic) but stops short of a live mid-flight broadcast to
+OTHER connected tabs — `ctx.broadcast` is not threaded into `resolveGate` — recorded here rather than
+guessed at further: the daemon's OWN next tick (or that tab's own next reload) still converges on the
+truth, just not necessarily within the exact synchronous window a start production is in flight if no
+local click triggered it.
+
+**Tests.** `tests/adapters.test.ts` — the "malformed usage" describe block (testing the now-deleted
+doc-frontmatter usage parsing) was replaced with "levare authors the artifact frontmatter, never the
+member (ruling C12)": a native member returning plain prose produces a valid, fully-levare-authored
+artifact with an SDK-reported receipt; a member emitting its own (deliberately wrong) frontmatter fence
+has every field stripped and replaced with levare's own, including a fabricated `usage:` block ignored
+in favor of an `unreported` receipt when the boundary reports none; empty content throws; a CLI member's
+raw stdout is authored the same way. `tests/serve-native-e2e.test.ts` — `FAKE_MODEL_DOC` is now genuine
+plain prose (no frontmatter at all, the actual bug shape), asserted end to end through the real board
+route to produce a valid, levare-authored artifact with the SDK's own receipt; a new
+`HOSTILE_FRONTMATTER_MODEL_DOC` case proves a model that DOES wrap fabricated frontmatter around the
+same content has it stripped and replaced, end to end. `tests/cli-context-delivery.test.ts`/
+`tests/cli-context-artifacts.test.ts` updated their dry-run/live-parity assertions from doc-equals-
+context to doc-CONTAINS-context (the context now lands as the artifact's body, not the whole document),
+and the `context_via: arg` empty-stdin case now asserts an `AdapterError` (blocked) rather than a blank
+`""` document. `tests/validate.test.ts` gained a `buildStudio` helper constructing a minimal two-team-
+same-kind studio, covering `AMBIGUOUS_PRODUCER` (naming the kind and both teams), a `team:` override
+resolving it cleanly, `UNKNOWN_TEAM`, and `TEAM_CANNOT_PRODUCE`. `tests/gates.test.ts` covers
+`responsibleTeamFor`/`responsibleTeamsFor`'s `team:` override directly (a nonexistent named team
+resolves to no responsible team, never a fallback guess). `tests/board-render.test.ts` gained a
+describe block proving a gate card renders Start/Not yet/Re-scope with no running invocations, the
+dispatching state (and none of the verb buttons) the instant a matching invocation appears in `running`,
+that an in-flight invocation for a DIFFERENT unit leaves an unrelated gate untouched, and that the
+project/run screens render the identical dispatching state. `tests/board-serve-daemon.test.ts` gained an
+end-to-end case: a real `POST /gates/.../start` over HTTP, with a member-runner wrapper that renders
+`renderStudio` from inside the in-flight `produce()` call (mirroring the existing daemon-tick test's own
+pattern) — proving the invocation is genuinely visible in `daemon.running()` and the rendered dispatching
+state DURING the request, and cleared after.
+
+**Verification.** `bun test` — 518 pass, 1 pre-existing skip, 0 fail, across 45 files (up from 505/1/0 at
+F8); `levare replay fixtures/golden --stubs` — final artifact statuses byte-for-byte against the
+regenerated `expected.json`; `deps:check` — `deps ok`; a `renderStudio`/`renderProject`/`renderRun`
+smoke check against the golden fixture confirmed the dispatching markup renders exactly as asserted.
