@@ -55,6 +55,12 @@ export interface OrchestratorBoundary {
    * intercepting every message `interpret()` couldn't force into one of the other six kinds). The
    * deterministic boundary's own implementation IS that offline fallback line — it is now the only
    * place that string can come from, and only when the offline boundary is genuinely selected.
+   *
+   * `root` is the served studio's root — required, never defaulted (ruling C10: a boundary call
+   * constructed without one is an error). The real SDK boundary grants NO filesystem tools; it
+   * grounds itself instead in a deterministic projection of that exact studio (`orchestrator-
+   * projection.ts#buildStudioProjection`), re-derived from `root` on every call, never fetched by
+   * the model itself.
    */
   converse(text: string, root: string): Promise<string>;
 }
@@ -542,7 +548,8 @@ export async function handle(text: string, ctx: OrchestratorContext, boundary: O
       // regardless of which boundary was selected — silently intercepting every free-form message the
       // real SDK boundary correctly classified as "not a structured operation" before the model ever
       // got a chance to actually answer it. `converse()` is the real boundary's genuine conversational
-      // path (tool-enabled, grounded in repo state); the deterministic boundary's own `converse()`
+      // path (no tools — grounded in a re-derived studio projection, ruling C10); the deterministic
+      // boundary's own `converse()`
       // implementation is the ONLY source of the canned line now, so it can only appear when the
       // offline boundary is genuinely selected. An empty message never reaches the model at all —
       // there is nothing to converse about.

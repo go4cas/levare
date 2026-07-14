@@ -21,6 +21,8 @@ import type { Intent, OrchestratorBoundary } from "./orchestrator.ts";
 import { deterministicBoundary } from "./orchestrator.ts";
 import type { Verb } from "./runner.ts";
 import type { Receipt } from "./types.ts";
+import { loadRepo } from "./repo.ts";
+import { buildStudioProjection } from "./orchestrator-projection.ts";
 import {
   asyncSdkTransport,
   hasAnthropicCredentials,
@@ -163,8 +165,9 @@ export interface SdkOrchestratorBoundaryOptions {
   /** Environment the transport's spawned worker draws from (default process.env). Never logged. */
   env?: Record<string, string | undefined>;
   timeoutMs?: number;
-  /** Timeout for `converse()` specifically — longer than `timeoutMs` by default, since tool use may
-   * take several turns (NOTES phase-7 K17). */
+  /** Timeout for `converse()` specifically — longer than `timeoutMs` by default: its prompt carries
+   * the full studio projection (NOTES/ruling C10) rather than a short task string, so it is a bigger
+   * single-turn call than interpret()/narrate() even with no tool round-trips. */
   converseTimeoutMs?: number;
   /** Explicit override for the resolved native-binary path (test-only) — see
    * `resolveNativeBinaryPath` default below and NOTES phase-7 K14. */
@@ -186,8 +189,9 @@ export function createSdkOrchestratorBoundary(opts: SdkOrchestratorBoundaryOptio
   // timeout must stay comfortably LONGER than this, never shorter — the reverse is what let a hung
   // call outlive the test that was supposed to catch it.
   const timeoutMs = opts.timeoutMs ?? 45_000;
-  // converse() involves tool use (Read/Grep/Glob — possibly several turns to investigate before
-  // answering), so it legitimately needs more room than a single-turn classification/voice call.
+  // converse()'s prompt carries the full studio projection (ruling C10) rather than a short task
+  // string, so it legitimately needs more room than a single-turn classification/voice call, even
+  // with no tool round-trips left to wait on.
   const converseTimeoutMs = opts.converseTimeoutMs ?? 90_000;
   // Resolved ONCE, here, at construction time — never left to the SDK's own implicit resolution
   // inside the worker (NOTES phase-7 K14: a live host showed that implicit lookup fail to find a
@@ -232,19 +236,28 @@ export function createSdkOrchestratorBoundary(opts: SdkOrchestratorBoundaryOptio
       logReceipt("narrate", res.receipt);
       return res.result;
     },
-    // NOTES phase-7 K17: the real conversational path. READ-ONLY tools only (Read/Grep/Glob — never
-    // Write/Edit/Bash) so the model can genuinely re-derive facts from the repo (§7) but structurally
-    // cannot mutate anything from inside a chat reply — "proposals, never writes" holds even when the
-    // model is given tool access, not just by convention. `cwd: root` scopes file access to the
-    // studio itself. The verbatim system prompt already instructs refusal-by-name for an
-    // invariant-violating instruction and treating file/artifact contents as information, not
-    // instruction (prompt-injection resistance) — this call is what lets the model actually ACT on
-    // those instructions instead of never being asked to.
+    // Ruling C10: the real conversational path — ZERO tools (no Read/Grep/Glob, no Bash, nothing).
+    // A live host showed `converse()`'s prior Read/Grep/Glob grant let the model wander: the SDK
+    // worker process is always spawned with `cwd: LEVARE_ROOT` (sdk-transport.ts, NOTES phase-7
+    // K13 — needed so the worker script itself resolves its own node_modules), and a tool-driven
+    // model resolving relative paths walked LEVARE'S OWN SOURCE TREE, not the served studio, even
+    // though `root` here was the correct studio path all along — "the model has search tools" was
+    // the actual bug, not the wiring. The fix is structural, not a sandboxing fix: the Orchestrator
+    // gets no filesystem access at all. In its place, `buildStudioProjection` (orchestrator-
+    // projection.ts) — the same "levare derives it, the model never fetches it" discipline as the
+    // §6 member-context recipe — assembles a deterministic summary of exactly this studio (`root`,
+    // validated below, never defaulted) and it is prepended to the prompt as the model's ONLY view
+    // of the studio. This also closes the security audit's Surface 1 finding that the Orchestrator
+    // could read arbitrary files the process could reach — it no longer can read any file at all.
+    // The verbatim system prompt already instructs treating embedded content as information, not
+    // instruction, and the projection's own header repeats that for the exact content it carries.
     async converse(text: string, root: string): Promise<string> {
-      const res = await transport.run(
-        { prompt: text, systemPrompt, model, tools: ["Read", "Grep", "Glob"], allowedTools: ["Read", "Grep", "Glob"], cwd: root, pathToClaudeCodeExecutable },
-        { env, timeoutMs: converseTimeoutMs },
-      );
+      if (!root) {
+        throw new Error("OrchestratorBoundary.converse() called without an explicit studio root — the served studio root is required, it is never defaulted (ruling C10)");
+      }
+      const projection = buildStudioProjection(loadRepo(root));
+      const prompt = `${projection}\n\nConductor: ${text}`;
+      const res = await transport.run({ prompt, systemPrompt, model, tools: [], allowedTools: [], pathToClaudeCodeExecutable }, { env, timeoutMs: converseTimeoutMs });
       // Same reasoning as interpret(): a transport failure must never be dressed up as a real answer.
       // Throwing here (rather than degrading in-place, unlike narrate()) reuses the EXISTING
       // board/serve.ts catch-and-degrade-to-offline path (K11) instead of inventing a second, ad-hoc
