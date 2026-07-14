@@ -4192,3 +4192,60 @@ mechanism decides:
 
 `bun test` exits 0 (609 pass, 1 pre-existing skip, 0 fail, across 52 files); `levare replay
 fixtures/golden --stubs` matches the oracle byte-for-byte; `deps:check` reports `deps ok`.
+
+## A test-quality pattern: assert about the code, not the shell it happened to run in
+
+Three tests in a week failed (or silently passed for the wrong reason) because they asserted
+something true about the WORLD the test happened to run in, rather than something true about the
+CODE under test. Naming the pattern here so the fourth instance is caught in review, not production.
+
+1. **`tests/board-serve-e2e.test.ts`** — the spawned `./levare serve` subprocess bound a port derived
+   from `4100 + (process.pid % 400)`, "to spread across runs to avoid colliding with a stale
+   listener" — a mitigation, not a fix. Two processes (a stale listener from a crashed prior run,
+   another CI shard, a container with a recycled low PID range) can still collide on that formula.
+   When they did, the bind failed, the subprocess exited, and `expect(proc.exitCode).toBeNull()`
+   reported "the process died" — reading as a real regression (the server crashing after boot) when
+   the actual fact was mundane: the port was merely taken. The test was asserting "this specific port
+   was free," a fact about the host, and mislabeling its failure as a fact about `levare serve`.
+
+2. **`tests/daemon.test.ts`** — "many rapid ticks never invoke a member twice" already asserted a
+   fully deterministic property (a fixed 30 ticks, an exact invocation-count match — no randomness,
+   no network) but ran under bun's default 5000ms per-test timeout. Each tick makes a real git commit,
+   so wall time tracks host load, not the property under test; a busy CI runner or a loaded dev
+   machine could push the SAME deterministic sequence past 5s while a quiet one stayed under it. Fixed
+   in `e4a214c` by raising the test's own timeout to a generous 30s ceiling — the assertion itself
+   never changed, because it was never actually about time.
+
+3. **`tests/orchestrator-no-deterministic-boundary.test.ts`** — asserted `selectOrchestratorBoundary
+   ({})` (an explicitly empty, self-contained env) returns `null`. It passed in isolation and in CI
+   (no `ANTHROPIC_API_KEY` either way) and failed on any developer machine that had ever exported one
+   — which, for a levare contributor, is every machine that has ever run the real Orchestrator. Root
+   cause: `sdk-transport.ts#checkSdkPreconditionsCached` memoizes its verdict in a MODULE-LEVEL cache
+   with a 30s TTL keyed by nothing but time — not by the `env` argument. Bun runs a whole test file's
+   suite in one process, so if ANY earlier test in that run resolved the boundary against the real
+   `process.env` (the default for every call site that doesn't inject its own — a live board test, an
+   orchestrator smoke test), that verdict stayed cached and silently outlived the env this test
+   explicitly passed. The test controlled its OWN input and still wasn't testing its own input — a
+   shared, invisible cache from an unrelated, earlier-running test was. Fixed by calling the already-
+   established `resetSdkPreconditionCache()` (test-only, and already the convention in
+   `tests/orchestrator-sdk.test.ts`'s own `beforeEach`) before every test in the file, so
+   `selectOrchestratorBoundary({})` is guaranteed to actually re-evaluate the env this test injects,
+   not whatever an unrelated test left behind.
+
+**The pattern.** Each of the three had a plausible-looking guard against exactly ONE source of
+ambient truth (a "spread across runs" port formula, CI's own lack of a key, a 5-second timeout that's
+usually enough) while a DIFFERENT ambient channel — a stale listener, a loaded host, a module-level
+cache with no env key — still leaked through. A test that reads (or is silently gated by) something
+outside its own explicit setup — the wall clock, a fixed or formula-derived port, a real environment
+variable, a shared module-level cache, host load, execution order — is testing the environment, not
+the code, even when its assertion LOOKS like it's about the code. The fix is never a longer timeout or
+a wider port-spread formula alone (both mitigate, neither eliminates); it's controlling the actual
+input: inject the exact env/config/clock the assertion is about (`buildMemberEnv`'s base-env
+parameter, `checkSdkPreconditionsCached`'s own injectable `env` + `resetSdkPreconditionCache()`,
+`AdapterRunnerOptions.now`), or pick a genuinely collision-free resource (an OS-assigned ephemeral
+port, `--port 0`, rather than a formula over the PID) — the same "inject the input under test, don't
+default to the ambient world" posture this project already uses throughout §6's `buildMemberEnv` and
+the AdapterRunner's own `spawn`/`asyncSpawn`/`now` injection points. When reviewing a new test, ask
+what it would take to make it fail SPURIOUSLY on a correct implementation — a busy CI runner, a
+long-lived developer shell, two people running the suite at once — and if the answer isn't "nothing,"
+it isn't testing what it claims to.
