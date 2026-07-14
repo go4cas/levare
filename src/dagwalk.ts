@@ -432,7 +432,12 @@ async function produceOne(
     const located = locateArtifactFile(unit.dir, loop.supersedes);
     if (located) {
       const oldSrc = readFileSync(located.file, "utf8");
-      writeFileSync(located.file, patchFrontmatter(oldSrc, { status: "superseded" }));
+      // The prior round's companion may already be `approved` (ruling C2: any resolution of a loop's
+      // first-member gate approves the round's companion, regardless of verb) — an approved artifact
+      // superseded without clearing `approved_by` fails the validator's own invariant ("only an
+      // approved artifact may name an approver"). Superseding always clears it, matching how a
+      // never-approved (in-review) companion already carries `approved_by: null`.
+      writeFileSync(located.file, patchFrontmatter(oldSrc, { status: "superseded", approved_by: null }));
       files.unshift(located.file);
     }
   }
