@@ -33,7 +33,7 @@ const CANNED: Record<string, Canned> = {
       "**Problem.** The current three-page checkout loses buyers between address and payment.\n" +
       "**Job to be done.** Pay for a full cart in one uninterrupted flow.\n" +
       "**Success signal.** Checkout completion rate up, measured 30 days post-ship.\n",
-    usage: { model: "claude-sonnet", tokens_in: 8200, tokens_out: 2100, usd: 0.06, wall_clock_s: 95 },
+    usage: { model: "claude-sonnet-5", tokens_in: 8200, tokens_out: 2100, usd: 0.06, wall_clock_s: 95 },
   },
   "lyra:design": {
     id: "design-checkout-v1",
@@ -41,7 +41,7 @@ const CANNED: Record<string, Canned> = {
     consumes: ["product-brief-v1"],
     status: "in-review",
     body: "# Design — checkout-flow\n\nSingle-page flow with four collapsible sections and a summary rail.\n",
-    usage: { model: "claude-sonnet", tokens_in: 12400, tokens_out: 3800, usd: 0.1, wall_clock_s: 210 },
+    usage: { model: "claude-sonnet-5", tokens_in: 12400, tokens_out: 3800, usd: 0.1, wall_clock_s: 210 },
   },
   "lyra:spec": {
     id: "spec-checkout-flow-v1",
@@ -49,7 +49,7 @@ const CANNED: Record<string, Canned> = {
     consumes: ["product-brief-v1", "design-checkout-v1"],
     status: "in-review",
     body: "# Spec — checkout-flow\n\nServer-rendered `/checkout`; idempotent payment on an order key.\n",
-    usage: { model: "claude-sonnet", tokens_in: 31000, tokens_out: 10000, usd: 0.58, wall_clock_s: 480 },
+    usage: { model: "claude-sonnet-5", tokens_in: 31000, tokens_out: 10000, usd: 0.58, wall_clock_s: 480 },
   },
   "finch:review": {
     id: "review-checkout-flow-v1",

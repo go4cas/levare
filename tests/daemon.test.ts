@@ -7,6 +7,8 @@ import { Daemon } from "../src/daemon.ts";
 import { resolveGate } from "../src/board/gateops.ts";
 import { stubAdapterRunner } from "../src/replay.ts";
 import { loadRepo } from "../src/repo.ts";
+import { loadPricing } from "../src/pricing.ts";
+import { AdapterRunner } from "../src/adapters.ts";
 import type { MemberRunner } from "../src/runner.ts";
 import type { Verb } from "../src/runner.ts";
 
@@ -282,6 +284,59 @@ describe("(d) failures never crash the daemon or stall silently — they surface
     expect(r2.entries.length).toBeGreaterThan(0);
     // Never retried: the blocked artifact occupies design's slot, so the daemon halts there instead.
     expect(calls).toBe(1);
+  });
+});
+
+// NOTES F11 part 2 — proven live: a native member's usage receipt can name a DIFFERENT model than the
+// one it declared (the SDK silently substitutes its own default with no error and no warning — see
+// tests/sdk-worker-receipt.test.ts for the root-cause reproduction). levare's only real defence is
+// comparing what it asked for against what its own receipt reports, end to end: a member that ran on a
+// model the Conductor did not authorise must never land as a quiet in-review artifact.
+describe("(d2) NOTES F11: a native member's receipt naming a model other than the one it declared blocks the artifact, naming BOTH models", () => {
+  test("a real AdapterRunner backed by a native boundary that reports the wrong model produces a `blocked` artifact naming the declared and the actual model", async () => {
+    const repo = loadRepo(root);
+    const adapterRunner = new AdapterRunner(repo, {
+      pricing: loadPricing(root),
+      capabilities: [{ member: "wren", kind: "product-brief" }],
+      native: {
+        // Simulates exactly the live defect: the SDK reports back a DIFFERENT model than the one
+        // requested (wren declares claude-sonnet-5; the boundary here reports claude-haiku-4-5-20251001).
+        invoke: (r) => ({
+          doc: `# product brief\n\nDrafted for ${r.unit}.\n`,
+          receipt: { model: "claude-haiku-4-5-20251001", tokens_in: 500, tokens_out: 100, wall_clock_s: 2, usd: 0.002, unreported: false },
+        }),
+      },
+      remote: { call: () => { throw new Error("not used"); } },
+    });
+    const memberRunner = {
+      capabilities: () => adapterRunner.capabilities(),
+      produce: (member: string, kind: string, unit: string, project: string) => adapterRunner.produce(member, kind, unit, project),
+    };
+
+    const started = await resolveGate(root, "storefront", "loyalty-flow", "start", { memberRunner, today: "2026-07-12" });
+    expect(started.ok).toBe(false);
+    // doStart surfaces a member-boundary failure as 502, the reason verbatim (board/gateops.ts#doStart).
+    expect((started as { error: string }).error).toContain("claude-sonnet-5"); // wren's declared model
+    expect((started as { error: string }).error).toContain("claude-haiku-4-5-20251001"); // what actually ran
+
+    // The artifact landed on disk, BLOCKED (dagwalk.ts#writeBlocked — the same path every other member
+    // failure already takes), naming both models — never a silent in-review artifact carrying
+    // unauthorised, unbudgeted work.
+    const unitDir = join(root, "work/storefront/loyalty-flow");
+    const files = readdirSync(unitDir).filter((f) => f.startsWith("product-brief-"));
+    expect(files.length).toBe(1);
+    const doc = readFileSync(join(unitDir, files[0]), "utf8");
+    expect(doc).toContain("status: blocked");
+    expect(doc).toContain("claude-sonnet-5");
+    expect(doc).toContain("claude-haiku-4-5-20251001");
+
+    // The daemon's own re-derivation agrees: nothing further happens for this unit until a human acts —
+    // the blocked artifact occupies the slot, exactly like any other member-failure block.
+    const daemon = new Daemon(root, { memberRunner: () => memberRunner });
+    const before = readFileSync(join(unitDir, files[0]), "utf8");
+    await daemon.tick();
+    const after = readFileSync(join(unitDir, files[0]), "utf8");
+    expect(after).toBe(before);
   });
 });
 

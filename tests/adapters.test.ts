@@ -80,7 +80,10 @@ describe("native adapter (mocked SDK boundary)", () => {
   // table when the boundary actually reported one.
   test("a receipt reported by the native boundary is used verbatim, not re-priced from the doc", () => {
     const repo = loadRepo(ROOT);
-    const sdkReceipt = { model: "claude-opus-4-8", tokens_in: 9001, tokens_out: 42, wall_clock_s: 3.5, usd: 0.0007, unreported: false };
+    // Matches lyra's own declared model (fixtures/golden/agents/lyra.md) — this test is about receipt
+    // FIDELITY (verbatim passthrough, never re-priced), not the NOTES F11 requested-vs-actual guard;
+    // see the dedicated describe block below for that.
+    const sdkReceipt = { model: "claude-sonnet-5", tokens_in: 9001, tokens_out: 42, wall_clock_s: 3.5, usd: 0.0007, unreported: false };
     const native: NativeBoundary = { invoke: (r) => ({ doc: render(r.member, r.kind, r.unit, r.project), receipt: sdkReceipt }) };
     const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native, remote: remoteMock });
     const { receipt } = runner.produce("lyra", "spec", "checkout-flow", "storefront");
@@ -108,6 +111,59 @@ describe("native adapter (mocked SDK boundary)", () => {
     expect(seen!.agent.model).toBe("claude-sonnet-5"); // lyra's own declared model (fixtures/golden/agents/lyra.md)
     expect(receipt.model).toBe("claude-sonnet-5");
     expect(doc).toContain("model: claude-sonnet-5");
+  });
+
+  // NOTES F11 part 2 — THE GUARD: the SDK can silently substitute its own default model when a call
+  // doesn't run on the one requested, with no error and no warning; the only honest defence is
+  // comparing what levare asked for against what its own receipt reports. Never a warning, never an
+  // in-review artifact carrying unauthorised/unbudgeted work — a hard failure (AdapterError), which
+  // dagwalk.ts#produceOne's existing member-failure handling turns into a `blocked` artifact naming
+  // both models — proven end to end in tests/daemon.test.ts's own describe block for this guard.
+  describe("a native member's receipt naming a DIFFERENT model than declared is a hard failure, never a silent in-review artifact", () => {
+    test("produce() throws AdapterError naming both the declared and the actually-reported model", () => {
+      const repo = loadRepo(ROOT);
+      const native: NativeBoundary = {
+        invoke: (r) => ({ doc: render(r.member, r.kind, r.unit, r.project), receipt: { model: "claude-haiku-4-5-20251001", tokens_in: 10, tokens_out: 5, wall_clock_s: 1, usd: 0.001, unreported: false } }),
+      };
+      const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native, remote: remoteMock });
+      expect(() => runner.produce("lyra", "spec", "checkout-flow", "storefront")).toThrow(AdapterError);
+      try {
+        runner.produce("lyra", "spec", "checkout-flow", "storefront");
+        throw new Error("expected produce() to throw");
+      } catch (e) {
+        expect(e).toBeInstanceOf(AdapterError);
+        const msg = (e as Error).message;
+        expect(msg).toContain("claude-sonnet-5"); // declared (fixtures/golden/agents/lyra.md)
+        expect(msg).toContain("claude-haiku-4-5-20251001"); // what the receipt actually reported
+      }
+    });
+
+    test("produceAsync() applies the same guard", async () => {
+      const repo = loadRepo(ROOT);
+      const asyncNative = {
+        invoke: async (r: InvokeRequest) => ({ doc: render(r.member, r.kind, r.unit, r.project), receipt: { model: "claude-opus-4-8", tokens_in: 10, tokens_out: 5, wall_clock_s: 1, usd: 0.001, unreported: false } }),
+      };
+      const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native: nativeMock, asyncNative, remote: remoteMock });
+      await expect(runner.produceAsync("lyra", "spec", "checkout-flow", "storefront")).rejects.toThrow(AdapterError);
+      await expect(runner.produceAsync("lyra", "spec", "checkout-flow", "storefront")).rejects.toThrow(/claude-sonnet-5.*claude-opus-4-8|claude-opus-4-8.*claude-sonnet-5/);
+    });
+
+    test("an UNREPORTED receipt (no model claim at all) is never treated as a mismatch — nothing to compare against", () => {
+      const repo = loadRepo(ROOT);
+      const native: NativeBoundary = { invoke: (r) => ({ doc: render(r.member, r.kind, r.unit, r.project) }) }; // no receipt at all → unreported
+      const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native, remote: remoteMock });
+      const { receipt } = runner.produce("lyra", "spec", "checkout-flow", "storefront");
+      expect(receipt.unreported).toBe(true);
+    });
+
+    test("a matching model never triggers the guard", () => {
+      const repo = loadRepo(ROOT);
+      const native: NativeBoundary = {
+        invoke: (r) => ({ doc: render(r.member, r.kind, r.unit, r.project), receipt: { model: r.agent.model!, tokens_in: 10, tokens_out: 5, wall_clock_s: 1, usd: 0.001, unreported: false } }),
+      };
+      const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native, remote: remoteMock });
+      expect(() => runner.produce("lyra", "spec", "checkout-flow", "storefront")).not.toThrow();
+    });
   });
 
   test("produceAsync prefers `asyncNative` over `native` for a native member, and its receipt passes through the same way", async () => {

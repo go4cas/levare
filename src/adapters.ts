@@ -488,6 +488,22 @@ export class AdapterRunner implements MemberRunner {
     const content = stripFrontmatter(raw);
     if (!content) throw new AdapterError(`member '${req.member}' produced no usable content`);
     const finalReceipt = receipt ?? normalizeReceipt(null, this.opts.pricing);
+    // NOTES F11 part 2: the SDK can silently substitute its own default model when a call doesn't run
+    // on the one requested — no error, no warning, the call simply succeeds on a different model
+    // (proven live: an auxiliary internal call inside a single query() ran on a model the agent never
+    // declared, alongside a correctly-honoured primary response — see sdk-worker.ts's `respondingModel`
+    // fix for the root cause this guards against as defense in depth). The receipt is the SDK's OWN
+    // report of what actually ran (never re-derived, per the comment above) — so it is the only honest
+    // thing to compare the DECLARATION against. A native member whose receipt names a model other than
+    // its own declared `model:` produced work the Conductor never authorised and never budgeted for:
+    // that is a hard failure, not a warning. Thrown here (before any content is authored) so
+    // dagwalk.ts#produceOne's existing member-failure handling turns it into a `blocked` artifact
+    // naming both models — the same path every other member failure already takes, not a new one.
+    if (req.agent.kind === "native" && req.agent.model && !finalReceipt.unreported && finalReceipt.model && finalReceipt.model !== req.agent.model) {
+      throw new AdapterError(
+        `native member '${req.member}' declared model '${req.agent.model}' but its usage receipt reports it ran on '${finalReceipt.model}' — a member that ran on a model the Conductor did not authorise produced work they did not sanction or budget for`,
+      );
+    }
     const team = teamOf(this.repo, req.member);
     const producedBy = team ? `${team.name}/${req.member}` : req.member;
     const consumes = unitArtifactPaths(this.repo.root, req.project, req.unit)
