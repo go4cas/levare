@@ -104,6 +104,9 @@ const WORK_UNIT_SCHEMA: Schema = {
     project: { type: "str", required: false },
     unit: { type: "str", required: false },
     after: { type: "str[]", required: false },
+    // Ruling C12/F10 defect 2: disambiguates which team is responsible when more than one team in the
+    // studio produces a kind this unit's type expects — see validateResponsibleTeam below.
+    team: { type: "str", required: false },
     timebox: { type: "str", required: false, nullable: true },
     budget: { type: "num", required: false, nullable: true },
     // Why a `blocked` unit is blocked (NOTES F1) — e.g. an unbindable flow step. Recorded on disk so
@@ -314,6 +317,7 @@ export function validatePath(target: string): ValidationResult {
   // Cross-entity structural checks: can this studio actually RUN? (only meaningful for a whole tree)
   if (st.isDirectory()) {
     validateStudioBindings(target, errors);
+    validateResponsibleTeam(target, errors);
     validateAgentContextScope(target, errors);
     validateEnvNotTracked(target, errors);
   }
@@ -751,6 +755,107 @@ function validateStudioBindings(root: string, errors: ValidationError[]): void {
           file: path,
         });
       }
+    }
+  }
+}
+
+/**
+ * Ruling C12/F10 defect 2 — team ambiguity: "levare must not guess" extended to WHICH team is
+ * responsible for a unit, not just which member. The Conductor found this live: a `press` team (one
+ * member, produces `product-brief`) started a unit whose work `press` was meant to do — and `kestrel`
+ * ran it instead, because kestrel also declares `product-brief` and gates.ts#responsibleTeamsFor's
+ * produces∩expects scoring silently picked one. For every work unit, if some kind its type `expects`
+ * is produced by more than one team AND the unit does not disambiguate with `team:`, that is an
+ * AMBIGUOUS_PRODUCER error naming the kind(s) and every candidate team — never a runtime coin-flip.
+ * A `team:` override, when present, is validated on its own terms: it must name a real team, and that
+ * team must actually be able to produce something the unit's type expects (otherwise the override just
+ * relocates the "nothing can run this unit" failure UNBINDABLE_STEP/UNPRODUCIBLE_KIND already catch).
+ */
+function validateResponsibleTeam(root: string, errors: ValidationError[]): void {
+  const workRoot = join(root, "work");
+  const teamsDir = join(root, "teams");
+  const typesDir = join(root, "types");
+  if (!existsSync(workRoot) || !existsSync(teamsDir) || !existsSync(typesDir)) return;
+
+  const teamProduces = new Map<string, string[]>();
+  for (const file of readdirSync(teamsDir).sort()) {
+    if (!file.endsWith(".md") || file.endsWith(".learnings.md")) continue;
+    let data: Record<string, YamlValue>;
+    try {
+      ({ data } = parseFrontmatter(readFileSync(join(teamsDir, file), "utf8")));
+    } catch {
+      continue; // its own PARSE_ERROR was already recorded by the per-file pass.
+    }
+    const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+    teamProduces.set(name, strList(data.produces));
+  }
+
+  const typeExpects = new Map<string, string[]>();
+  for (const file of readdirSync(typesDir).sort()) {
+    if (!file.endsWith(".md")) continue;
+    let data: Record<string, YamlValue>;
+    try {
+      ({ data } = parseFrontmatter(readFileSync(join(typesDir, file), "utf8")));
+    } catch {
+      continue;
+    }
+    const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+    typeExpects.set(name, strList(data.expects));
+  }
+
+  for (const project of listDirs(workRoot)) {
+    for (const unitName of listDirs(join(workRoot, project))) {
+      const unitFile = join(workRoot, project, unitName, "unit.md");
+      if (!existsSync(unitFile)) continue;
+      let data: Record<string, YamlValue>;
+      try {
+        ({ data } = parseFrontmatter(readFileSync(unitFile, "utf8")));
+      } catch {
+        continue;
+      }
+      const type = typeof data.type === "string" ? data.type : undefined;
+      const expects = type ? (typeExpects.get(type) ?? []) : [];
+      const team = typeof data.team === "string" ? data.team : undefined;
+
+      if (team) {
+        if (!teamProduces.has(team)) {
+          errors.push({ code: "UNKNOWN_TEAM", message: `unit '${unitName}' declares team: '${team}', but no such team is defined`, file: unitFile });
+          continue;
+        }
+        const produces = teamProduces.get(team)!;
+        if (expects.length > 0 && !produces.some((k) => expects.includes(k))) {
+          errors.push({
+            code: "TEAM_CANNOT_PRODUCE",
+            message:
+              `unit '${unitName}' declares team: '${team}', but that team produces [${produces.join(", ") || "nothing"}] — ` +
+              `none of which its type '${type}' expects [${expects.join(", ")}]`,
+            file: unitFile,
+          });
+        }
+        continue; // disambiguated: an explicit team: names exactly one responsible team.
+      }
+
+      // Which of the type's expected kinds are produced by more than one team?
+      const producersByKind = new Map<string, string[]>();
+      for (const [teamName, kinds] of teamProduces) {
+        for (const kind of kinds) {
+          if (!expects.includes(kind)) continue;
+          const arr = producersByKind.get(kind) ?? [];
+          arr.push(teamName);
+          producersByKind.set(kind, arr);
+        }
+      }
+      const ambiguous = [...producersByKind.entries()].filter(([, teams]) => teams.length > 1);
+      if (ambiguous.length === 0) continue;
+      const allTeams = new Set<string>();
+      for (const [, teams] of ambiguous) for (const t of teams) allTeams.add(t);
+      errors.push({
+        code: "AMBIGUOUS_PRODUCER",
+        message:
+          `unit '${unitName}' (type '${type}') needs kind(s) [${ambiguous.map(([k]) => k).join(", ")}], each produced by more than one team ` +
+          `(${[...allTeams].sort().join(", ")}); levare never guesses which team is responsible — add 'team:' to ${unitFile} naming one`,
+        file: unitFile,
+      });
     }
   }
 }

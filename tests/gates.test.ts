@@ -1,6 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import { loadRepo } from "../src/repo.ts";
-import { loopMembershipFor, responsibleTeamFor, resolveStep, unmetAfter } from "../src/gates.ts";
+import { loopMembershipFor, responsibleTeamFor, responsibleTeamsFor, resolveStep, unmetAfter } from "../src/gates.ts";
 import { CAPABILITIES } from "../fixtures/stubs/member-stub.ts";
 
 // gates.ts (ruling C7) is the shared home for the flow/gate-resolution helpers the Runner's walk and
@@ -39,6 +39,23 @@ describe("responsibleTeamFor", () => {
   test("kestrel is also responsible for loyalty-flow (same feature type)", () => {
     const unit = repo.units.find((u) => u.unit === "loyalty-flow")!;
     expect(responsibleTeamFor(repo, unit)!.name).toBe("kestrel");
+  });
+
+  // Ruling C12/F10 defect 2: an explicit `team:` names the SOLE responsible team, bypassing the
+  // produces∩expects scoring entirely — the scoring is exactly what silently picked a team when two
+  // of them both produce a kind a unit needs (the live "press vs. kestrel" defect this closes).
+  describe("`team:` override", () => {
+    test("an explicit team: is used verbatim, never the produces∩expects scoring", () => {
+      const unit = { ...repo.units.find((u) => u.unit === "checkout-flow")!, team: "kestrel" };
+      expect(responsibleTeamFor(repo, unit)!.name).toBe("kestrel");
+      expect(responsibleTeamsFor(repo, unit).map((t) => t.name)).toEqual(["kestrel"]);
+    });
+
+    test("a team: naming a nonexistent team resolves to no responsible team, not a fallback guess", () => {
+      const unit = { ...repo.units.find((u) => u.unit === "checkout-flow")!, team: "no-such-team" };
+      expect(responsibleTeamFor(repo, unit)).toBeNull();
+      expect(responsibleTeamsFor(repo, unit)).toEqual([]);
+    });
   });
 });
 

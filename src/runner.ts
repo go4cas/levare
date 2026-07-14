@@ -220,6 +220,11 @@ export class Runner {
   private responsibleTeams(unit: WorkUnit): Team[] {
     const type = this.repo.types.get(unit.type);
     const expects = type?.expects ?? [];
+    // Ruling C12/F10 defect 2: mirrors gates.ts#responsibleTeamsFor's own `team:` override exactly.
+    if (unit.team) {
+      const named = this.repo.teams.get(unit.team);
+      return named ? [named] : [];
+    }
     const scored: Array<{ team: Team; earliest: number }> = [];
     for (const team of this.repo.teams.values()) {
       const producedHere = team.produces.filter((k) => expects.includes(k));

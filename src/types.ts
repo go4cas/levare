@@ -149,6 +149,14 @@ export interface WorkUnit {
   unit: string;
   /** Start-gate condition — a unit with unmet `after:` is invisible to the walk (§6, NOTES A6). */
   after?: string[];
+  /**
+   * Explicit team override (ruling C12/F10 defect 2): when two teams in a studio both produce a kind
+   * this unit's type expects, `levare validate` refuses to guess (AMBIGUOUS_PRODUCER) unless the unit
+   * names which team is responsible. When set, the walk (gates.ts#responsibleTeamsFor/runner.ts) uses
+   * ONLY this team, never the produces∩expects scoring — validated separately (the team must exist
+   * and must actually produce something the type expects).
+   */
+  team?: string;
   timebox?: string | null;
   /** USD; crossing the ledger sum raises a budget gate (§10). */
   budget?: number | null;

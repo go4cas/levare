@@ -59,6 +59,14 @@ export function loopMembershipFor(
 export function responsibleTeamsFor(repo: Repo, unit: WorkUnit): Team[] {
   const type = repo.types.get(unit.type);
   const expects = type?.expects ?? [];
+  // Ruling C12/F10 defect 2: an explicit `team:` override names the SOLE responsible team — never
+  // guessed via produces∩expects scoring, which is exactly what silently picks a team when two of
+  // them both produce a kind this unit needs (validate.ts#validateResponsibleTeam rejects that
+  // ambiguity up front unless this override resolves it).
+  if (unit.team) {
+    const named = repo.teams.get(unit.team);
+    return named ? [named] : [];
+  }
   const scored: Array<{ team: Team; earliest: number }> = [];
   for (const team of repo.teams.values()) {
     const producedHere = team.produces.filter((k) => expects.includes(k));

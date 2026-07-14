@@ -196,6 +196,7 @@ function loadWork(workRoot: string): { units: WorkUnit[]; artifacts: Repo["artif
         project: (optStr(data.project) ?? project) as string,
         unit: (optStr(data.unit) ?? unit) as string,
         after: data.after ? strArr(data.after) : undefined,
+        team: optStr(data.team),
         timebox: data.timebox === undefined ? undefined : (data.timebox as string | null),
         budget: data.budget === undefined ? undefined : (data.budget as number | null),
         blocked_reason: optStr(data.blocked_reason),

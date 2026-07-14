@@ -190,6 +190,110 @@ describe("ruling C9: cwd outside the studio root requires `context_artifacts: in
   });
 });
 
+// Ruling C12/F10 defect 2: the live "press vs. kestrel" dogfood bug — a second team declaring the same
+// `produces:` kind a unit's type expects was silently resolved at runtime by gates.ts's own
+// produces∩expects scoring, never surfaced. `levare validate` must refuse to guess.
+describe("F10 defect 2: two teams producing the same kind a unit needs is AMBIGUOUS_PRODUCER, never guessed", () => {
+  function buildStudio(unitTeam?: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "levare-ambiguous-producer-"));
+    mkdirSync(join(dir, "teams"), { recursive: true });
+    mkdirSync(join(dir, "agents"), { recursive: true });
+    mkdirSync(join(dir, "types"), { recursive: true });
+    mkdirSync(join(dir, "work", "acme", "launch"), { recursive: true });
+    writeFileSync(
+      join(dir, "agents", "wren.md"),
+      ["---", "name: wren", "kind: native", "produces: [product-brief]", "model: claude-sonnet", "style:", "  avatar: Wr", "---", "", "Wren.", ""].join("\n"),
+    );
+    writeFileSync(
+      join(dir, "agents", "scribe.md"),
+      ["---", "name: scribe", "kind: native", "produces: [product-brief]", "model: claude-sonnet", "style:", "  avatar: Sc", "---", "", "Scribe.", ""].join("\n"),
+    );
+    writeFileSync(
+      join(dir, "teams", "kestrel.md"),
+      ["---", "name: kestrel", "consumes: []", "produces: [product-brief]", "members: [wren]", "flow:", "  - step: brief", "style:", "  color: '#000'", "---", "", "Kestrel.", ""].join("\n"),
+    );
+    writeFileSync(
+      join(dir, "teams", "press.md"),
+      ["---", "name: press", "consumes: []", "produces: [product-brief]", "members: [scribe]", "flow:", "  - step: brief", "style:", "  color: '#111'", "---", "", "Press.", ""].join("\n"),
+    );
+    writeFileSync(
+      join(dir, "types", "feature.md"),
+      ["---", "name: feature", "glyph: '▸'", "expects: [product-brief]", "gates: []", "---", "", "Feature.", ""].join("\n"),
+    );
+    const teamLine = unitTeam ? `\nteam: ${unitTeam}` : "";
+    writeFileSync(
+      join(dir, "work", "acme", "launch", "unit.md"),
+      `---\ntype: feature\nstatus: active${teamLine}\n---\n\n# launch\n\nAmbiguous-producer test fixture.\n`,
+    );
+    return dir;
+  }
+
+  test("no team: override → AMBIGUOUS_PRODUCER, naming the kind and both teams", () => {
+    const dir = buildStudio();
+    try {
+      const r = validatePath(dir);
+      expect(r.ok).toBe(false);
+      const err = r.errors.find((e) => e.code === "AMBIGUOUS_PRODUCER");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("product-brief");
+      expect(err!.message).toContain("kestrel");
+      expect(err!.message).toContain("press");
+      expect(err!.file).toContain("work/acme/launch/unit.md");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("team: press disambiguates — no AMBIGUOUS_PRODUCER, and press validates as the responsible team", () => {
+    const dir = buildStudio("press");
+    try {
+      const r = validatePath(dir);
+      expect(r.errors.map((e) => e.code)).not.toContain("AMBIGUOUS_PRODUCER");
+      expect(r.ok).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("team: naming a team that doesn't exist fails with UNKNOWN_TEAM", () => {
+    const dir = buildStudio("ghost-team");
+    try {
+      const r = validatePath(dir);
+      const err = r.errors.find((e) => e.code === "UNKNOWN_TEAM");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("ghost-team");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("team: naming a real team that can't produce what the type expects fails with TEAM_CANNOT_PRODUCE", () => {
+    const dir = buildStudio();
+    try {
+      // A third team that exists but produces something irrelevant to `feature`'s expects.
+      writeFileSync(
+        join(dir, "agents", "smith.md"),
+        ["---", "name: smith", "kind: native", "produces: [code]", "model: claude-sonnet", "style:", "  avatar: Sm", "---", "", "Smith.", ""].join("\n"),
+      );
+      writeFileSync(
+        join(dir, "teams", "forge.md"),
+        ["---", "name: forge", "consumes: []", "produces: [code]", "members: [smith]", "flow:", "  - step: code", "style:", "  color: '#222'", "---", "", "Forge.", ""].join("\n"),
+      );
+      writeFileSync(
+        join(dir, "work", "acme", "launch", "unit.md"),
+        "---\ntype: feature\nstatus: active\nteam: forge\n---\n\n# launch\n\nAmbiguous-producer test fixture.\n",
+      );
+      const r = validatePath(dir);
+      const err = r.errors.find((e) => e.code === "TEAM_CANNOT_PRODUCE");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("forge");
+      expect(err!.message).toContain("product-brief");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("PRD v1.1: `mode:` was removed from the team schema (invariant 7)", () => {
   test("a team definition declaring `mode:` fails validation with a REMOVED_FIELD error naming it and v1.1", () => {
     const r = validatePath("fixtures/rejections/team-bad-mode");
