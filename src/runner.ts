@@ -9,7 +9,7 @@
 // invariant governs the whole thing: no member runs without a Conductor approval in its causal
 // chain (invariant 1) — here every gate decision is sourced from the DecisionSource, never faked.
 
-import { validateArtifactSource } from "./validate.ts";
+import { validateArtifactSource, formatValidationErrors } from "./validate.ts";
 import { parseArtifactDoc } from "./repo.ts";
 import type { Repo } from "./repo.ts";
 import type {
@@ -310,7 +310,8 @@ export class Runner {
     // Boundary contract enforcement (§6) with the same validator used on disk.
     const errs = validateArtifactSource(doc, `${member}:${kind}`);
     if (errs.length > 0) {
-      throw new RunnerError(`member '${member}' produced off-contract '${kind}': ${errs[0].code} — ${errs[0].message}`);
+      // NOTES F22: every accumulated error, not just the first.
+      throw new RunnerError(`member '${member}' produced off-contract '${kind}': ${formatValidationErrors(errs)}`);
     }
 
     const art = parseArtifactDoc(doc);

@@ -38,7 +38,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { validateArtifactSource } from "./validate.ts";
+import { validateArtifactSource, formatValidationErrors } from "./validate.ts";
 import { parseArtifactDoc } from "./repo.ts";
 import type { Repo } from "./repo.ts";
 import { RunnerError, timeboxSeconds, bumpVersion, roundOf } from "./runner.ts";
@@ -443,7 +443,9 @@ async function produceOne(
 
   const errs = validateArtifactSource(doc, `${member}:${kind}`, unit.dir);
   if (errs.length > 0) {
-    return writeBlocked(root, unit, team, member, kind, newId, new Error(`${errs[0].code}: ${errs[0].message}`), today, commitFn, verb);
+    // NOTES F22: every accumulated error, not just the first — a Conductor fixing a produced
+    // artifact's off-contract shape must see every problem in one blocked_reason, not one per retry.
+    return writeBlocked(root, unit, team, member, kind, newId, new Error(formatValidationErrors(errs)), today, commitFn, verb);
   }
 
   const art = parseArtifactDoc(doc);

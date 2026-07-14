@@ -19,6 +19,18 @@ export interface ValidationError {
   line?: number;
 }
 
+// NOTES F22: `validatePath`/`validateArtifactSource` already accumulate EVERY error for a touched
+// entity in one pass (per-file walking, per-field schema checks — neither short-circuits). The gap
+// was downstream: every caller that turns a `ValidationError[]` into ONE human-facing message
+// (a 422 response, a blocked artifact's reason, a chat reply) kept only `errs[0]`, discarding the
+// rest — so a project pointer (or artifact, or unit) missing three required fields reported one, the
+// Conductor fixed it, ran again, got told about the second, fixed it, ran a third time for the last.
+// One shared formatter, used everywhere a `ValidationError[]` becomes a single string, so this can
+// never regress into a second, independently-truncating call site.
+export function formatValidationErrors(errs: ValidationError[]): string {
+  return errs.map((e) => `${e.code}: ${e.message}`).join("; ");
+}
+
 // Which branch the approved-immutability check took for a given target/artifact (see
 // gitImmutabilityCheck). Exposed so tests can assert the *state*, not merely ok/not-ok — a
 // wrong-state exit (e.g. masking a mutation as "no history") must never pass again.

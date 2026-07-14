@@ -16,7 +16,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { loadRepo, type Repo } from "../repo.ts";
-import { validateArtifactSource } from "../validate.ts";
+import { validateArtifactSource, formatValidationErrors } from "../validate.ts";
 import { bumpVersion, roundOf, type Verb } from "../runner.ts";
 import { productionAdapterRunner } from "../replay.ts";
 import { loopMembershipFor, isLoopCompanionKind, loopUntilKind, resolveStep, responsibleTeamFor, unmetAfter, patchFrontmatter, upsertFrontmatterField } from "../gates.ts";
@@ -145,7 +145,7 @@ function doApprove(root: string, file: string, id: string, today: string, note: 
   const src = readFileSync(file, "utf8");
   const patched = stampApproval(src, today, root);
   const errs = validateArtifactSource(patched, file, dirname(file));
-  if (errs.length > 0) return { ok: false, status: 422, error: `${errs[0].code}: ${errs[0].message}` };
+  if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
   writeFileSync(file, patched);
   const files = [file, ...extraFiles];
   const commit = conductorCommit(root, files, `approve ${id}${note ? `\n\n${note}` : ""}`);
@@ -156,7 +156,7 @@ function doReject(root: string, file: string, id: string, note: string | undefin
   const src = readFileSync(file, "utf8");
   const patched = patchFrontmatter(src, { status: "rejected" });
   const errs = validateArtifactSource(patched, file, dirname(file));
-  if (errs.length > 0) return { ok: false, status: 422, error: `${errs[0].code}: ${errs[0].message}` };
+  if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
   writeFileSync(file, patched);
   const files = [file, ...extraFiles];
   const commit = conductorCommit(root, files, `reject ${id}${note ? `\n\n${note}` : ""}`);
@@ -178,7 +178,7 @@ function doRescopeArtifact(root: string, unit: WorkUnit, art: Artifact, note: st
   const src = readFileSync(located.file, "utf8");
   const patched = patchFrontmatter(src, { status: "rejected" });
   const errs = validateArtifactSource(patched, located.file, dirname(located.file));
-  if (errs.length > 0) return { ok: false, status: 422, error: `${errs[0].code}: ${errs[0].message}` };
+  if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
 
   const unitFile = join(unit.dir, "unit.md");
   const unitSrc = readFileSync(unitFile, "utf8");
@@ -291,7 +291,7 @@ async function doRequest(
   const newId = bumpVersion(baseId, nextRound);
   const newDoc = patchFrontmatter(baseDoc, { id: newId, supersedes: supersedeId });
   const errs = validateArtifactSource(newDoc, `${newId}.md`, unitDir);
-  if (errs.length > 0) return { ok: false, status: 422, error: `${errs[0].code}: ${errs[0].message}` };
+  if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
 
   const oldSrc = readFileSync(supersedeFile, "utf8");
   // F16: the artifact being superseded may already be `approved` — the loop-companion cascade
@@ -375,7 +375,7 @@ async function resolveBlockedArtifactGate(
     // without it.
     const patched = patchFrontmatter(readFileSync(located.file, "utf8"), { status: "skipped" });
     const errs = validateArtifactSource(patched, located.file, dirname(located.file));
-    if (errs.length > 0) return { ok: false, status: 422, error: `${errs[0].code}: ${errs[0].message}` };
+    if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
     writeFileSync(located.file, patched);
     const commit = conductorCommit(root, [located.file], `skip ${art.id}: marking abandoned so the walk can continue${opts.note ? `\n\n${opts.note}` : ""}`);
     return { ok: true, commit, changedFiles: [located.file] };
@@ -410,7 +410,7 @@ async function resolveBlockedArtifactGate(
 
   const newDoc = patchFrontmatter(baseDoc, { id: newId, supersedes: art.id });
   const errs = validateArtifactSource(newDoc, `${newId}.md`, unit.dir);
-  if (errs.length > 0) return { ok: false, status: 422, error: `${errs[0].code}: ${errs[0].message}` };
+  if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
   const oldPatched = patchFrontmatter(readFileSync(located.file, "utf8"), { status: "superseded" });
   const newFile = join(unit.dir, `${newId}.md`);
   writeFileSync(located.file, oldPatched);

@@ -4053,3 +4053,41 @@ enforcement, not cosmetics alone.
 fixtures/golden --stubs` — final artifact statuses still byte-for-byte against `expected.json`
 (neither `blocked`/`skipped` nor the new verbs are reachable from the phase-2 batch engine);
 `deps:check` — `deps ok`.
+
+## F22. A project pointer missing three required fields reported one, then another, then a third
+
+**Investigated live.** The reported symptom: a Conductor fixes a broken `projects/*.md` pointer,
+re-validates, and is told about the NEXT missing field, then the next — three round-trips to learn
+what one message could have said.
+
+**Root cause — NOT where it looked.** `validate.ts#validateAgainstSchema`/`checkField` already loop
+over every declared field and accumulate every `MISSING_FIELD`/`BAD_TYPE`/`BAD_ENUM` for one entity in
+a single pass (verified directly: a scratch `projects/acme.md` missing all six required fields, run
+through both `validatePath()` and the real `levare validate` binary, reports all six in one shot,
+every time). The walking-multiple-files case the goal itself named as already-working was also
+already fine. The gap was one layer downstream: every CALLER that turns a `ValidationError[]` into
+ONE human-facing string — a 422 response, a blocked artifact's reason, a chat reply — kept only
+`errors[0]`, discarding everything else the validator had already found. `board/gateops.ts` (6 sites:
+approve/reject/request/skip/rescope-supersede/loop-companion), `dagwalk.ts#produceOne` (an off-contract
+produced artifact's `blocked_reason`), `runner.ts#runStep` (the batch engine's mirror of the same
+check), and `orchestrator.ts` (5 sites: `rollbackAndFail`, `openUnit`, `captureIdea`, `promoteIdea`,
+`runNewProjectSkill` — the literal "write a project pointer" path) all independently wrote
+`` `${errs[0].code}: ${errs[0].message}` ``. `board/serve.ts`'s registry-edit route was already
+better (`errors.slice(0, 5)`) but still an independent, differently-capped derivation.
+
+**The fix.** One shared formatter — `validate.ts#formatValidationErrors(errs)` — joins every error's
+`code: message` with `; `. Every site above now calls it instead of reaching for `errs[0]` (or its own
+`.slice(0, 5)`) — one derivation, not eight that could independently regress or drift apart (the same
+"one derivation, not two" posture ruling C12 established for artifact `consumes:`).
+
+**Tests.** New `tests/f22-validation-accumulation.test.ts`: a regression pin proving
+`validatePath`/`levare validate` already accumulate correctly (documenting the investigation, not just
+asserting the fix); the board's registry-edit route (`POST /registry/projects/<name>.md`) reports
+every missing field of a broken project pointer in one 422 response, not a truncated subset;
+`formatValidationErrors` joins in order; a member that produces an artifact with TWO simultaneous
+contract violations at once (an unknown key AND a listed file that doesn't exist) blocks with BOTH
+reasons named, via `dagwalk.ts`'s live walk — not just the first one found.
+
+**Verification.** `bun test` — 599 pass, 1 pre-existing skip, 0 fail, across 52 files (new:
+`tests/f22-validation-accumulation.test.ts`); `levare replay fixtures/golden --stubs` — final artifact
+statuses still byte-for-byte against `expected.json`; `deps:check` — `deps ok`.

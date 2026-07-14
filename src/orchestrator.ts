@@ -31,7 +31,7 @@ import { openGates, medianGateResponseDays, repoSpend, type OpenGate } from "./b
 import { diagnose, type CliProbe, type ConnectorHealth, type EnvProbe } from "./doctor.ts";
 import { resolveGate, type GateOpResult } from "./board/gateops.ts";
 import type { Verb } from "./runner.ts";
-import { validatePath } from "./validate.ts";
+import { validatePath, formatValidationErrors } from "./validate.ts";
 import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL } from "./git.ts";
 
 // ---------------------------------------------------------------------------
@@ -158,8 +158,7 @@ function rollbackAndFail(root: string, file: string, existedBefore: boolean, bac
   if (existedBefore && backup !== null) writeFileSync(file, backup);
   else rmSync(file, { force: true });
   const result = validatePath(root);
-  const first = result.errors[0];
-  return { ok: false, status: 422, error: first ? `${first.code}: ${first.message}` : "validation failed" };
+  return { ok: false, status: 422, error: formatValidationErrors(result.errors) || "validation failed" };
 }
 
 export interface OpenUnitOptions {
@@ -199,8 +198,7 @@ export function openUnit(opts: OpenUnitOptions): GateOpResult {
   const result = validatePath(opts.root);
   if (!result.ok) {
     rmSync(dir, { recursive: true, force: true });
-    const first = result.errors[0];
-    return { ok: false, status: 422, error: first ? `${first.code}: ${first.message}` : "validation failed" };
+    return { ok: false, status: 422, error: formatValidationErrors(result.errors) || "validation failed" };
   }
   const commit = conductorCommit(opts.root, [file], `open ${opts.type} unit ${opts.project}/${opts.unit}`);
   return { ok: true, commit, changedFiles: [file] };
@@ -235,8 +233,7 @@ export function captureIdea(opts: CaptureIdeaOptions): GateOpResult {
   const result = validatePath(opts.root);
   if (!result.ok) {
     rmSync(file, { force: true });
-    const first = result.errors[0];
-    return { ok: false, status: 422, error: first ? `${first.code}: ${first.message}` : "validation failed" };
+    return { ok: false, status: 422, error: formatValidationErrors(result.errors) || "validation failed" };
   }
   const commit = conductorCommit(opts.root, [file], `capture idea ${opts.name}`);
   return { ok: true, commit, changedFiles: [file] };
@@ -272,8 +269,7 @@ export function promoteIdea(opts: PromoteIdeaOptions): GateOpResult {
   if (!result.ok) {
     rmSync(dir, { recursive: true, force: true });
     writeFileSync(ideaFile, ideaSrc);
-    const first = result.errors[0];
-    return { ok: false, status: 422, error: first ? `${first.code}: ${first.message}` : "validation failed" };
+    return { ok: false, status: 422, error: formatValidationErrors(result.errors) || "validation failed" };
   }
   const commit = conductorCommit(opts.root, [unitFile, ideaFile], `promote idea ${opts.idea} → ${opts.project}/${opts.unit}`);
   return { ok: true, commit, changedFiles: [unitFile, ideaFile] };
@@ -430,8 +426,7 @@ export function runNewProjectSkill(opts: NewProjectOptions): GateOpResult {
   const result = validatePath(opts.root);
   if (!result.ok) {
     rmSync(projectFile, { force: true });
-    const first = result.errors[0];
-    return { ok: false, status: 422, error: first ? `${first.code}: ${first.message}` : "validation failed" };
+    return { ok: false, status: 422, error: formatValidationErrors(result.errors) || "validation failed" };
   }
   const commit = conductorCommit(opts.root, [projectFile], `new-project ${opts.name}`);
   return { ok: true, commit, changedFiles: [projectFile] };

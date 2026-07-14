@@ -11,7 +11,7 @@ import { loadRepo, type Repo } from "../repo.ts";
 import { renderStudio, renderProject, renderRun, renderRegistry, renderArtifact, renderIdea } from "./render.ts";
 import { resolveGate } from "./gateops.ts";
 import type { AsyncMemberRunner } from "../dagwalk.ts";
-import { validatePath } from "../validate.ts";
+import { validatePath, formatValidationErrors } from "../validate.ts";
 import type { Verb } from "../runner.ts";
 import { conductorCommit, CONDUCTOR_NAME } from "../git.ts";
 import { handle as orchestratorHandle, type HandleResult, type OrchestratorBoundary } from "../orchestrator.ts";
@@ -276,7 +276,9 @@ export const ROUTES: RouteDef[] = [
         } else {
           writeFileSync(file, backup);
         }
-        return json({ ok: false, error: result.errors.slice(0, 5).map((e) => `${e.code}: ${e.message}`).join("; ") }, 422);
+        // NOTES F22: every accumulated error, not just a capped subset — one shared formatter
+        // (validate.ts#formatValidationErrors) for every place a ValidationError[] becomes one string.
+        return json({ ok: false, error: formatValidationErrors(result.errors) }, 422);
       }
       const commit = conductorCommit(ctx.root, [file], `edit ${relPath}`);
       ctx.broadcast("reload");
