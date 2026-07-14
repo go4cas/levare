@@ -2,7 +2,7 @@ import { test, expect, describe } from "bun:test";
 import { loadRepo } from "../src/repo.ts";
 import { assembleContext } from "../src/context.ts";
 import { loadPricing } from "../src/pricing.ts";
-import { AdapterRunner, bunSpawn, asyncBunSpawn, type NativeBoundary, type RemoteBoundary } from "../src/adapters.ts";
+import { AdapterRunner, AdapterError, bunSpawn, asyncBunSpawn, type NativeBoundary, type RemoteBoundary } from "../src/adapters.ts";
 import { render } from "../fixtures/stubs/member-stub.ts";
 
 // NOTES F7: an agent declares HOW it wants its §6 context delivered — `context_via: arg` (default,
@@ -44,21 +44,34 @@ for (const spawn of ["sync", "async"] as const) {
       const expectedContext = assembleContext(repo, { root: ROOT, agent: member, unit: "checkout-flow", capabilities: [{ member, kind: "review" }] });
 
       const { doc } = spawn === "sync" ? runner.produce(member, "review", "checkout-flow", "storefront") : await runner.produceAsync(member, "review", "checkout-flow", "storefront");
-      // `cat` echoed back exactly what it read on stdin: the full §6-assembled context.
-      expect(doc).toBe(expectedContext);
+      // `cat` echoed back exactly what it read on stdin: the full §6-assembled context, landing as the
+      // authored artifact's BODY (ruling C12 — levare wraps the member's raw content in its own
+      // frontmatter; it is never the whole document).
+      expect(doc).toContain(expectedContext.trim());
       expect(doc).toContain(`── 1. agent · ${member}`);
+      expect(doc).toContain("kind: review");
+      expect(doc).toContain(`produced_by: kestrel/${member}`);
     });
 
     test(`context_via: arg (default) — stdin is closed, never left open (${spawn})`, async () => {
       const member = `argmode-${spawn}`;
       const { runner } = catRunner(member, "arg", spawn);
       const start = Date.now();
-      const { doc } = spawn === "sync" ? runner.produce(member, "review", "checkout-flow", "storefront") : await runner.produceAsync(member, "review", "checkout-flow", "storefront");
+      // `cat` read nothing (stdin closed with EOF immediately) and exited with empty stdout — no
+      // usable content, so the boundary throws rather than authoring a blank artifact (ruling C12: "a
+      // member's output is empty or unusable" is a blocked artifact, never a silent empty document).
+      let threw: unknown;
+      try {
+        if (spawn === "sync") runner.produce(member, "review", "checkout-flow", "storefront");
+        else await runner.produceAsync(member, "review", "checkout-flow", "storefront");
+      } catch (e) {
+        threw = e;
+      }
       const elapsed = Date.now() - start;
-      // `cat` read nothing (stdin closed with EOF immediately) and exited — proof it never blocked
-      // waiting on input that would never arrive. A left-open/inherited stdin would hang `cat` until
-      // the agent's 5s timeout killed it; this must return almost instantly instead.
-      expect(doc).toBe("");
+      expect(threw).toBeInstanceOf(AdapterError);
+      // Proof `cat` never blocked waiting on input that would never arrive — a left-open/inherited
+      // stdin would hang `cat` until the agent's 5s timeout killed it; this must return almost
+      // instantly instead.
       expect(elapsed).toBeLessThan(2000);
     });
   });

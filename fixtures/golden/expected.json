@@ -5,8 +5,8 @@
     "status": "active"
   },
   "artifacts": {
-    "design-checkout-v1": "approved",
-    "product-brief-v1": "approved",
+    "design-checkout-flow-v1": "approved",
+    "product-brief-checkout-flow-v1": "approved",
     "review-checkout-flow-v1": "superseded",
     "review-checkout-flow-v2": "approved",
     "spec-checkout-flow-v1": "superseded",

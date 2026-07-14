@@ -50,7 +50,10 @@ function agentSteps(repo: Repo, teamName: string, caps: Capability[], agent: str
 
 // The unit's on-disk artifacts as (id, status, root-relative path), so consumed paths are addressable
 // and deterministic. Mirrors repo.ts's discovery (single-file and one-index folder artifacts).
-function unitArtifactPaths(root: string, project: string, unit: string): Array<{ id: string; status: string; rel: string }> {
+// Exported for adapters.ts (ruling C12): the same "currently-approved artifacts" set assembleContext
+// hands a member as its consumed paths is what levare itself records as `consumes:` on the artifact it
+// authors — one derivation, not a second copy that could drift from what the member was actually given.
+export function unitArtifactPaths(root: string, project: string, unit: string): Array<{ id: string; status: string; rel: string }> {
   const unitDir = join(root, "work", project, unit);
   const out: Array<{ id: string; status: string; rel: string }> = [];
   if (!existsSync(unitDir)) return out;

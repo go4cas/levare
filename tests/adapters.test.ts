@@ -38,7 +38,10 @@ function fakeSpawn(capture?: { argv?: string[]; env?: Record<string, string> }):
 const stubCliCommand = (r: InvokeRequest) => ["bun", "stub", r.member, r.kind, "--unit", r.unit, "--project", r.project];
 
 describe("native adapter (mocked SDK boundary)", () => {
-  test("invokes the native boundary and normalizes a priced receipt", () => {
+  // Ruling C12: levare authors the id (unit-scoped convention), never trusting whatever the mocked
+  // boundary's own doc claims. The boundary reports no receipt here, so the doc's own canned usage
+  // block (self-reported) is discarded unread — never re-derived into a fabricated priced receipt.
+  test("invokes the native boundary; levare authors the id, and an unreported boundary receipt is never re-derived from the doc's own usage block", () => {
     const repo = loadRepo(ROOT);
     const runner = new AdapterRunner(repo, {
       pricing,
@@ -48,9 +51,10 @@ describe("native adapter (mocked SDK boundary)", () => {
     });
     const { doc, receipt } = runner.produce("lyra", "spec", "checkout-flow", "storefront");
     expect(doc).toContain("id: spec-checkout-flow-v1");
-    expect(receipt.unreported).toBe(false);
-    expect(receipt.usd).toBe(0.24); // derived from the pricing table
-    expect(receipt.wall_clock_s).toBe(480);
+    expect(receipt.unreported).toBe(true);
+    expect(receipt.usd).toBe(null);
+    expect(doc).not.toContain("usage:");
+    expect(doc).not.toContain("31000"); // the stub's own canned token count never leaks in.
   });
 
   test("passes the agent's tool allowlist and scoped env to the boundary", () => {
@@ -352,7 +356,10 @@ describe("remote adapter (mocked MCP)", () => {
     });
     const { receipt } = runner.produce("echo", "spec", "checkout-flow", "storefront");
     expect(called).toBe(true);
-    expect(receipt.usd).toBe(0.24);
+    // The remote boundary reports no receipt (§10/ruling C12) — never re-priced from the doc's own
+    // self-reported usage block.
+    expect(receipt.unreported).toBe(true);
+    expect(receipt.usd).toBe(null);
   });
 });
 
@@ -523,34 +530,113 @@ describe("timeout vs. exit-code, kept distinct", () => {
 });
 
 // ---------------------------------------------------------------------------
-// readUsage validates the usage block shape (§10 fix-up)
+// Ruling C12: the member authors CONTENT, levare authors the ARTIFACT. A member's raw output is never
+// trusted as a document — plain prose is wrapped in levare's own frontmatter; a self-declared
+// frontmatter fence (right or wrong) is stripped and discarded before levare writes its own.
 // ---------------------------------------------------------------------------
 
-describe("malformed usage records unreported, never a fabricated/crashing receipt", () => {
-  function runnerFor(doc: string) {
+describe("levare authors the artifact frontmatter, never the member (ruling C12)", () => {
+  test("a native member returning plain prose (no frontmatter) produces a valid artifact with levare-authored frontmatter and an SDK-reported usage receipt", () => {
     const repo = loadRepo(ROOT);
-    const native: NativeBoundary = { invoke: () => ({ doc }) };
-    return new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native, remote: remoteMock });
-  }
-  const frame = (usageBlock: string) =>
-    ["---", "kind: spec", "id: spec-x", "unit: checkout-flow", "project: storefront", "status: in-review", "produced_by: kestrel/lyra", "consumes: []", "supersedes: null", "approved_by: null", "created: 2026-07-11", "files: []", usageBlock, "---", "", "# spec", "", "body"].join("\n");
+    const sdkReceipt = { model: "claude-sonnet-5", tokens_in: 500, tokens_out: 200, wall_clock_s: 4.2, usd: 0.012, unreported: false };
+    const native: NativeBoundary = {
+      invoke: () => ({ doc: "# Spec — checkout-flow\n\nServer-rendered `/checkout`; idempotent payment on an order key.\n", receipt: sdkReceipt }),
+    };
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native, remote: remoteMock, now: () => "2026-07-14" });
+    const { doc, receipt } = runner.produce("lyra", "spec", "checkout-flow", "storefront");
 
-  test("a usage field that is a scalar (not a map) → unreported", () => {
-    const { receipt } = runnerFor(frame("usage: not-a-map")).produce("lyra", "spec", "checkout-flow", "storefront");
-    expect(receipt.unreported).toBe(true);
-    expect(receipt.usd).toBe(null);
+    expect(doc).toContain("kind: spec");
+    expect(doc).toContain("id: spec-checkout-flow-v1");
+    expect(doc).toContain("unit: checkout-flow");
+    expect(doc).toContain("project: storefront");
+    expect(doc).toContain("status: in-review");
+    expect(doc).toContain("produced_by: kestrel/lyra");
+    // consumes: levare's own record of the unit's currently-approved artifacts — the golden fixture
+    // seeds product-brief-v1/design-checkout-v1 as already approved on disk.
+    expect(doc).toContain("consumes: [design-checkout-v1, product-brief-v1]");
+    expect(doc).toContain("supersedes: null");
+    expect(doc).toContain("approved_by: null");
+    expect(doc).toContain("created: 2026-07-14");
+    expect(doc).toContain("files: []");
+    expect(doc).toContain("Server-rendered `/checkout`");
+    expect(receipt).toEqual(sdkReceipt);
+    expect(doc).toContain("usd: 0.012");
+    expect(doc).toContain("tokens_in: 500");
   });
 
-  test("a usage map with a wrong-typed numeric field → unreported (no NaN estimate)", () => {
-    const { receipt } = runnerFor(frame("usage:\n  model: claude-sonnet\n  tokens_in: lots\n  tokens_out: 10\n  usd: null\n  wall_clock_s: 5")).produce("lyra", "spec", "checkout-flow", "storefront");
+  test("a member that DOES emit a frontmatter fence has it stripped and replaced with levare's own values", () => {
+    const repo = loadRepo(ROOT);
+    // A "well-behaved" model that guessed at the contract — every field is WRONG (fabricated id,
+    // wrong produced_by, a self-reported usage block) except the body, which is the only thing that
+    // should survive.
+    const hostileDoc = [
+      "---",
+      "kind: spec",
+      "id: totally-made-up-id",
+      "unit: some-other-unit",
+      "project: some-other-project",
+      "status: approved",
+      "produced_by: nobody/ghost",
+      "consumes: [fabricated-id]",
+      "supersedes: spec-old",
+      "approved_by: \"self-approved 2020-01-01\"",
+      "created: 1999-01-01",
+      "files: [fake.txt]",
+      "usage:",
+      "  model: made-up-model",
+      "  tokens_in: 999999",
+      "  tokens_out: 999999",
+      "  usd: 999.99",
+      "  wall_clock_s: 1",
+      "---",
+      "",
+      "# Spec — checkout-flow",
+      "",
+      "The real body content.",
+    ].join("\n");
+    const native: NativeBoundary = { invoke: () => ({ doc: hostileDoc }) }; // no boundary-reported receipt.
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native, remote: remoteMock, now: () => "2026-07-14" });
+    const { doc, receipt } = runner.produce("lyra", "spec", "checkout-flow", "storefront");
+
+    // The member's self-declared metadata is gone, replaced with levare's own.
+    expect(doc).toContain("id: spec-checkout-flow-v1");
+    expect(doc).not.toContain("totally-made-up-id");
+    expect(doc).toContain("unit: checkout-flow");
+    expect(doc).toContain("project: storefront");
+    expect(doc).toContain("status: in-review");
+    expect(doc).not.toContain("status: approved");
+    expect(doc).toContain("produced_by: kestrel/lyra");
+    expect(doc).not.toContain("nobody/ghost");
+    expect(doc).toContain("supersedes: null");
+    expect(doc).not.toContain("spec-old");
+    expect(doc).toContain("approved_by: null");
+    expect(doc).not.toContain("self-approved");
+    expect(doc).toContain("files: []");
+    expect(doc).not.toContain("fake.txt");
+    // No boundary receipt was reported → unreported, never the member's own fabricated $999.99.
     expect(receipt.unreported).toBe(true);
-    expect(Number.isNaN(receipt.usd as number)).toBe(false);
-    expect(receipt.usd).toBe(null);
+    expect(doc).not.toContain("999.99");
+    expect(doc).not.toContain("made-up-model");
+    // Only the body survives, verbatim.
+    expect(doc).toContain("The real body content.");
   });
 
-  test("a well-formed usage map is still priced normally", () => {
-    const { receipt } = runnerFor(frame("usage:\n  model: claude-sonnet\n  tokens_in: 8200\n  tokens_out: 2100\n  usd: null\n  wall_clock_s: 95")).produce("lyra", "spec", "checkout-flow", "storefront");
-    expect(receipt.unreported).toBe(false);
-    expect(receipt.usd).toBe(0.06);
+  test("empty content after stripping is a hard error, not a blank artifact", () => {
+    const repo = loadRepo(ROOT);
+    const native: NativeBoundary = { invoke: () => ({ doc: "---\nkind: spec\n---\n\n   \n" }) };
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native, remote: remoteMock });
+    expect(() => runner.produce("lyra", "spec", "checkout-flow", "storefront")).toThrow(/produced no usable content/);
+  });
+
+  test("a cli member's raw stdout is likewise authored, never trusted verbatim", () => {
+    const repo = loadRepo(ROOT);
+    const spawn: CliSpawn = { run: () => ({ stdout: "Approved with one note: name the idempotency key column.", exitCode: 0, timedOut: false }) };
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "finch", kind: "review" }], native: nativeMock, remote: remoteMock, spawn, cliCommand: stubCliCommand, now: () => "2026-07-14" });
+    const { doc, receipt } = runner.produce("finch", "review", "checkout-flow", "storefront");
+    expect(doc).toContain("kind: review");
+    expect(doc).toContain("id: review-checkout-flow-v1");
+    expect(doc).toContain("produced_by: kestrel/finch");
+    expect(doc).toContain("Approved with one note");
+    expect(receipt.unreported).toBe(true);
   });
 });

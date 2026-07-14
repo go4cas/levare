@@ -70,6 +70,22 @@ export const CAPABILITIES: Array<{ member: string; kind: string }> = Object.keys
   return { member, kind };
 });
 
+/**
+ * Ruling C12: `AdapterRunner` no longer trusts a member's own frontmatter for usage — it uses only the
+ * BOUNDARY'S reported receipt (the SDK's own accounting for a native call). replay.ts's `stubNative`
+ * stands in for that boundary, so it hands this — the CANNED figures, reshaped as a receipt — rather
+ * than relying on `render()`'s embedded `usage:` block, which `AdapterRunner` now strips unread.
+ */
+export function cannedReceipt(
+  member: string,
+  kind: string,
+): { model: string | null; tokens_in: number | null; tokens_out: number | null; usd: number | null; wall_clock_s: number | null; unreported: boolean } | undefined {
+  const c = CANNED[`${member}:${kind}`];
+  if (!c) return undefined;
+  if (c.usage === null) return { model: null, tokens_in: null, tokens_out: null, usd: null, wall_clock_s: null, unreported: true };
+  return { ...c.usage, unreported: false };
+}
+
 function opt(args: string[], name: string, fallback: string): string {
   const i = args.indexOf(name);
   return i >= 0 && i + 1 < args.length ? args[i + 1] : fallback;

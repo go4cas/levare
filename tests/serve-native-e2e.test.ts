@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { createBoard } from "../src/board/serve.ts";
 import { loadRepo } from "../src/repo.ts";
 import { loadPricing } from "../src/pricing.ts";
+import { validateArtifactSource } from "../src/validate.ts";
 import { AdapterRunner, createSdkNativeBoundary, createAsyncSdkNativeBoundary, type RemoteBoundary } from "../src/adapters.ts";
 import type { AsyncSdkTransport, SdkWorkerRequest, SdkWorkerResponse } from "../src/sdk-transport.ts";
 import type { AsyncMemberRunner } from "../src/dagwalk.ts";
@@ -49,27 +50,46 @@ function req(url: string, init?: RequestInit): Request {
 // storefront buyers with points redeemable at checkout", unit.md), never the golden fixture's
 // checkout-flow product-brief prose (fixtures/stubs/member-stub.ts's canned "wren:product-brief" body).
 const MODEL_BODY_MARKER = "MODEL-AUTHORED-NOT-FIXTURE";
-const FAKE_MODEL_DOC = [
-  "---",
-  "kind: product-brief",
-  "id: product-brief-v1",
-  "unit: loyalty-flow",
-  "project: storefront",
-  "status: in-review",
-  "produced_by: kestrel/wren",
-  "consumes: []",
-  "supersedes: null",
-  "approved_by: null",
-  "created: 2026-07-14",
-  "files: []",
-  "---",
-  "",
+const MODEL_BODY = [
   `# Product brief — loyalty-flow (${MODEL_BODY_MARKER})`,
   "",
   "**Problem.** Repeat storefront buyers have no reason to come back sooner than they otherwise would.",
   "**Job to be done.** Reward repeat storefront buyers with points redeemable at checkout.",
   "**Success signal.** Repeat purchase rate up, measured 30 days post-ship.",
   "",
+].join("\n");
+
+// Ruling C12: a model was never told the artifact contract, so it never emits plain prose ONLY — no
+// frontmatter fence at all. This is the actual bug this test suite reproduces (NOTES C12): a native
+// member's SDK call succeeded and its plain-prose output was then rejected with "document has no
+// frontmatter fence" by levare's own boundary validator.
+const FAKE_MODEL_DOC = MODEL_BODY;
+
+// A second, deliberately-hostile shape: a model that DID guess at the schema and wrapped its own
+// (wrong, fabricated) frontmatter around the same content — every field is wrong except the body, to
+// prove levare strips and re-authors it rather than trusting any of it.
+const HOSTILE_FRONTMATTER_MODEL_DOC = [
+  "---",
+  "kind: product-brief",
+  "id: totally-fabricated-id",
+  "unit: some-other-unit",
+  "project: some-other-project",
+  "status: approved",
+  "produced_by: nobody/ghost",
+  "consumes: [made-up-artifact]",
+  "supersedes: brief-old",
+  'approved_by: "self-approved 2020-01-01"',
+  "created: 1999-01-01",
+  "files: [fake.txt]",
+  "usage:",
+  "  model: made-up-model",
+  "  tokens_in: 999999",
+  "  tokens_out: 999999",
+  "  usd: 999.99",
+  "  wall_clock_s: 1",
+  "---",
+  "",
+  MODEL_BODY,
 ].join("\n");
 
 const REAL_SDK_RECEIPT = { model: "claude-sonnet", tokens_in: 6412, tokens_out: 1180, wall_clock_s: 22.4, usd: 0.0891, unreported: false };
@@ -134,6 +154,78 @@ describe("`levare serve` invokes a native member through the real SDK boundary (
       expect(doc).toContain("produced_by: kestrel/wren");
       expect(doc).toContain("unit: loyalty-flow");
       expect(doc).toContain("project: storefront");
+
+      // Ruling C12: the model was never told the artifact contract and returned plain prose — no
+      // frontmatter fence at all (FAKE_MODEL_DOC === MODEL_BODY). levare authored the whole wrapper
+      // itself: a valid document, a unit-scoped id, consumes: [] (nothing approved yet), status
+      // in-review, approved_by: null, and the SDK's own reported usage receipt — never a model's
+      // guess at any of it.
+      expect(doc).toContain("id: product-brief-loyalty-flow-v1");
+      expect(doc).toContain("status: in-review");
+      expect(doc).toContain("consumes: []");
+      expect(doc).toContain("supersedes: null");
+      expect(doc).toContain("approved_by: null");
+      expect(doc).toContain("files: []");
+      expect(doc).toContain("usage:");
+      expect(doc).toContain("tokens_in: 6412");
+      expect(doc).toContain("usd: 0.0891");
+      const parsed = validateArtifactSource(doc);
+      expect(parsed).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a model that DOES wrap its output in a frontmatter fence has it stripped and replaced with levare's own values", async () => {
+    const root = seedScratchRepo();
+    try {
+      const fakeAsyncTransport: AsyncSdkTransport = {
+        async run(): Promise<SdkWorkerResponse> {
+          return { ok: true, result: HOSTILE_FRONTMATTER_MODEL_DOC, receipt: REAL_SDK_RECEIPT };
+        },
+      };
+      const repo = loadRepo(root);
+      const adapterRunner = new AdapterRunner(repo, {
+        pricing: loadPricing(root),
+        native: createSdkNativeBoundary({ transport: { run: () => ({ ok: false, error: "sync transport must not be called by produceAsync" }) } }),
+        asyncNative: createAsyncSdkNativeBoundary({ transport: fakeAsyncTransport, env: { PATH: "/usr/bin", HOME: "/home/test" } }),
+        remote: { call: () => { throw new Error("not used"); } },
+      });
+      const memberRunner: AsyncMemberRunner = {
+        capabilities: () => adapterRunner.capabilities(),
+        produce: (member, kind, unit, project) => adapterRunner.produceAsync(member, kind, unit, project),
+      };
+
+      const board = createBoard(root, { memberRunner });
+      const res = await board.fetch(req("/gates/storefront/loyalty-flow/start", { method: "POST" }));
+      board.close();
+      expect(res.status).toBe(200);
+
+      const artifactPath = join(root, "work/storefront/loyalty-flow/product-brief-loyalty-flow-v1.md");
+      const doc = readFileSync(artifactPath, "utf8");
+
+      // Every self-declared field the model guessed at is gone, replaced with levare's own facts.
+      expect(doc).toContain("id: product-brief-loyalty-flow-v1");
+      expect(doc).not.toContain("totally-fabricated-id");
+      expect(doc).toContain("unit: loyalty-flow");
+      expect(doc).toContain("project: storefront");
+      expect(doc).toContain("status: in-review");
+      expect(doc).not.toContain("status: approved");
+      expect(doc).toContain("produced_by: kestrel/wren");
+      expect(doc).not.toContain("nobody/ghost");
+      expect(doc).toContain("supersedes: null");
+      expect(doc).not.toContain("brief-old");
+      expect(doc).toContain("approved_by: null");
+      expect(doc).not.toContain("self-approved");
+      expect(doc).toContain("files: []");
+      expect(doc).not.toContain("fake.txt");
+      // The SDK's own reported receipt is used verbatim — never the model's fabricated $999.99.
+      expect(doc).toContain("usd: 0.0891");
+      expect(doc).not.toContain("999.99");
+      expect(doc).not.toContain("made-up-model");
+      // Only the body survives.
+      expect(doc).toContain(MODEL_BODY_MARKER);
+      expect(validateArtifactSource(doc)).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

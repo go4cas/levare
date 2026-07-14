@@ -9,7 +9,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { CAPABILITIES, render } from "../fixtures/stubs/member-stub.ts";
+import { CAPABILITIES, render, cannedReceipt } from "../fixtures/stubs/member-stub.ts";
 import { loadRepo } from "./repo.ts";
 import { Runner, type Decision, type DecisionSource, type Gate, type MemberRunner, type RunEvent, type RunResult, type Verb } from "./runner.ts";
 import {
@@ -49,7 +49,9 @@ const STUB_CLI = Bun.fileURLToPath(new URL("../fixtures/stubs/member-stub.ts", i
 // deliberately, for `--stubs` reproducibility (§11 phase 3), not because either boundary lacks a real
 // backing: native has one (adapters.ts#createSdkNativeBoundary, wired into production since NOTES F8);
 // remote's real MCP backing remains a documented, separate deferral (K5).
-const stubNative: NativeBoundary = { invoke: (r: InvokeRequest) => ({ doc: render(r.member, r.kind, r.unit, r.project) }) };
+const stubNative: NativeBoundary = {
+  invoke: (r: InvokeRequest) => ({ doc: render(r.member, r.kind, r.unit, r.project), receipt: cannedReceipt(r.member, r.kind) }),
+};
 const stubRemote: RemoteBoundary = { call: (r: InvokeRequest) => ({ doc: render(r.member, r.kind, r.unit, r.project) }) };
 
 /**

@@ -18,8 +18,8 @@ describe("replay", () => {
 
   test("expected.json records the derived final statuses", () => {
     expect(report.oracle.artifacts).toEqual({
-      "design-checkout-v1": "approved",
-      "product-brief-v1": "approved",
+      "design-checkout-flow-v1": "approved",
+      "product-brief-checkout-flow-v1": "approved",
       "review-checkout-flow-v1": "superseded",
       "review-checkout-flow-v2": "approved",
       "spec-checkout-flow-v1": "superseded",

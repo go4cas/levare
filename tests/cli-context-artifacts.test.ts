@@ -76,7 +76,10 @@ describe("ruling C9: `levare context --dry-run` matches a REAL spawned member, i
   test("context_artifacts: paths — dry-run equals the real spawned member's stdin, paths only", () => {
     const dry = dryRun(pathsRoot);
     const real = realSpawned(pathsRoot);
-    expect(dry).toBe(real);
+    // The real spawn's stdout (the dry-run context, echoed by `cat`) lands as the authored artifact's
+    // BODY (ruling C12) — levare wraps it in its own frontmatter, so `real` is no longer byte-equal to
+    // `dry`, but contains it verbatim.
+    expect(real).toContain(dry.trim());
     expect(dry).toContain("── 7. consumed artifacts (paths only — never contents) ──");
     expect(dry).toContain("work/storefront/checkout-flow/product-brief-v1.md");
     expect(dry).not.toContain("saved-card fallback");
@@ -85,7 +88,7 @@ describe("ruling C9: `levare context --dry-run` matches a REAL spawned member, i
   test("context_artifacts: inline — dry-run equals the real spawned member's stdin, full text", () => {
     const dry = dryRun(inlineRoot);
     const real = realSpawned(inlineRoot);
-    expect(dry).toBe(real);
+    expect(real).toContain(dry.trim());
     expect(dry).toContain("── 7. consumed artifacts (inline — full text, per agent declaration `context_artifacts: inline`, ruling C9) ──");
     expect(dry).toContain("work/storefront/checkout-flow/product-brief-v1.md");
     expect(dry).toContain("saved-card fallback"); // the consumed brief's body, now inlined
@@ -95,7 +98,7 @@ describe("ruling C9: `levare context --dry-run` matches a REAL spawned member, i
   test("undeclared `context_artifacts` (absent field) still defaults to paths — dry-run equals real spawn", () => {
     const dry = dryRun(defaultRoot);
     const real = realSpawned(defaultRoot);
-    expect(dry).toBe(real);
+    expect(real).toContain(dry.trim());
     expect(dry).toContain("── 7. consumed artifacts (paths only — never contents) ──");
     expect(dry).not.toContain("saved-card fallback");
   });

@@ -6,27 +6,37 @@
 //            interface — tests mock it; production (replay.ts#productionAdapterRunner, NOTES F8)
 //            backs it with the real SDK via `createSdkNativeBoundary`/`createAsyncSdkNativeBoundary`.
 //   cli    → Bun.spawn of the agent's command template in `cwd`, with the allowlisted env only and
-//            the timeout enforced; the raw stdout is the artifact doc, validated at the boundary.
+//            the timeout enforced; the raw stdout is the member's content.
 //   remote → an MCP call, likewise behind a mockable `RemoteBoundary` (still mocked in every path —
 //            a documented, separate deferral, untouched by F8).
 //
-// All three funnel their member's reported usage through normalizeReceipt (§10), so the receipt shape
-// is identical and `unreported` is recorded honestly when a member gives nothing. The doc itself is
-// never trusted from the member: the Runner re-validates it against the artifact contract.
+// Ruling C12: the member authors CONTENT, levare authors the ARTIFACT. Whatever a boundary returns —
+// plain prose, or prose wrapped in a frontmatter fence the member had no business emitting — is never
+// trusted as the document. `AdapterRunner#author` strips any fence the raw text carries, keeps only
+// the body, and wraps it in frontmatter built entirely from facts levare itself already knows: kind
+// (the flow step's resolved kind), id (unit-scoped, `<kind>-<unit>-vN`), unit, project, status
+// (`in-review`), produced_by (the team/member that actually ran), consumes (the artifacts levare
+// handed it — the same set assembleContext put in the member's own context), supersedes (null; a
+// caller versions/supersedes afterward), approved_by (null), created, files ([]), and usage — the
+// SDK's own reported receipt when the boundary supplied one, `unreported` otherwise. A member's own
+// token count, id, or any other self-reported metadata is discarded unread: a member reporting its
+// own usage is a member guessing, and asking a model to restate facts the runner can already assert
+// is asking it to fabricate them. Empty/unusable content after stripping is a hard error — the same
+// "blocked artifact" surfacing every existing caller (dagwalk.ts, board/gateops.ts) already gives an
+// AdapterError.
 
 import { existsSync, statSync, accessSync, constants as fsConstants } from "node:fs";
 import { isAbsolute, join as pathJoin } from "node:path";
-import { parseFrontmatter } from "./yaml.ts";
 import { normalizeReceipt } from "./receipts.ts";
-import { buildMemberEnv } from "./env.ts";
+import { buildMemberEnv, teamOf } from "./env.ts";
 import { allowedTools } from "./guardrails.ts";
-import { assembleContext } from "./context.ts";
+import { assembleContext, unitArtifactPaths } from "./context.ts";
 import { asyncSdkTransport, bunSdkTransport, resolveNativeBinary, type AsyncSdkTransport, type SdkTransport } from "./sdk-transport.ts";
 import { repoCapabilities } from "./repo.ts";
 import type { Pricing } from "./pricing.ts";
 import type { Repo } from "./repo.ts";
 import type { MemberRunner } from "./runner.ts";
-import type { Agent, Receipt, Usage } from "./types.ts";
+import type { Agent, Receipt } from "./types.ts";
 
 export class AdapterError extends Error {}
 
@@ -296,6 +306,9 @@ export interface AdapterRunnerOptions {
    * ({task}/{feature_repo}); replay's --stubs mode overrides this to spawn the stub member CLI.
    */
   cliCommand?: (req: InvokeRequest) => string[];
+  /** Injectable clock for the artifact's `created` date (ruling C12) — default real today; tests
+   * inject a fixed date for deterministic assertions. */
+  now?: () => string;
 }
 
 // Substitute the agent.command argv template. {task} = the FULL §6-assembled context (NOTES F7) —
@@ -394,25 +407,25 @@ export class AdapterRunner implements MemberRunner {
    * through `produceAsync` instead — see NOTES F5). */
   produce(member: string, kind: string, unit: string, project: string): { doc: string; receipt: Receipt } {
     const { agent, req } = this.prepare(member, kind, unit, project);
-    let doc: string;
+    let raw: string;
     let receipt: Receipt | undefined;
     switch (agent.kind) {
       case "native": {
         const res = this.opts.native.invoke(req);
-        doc = res.doc;
+        raw = res.doc;
         receipt = res.receipt;
         break;
       }
       case "remote":
-        doc = this.opts.remote.call(req).doc;
+        raw = this.opts.remote.call(req).doc;
         break;
       case "cli":
-        doc = this.runCli(agent, req);
+        raw = this.runCli(agent, req);
         break;
       default:
         throw new AdapterError(`unknown agent kind '${(agent as Agent).kind}' for '${member}'`);
     }
-    return this.finalize(doc, receipt);
+    return this.author(req, raw, receipt);
   }
 
   /**
@@ -425,25 +438,25 @@ export class AdapterRunner implements MemberRunner {
    */
   async produceAsync(member: string, kind: string, unit: string, project: string): Promise<{ doc: string; receipt: Receipt }> {
     const { agent, req } = this.prepare(member, kind, unit, project);
-    let doc: string;
+    let raw: string;
     let receipt: Receipt | undefined;
     switch (agent.kind) {
       case "native": {
         const res = this.opts.asyncNative ? await this.opts.asyncNative.invoke(req) : this.opts.native.invoke(req);
-        doc = res.doc;
+        raw = res.doc;
         receipt = res.receipt;
         break;
       }
       case "remote":
-        doc = this.opts.remote.call(req).doc;
+        raw = this.opts.remote.call(req).doc;
         break;
       case "cli":
-        doc = await this.runCliAsync(agent, req);
+        raw = await this.runCliAsync(agent, req);
         break;
       default:
         throw new AdapterError(`unknown agent kind '${(agent as Agent).kind}' for '${member}'`);
     }
-    return this.finalize(doc, receipt);
+    return this.author(req, raw, receipt);
   }
 
   // Shared setup for both produce/produceAsync: resolve the agent, assemble its §6 context, scope its
@@ -457,14 +470,51 @@ export class AdapterRunner implements MemberRunner {
     return { agent, req };
   }
 
-  // NOTES F8: `receipt`, when given, is the SDK's OWN reported usage (a native member's real token
-  // counts/cost/wall-clock, computed by sdk-worker.ts from the actual API response) — used verbatim,
-  // never re-derived. Only when absent (every non-native adapter, and a mocked/stub native boundary
-  // that doesn't report one) does this fall back to parsing the returned doc's own frontmatter
-  // `usage:` block — the pre-existing behavior, still correct for a CLI/remote member that self-
-  // reports its usage in its own output.
-  private finalize(doc: string, receipt?: Receipt): { doc: string; receipt: Receipt } {
-    return { doc, receipt: receipt ?? normalizeReceipt(readUsage(doc), this.opts.pricing) };
+  // Ruling C12: levare authors the artifact. `raw` is whatever the boundary returned — plain content,
+  // or content the member wrapped in a frontmatter fence of its own (stripped below, never read). The
+  // wrapper is built entirely from facts this runner already knows; the member's own account of them
+  // is never consulted. `receipt`, when the boundary supplied one, is the SDK's OWN reported usage (a
+  // native member's real token counts/cost/wall-clock, computed by sdk-worker.ts from the actual API
+  // response) — used verbatim. Absent (every non-native adapter, and a mocked/stub native boundary
+  // that doesn't report one) records `unreported`, honestly — never re-derived by parsing whatever
+  // usage figures the member's own output happened to claim.
+  private author(req: InvokeRequest, raw: string, receipt?: Receipt): { doc: string; receipt: Receipt } {
+    const content = stripFrontmatter(raw);
+    if (!content) throw new AdapterError(`member '${req.member}' produced no usable content`);
+    const finalReceipt = receipt ?? normalizeReceipt(null, this.opts.pricing);
+    const team = teamOf(this.repo, req.member);
+    const producedBy = team ? `${team.name}/${req.member}` : req.member;
+    const consumes = unitArtifactPaths(this.repo.root, req.project, req.unit)
+      .filter((a) => a.status === "approved")
+      .map((a) => a.id);
+    const id = `${req.kind}-${req.unit}-v1`;
+    const created = (this.opts.now ?? (() => new Date().toISOString().slice(0, 10)))();
+    const lines = [
+      "---",
+      `kind: ${req.kind}`,
+      `id: ${id}`,
+      `unit: ${req.unit}`,
+      `project: ${req.project}`,
+      "status: in-review",
+      `produced_by: ${producedBy}`,
+      `consumes: [${consumes.join(", ")}]`,
+      "supersedes: null",
+      "approved_by: null",
+      `created: ${created}`,
+      "files: []",
+    ];
+    if (!finalReceipt.unreported) {
+      lines.push(
+        "usage:",
+        `  model: ${finalReceipt.model ?? "null"}`,
+        `  tokens_in: ${finalReceipt.tokens_in ?? "null"}`,
+        `  tokens_out: ${finalReceipt.tokens_out ?? "null"}`,
+        `  usd: ${finalReceipt.usd ?? "null"}`,
+        `  wall_clock_s: ${finalReceipt.wall_clock_s ?? "null"}`,
+      );
+    }
+    lines.push("---", "");
+    return { doc: lines.join("\n") + content + "\n", receipt: finalReceipt };
   }
 
   // Shared argv/cwd/stdin derivation for both the sync and async CLI spawn paths.
@@ -532,34 +582,17 @@ export class AdapterRunner implements MemberRunner {
   }
 }
 
-// Pull the reported usage block out of a raw artifact doc and validate its SHAPE before it is priced.
-// A missing block, or a malformed one (not a map, or any field of the wrong type), records `unreported`
-// (returns null) rather than a fabricated or crashing receipt — silence and garbage both read as "no
-// trustworthy usage", never as a $0 run or a NaN estimate.
-function readUsage(doc: string): Usage | null {
-  let raw: unknown;
-  try {
-    raw = parseFrontmatter(doc).data.usage;
-  } catch {
-    return null;
+// Ruling C12: a member's raw output is content, never a document. If it happens to open with a
+// frontmatter fence (a member that guessed at the schema, or restated it), that fence — and
+// everything in it — is discarded unread; only the body past the closing fence is kept. A raw string
+// with no fence at all (the common, honest case: a native member just wrote prose) passes through
+// trimmed, unchanged.
+function stripFrontmatter(raw: string): string {
+  const lines = raw.split("\n");
+  if (lines[0]?.trim() === "---") {
+    for (let i = 1; i < lines.length; i++) {
+      if (lines[i].trim() === "---") return lines.slice(i + 1).join("\n").trim();
+    }
   }
-  return coerceUsage(raw);
-}
-
-function coerceUsage(raw: unknown): Usage | null {
-  if (raw === null || raw === undefined) return null;
-  if (typeof raw !== "object" || Array.isArray(raw)) return null; // a scalar/list usage field is malformed.
-  const m = raw as Record<string, unknown>;
-  // A present-but-wrong-typed field yields the `undefined` sentinel → the whole block is malformed.
-  const asNum = (v: unknown): number | null | undefined =>
-    v === undefined || v === null ? null : typeof v === "number" && Number.isFinite(v) ? v : undefined;
-  const asStr = (v: unknown): string | null | undefined =>
-    v === undefined || v === null ? null : typeof v === "string" ? v : undefined;
-  const model = asStr(m.model);
-  const tokens_in = asNum(m.tokens_in);
-  const tokens_out = asNum(m.tokens_out);
-  const usd = asNum(m.usd);
-  const wall_clock_s = asNum(m.wall_clock_s);
-  if ([model, tokens_in, tokens_out, usd, wall_clock_s].some((v) => v === undefined)) return null;
-  return { model: model!, tokens_in: tokens_in!, tokens_out: tokens_out!, usd: usd!, wall_clock_s: wall_clock_s! };
+  return raw.trim();
 }
