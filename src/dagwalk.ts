@@ -141,7 +141,10 @@ export function nextAction(repo: Repo, unit: WorkUnit, team: Team, capabilities:
       const current = latestLiveArtifact(repo, unit, kind);
       if (!current) return { type: "produce", member, kind, stepLabel: node.step };
       if (current.status === "in-review") return { type: "halt", reason: `gate open on ${current.id}` };
-      if (current.status === "approved") continue;
+      // NOTES F19: a Conductor's "skip" verb on a blocked artifact marks it `skipped` precisely so the
+      // walk continues past this kind — treated like `approved` here, the one other status that lets
+      // a plain step's flow proceed.
+      if (current.status === "approved" || current.status === "skipped") continue;
       return { type: "halt", reason: `${current.id} is ${current.status}; awaiting Conductor` };
     }
     if (node.kind === "loop") {

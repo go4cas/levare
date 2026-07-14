@@ -5,7 +5,8 @@
 import type { Artifact, ArtifactStatus, Team, TypeTemplate, Usage, WorkUnit } from "../types.ts";
 import type { Repo } from "../repo.ts";
 import { firstParagraph, repoCapabilities } from "../repo.ts";
-import { isLoopCompanionKind } from "../gates.ts";
+import { isLoopCompanionKind, loopMembershipFor } from "../gates.ts";
+import { roundOf } from "../runner.ts";
 
 export function esc(s: string): string {
   return String(s)
@@ -50,7 +51,10 @@ export function ageLabel(fromIso: string, now: Date): string {
 // ---------------------------------------------------------------------------
 
 export interface OpenGate {
-  type: "artifact" | "start" | "blocked";
+  // NOTES F19: "artifact-blocked" is a member's FAILURE to produce (dagwalk.ts#writeBlocked) —
+  // distinct from "blocked" (a UNIT the walk could not advance at all, F1/F18) and from "artifact"
+  // (an in-review artifact awaiting a content decision). It carries its own verbs: retry/skip/abandon.
+  type: "artifact" | "start" | "blocked" | "artifact-blocked";
   project: string;
   unit: string;
   /** The artifact id for an artifact-shaped gate; the unit id for a start or blocked gate. */
@@ -61,6 +65,15 @@ export interface OpenGate {
   label: string;
   /** Why a blocked unit is blocked (its `blocked_reason`) — NOTES F1. */
   reason?: string;
+  /**
+   * NOTES F20: set only on the artifact a loop's `until` condition actually names (the one gate a
+   * loop ever raises — F16). The server already refuses a `request` past `maxRounds` (ruling C14,
+   * `board/gateops.ts#doRequest`) — this is what lets the BOARD say so too, before the Conductor ever
+   * clicks: `exhausted` is true once this round is the loop's last without `until` satisfied, so the
+   * card can state the round count up front and disable "Request changes" instead of silently
+   * discarding it after a refused round-trip.
+   */
+  loop?: { round: number; maxRounds: number; until: string; exhausted: boolean };
 }
 
 /**
@@ -77,6 +90,24 @@ export function openGates(repo: Repo): OpenGate[] {
     const artifacts = repo.artifacts.get(key);
     if (artifacts) {
       for (const art of artifacts.values()) {
+        // NOTES F19: a blocked artifact (a member ran and failed — dagwalk.ts#writeBlocked) raises
+        // its own gate, distinct from an in-review one — retry/skip/abandon, never approve/reject/
+        // request. Previously invisible entirely: `openGates` skipped anything not `in-review`, so a
+        // failed member left NO gate at all, and the only way past it was deleting the file by hand.
+        if (art.status === "blocked") {
+          const [teamName, member] = art.produced_by.split("/");
+          gates.push({
+            type: "artifact-blocked",
+            project: unit.project,
+            unit: unit.unit,
+            target: art.id,
+            artifact: art,
+            team: repo.teams.get(teamName),
+            member,
+            label: art.kind,
+          });
+          continue;
+        }
         if (art.status !== "in-review") continue;
         const [teamName, member] = art.produced_by.split("/");
         const team = repo.teams.get(teamName);
@@ -87,6 +118,13 @@ export function openGates(repo: Repo): OpenGate[] {
         // round's two artifacts both showed as open gates, and resolving the wrong one left the other
         // stranded `in-review` forever with `until` unreachable.
         if (team && isLoopCompanionKind(team, art.kind, capabilities)) continue;
+        // NOTES F20: this is, by construction, the loop's ONLY gate-raising artifact when it belongs
+        // to one at all (the companion is skipped above) — round/exhaustion info the card needs to
+        // state the round count and disable "Request changes" before the Conductor ever clicks it.
+        const membership = team ? loopMembershipFor(team, art.kind, capabilities) : undefined;
+        const loop = membership
+          ? { round: roundOf(art.id), maxRounds: membership.loop.maxRounds, until: membership.loop.until, exhausted: roundOf(art.id) >= membership.loop.maxRounds }
+          : undefined;
         gates.push({
           type: "artifact",
           project: unit.project,
@@ -96,6 +134,7 @@ export function openGates(repo: Repo): OpenGate[] {
           team,
           member,
           label: art.kind,
+          loop,
         });
       }
     }

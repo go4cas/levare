@@ -77,17 +77,20 @@
         approve: ['approved', 'is-ok'],
         reject:  ['rejected', 'is-danger'],
         notyet:  ['not yet', 'is-neutral'],
-        send:    ['changes sent', 'is-neutral']
+        send:    ['changes sent', 'is-neutral'],
+        skip:    ['skipped', 'is-neutral'],
+        abandon: ['abandoned', 'is-danger']
       };
       var realVerb = verb === 'send' ? (card._pendingVerb || 'request') : verb;
       var note = verb === 'send' && card._note ? card._note.querySelector('.gate__note').value : undefined;
       postGate(card, realVerb, note);
-      // `start` (and `send`, which re-invokes the producer) dispatch a real member call that can take
-      // seconds to minutes — an immediate "started"/"changes sent" resolved-line would be a premature
-      // claim of completion. Show the quiet pending state instead (NOTES F10 defect 3) and let the
-      // SSE-driven reload replace it with the server's real post-production render; every other verb
-      // resolves synchronously server-side, so its immediate optimistic label stays accurate.
-      if (realVerb === 'start' || realVerb === 'request') { markDispatching(card); return; }
+      // `start`, `send` (re-invokes the producer), and `retry` (NOTES F19 — re-invokes the same
+      // member, costing money again) all dispatch a real member call that can take seconds to
+      // minutes — an immediate resolved-line would be a premature claim of completion. Show the quiet
+      // pending state instead (NOTES F10 defect 3) and let the SSE-driven reload replace it with the
+      // server's real post-production render; every other verb resolves synchronously server-side, so
+      // its immediate optimistic label stays accurate.
+      if (realVerb === 'start' || realVerb === 'request' || realVerb === 'retry') { markDispatching(card); return; }
       var m = map[verb];
       if (!m) return;
       resolveGate(card, m[0], m[1]);

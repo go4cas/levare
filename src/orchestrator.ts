@@ -101,8 +101,11 @@ export interface Briefing {
 
 export function buildBriefing(repo: Repo, env: EnvProbe, probe: CliProbe): Briefing {
   const all = openGates(repo);
+  // NOTES F19: "artifact-blocked" (a member ran and failed — retry/skip/abandon) is, like "artifact"
+  // (approve/reject/request), a decision that needs the Conductor NOW — it belongs in the same
+  // triage list, not silently dropped the way it was before this gate type existed at all.
   const gates = all
-    .filter((g): g is OpenGate & { artifact: NonNullable<OpenGate["artifact"]> } => g.type === "artifact" && !!g.artifact)
+    .filter((g): g is OpenGate & { artifact: NonNullable<OpenGate["artifact"]> } => (g.type === "artifact" || g.type === "artifact-blocked") && !!g.artifact)
     .sort((a, b) => a.artifact.created.localeCompare(b.artifact.created));
   const unblocked = all.filter((g) => g.type === "start");
   const blocked = all.filter((g) => g.type === "blocked");

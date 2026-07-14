@@ -62,7 +62,9 @@ interface Schema {
   removed?: Record<string, string>;
 }
 
-const STATUS_ENUM = ["draft", "in-review", "approved", "rejected", "superseded", "blocked"];
+// NOTES F19: "skipped" — a Conductor's explicit "skip" verb on a blocked artifact, marking the step
+// abandoned so the walk can continue past it.
+const STATUS_ENUM = ["draft", "in-review", "approved", "rejected", "superseded", "blocked", "skipped"];
 
 const ARTIFACT_SCHEMA: Schema = {
   name: "artifact",

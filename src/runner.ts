@@ -57,7 +57,15 @@ export type Verb =
   | "rescope"
   | "continue"
   | "raise"
-  | "stop";
+  | "stop"
+  // NOTES F19: verbs against a BLOCKED artifact gate (a member ran and failed) — retry re-invokes the
+  // same member/kind through the same MemberRunner boundary (costed, ledger-recorded, never automatic
+  // — only a Conductor's explicit click ever takes this path); skip marks the step abandoned so the
+  // walk can continue past it; abandon pauses the whole unit. Never produced by the phase-2 batch
+  // Runner (it has no notion of a `blocked` artifact) — resolved entirely in board/gateops.ts.
+  | "retry"
+  | "skip"
+  | "abandon";
 
 export interface Decision {
   verb: Verb;

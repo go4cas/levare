@@ -198,7 +198,12 @@ export type ArtifactStatus =
   | "approved"
   | "rejected"
   | "superseded"
-  | "blocked";
+  | "blocked"
+  // NOTES F19: a Conductor's explicit "skip" verb on a blocked artifact — the step is marked
+  // abandoned so the walk can continue past this kind (dagwalk.ts#nextAction treats it like
+  // `approved` for a plain step), distinct from `blocked` (still awaiting a Conductor decision) and
+  // from `rejected` (a content review outcome, not a produce-failure one).
+  | "skipped";
 
 export interface Artifact {
   kind: string;

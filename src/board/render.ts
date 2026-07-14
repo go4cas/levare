@@ -322,25 +322,71 @@ function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: boole
     </article>`;
   }
 
+  // NOTES F19: a blocked artifact (a member ran and failed) — retry/skip/abandon, the only three
+  // verbs that make sense against a produce-time failure (never approve/reject/request, which decide
+  // on CONTENT this artifact never had). `firstParagraph` surfaces the writeBlocked reason verbatim
+  // — since NOTES F21, that reason leads with the actual diagnosis, not levare's own echoed prompt.
+  if (gate.type === "artifact-blocked") {
+    const art = gate.artifact!;
+    const ctx = esc(firstParagraph(art.body ?? ""));
+    const age = ageLabel(art.created, now);
+    const verbs = dispatching
+      ? dispatchingHtml(dispatching.member, dispatching.kind)
+      : `<div class="gate__verbs">
+        <button class="verb is-primary" data-verb="retry">Retry</button>
+        <button class="verb is-secondary" data-verb="skip">Skip</button>
+        <button class="verb is-danger" data-verb="abandon">Abandon</button>
+      </div>`;
+    return `<article class="gate gate--artifact-blocked${dispatching ? " is-dispatching" : ""}" data-gate-project="${esc(gate.project)}" data-gate-target="${esc(art.id)}">
+      <div class="gate__top">
+        <span class="gate__marker" aria-hidden="true">${glyph}</span>
+        <div class="gate__body">
+          <div class="gate__name-row">${artifactTokenLink(gate.project, gate.unit, art.id, artifactFileName(art))}<span class="gate__producer">member/<b>${esc(gate.member ?? "")}</b></span></div>
+          <p class="gate__ctx">Blocked: ${ctx}</p>
+          <div class="gate__meta"><span>${esc(age)}</span></div>
+        </div>
+        <span class="gate__badge is-blocked">blocked</span>
+      </div>
+      ${verbs}
+    </article>`;
+  }
+
   const art = gate.artifact!;
-  const ctx = esc(firstParagraph(art.body ?? ""));
   const consumesHtml = art.consumes.length
     ? `<div class="gate__consumes">consumes: ${art.consumes.map((id) => artifactTokenLink(gate.project, gate.unit, id, id)).join(" &middot; ")}</div>`
     : "";
   const age = ageLabel(art.created, now);
   const cost = costLabel(art.usage);
   const nameRow = `<div class="gate__name-row">${artifactTokenLink(gate.project, gate.unit, art.id, artifactFileName(art))}<span class="gate__producer">member/<b>${esc(gate.member ?? "")}</b></span></div>`;
-  const meta = `<div class="gate__meta"><span>${esc(age)}</span>${cost ? `<span class="cost">${cost}</span>` : ""}</div>`;
+
+  // NOTES F20: an exhausted loop (max_rounds reached without `until`) is enforced server-side
+  // (`board/gateops.ts#doRequest` already refuses a `request` past max_rounds, 409, no spend) but was
+  // invisible here — the card offered "Request changes" regardless, the note composer opened, took
+  // the Conductor's text, and the server silently discarded it. The card now says so up front and
+  // presents the loop's ACTUAL on_exhaust decision (approve over the critic's objection, reject, or
+  // re-scope) instead of a verb that can never succeed.
+  const ctx = gate.loop?.exhausted
+    ? `${gate.loop.round} of ${gate.loop.maxRounds} rounds used — this loop cannot continue without \`${esc(gate.loop.until)}\`.`
+    : esc(firstParagraph(art.body ?? ""));
+  const roundBadge = gate.loop ? `<span class="gate__round">round ${gate.loop.round}/${gate.loop.maxRounds}</span>` : "";
+  const meta = `<div class="gate__meta"><span>${esc(age)}</span>${cost ? `<span class="cost">${cost}</span>` : ""}${roundBadge}</div>`;
   const verbs = dispatching
     ? dispatchingHtml(dispatching.member, dispatching.kind)
-    : `<div class="gate__verbs">
+    : gate.loop?.exhausted
+      ? `<div class="gate__verbs">
+        <button class="verb is-primary" data-verb="approve">Approve anyway</button>
+        <button class="verb" data-verb="rescope">Re-scope</button>
+        <button class="verb is-danger" data-verb="reject">Reject</button>
+      </div>`
+      : `<div class="gate__verbs">
         <button class="verb is-primary" data-verb="approve">Approve</button>
         <button class="verb is-secondary" data-verb="request">Request changes</button>
         <button class="verb is-danger" data-verb="reject">Reject</button>
       </div>`;
 
+  const exhaustedCls = gate.loop?.exhausted ? " gate--exhausted" : "";
   if (opts.cta) {
-    return `<article class="gate gate--cta${dispatching ? " is-dispatching" : ""}" data-gate-project="${esc(gate.project)}" data-gate-target="${esc(art.id)}">
+    return `<article class="gate gate--cta${exhaustedCls}${dispatching ? " is-dispatching" : ""}" data-gate-project="${esc(gate.project)}" data-gate-target="${esc(art.id)}">
       <div class="gate__banner"><span class="dia" aria-hidden="true"></span><span class="t">Gate &middot; ${esc(gate.label)} review</span></div>
       <div class="gate__inner">
         ${nameRow}
@@ -351,7 +397,7 @@ function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: boole
       </div>
     </article>`;
   }
-  return `<article class="gate${dispatching ? " is-dispatching" : ""}" data-gate-project="${esc(gate.project)}" data-gate-target="${esc(art.id)}">
+  return `<article class="gate${exhaustedCls}${dispatching ? " is-dispatching" : ""}" data-gate-project="${esc(gate.project)}" data-gate-target="${esc(art.id)}">
     <div class="gate__top">
       <span class="gate__marker" aria-hidden="true">${glyph}</span>
       <div class="gate__body">
@@ -360,7 +406,7 @@ function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: boole
         ${consumesHtml}
         ${meta}
       </div>
-      <span class="gate__badge">on you</span>
+      <span class="gate__badge${gate.loop?.exhausted ? " is-blocked" : ""}">${gate.loop?.exhausted ? "exhausted" : "on you"}</span>
     </div>
     ${verbs}
   </article>`;

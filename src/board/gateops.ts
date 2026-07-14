@@ -57,20 +57,35 @@ export interface ResolveOpts {
   daemon?: Daemon;
 }
 
-/** Resolve one gate verb against `target` (an artifact id, or — for start/notyet/rescope — a unit id). */
+/** Resolve one gate verb against `target` (an artifact id, or — for start/notyet, and rescope of a
+ * unit's start gate — a unit id). */
 export async function resolveGate(root: string, project: string, target: string, verb: Verb, opts: ResolveOpts = {}): Promise<GateOpResult> {
   const today = opts.today ?? new Date().toISOString().slice(0, 10);
   const repo = loadRepo(root);
   const memberRunner = opts.memberRunner ?? productionAdapterRunner(repo);
   const unit = repo.units.find((u) => u.project === project && repo.artifacts.get(`${project}/${u.unit}`)?.has(target));
 
-  if (verb === "start" || verb === "notyet" || verb === "rescope") {
+  if (verb === "start" || verb === "notyet") {
+    return await resolveStartGate(root, repo, project, target, verb, memberRunner, opts.daemon);
+  }
+  // NOTES F20: `rescope` also targets an ARTIFACT now — a loop's on_exhaust decision — alongside its
+  // pre-existing meaning against a unit's start gate. Disambiguated by whether `target` resolves to a
+  // live artifact at all; a unit id never does.
+  if (verb === "rescope" && !unit) {
     return await resolveStartGate(root, repo, project, target, verb, memberRunner, opts.daemon);
   }
   if (!unit) return { ok: false, status: 404, error: `no open gate for artifact '${target}' in project '${project}'` };
 
   const artifacts = repo.artifacts.get(`${project}/${unit.unit}`)!;
   const art = artifacts.get(target)!;
+
+  // NOTES F19: a blocked artifact (a member ran and failed) raises its own gate with three verbs —
+  // retry/skip/abandon — resolved against `art.status === "blocked"`, never `in-review`.
+  if (verb === "retry" || verb === "skip" || verb === "abandon") {
+    return await resolveBlockedArtifactGate(root, unit, art, verb, memberRunner, opts, today);
+  }
+  if (verb === "rescope") return doRescopeArtifact(root, unit, art, opts.note);
+
   if (art.status !== "in-review") {
     return { ok: false, status: 409, error: `artifact '${target}' is not at an open gate (status: ${art.status})` };
   }
@@ -145,6 +160,34 @@ function doReject(root: string, file: string, id: string, note: string | undefin
   writeFileSync(file, patched);
   const files = [file, ...extraFiles];
   const commit = conductorCommit(root, files, `reject ${id}${note ? `\n\n${note}` : ""}`);
+  return { ok: true, commit, changedFiles: files };
+}
+
+// NOTES F20: the on_exhaust gate's third decision, alongside "approve anyway" (doApprove, unchanged —
+// the existing C2 companion cascade already resolves the round's review alongside it) and "reject"
+// (doReject, unchanged). A loop that hit `max_rounds` without its `until` cannot simply try again
+// (`doRequest` already refuses that, 409, no spend) — re-scoping rejects the artifact AND pauses the
+// whole unit in one commit, so the Conductor's next move is deliberate re-planning, not another round
+// this loop already proved it cannot complete on its own.
+function doRescopeArtifact(root: string, unit: WorkUnit, art: Artifact, note: string | undefined): GateOpResult {
+  if (art.status !== "in-review") {
+    return { ok: false, status: 409, error: `artifact '${art.id}' is not at an open gate (status: ${art.status})` };
+  }
+  const located = locateArtifactFile(unit.dir, art.id);
+  if (!located) return { ok: false, status: 404, error: `artifact file for '${art.id}' not found on disk` };
+  const src = readFileSync(located.file, "utf8");
+  const patched = patchFrontmatter(src, { status: "rejected" });
+  const errs = validateArtifactSource(patched, located.file, dirname(located.file));
+  if (errs.length > 0) return { ok: false, status: 422, error: `${errs[0].code}: ${errs[0].message}` };
+
+  const unitFile = join(unit.dir, "unit.md");
+  const unitSrc = readFileSync(unitFile, "utf8");
+  const unitPatched = patchFrontmatter(unitSrc, { status: "paused" });
+
+  writeFileSync(located.file, patched);
+  writeFileSync(unitFile, unitPatched);
+  const files = [located.file, unitFile];
+  const commit = conductorCommit(root, files, `re-scope ${unit.unit} at ${art.id}: loop exhausted${note ? `\n\n${note}` : ""}`);
   return { ok: true, commit, changedFiles: files };
 }
 
@@ -264,6 +307,116 @@ async function doRequest(
   writeFileSync(newFile, newDoc);
   const files = [supersedeFile, newFile, ...extraFiles];
   const commit = conductorCommit(root, files, `request changes on ${supersedeId} → ${newId}\n\n${note}`);
+  return { ok: true, commit, changedFiles: files };
+}
+
+// The same doc shape dagwalk.ts#writeBlocked writes for the live walk's own member failures — kept as
+// an independent copy (mirroring gates.ts's precedent for responsibleTeamFor/resolveStep) rather than
+// exporting a dagwalk.ts internal into the board's write path. `supersedes` names the PRIOR attempt
+// this retry replaces, so a repeated failure stays a proper chain, not a series of orphaned blocks.
+function blockedRetryDoc(art: Artifact, newId: string, msg: string, today: string): string {
+  return [
+    "---",
+    `kind: ${art.kind}`,
+    `id: ${newId}`,
+    `unit: ${art.unit}`,
+    `project: ${art.project}`,
+    "status: blocked",
+    `produced_by: ${art.produced_by}`,
+    "consumes: []",
+    `supersedes: ${art.id}`,
+    "approved_by: null",
+    `created: ${today}`,
+    "files: []",
+    "---",
+    "",
+    `# ${art.kind} — blocked`,
+    "",
+    `The daemon could not produce this artifact: ${msg}`,
+    "",
+  ].join("\n");
+}
+
+// NOTES F19: a blocked artifact (a member ran and failed — dagwalk.ts#writeBlocked/produceOne) used
+// to have no verbs at all: the only way to move past it was deleting the file by hand and committing.
+// It now raises a gate with three: RETRY (re-invoke the same member with the same context — the
+// context is re-assembled fresh from the SAME on-disk state, since nothing else has changed since the
+// failure — through the exact `memberRunner.produce()` boundary every other invocation goes through,
+// so this attempt's cost lands in the ledger exactly like any other), SKIP (mark the step abandoned;
+// the walk continues past this kind if it can), ABANDON (pause the whole unit). The daemon itself
+// NEVER calls this path — retry is exclusively a Conductor's explicit, costed decision; an unbounded
+// automatic retry against a persistently-failing member would be a money fire, not a fix.
+async function resolveBlockedArtifactGate(
+  root: string,
+  unit: WorkUnit,
+  art: Artifact,
+  verb: "retry" | "skip" | "abandon",
+  memberRunner: AsyncMemberRunner,
+  opts: ResolveOpts,
+  today: string,
+): Promise<GateOpResult> {
+  if (art.status !== "blocked") {
+    return { ok: false, status: 409, error: `artifact '${art.id}' is not blocked (status: ${art.status})` };
+  }
+  const located = locateArtifactFile(unit.dir, art.id);
+  if (!located) return { ok: false, status: 404, error: `artifact file for '${art.id}' not found on disk` };
+
+  if (verb === "abandon") {
+    const unitFile = join(unit.dir, "unit.md");
+    const unitPatched = patchFrontmatter(readFileSync(unitFile, "utf8"), { status: "paused" });
+    writeFileSync(unitFile, unitPatched);
+    const commit = conductorCommit(root, [unitFile], `abandon ${unit.unit}: pausing after ${art.id} blocked${opts.note ? `\n\n${opts.note}` : ""}`);
+    return { ok: true, commit, changedFiles: [unitFile] };
+  }
+
+  if (verb === "skip") {
+    // dagwalk.ts#nextAction treats a `skipped` step's artifact like an `approved` one for a plain
+    // step — the walk continues past this kind on its next tick, if the rest of the flow can proceed
+    // without it.
+    const patched = patchFrontmatter(readFileSync(located.file, "utf8"), { status: "skipped" });
+    const errs = validateArtifactSource(patched, located.file, dirname(located.file));
+    if (errs.length > 0) return { ok: false, status: 422, error: `${errs[0].code}: ${errs[0].message}` };
+    writeFileSync(located.file, patched);
+    const commit = conductorCommit(root, [located.file], `skip ${art.id}: marking abandoned so the walk can continue${opts.note ? `\n\n${opts.note}` : ""}`);
+    return { ok: true, commit, changedFiles: [located.file] };
+  }
+
+  // retry
+  const [, member] = art.produced_by.split("/");
+  const hasCap = memberRunner.capabilities().some((c) => c.member === member && c.kind === art.kind);
+  if (!hasCap) return { ok: false, status: 501, error: `no producer available to retry '${art.produced_by}' for kind '${art.kind}'` };
+
+  const nextRound = roundOf(art.id) + 1;
+  const newId = bumpVersion(`${art.kind}-${unit.unit}`, nextRound);
+  const invocation = opts.daemon?.beginInvocation({ project: art.project, unit: art.unit, member, kind: art.kind });
+  let baseDoc: string;
+  try {
+    ({ doc: baseDoc } = await memberRunner.produce(member, art.kind, art.unit, art.project));
+  } catch (e) {
+    // Retried and failed again — a new blocked artifact records THIS attempt, superseding the last
+    // one, so the gate stays actionable (retry/skip/abandon again) rather than wedging on a stale
+    // failure the Conductor already saw.
+    const msg = e instanceof Error ? e.message : String(e);
+    const doc = blockedRetryDoc(art, newId, msg, today);
+    const oldPatched = patchFrontmatter(readFileSync(located.file, "utf8"), { status: "superseded" });
+    const newFile = join(unit.dir, `${newId}.md`);
+    writeFileSync(located.file, oldPatched);
+    writeFileSync(newFile, doc);
+    conductorCommit(root, [located.file, newFile], `retry ${art.id} → ${newId} FAILED again: ${msg.slice(0, 120)}`);
+    return { ok: false, status: 502, error: `retry failed: ${msg}` };
+  } finally {
+    if (invocation) opts.daemon!.endInvocation(invocation);
+  }
+
+  const newDoc = patchFrontmatter(baseDoc, { id: newId, supersedes: art.id });
+  const errs = validateArtifactSource(newDoc, `${newId}.md`, unit.dir);
+  if (errs.length > 0) return { ok: false, status: 422, error: `${errs[0].code}: ${errs[0].message}` };
+  const oldPatched = patchFrontmatter(readFileSync(located.file, "utf8"), { status: "superseded" });
+  const newFile = join(unit.dir, `${newId}.md`);
+  writeFileSync(located.file, oldPatched);
+  writeFileSync(newFile, newDoc);
+  const files = [located.file, newFile];
+  const commit = conductorCommit(root, files, `retry ${art.id} → ${newId} produced ${art.kind}`);
   return { ok: true, commit, changedFiles: files };
 }
 

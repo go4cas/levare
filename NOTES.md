@@ -3959,3 +3959,97 @@ as a `type: "blocked"` gate on the board, rendered with the reason on the card; 
 **Verification.** `bun test` — 581 pass, 1 pre-existing skip, 0 fail, across 50 files (new:
 `tests/f18-unadvanceable.test.ts`); `levare replay fixtures/golden --stubs` unaffected (this ruling
 touches only the live daemon/board/Orchestrator path, never the phase-2 batch Runner).
+
+## F21. A blocked CLI member's card showed levare's own echoed prompt, not the real error
+
+**Found live.** A wrapped CLI member (Codex/Gemini, `kind: cli`) failed. The blocked artifact's reason
+— the most prominent thing a Conductor should see on that card — was dominated by the argv the member
+was invoked with, which for a real studio embeds `{task}`: the member's ENTIRE §6-assembled context,
+often thousands of characters. The actual diagnosis (the CLI's own stderr) was appended AFTER it, so a
+card showing only a bounded preview displayed levare's own echoed prompt and never the real error.
+
+**Root cause.** `adapters.ts#cliResultToDoc` built its `AdapterError` message as `cli member '${member}'
+exited ${code} (argv: ${JSON.stringify(argv)})${stderrSuffix}` — argv FIRST, diagnosis LAST. `argv`
+carries whatever `defaultCliCommand` substituted into the command template, unbounded.
+
+**The fix.** `diagnoseCliFailure(result)` — tried in order: the vendor's own structured JSON error
+(many CLIs report one), the tail of stderr (unchanged 2000-char cap, NOTES F3), the last non-empty
+line of stdout (some CLIs write their error there instead) — surfaced FIRST in the thrown message.
+`summarizeArgv(argv)` caps each element (200 chars, `…(N chars total)` suffix) and is appended AFTER
+the diagnosis, as a secondary "what actually ran" reference — never the primary content again.
+
+**Tests.** New "F21" block in `tests/adapters.test.ts`: a huge (~16k char) substituted argv element
+never buries a real stderr diagnosis (asserted by string position, diagnosis before `(argv:`, and the
+whole message far shorter than the raw huge element); a CLI's structured `{"error":{"message":...}}`
+stderr is preferred over a raw tail; empty stderr falls back to the last non-empty stdout line rather
+than a bare "exited N". All pre-existing F3 tests (argv presence, stderr truncation, timeout stderr)
+pass unchanged — the shape changed, not the guarantees.
+
+**Verification.** `bun test` — 595 pass, 1 pre-existing skip, 0 fail, across 51 files; `levare replay
+fixtures/golden --stubs` unaffected (the CLI adapter path is not exercised by `--stubs`); `deps:check`
+— `deps ok`.
+
+## F19/F20. A blocked artifact had no verbs, and an exhausted loop's card didn't say so
+
+**Found live**, the same session as F18/F21 — the other half of "the mechanism is correct, the telling
+is absent": a member's failure correctly blocks the artifact (dagwalk.ts#writeBlocked) and the daemon
+correctly never auto-retries (a money fire waiting to happen) — but the ONLY way past it was deleting
+the file by hand and committing. Separately, a loop at `max_rounds` is correctly refused a further
+`request` server-side (409, no spend — ruling C14/F16) — but the board's card didn't know: it still
+offered "Request changes", opened the note composer, and silently discarded the Conductor's text on
+the refused round-trip.
+
+### F19 — a blocked artifact gains retry/skip/abandon
+
+**The fix.** `board/derive.ts#openGates` now raises a NEW gate type, `"artifact-blocked"`, for any
+artifact at `status: blocked` (previously skipped entirely — `openGates` only ever looked at
+`in-review`). `board/render.ts#gateCardHtml` renders it with three verbs — never approve/reject/
+request, which decide on CONTENT this artifact never had: **Retry** (re-invoke the same member for the
+same kind — the context re-assembles fresh from the same on-disk state, through the exact
+`memberRunner.produce()` boundary every other invocation uses, so a successful retry's usage receipt
+lands in the ledger exactly like any other production), **Skip** (`board/gateops.ts` patches the
+artifact to a NEW status, `skipped` — added to `ArtifactStatus`/`STATUS_ENUM` — and
+`dagwalk.ts#nextAction` now treats `skipped` like `approved` for a plain step, so the walk continues
+past this kind on its next tick), **Abandon** (pauses the whole unit). `runner.ts#Verb` gained `retry
+| skip | abandon`, resolved entirely in `board/gateops.ts#resolveBlockedArtifactGate` — the phase-2
+batch Runner has no notion of a `blocked` artifact and is untouched. A retry that fails again writes a
+NEW blocked artifact superseding the last (mirroring `writeBlocked`'s own doc shape), so the gate stays
+actionable rather than wedging on a stale failure. The daemon's own autonomous walk never calls this
+path — retry is exclusively a Conductor's explicit, costed click, exactly as before.
+
+### F20 — an exhausted loop's card says so, and offers the loop's real decision
+
+**The fix.** `openGates` now attaches `{round, maxRounds, until, exhausted}` to the ONE artifact a
+loop's `until` names (by construction the loop's only gate-raising artifact — F16's own companion
+skip already guarantees this), computed from `gates.ts#loopMembershipFor` + `runner.ts#roundOf` — the
+same primitives `board/gateops.ts#doRequest`'s existing 409 check already uses server-side, so the
+card's claim and the server's enforcement can never drift apart. `gateCardHtml`: when `exhausted`, the
+card's context line states the round count and the `until` condition instead of the artifact's own
+first paragraph, "Request changes" is dropped entirely (replaced, never merely greyed out), and the
+verb row becomes **Approve anyway** / **Reject** / **Re-scope** — the loop's actual on_exhaust
+decision. **Re-scope** is a new artifact-targeting sense for the pre-existing `rescope` verb
+(previously unit-start-gate-only; `resolveGate` now disambiguates by whether `target` resolves to a
+live artifact at all): `board/gateops.ts#doRescopeArtifact` rejects the exhausted artifact AND pauses
+the whole unit, in one commit — a deliberate re-plan, not another round this loop already proved it
+cannot complete alone. `assets/app.js` needed only two small additions (`retry`/`skip`/`abandon` in
+the verb→label map, `retry` added to the dispatching-verb list alongside `start`/`request`) —
+"rescope" already opened the note composer and posted through the existing generic pipeline.
+
+**Tests.** New `tests/f19-blocked-artifact-verbs.test.ts`: a blocked artifact surfaces as its own
+`artifact-blocked` gate (never approve/reject/request on it); a successful retry re-invokes the same
+member and the unit's ledger spend increases; a retry that fails again supersedes with a new blocked
+artifact naming the new error; skip marks the artifact `skipped` and the walk's next tick produces the
+following kind instead of halting; abandon pauses the unit; the daemon's own autonomous walk never
+retries on its own (0 calls when the design slot is already blocked). New
+`tests/f20-loop-exhaustion.test.ts`: `openGates` annotates round 3/3 as `exhausted: true` (round 1
+`exhausted: false`); the rendered card states "3 of 3 rounds used", carries no `request` verb, and
+offers approve/reject/rescope; a non-exhausted round's card keeps `request` and shows a plain round
+indicator; re-scope rejects the artifact and pauses the unit in one two-file commit; `request` at the
+final round is still refused server-side (409, no v4 artifact) — the card's disabling matches a real
+enforcement, not cosmetics alone.
+
+**Verification.** `bun test` — 595 pass, 1 pre-existing skip, 0 fail, across 51 files (new:
+`tests/f19-blocked-artifact-verbs.test.ts`, `tests/f20-loop-exhaustion.test.ts`); `levare replay
+fixtures/golden --stubs` — final artifact statuses still byte-for-byte against `expected.json`
+(neither `blocked`/`skipped` nor the new verbs are reachable from the phase-2 batch engine);
+`deps:check` — `deps ok`.
