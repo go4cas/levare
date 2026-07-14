@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validatePath } from "../src/validate.ts";
+import { loadPricing } from "../src/pricing.ts";
 
 describe("golden fixture", () => {
   test("fixtures/golden validates clean", () => {
@@ -102,7 +103,7 @@ describe("F1: a structurally unrunnable studio fails validation, naming what can
       mkdirSync(join(dir, "agents"), { recursive: true });
       writeFileSync(
         join(dir, "agents", "mute.md"),
-        ["---", "name: mute", "kind: native", "produces: []", "model: claude-sonnet", "style:", "  avatar: Mu", "---", "", "Produces nothing.", ""].join("\n"),
+        ["---", "name: mute", "kind: native", "produces: []", "model: claude-sonnet-5", "style:", "  avatar: Mu", "---", "", "Produces nothing.", ""].join("\n"),
       );
       const r = validatePath(dir);
       expect(r.ok).toBe(false);
@@ -118,7 +119,7 @@ describe("F1: a structurally unrunnable studio fails validation, naming what can
       mkdirSync(join(dir, "agents"), { recursive: true });
       writeFileSync(
         join(dir, "agents", "quiet.md"),
-        ["---", "name: quiet", "kind: native", "model: claude-sonnet", "style:", "  avatar: Qu", "---", "", "Declares no capability.", ""].join("\n"),
+        ["---", "name: quiet", "kind: native", "model: claude-sonnet-5", "style:", "  avatar: Qu", "---", "", "Declares no capability.", ""].join("\n"),
       );
       const r = validatePath(dir);
       expect(r.ok).toBe(false);
@@ -267,11 +268,11 @@ describe("F10 defect 2: two teams producing the same kind a unit needs is AMBIGU
     mkdirSync(join(dir, "work", "acme", "launch"), { recursive: true });
     writeFileSync(
       join(dir, "agents", "wren.md"),
-      ["---", "name: wren", "kind: native", "produces: [product-brief]", "model: claude-sonnet", "style:", "  avatar: Wr", "---", "", "Wren.", ""].join("\n"),
+      ["---", "name: wren", "kind: native", "produces: [product-brief]", "model: claude-sonnet-5", "style:", "  avatar: Wr", "---", "", "Wren.", ""].join("\n"),
     );
     writeFileSync(
       join(dir, "agents", "scribe.md"),
-      ["---", "name: scribe", "kind: native", "produces: [product-brief]", "model: claude-sonnet", "style:", "  avatar: Sc", "---", "", "Scribe.", ""].join("\n"),
+      ["---", "name: scribe", "kind: native", "produces: [product-brief]", "model: claude-sonnet-5", "style:", "  avatar: Sc", "---", "", "Scribe.", ""].join("\n"),
     );
     writeFileSync(
       join(dir, "teams", "kestrel.md"),
@@ -338,7 +339,7 @@ describe("F10 defect 2: two teams producing the same kind a unit needs is AMBIGU
       // A third team that exists but produces something irrelevant to `feature`'s expects.
       writeFileSync(
         join(dir, "agents", "smith.md"),
-        ["---", "name: smith", "kind: native", "produces: [code]", "model: claude-sonnet", "style:", "  avatar: Sm", "---", "", "Smith.", ""].join("\n"),
+        ["---", "name: smith", "kind: native", "produces: [code]", "model: claude-sonnet-5", "style:", "  avatar: Sm", "---", "", "Smith.", ""].join("\n"),
       );
       writeFileSync(
         join(dir, "teams", "forge.md"),
@@ -446,11 +447,44 @@ describe("F11: known-model validation — a model that cannot be priced cannot b
     }
   });
 
-  test("with no knowledge/model-pricing.md at all, model validation fails open (nothing to check against)", () => {
+  // NOTES F23 (ruling): levare ships a baseline pricing table IN THE BINARY, so this no longer fails
+  // open — a fresh studio with no knowledge/model-pricing.md of its own is still checked against every
+  // real, currently-callable model the binary knows, closing the exact gap that let a freshly-`levare
+  // init`'d studio validate clean while declaring `claude-sonnet`/`claude-opus` (neither a real id).
+  test("with no knowledge/model-pricing.md at all, the binary's own baseline table still catches an unknown model", () => {
     const dir = buildStudio({ agentModel: "totally-made-up-model", withPricing: false });
     try {
       const r = validatePath(dir);
+      expect(r.errors.map((e) => e.code)).toContain("UNKNOWN_MODEL");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("...and a real baseline model validates clean with no studio pricing file at all", () => {
+    const dir = buildStudio({ agentModel: "claude-sonnet-5", withPricing: false });
+    try {
+      const r = validatePath(dir);
       expect(r.errors.map((e) => e.code)).not.toContain("UNKNOWN_MODEL");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a studio's own knowledge/model-pricing.md EXTENDS the baseline — a custom/self-hosted model it names validates clean", () => {
+    const dir = buildStudio({ agentModel: "totally-made-up-model", withPricing: false });
+    try {
+      mkdirSync(join(dir, "knowledge"), { recursive: true });
+      writeFileSync(
+        join(dir, "knowledge", "model-pricing.md"),
+        ["---", "name: model-pricing", "---", "", "| model | tokens_in (/M) | tokens_out (/M) |", "| --- | --- | --- |", "| totally-made-up-model | 1.00 | 1.00 |", ""].join("\n"),
+      );
+      const r = validatePath(dir);
+      expect(r.errors.map((e) => e.code)).not.toContain("UNKNOWN_MODEL");
+      // The baseline is still active alongside the studio's own extension — a genuinely unknown model
+      // (never declared by any agent here, but checked the same way) would still fail were it declared.
+      expect(loadPricing(dir).has("claude-sonnet-5")).toBe(true);
+      expect(loadPricing(dir).has("totally-made-up-model")).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

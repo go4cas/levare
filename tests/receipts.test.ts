@@ -1,5 +1,8 @@
 import { test, expect, describe } from "bun:test";
-import { parsePricing, priceUsd, loadPricing } from "../src/pricing.ts";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { parsePricing, priceUsd, loadPricing, baselinePricing } from "../src/pricing.ts";
 import { normalizeReceipt, formatReceipt } from "../src/receipts.ts";
 import type { Usage } from "../src/types.ts";
 
@@ -32,6 +35,64 @@ describe("pricing table (knowledge/model-pricing.md)", () => {
   test("parsePricing tolerates extra whitespace and pipe framing", () => {
     const p = parsePricing("| model | a | b |\n|---|---|---|\n|  m1  | 1.5 | 2.5 |\n");
     expect(p.get("m1")).toEqual({ in_per_m: 1.5, out_per_m: 2.5 });
+  });
+});
+
+// NOTES F23 (ruling): a `levare init`-scaffolded studio used to price (and validate!) work against
+// `claude-sonnet`/`claude-opus` — neither a real, callable model id — because the ONLY pricing data
+// came from a studio's own knowledge/model-pricing.md, and a fresh/misconfigured one could name
+// anything. levare now ships a baseline pricing table IN THE BINARY, current with each release; a
+// studio's own file only EXTENDS or OVERRIDES it.
+describe("F23: the binary ships a baseline pricing table; a studio's file extends/overrides it", () => {
+  test("baselinePricing() carries real, currently-callable model ids with no studio file involved", () => {
+    const base = baselinePricing();
+    expect(base.size).toBeGreaterThan(0);
+    expect(base.get("claude-sonnet-5")).toEqual({ in_per_m: 3.0, out_per_m: 15.0 });
+    expect(base.has("claude-sonnet")).toBe(false); // the exact non-model this ruling closes
+    expect(base.has("claude-opus")).toBe(false);
+  });
+
+  test("a studio with NO knowledge/model-pricing.md at all still prices a baseline model", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-baseline-pricing-"));
+    try {
+      const pricing = loadPricing(dir); // no knowledge/ dir at all
+      expect(pricing.get("claude-sonnet-5")).toEqual({ in_per_m: 3.0, out_per_m: 15.0 });
+      expect(priceUsd("claude-sonnet-5", 1_000_000, 0, pricing)).toBe(3.0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a studio's own knowledge/model-pricing.md OVERRIDES a baseline rate for the same model", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-override-pricing-"));
+    try {
+      mkdirSync(join(dir, "knowledge"), { recursive: true });
+      writeFileSync(
+        join(dir, "knowledge/model-pricing.md"),
+        ["---", "name: model-pricing", "---", "", "| model | tokens_in (/M) | tokens_out (/M) |", "| --- | --- | --- |", "| claude-sonnet-5 | 1.00 | 1.00 |", ""].join("\n"),
+      );
+      const pricing = loadPricing(dir);
+      expect(pricing.get("claude-sonnet-5")).toEqual({ in_per_m: 1.0, out_per_m: 1.0 }); // overridden
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a studio's own knowledge/model-pricing.md EXTENDS the baseline with a model the binary doesn't know", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-extend-pricing-"));
+    try {
+      mkdirSync(join(dir, "knowledge"), { recursive: true });
+      writeFileSync(
+        join(dir, "knowledge/model-pricing.md"),
+        ["---", "name: model-pricing", "---", "", "| model | tokens_in (/M) | tokens_out (/M) |", "| --- | --- | --- |", "| my-self-hosted-model | 0.10 | 0.20 |", ""].join("\n"),
+      );
+      const pricing = loadPricing(dir);
+      expect(pricing.get("my-self-hosted-model")).toEqual({ in_per_m: 0.1, out_per_m: 0.2 });
+      // The baseline is still present alongside the extension — never replaced wholesale.
+      expect(pricing.get("claude-sonnet-5")).toEqual({ in_per_m: 3.0, out_per_m: 15.0 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

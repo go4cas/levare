@@ -4091,3 +4091,104 @@ reasons named, via `dagwalk.ts`'s live walk — not just the first one found.
 **Verification.** `bun test` — 599 pass, 1 pre-existing skip, 0 fail, across 52 files (new:
 `tests/f22-validation-accumulation.test.ts`); `levare replay fixtures/golden --stubs` — final artifact
 statuses still byte-for-byte against `expected.json`; `deps:check` — `deps ok`.
+
+## F23. `levare init` scaffolds a studio that lies about its models, its CLI contract, and its secrets
+
+**The three-part ruling.** (1) A fresh studio's pricing/known-model data must never depend entirely
+on a file the studio itself scaffolds — levare ships a baseline pricing table IN THE BINARY, current
+with each release, and a studio's own `knowledge/model-pricing.md` EXTENDS or OVERRIDES it, never
+replaces it wholesale. (2) A scaffolded CLI agent's `result:` field must describe the CURRENT contract
+(ruling C12: levare authors the artifact wrapper; members emit content only), not the pre-C12 one.
+(3) A fresh studio scaffolds `.env.example` — naming what it might need — and never a live `.env`.
+
+**Investigated.** `src/init.ts`'s own scaffolded agents (`wren`, `lyra`) already declared real,
+callable model ids (`claude-sonnet-5`) and its `knowledge/model-pricing.md` template already listed
+real ids too — NOTES F11's known-model validation work had already closed the literal
+`model: claude-sonnet`/`claude-opus` gap for the SCAFFOLD specifically, with its own test coverage
+(`tests/init.test.ts`, "scaffolded agents ... are all in the known-model set"). Two real gaps
+remained: the ruling's structural point (1) — pricing/known-model data still depended ENTIRELY on
+`knowledge/model-pricing.md`, so ANY studio (scaffolded or hand-written) that omitted or emptied that
+file quietly fell back to `validate.ts#validateKnownModels`'s own `pricing.size === 0` fail-open branch,
+never checking a declared model at all — and (2), `agents/finch.md`'s `result:` field (both the
+scaffold AND, identically, `fixtures/golden/agents/finch.md`) still read "the wrapper validates its
+frontmatter against the artifact contract" — a member never has frontmatter of its own to validate;
+levare authors the whole wrapper (ruling C12), the member's raw output is content only. (3), the
+`.env.example` gap, was exactly as described: no such file was scaffolded at all.
+
+**The fix.**
+1. **`pricing.ts`**: `BASELINE_PRICING_MARKDOWN` — a real, currently-callable Claude model id table,
+   parsed through the same `parsePricing` a studio's own file uses (one parser, not a hand-rolled
+   literal `Map` that could drift from what a studio-authored table means). `loadPricing(root)` now
+   starts from `baselinePricing()` and overlays the studio's own `knowledge/model-pricing.md` on top,
+   entry by entry — a studio can still price an exotic/self-hosted model the binary doesn't know, or
+   override a baseline rate, but never loses the baseline by omission. `validateKnownModels`'s
+   `pricing.size === 0` fail-open branch is gone (`pricing.size` can no longer be 0) — a studio with NO
+   pricing file of its own is now actively checked against every baseline model, not silently skipped.
+2. **`agents/finch.md`'s `result:`** (both `src/init.ts`'s scaffold and `fixtures/golden`, which carried
+   the identical stale text): rewritten to state the actual contract — the CLI's stdout is content
+   only, levare authors the wrapper (id, status, consumes, usage) around it and validates the whole
+   document at the boundary (ruling C12), never trusting pre-formed frontmatter from the member.
+3. **`.env.example`** (`src/init.ts`): scaffolded alongside `.gitignore` (which already lists `.env`,
+   unchanged), naming `ANTHROPIC_API_KEY` (the Orchestrator — explicitly commented OPTIONAL: the board,
+   registry, and every gate work without it), the optional `LEVARE_ORCHESTRATOR_MODEL` override, and
+   the scaffolded connectors' own vars (`GITHUB_TOKEN`, `LINEAR_API_KEY`) — commented that connector
+   grants are scoped (invariant 11: a value set here is still only visible to a member whose team/agent
+   explicitly grants that connector). The README's "Getting started" section gained a `cp .env.example
+   .env` line and a two-sentence explanation. `.env.example` is not a registry entity (no `.md`
+   extension under a registry folder) — `levare validate` never looks at it.
+
+**Collateral: fixture/test model names.** Fixing the fail-open branch made every OTHER scratch studio
+in the test suite that used the placeholder `model: claude-sonnet` (never checked before, since those
+scratch studios had no pricing file either) newly, correctly, subject to `UNKNOWN_MODEL` — exactly the
+mechanism this ruling exists to make universal. Updated to the real `claude-sonnet-5` id:
+`tests/validate.test.ts`'s shared `buildStudio` helpers (the AMBIGUOUS_PRODUCER/TEAM_CANNOT_PRODUCE/
+EMPTY_PRODUCES/MISSING_FIELD fixtures — none of them about model validation, so the placeholder was
+incidental) and `fixtures/rejections/{team-unproducible-kind,unbindable-step}/agents/scribe.md`. The
+one test that explicitly asserted the OLD fail-open behavior was rewritten to assert the new,
+correct one (`tests/validate.test.ts`, "F11: known-model validation") — a studio with no pricing file
+still catches `totally-made-up-model` via the baseline, still validates a real baseline model clean,
+and its own `knowledge/model-pricing.md`, when present, still extends the baseline rather than
+replacing it.
+
+**Tests.** New `describe` block in `tests/receipts.test.ts` ("F23"): `baselinePricing()` carries real
+ids and explicitly does NOT carry `claude-sonnet`/`claude-opus`; a studio with no pricing file at all
+still prices a baseline model; a studio's own file overrides a baseline rate for the same model, and
+separately extends the baseline with a model the binary doesn't know, without losing the baseline.
+New `describe` block in `tests/init.test.ts` ("F23"): `.env.example` is scaffolded and a live `.env`
+never is; it names `ANTHROPIC_API_KEY`/`GITHUB_TOKEN`/`LINEAR_API_KEY` with no real secret values (a
+checklist, not a leak); it explains the Orchestrator is optional and connector grants are scoped; it
+never trips `levare validate`. The pre-existing "produces exactly the expected skeleton" test gained
+`.env.example` to its expected file set.
+
+**Verification.** `bun test` — 609 pass, 1 pre-existing skip, 0 fail, across 52 files (all tests
+updated for the new UNKNOWN_MODEL behavior, none skipped or weakened); a live smoke test (`levare init`
+into a scratch directory, then `levare validate .`) prints `valid` and leaves `.env.example` on disk
+with no `.env`; `levare replay fixtures/golden --stubs` — final artifact statuses still byte-for-byte
+against `expected.json`; `deps:check` — `deps ok`.
+
+---
+
+## Achieved: NOTES F18–F23 (the silences)
+
+Six defects, one theme: levare's most common failure mode is not being wrong — it is knowing
+something and not saying it. Every fix above closes exactly that gap, never by changing what the
+mechanism decides:
+
+- **F18** — a unit no team can ever advance now blocks loudly, naming the missing kind; the
+  Orchestrator's briefing no longer silently drops a blocked unit.
+- **F19** — a blocked artifact raises a gate with retry/skip/abandon; retry re-invokes the same member
+  through the same costed boundary and re-costs the ledger like any other invocation; the daemon still
+  never retries on its own.
+- **F20** — an exhausted loop's card states the round count and the `until` condition, drops "Request
+  changes" (it can never succeed), and offers the loop's real decision: approve anyway, reject, or
+  re-scope.
+- **F21** — a blocked CLI member's card leads with the actual diagnosis (structured error, stderr
+  tail, or last output line), never levare's own echoed `{task}` prompt.
+- **F22** — every consumer of a `ValidationError[]` reports every accumulated error in one message,
+  via one shared `formatValidationErrors`, not `errors[0]`.
+- **F23** — a fresh studio's model pricing/validation no longer depends entirely on a file it
+  scaffolds itself; its CLI agent's contract description is current; it ships `.env.example`, never a
+  live `.env`.
+
+`bun test` exits 0 (609 pass, 1 pre-existing skip, 0 fail, across 52 files); `levare replay
+fixtures/golden --stubs` matches the oracle byte-for-byte; `deps:check` reports `deps ok`.

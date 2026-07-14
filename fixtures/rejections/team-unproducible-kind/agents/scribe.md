@@ -2,7 +2,7 @@
 name: scribe
 kind: native
 produces: [report]
-model: claude-sonnet
+model: claude-sonnet-5
 style:
   avatar: Sc
 ---

@@ -35,6 +35,7 @@ describe("scaffoldStudio", () => {
     const top = readdirSync(root).sort();
     expect(top).toEqual([
       ".devcontainer",
+      ".env.example",
       ".gitignore",
       "README.md",
       "agents",
@@ -308,6 +309,46 @@ describe("D10/D11: a fresh `levare init` passes the real `levare validate` comma
     const gitignore = readFileSync(join(root, ".gitignore"), "utf8");
     const entries = gitignore.split("\n").map((l) => l.trim()).filter(Boolean);
     expect(entries).toEqual([".DS_Store", "node_modules/", ".env"]);
+  });
+
+  // NOTES F23: a fresh studio scaffolds `.env.example` — never a live `.env` (a real secret in a
+  // freshly-init'd, about-to-be-pushed repo is a loaded gun). It names the variables a studio might
+  // need, explains the Orchestrator is optional, and explains connector grants are scoped.
+  describe("F23: .env.example, never a live .env", () => {
+    test("scaffolds .env.example, and never a live .env", () => {
+      const root = tmpRoot();
+      scaffoldStudio(root);
+      expect(existsSync(join(root, ".env.example"))).toBe(true);
+      expect(existsSync(join(root, ".env"))).toBe(false);
+    });
+
+    test("names the variables this studio might need, with no real secret values", () => {
+      const root = tmpRoot();
+      scaffoldStudio(root);
+      const example = readFileSync(join(root, ".env.example"), "utf8");
+      expect(example).toContain("ANTHROPIC_API_KEY=");
+      expect(example).toContain("GITHUB_TOKEN=");
+      expect(example).toContain("LINEAR_API_KEY=");
+      // A checklist, not a leak: no line assigns an actual-looking secret value.
+      for (const line of example.split("\n")) {
+        if (line.startsWith("#") || !line.includes("=")) continue;
+        expect(line.split("=", 2)[1].trim()).toBe("");
+      }
+    });
+
+    test("explains the Orchestrator is optional, and that connector grants are scoped", () => {
+      const root = tmpRoot();
+      scaffoldStudio(root);
+      const example = readFileSync(join(root, ".env.example"), "utf8");
+      expect(example).toContain("OPTIONAL");
+      expect(example).toContain("scoped");
+    });
+
+    test(".env.example is not a registry entity — levare validate never trips on it", () => {
+      const root = tmpRoot();
+      scaffoldStudio(root);
+      expect(validatePath(root).ok).toBe(true);
+    });
   });
 
   test("a regression that empties an agent's produces: is caught by the SAME validator the CLI uses (EMPTY_PRODUCES / UNBINDABLE_STEP)", () => {

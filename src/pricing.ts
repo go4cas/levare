@@ -1,9 +1,17 @@
 // levare cost pricing (§10). Parses the USD-per-million-token table out of
 // knowledge/model-pricing.md and prices a usage receipt's USD estimate from reported tokens.
 //
-// The table is the single source of truth for cost estimates: no rates are hard-coded here. A model
-// absent from the table is *unpriceable* — priceUsd returns null rather than guessing, so an unknown
-// model surfaces as `usd: null` on the receipt (a quiet, honest gap) instead of a fabricated figure.
+// NOTES F23 (ruling): a `levare init`-scaffolded studio used to ship a `knowledge/model-pricing.md`
+// naming `claude-sonnet`/`claude-opus` — neither a real, callable model id — so a fresh studio priced
+// (and validated!) work against models that don't exist, and its own scaffolded agents failed on
+// their first invocation. The table is no longer the ONLY source of truth: levare ships a baseline
+// pricing table IN THE BINARY (`BASELINE_PRICING` below), current with each release, so a fresh studio
+// with no `knowledge/model-pricing.md` at all still prices and validates against real models out of
+// the box. A studio's own `knowledge/model-pricing.md`, when present, EXTENDS or OVERRIDES the
+// baseline entry-by-entry (a studio can still price an exotic/self-hosted model the binary doesn't
+// know about, or override a baseline rate) — never replaces it wholesale. A model absent from BOTH is
+// *unpriceable* — `priceUsd` returns null rather than guessing, so an unknown model surfaces as
+// `usd: null` on the receipt (a quiet, honest gap) instead of a fabricated figure.
 
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -13,6 +21,19 @@ export interface Rate {
   out_per_m: number;
 }
 export type Pricing = Map<string, Rate>;
+
+// The baseline table shipped in the binary — real, currently-callable Claude model ids only (see
+// docs/guide or the claude-api skill for the authoritative id list). Kept as markdown, parsed through
+// the same `parsePricing` a studio's own file goes through, so there is exactly one parser for the
+// shape, not a hand-rolled literal Map that could drift from what a studio-authored table means.
+const BASELINE_PRICING_MARKDOWN = `
+| model              | tokens_in (/M) | tokens_out (/M) |
+| ------------------ | --------------- | --------------- |
+| claude-opus-4-8     | 5.00            | 25.00           |
+| claude-sonnet-5     | 3.00            | 15.00           |
+| claude-fable-5      | 1.00            | 5.00            |
+| claude-haiku-4-5-20251001 | 1.00      | 5.00            |
+`;
 
 /** Parse a model-pricing markdown table into rates. Rows look like `| model | in | out |`. */
 export function parsePricing(markdown: string): Pricing {
@@ -30,11 +51,25 @@ export function parsePricing(markdown: string): Pricing {
   return pricing;
 }
 
-/** Load pricing from a repo root's knowledge/model-pricing.md; empty map when absent. */
+/** The binary's own baseline pricing table (NOTES F23) — exported so `levare doctor`/`init` can show
+ * or diff against it without re-parsing the markdown constant themselves. */
+export function baselinePricing(): Pricing {
+  return parsePricing(BASELINE_PRICING_MARKDOWN);
+}
+
+/**
+ * Load pricing for a studio: the binary's baseline (NOTES F23), overlaid with the studio's own
+ * `knowledge/model-pricing.md` when present — the studio file EXTENDS or OVERRIDES the baseline
+ * entry-by-entry, never replaces it. A studio with no pricing file of its own still prices and
+ * validates against every baseline model.
+ */
 export function loadPricing(root: string): Pricing {
+  const pricing = baselinePricing();
   const file = join(root, "knowledge", "model-pricing.md");
-  if (!existsSync(file)) return new Map();
-  return parsePricing(readFileSync(file, "utf8"));
+  if (existsSync(file)) {
+    for (const [model, rate] of parsePricing(readFileSync(file, "utf8"))) pricing.set(model, rate);
+  }
+  return pricing;
 }
 
 /**

@@ -822,8 +822,10 @@ function subscriptionAuthAgents(root: string): Set<string> {
 }
 
 function validateKnownModels(root: string, errors: ValidationError[]): void {
+  // NOTES F23: `loadPricing` always includes the binary's own baseline table now, so this never
+  // fails open on an unconfigured studio — a fresh studio with no knowledge/model-pricing.md at all
+  // is still checked against every real, currently-callable model the binary ships.
   const pricing: Pricing = loadPricing(root);
-  if (pricing.size === 0) return; // no pricing table to check against — fail open.
   const subscriptionAgents = subscriptionAuthAgents(root);
 
   for (const { agentName, model, file } of declaredAgentModels(join(root, "agents"))) {

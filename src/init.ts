@@ -84,10 +84,15 @@ the Agent Skills format — a folder carrying its own \`SKILL.md\` plus supporti
 ## Getting started
 
 \`\`\`sh
+cp .env.example .env  # fill in real values — .env itself is gitignored, never committed
 levare validate .     # confirms every definition here is on-contract
 levare serve .        # the board — studio / project / run / registry screens, at the printed URL
 levare doctor .       # connector env-presence + CLI/MCP reachability report
 \`\`\`
+
+\`.env.example\` names what this studio might need — the Orchestrator's \`ANTHROPIC_API_KEY\` is
+optional (the board, registry, and every gate work without it); connector variables are scoped to
+whichever team/agent explicitly grants that connector, even once set.
 
 Open a work unit by creating \`work/<project>/<unit>/unit.md\` (see \`types/\` for what each unit
 type expects and which artifacts its flow gates on), or capture a pitch as a new file under
@@ -182,7 +187,7 @@ produces: [review]
 command: [codex, review, --input, "{task}", --repo, "{feature_repo}"]
 cwd: "{feature_repo}"
 timeout: 600
-result: "Emits a \`review\` artifact markdown file to stdout; the wrapper validates its frontmatter against the artifact contract before recording it."
+result: "Emits review commentary as plain text on stdout — content only, never frontmatter of its own; levare authors the artifact wrapper (id, status, consumes, usage) around that content and validates the whole document against the artifact contract before recording it (ruling C12)."
 style:
   avatar: Fi
 ---
@@ -419,10 +424,39 @@ node_modules/
 .env
 `;
 
+// NOTES F23: a fresh studio scaffolds `.env.example` — never a live `.env` (that's a loaded gun: a
+// real secret in a freshly-`init`'d, about-to-be-pushed repo). Copy it to `.env` yourself and fill in
+// real values; `.env` is already in `.gitignore` above, so it never gets committed by accident.
+// `levare serve`/`levare doctor` load `<studio-root>/.env` (dotenv.ts#applyStudioEnv) into the process
+// environment on startup — same effect as exporting these in your shell, scoped to this studio only.
+const ENV_EXAMPLE = `# levare studio environment — copy this file to \`.env\` and fill in real values.
+# \`.env\` is already listed in .gitignore; it is never committed. Never fill in real secrets HERE,
+# in .env.example — this file is meant to be committed, as a checklist of what a value needs.
+
+# The Orchestrator (PRD §7) — the chat surface that opens every board session with a briefing,
+# interprets intent, and converses grounded in the repo. OPTIONAL: absent, the board, the registry,
+# and every gate still work exactly the same — approvals, rejections, and the daemon's own walk are
+# never gated on this. Absent, the Orchestrator panel simply renders disabled until you set it.
+ANTHROPIC_API_KEY=
+
+# Optional: overrides the model the Orchestrator itself uses (chat, intent classification,
+# briefings) — the source of truth is studio.md's own \`orchestrator_model:\` field; set this only to
+# override that per-environment (e.g. a cheaper model in CI) without editing the studio definition.
+# LEVARE_ORCHESTRATOR_MODEL=
+
+# Connector-granted variables (connectors/*.md) — declared here by NAME only, values here. A
+# connector's env vars are scoped (invariant 11): even set here, a member's spawned process sees one
+# ONLY when its own team or agent definition explicitly grants that connector — setting a value here
+# never hands it to every member automatically.
+GITHUB_TOKEN=
+LINEAR_API_KEY=
+`;
+
 const FILES: Template[] = [
   { path: "README.md", content: README },
   { path: "studio.md", content: STUDIO_SETTINGS },
   { path: ".gitignore", content: GITIGNORE },
+  { path: ".env.example", content: ENV_EXAMPLE },
   { path: ".devcontainer/devcontainer.json", content: DEVCONTAINER },
   { path: "teams/kestrel.md", content: TEAM_KESTREL },
   { path: "agents/wren.md", content: AGENT_WREN },
