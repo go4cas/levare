@@ -3008,3 +3008,43 @@ recorded), POSTs `/orchestrator/message` asking "what ideas do we have?", and as
 names the scratch studio's own idea and never the fixture's `loyalty-program`. `bun test` — 452 pass, 1
 pre-existing skip, 0 fail, across 41 files; `levare replay fixtures/golden --stubs` — still byte-for-
 byte against `expected.json`; `deps:check` — `deps ok`.
+
+## C10 fix-up (item 5): "briefing" was swallowing factual/situational questions
+
+**The live bug.** With the C10 projection wired in, a live host still got wrong answers: "list every
+idea in this studio" → "No gates open, nothing shipped, no spend on record."; "What is the pitch of
+the todo-cli idea, word for word?" → "There is nothing open, nothing shipped, and no spend recorded.
+No triage to give." Both were misclassified by `interpret()` as `kind: "briefing"`, which dispatches to
+`buildBriefing()` — a gate-triage view that never consults the projection at all — so it answered
+"nothing to triage" to a question that had a real answer. The SAME real boundary, on an unambiguous
+message in the same session, correctly reached `converse()` and answered from the projection
+(volunteering "one captured idea for todo-cli" unprompted). The projection had the answer both times;
+only the router failed to let it be used. Root cause: `"briefing"` requires no extra fields (unlike
+every other structured `Intent` kind), so it is the cheapest classification for the model to reach, and
+the prior `INTERPRET_TASK_PREFIX` never stated that it was narrow — nothing told the model "briefing"
+means an explicit triage request, not "any question shaped like it's about the studio."
+
+**The fix.** `INTERPRET_TASK_PREFIX` (`orchestrator-boundary.ts`) now states explicitly: `"briefing"`
+means ONLY an explicit request for triage ("what needs me", "brief me", "what's on my plate"); any
+factual or situational question about the studio's own content — teams/agents/ideas that exist, what a
+unit/artifact consumes or costs, what something is word for word — is NOT a briefing and must classify
+`"unknown"` so it reaches `converse()`, grounded in the full projection; when genuinely unsure, prefer
+`"unknown"` ("an unrequested triage is noise, an unanswered question is a failure"). The deterministic
+offline boundary's own briefing regex (`orchestrator.ts`) gained the `"what's on my plate"` phrasing to
+match (it was already narrow enough not to have this bug itself — a regex anchored on specific opening
+phrases never over-matched "list the ideas" or similar — but is kept as the same explicit contract, not
+grown to match anything studio-shaped). `buildBriefing()` itself is unchanged: the fix is entirely about
+never routing a factual question into it in the first place, not about making it answer more.
+
+**Tests.** `tests/orchestrator.test.ts` ("(b3)" describe block): the deterministic boundary classifies
+explicit triage phrases as `briefing` and the four named factual questions ("list the ideas", "what is
+the pitch of the todo-cli idea, word for word", "what teams do I have", "what did that cost") as
+anything but `briefing`; an end-to-end `handle()` case proves all four dispatch to `converse()` (with
+the served root, never `narrate()`/the briefing path) and are answered from it; a companion case proves
+an explicit triage request still reaches `buildBriefing()`, never `converse()`. `tests/orchestrator-
+sdk.test.ts` gained a prompt-content assertion (mirroring the established K17 pattern of asserting the
+task-framing prompt states the rule, since a live model's actual adherence is not something `bun test`
+can verify — NOTES K12) that `INTERPRET_TASK_PREFIX` states `"briefing"` is explicit-triage-only and
+that a factual/situational question must classify `"unknown"`. `bun test` — 457 pass, 1 pre-existing
+skip, 0 fail, across 41 files; `levare replay fixtures/golden --stubs` — still byte-for-byte against
+`expected.json`; `deps:check` — `deps ok`.
