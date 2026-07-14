@@ -2453,6 +2453,11 @@ never produced) and pass under the per-kind walk (a build team produces `code`, 
 - **Runner⇄dagwalk/gates duplication** (resolveStep, untilSatisfied, the C8/after: computation): the
   recommended end state is a leaf module both engines import, breaking the gates→runner import cycle
   that motivates the hand-synced copies (C7's own lesson, applied to the one place it was not).
+  **Partially addressed, C14**: the duplication itself is unchanged (still two independent `runLoop`-
+  shaped implementations), but a cross-engine equivalence test (`tests/loop-c14.test.ts`) now pins the
+  two engines to the SAME member-invocation sequence for the golden fixture's flow, so a future
+  divergence between them fails `bun test` rather than shipping silently, the way this exact
+  duplication just did. The unification itself is still open.
 
 ## R4. PRD v1.1 reconciliation — `mode` removed, C3 budget behaviour on the daemon
 Two clauses the v1.1 amendment ratified but the code did not yet do (both listed unresolved in R3).
@@ -3675,3 +3680,111 @@ on both existing golden connectors — neither is `auth: subscription`, so no wa
 `levare replay fixtures/golden --stubs` — final artifact statuses still byte-for-byte against
 `expected.json` (the golden fixture's two connectors and finch's Codex wrapper are untouched by this
 ruling — finch still grants no connector, unreported receipt unchanged); `deps:check` — `deps ok`.
+
+## C14. A loop must actually loop on the live path — dagwalk auto-advanced only the loop's first member; the companion was never dispatched
+
+**Found live.** A team declared `press` with `flow: [loop: {between: [product-brief, review], until:
+review.approved, max_rounds: 3, on_exhaust: gate}, gate: human]` and two members (scribe →
+product-brief, corvid → review). Starting the unit produced the brief and halted at a human gate.
+Corvid was never dispatched, no review was ever requested, and `max_rounds`/`on_exhaust` never came
+into play — a real author/critic loop that ran exactly one turn and stopped.
+
+**Root cause: two engines that disagree, the third instance of the same shape (F4, F8, C14).**
+`runner.ts` (the phase-2 BATCH engine, `levare replay --stubs` only) has a full `runLoop()` that
+alternates both members every round and honours `max_rounds`/`on_exhaust`. `dagwalk.ts` (the LIVE
+path — daemon and board) deliberately auto-advanced only the loop's FIRST member and documented, in
+its own header comment, that the companion was never auto-produced — a scope boundary that read as a
+deliberate design choice but was, in fact, the live defect. The loop was therefore exercised only by
+`levare replay`, where a scripted decision stream supplies both artifacts the loop checks for; the
+golden fixture's own on-disk state (`spec-checkout-flow-v1` sitting `in-review` with no `review` file,
+ever) was the frozen fossil of this exact gap, present since phase 8 and never noticed because nothing
+on the live path ever tried to complete that round.
+
+**The ruling.** The walk dispatches BOTH members, every round:
+
+1. Producing the loop's first (author) kind must dispatch the second (companion/critic) kind's
+   producer in the SAME walk, with the first artifact in the critic's own context — even though that
+   artifact is still `in-review`, not yet approved (`context_artifacts: paths|inline`, ruling C9, still
+   honoured). That pairing IS a round.
+2. If `until` is satisfied, the loop ends and the walk continues past it. If not, a new round begins:
+   the first member is re-invoked with the review in its context, superseding its previous artifact —
+   and the companion is re-produced for that new round too, superseding the prior round's companion.
+3. `max_rounds` bounds the rounds; on exhaustion, `on_exhaust: gate` raises a gate naming the round
+   count and the last review. A loop that cannot converge escalates — it never spins, and never gives
+   up silently.
+4. The Conductor's gate comes at the loop's OUTCOME, never on each internal turn: consent was already
+   given at the unit's start gate, and the loop is what was consented to. Nothing inside a round raises
+   a second, separate human gate for the companion — its resolution rides on the first member's gate
+   decision (ruling C2, unchanged).
+
+**The fix.** `dagwalk.ts#nextAction`'s loop branch now resolves BOTH loop members every round:
+
+- The first member is produced exactly as before when no live artifact of its kind exists (round 1).
+- The instant the first artifact reaches `in-review`, the round is paired to its companion by ROUND
+  NUMBER — the same `bumpVersion(kind-unit, N)` convention both members already share. If no artifact
+  exists at the round-matched id, the companion is produced for that round, superseding whichever
+  artifact was the PRIOR round's live companion (none, for round 1). Only once both members of a round
+  sit `in-review` does the walk halt — the round's one outcome gate.
+- `produceOne` (dagwalk.ts) generalizes from "always round 1" to an optional `{round, supersedes,
+  extraConsumes}` triple: `round` picks the id's version suffix; `supersedes` patches the prior live
+  companion to `status: superseded` (clearing `approved_by` too — an approved artifact superseded
+  without clearing it trips the validator's own "only an approved artifact may name an approver"
+  invariant, since ruling C2 may have already approved that companion alongside an earlier "request");
+  `extraConsumes` is handed to the memberRunner.
+- **`extraConsumes`** is the seam that lets a critic consume the round's own (still in-review) author
+  artifact: a new optional final parameter on `MemberRunner.produce` (runner.ts) and `AsyncMemberRunner
+  .produce` (dagwalk.ts), threaded through `AdapterRunner.produce`/`produceAsync`/`prepare`/`author`
+  (adapters.ts) into `assembleContext`'s own consumed-set filter (context.ts) — `status === "approved"
+  || extraConsumes.includes(id)` — applied identically to BOTH the context handed to the member and the
+  `consumes:` frontmatter levare authors onto the produced artifact (ruling C12: one derivation, not two
+  that could drift). Optional and ignored by every pre-existing `MemberRunner`/`AsyncMemberRunner`
+  implementation (a function assignable to fewer parameters than an interface declares is unaffected;
+  only the NEW loop-companion call site ever passes it) — applied to `runner.ts#runLoop` too, so the
+  batch engine gained the identical fix, not a second, independently-derived one.
+- **`max_rounds`/`on_exhaust`** live in `board/gateops.ts#doRequest` — the one place a new round is ever
+  requested (a Conductor's "request-changes" click). Before re-invoking the first member for round N+1,
+  `doRequest` now checks the CURRENT round (parsed the same `-vN` way, via the new `runner.ts#roundOf`
+  export) against the loop's declared `max_rounds` (`gates.ts#loopMembershipFor`, already shared with
+  the board's companion-approval rule). At the final round, "request" is refused (409) rather than
+  opening a round beyond the limit — the error names the round count, `max_rounds`, the `until`
+  condition, and the last review artifact's id, mirroring `runner.ts#runLoop`'s own `on_exhaust: gate`
+  (verbs narrow to approve/reject; runner.ts's own for-loop simply never starts round `max_rounds + 1`).
+- `dagwalk.ts`'s module header, previously documenting "only the first member is ever auto-advanced" as
+  a deliberate scope boundary, now documents the actual (fixed) behaviour — the stale comment asserting
+  the companion is never auto-produced is gone; nothing in this codebase still says that.
+
+**What stayed deliberately unchanged.** `board/gateops.ts#applyLoopCompanionApproval` (ruling C2: any
+resolution — approve, reject, or request — of the loop-first gate resolves the round's live companion
+to approved) needed no change: it already finds whatever companion is live and `in-review`, and now
+that dagwalk actually produces one, it simply starts working correctly rather than being permanently a
+no-op on the live path. `board/derive.ts`/`board/render.ts`'s round counters and per-artifact cost
+figures (the project page's "N review rounds · cost" line, already a generic count of `review`-kind
+artifacts) needed no change either — they start reporting real rounds the instant dagwalk produces real
+`review` artifacts; the rendering was never loop-unaware, only ever starved of real data to render.
+
+**Collateral: the golden fixture's own frozen loop, unfrozen.** `checkout-flow`'s static on-disk state
+(`spec-checkout-flow-v1` in-review, no review, forever) was the very state this ruling's fix now
+completes the instant any daemon walks it — several `daemon.test.ts` cases that share this scratch
+studio (to drive an unrelated unit, `loyalty-flow`) recorded every member call across BOTH units;
+those assertions now scope to the unit under test (`countingRunner` records `unit` too;
+`callsFor(calls, unit)` filters) rather than asserting on the raw, multi-unit call log — the daemon
+correctly completing checkout-flow's own long-stale round is the fix working, not a regression to
+paper over.
+
+**Tests.** `tests/loop-c14.test.ts` (new): (1) a minimal scratch studio matching the goal's own
+live-bug shape verbatim (team `press`: scribe author / corvid critic, `flow: [loop, gate: human]`)
+proves both members run in order, the critic's own artifact names the author's (still in-review)
+artifact in `consumes:`, the round halts as ONE outcome gate (never two), and a satisfied `until` lets
+the walk continue past the loop to the trailing `gate: human` (the unit's flow reports fully satisfied,
+not halted); (2) a non-converging loop against `loyalty-flow` (kestrel's flow, same `max_rounds: 3`)
+drives three `request` rounds and asserts a 4th is refused (409), naming the round count, `max_rounds`,
+and the last review, never silently opening `spec-loyalty-flow-v4`; (3) a cross-engine equivalence test
+closing the NOTES R3 duplication risk: the batch Runner's own golden replay scenario and a live daemon
+walk of `loyalty-flow` driven through the identical decision shape (start, approve, approve, request,
+approve) produce the byte-identical `(member, kind)` invocation sequence. `tests/daemon.test.ts`'s (a)
+gained the two new production steps (the companion's dispatch, and the round-outcome halt) in place of
+its old "never producing spec's companion review" assertion — the literal defect this ruling closes.
+`bun test` — 566 pass (up from 562 at C13), 1 pre-existing skip, 0 fail, across 47 files; `levare replay
+fixtures/golden --stubs` — final artifact statuses still byte-for-byte against `expected.json`
+(unchanged: the batch engine's own `runLoop` was already correct, per the goal's own root-cause
+finding); `deps:check` — `deps ok`.
