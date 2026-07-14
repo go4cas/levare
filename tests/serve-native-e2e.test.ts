@@ -92,7 +92,11 @@ const HOSTILE_FRONTMATTER_MODEL_DOC = [
   MODEL_BODY,
 ].join("\n");
 
-const REAL_SDK_RECEIPT = { model: "claude-sonnet", tokens_in: 6412, tokens_out: 1180, wall_clock_s: 22.4, usd: 0.0891, unreported: false };
+// NOTES F11: the SDK's own reported receipt always names the model it was ACTUALLY invoked with —
+// here, wren's declared `model: claude-sonnet-5` (fixtures/golden/agents/wren.md), never a hardcoded
+// SDK default. The test below asserts both ends of that chain: the transport is called with
+// "claude-sonnet-5", and the resulting artifact's usage receipt names that same model.
+const REAL_SDK_RECEIPT = { model: "claude-sonnet-5", tokens_in: 6412, tokens_out: 1180, wall_clock_s: 22.4, usd: 0.0891, unreported: false };
 
 describe("`levare serve` invokes a native member through the real SDK boundary (NOTES F8)", () => {
   test("starting loyalty-flow's satisfied start gate produces an artifact authored by the fake model, not the fixture stub", async () => {
@@ -134,7 +138,7 @@ describe("`levare serve` invokes a native member through the real SDK boundary (
       // The SDK was actually invoked exactly once, with wren's own model and the real §6-assembled
       // context (unit/agent-specific — never a generic or fixture-borrowed prompt).
       expect(calls).toHaveLength(1);
-      expect(calls[0].model).toBe("claude-sonnet");
+      expect(calls[0].model).toBe("claude-sonnet-5");
       expect(calls[0].prompt).toContain("kestrel/wren");
       expect(calls[0].prompt).toContain("storefront/loyalty-flow");
 
@@ -167,6 +171,10 @@ describe("`levare serve` invokes a native member through the real SDK boundary (
       expect(doc).toContain("approved_by: null");
       expect(doc).toContain("files: []");
       expect(doc).toContain("usage:");
+      // NOTES F11: the receipt in the authored artifact names the SAME model the agent declared and
+      // the SDK was invoked with — never the SDK's implicit default, and never silently diverging from
+      // what was requested.
+      expect(doc).toContain("model: claude-sonnet-5");
       expect(doc).toContain("tokens_in: 6412");
       expect(doc).toContain("usd: 0.0891");
       const parsed = validateArtifactSource(doc);

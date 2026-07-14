@@ -315,15 +315,21 @@ export interface AdapterRunnerOptions {
 // the same recipe a native member's system prompt carries (agent body, skills, knowledge, team
 // charter+learnings, project house rules, the task string, and consumed-artifact paths) — never just
 // the bare flow step label; a foreign CLI member is a first-class member, not a word-guessing game.
-// {feature_repo} = the project's checkout dir. Each template element maps to EXACTLY ONE argv element:
-// the placeholder is replaced in place and the resulting element is kept whole — a substituted value
-// containing spaces, quotes, or shell metacharacters stays a single argument and is never re-split.
-// The command is handed to a shell-less spawn(argv), so no element is ever interpreted by a shell.
+// {feature_repo} = the project's checkout dir. {model} = the agent's declared `model:` (NOTES F11) —
+// substituted whenever present so a template like `--model {model}` reaches the vendor CLI with the
+// model the studio actually declared; when the agent declares no model, {model} substitutes to "" (the
+// validator's MODEL_PLACEHOLDER_MISSING check is the enforcement point — a declared model with no
+// `{model}` in the template is a validation error, not a runtime no-op). Each template element maps to
+// EXACTLY ONE argv element: the placeholder is replaced in place and the resulting element is kept
+// whole — a substituted value containing spaces, quotes, or shell metacharacters stays a single
+// argument and is never re-split. The command is handed to a shell-less spawn(argv), so no element is
+// ever interpreted by a shell.
 function defaultCliCommand(req: InvokeRequest): string[] {
   const template = req.agent.command;
   if (!template || template.length === 0) throw new AdapterError(`cli agent '${req.member}' has no command template`);
   const feature = req.agent.cwd ?? ".";
-  return template.map((element) => element.replace(/\{task\}/g, req.context).replace(/\{feature_repo\}/g, feature));
+  const model = req.agent.model ?? "";
+  return template.map((element) => element.replace(/\{task\}/g, req.context).replace(/\{feature_repo\}/g, feature).replace(/\{model\}/g, model));
 }
 
 // Which of the two ways (NOTES F7) `agent.context_via` says a CLI member receives its context.

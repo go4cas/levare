@@ -90,6 +90,26 @@ describe("native adapter (mocked SDK boundary)", () => {
     expect(receipt.wall_clock_s).not.toBe(480);
   });
 
+  // NOTES F11: end-to-end — the agent's OWN declared model reaches the native boundary's request, and
+  // the resulting artifact's usage receipt names that SAME model, never a boundary/SDK default that
+  // silently diverges from what the agent declared.
+  test("the native boundary is invoked with the agent's declared model, and the produced artifact's usage receipt names that same model", () => {
+    const repo = loadRepo(ROOT);
+    let seen: InvokeRequest | null = null;
+    const native: NativeBoundary = {
+      invoke: (r) => {
+        seen = r;
+        // A real SDK call reports back the model it actually ran — here, exactly what it was asked for.
+        return { doc: render(r.member, r.kind, r.unit, r.project), receipt: { model: r.agent.model!, tokens_in: 100, tokens_out: 50, wall_clock_s: 2, usd: 0.01, unreported: false } };
+      },
+    };
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native, remote: remoteMock });
+    const { doc, receipt } = runner.produce("lyra", "spec", "checkout-flow", "storefront");
+    expect(seen!.agent.model).toBe("claude-sonnet-5"); // lyra's own declared model (fixtures/golden/agents/lyra.md)
+    expect(receipt.model).toBe("claude-sonnet-5");
+    expect(doc).toContain("model: claude-sonnet-5");
+  });
+
   test("produceAsync prefers `asyncNative` over `native` for a native member, and its receipt passes through the same way", async () => {
     const repo = loadRepo(ROOT);
     const sdkReceipt = { model: "claude-sonnet-5", tokens_in: 111, tokens_out: 22, wall_clock_s: 1.1, usd: 0.003, unreported: false };
@@ -465,6 +485,55 @@ describe("cli argv carries the assembled context via {task} — no shell re-spli
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NOTES F11: a CLI member's declared `model:` reaches the vendor via a `{model}` argv placeholder,
+// exactly like `{task}`/`{feature_repo}` — never silently dropped.
+// ---------------------------------------------------------------------------
+
+describe("cli argv carries the agent's declared model via {model} (NOTES F11)", () => {
+  test("{model} substitutes the agent's own declared model into the command template", () => {
+    const repo = loadRepo(ROOT);
+    const cap: { argv?: string[] } = {};
+    repo.agents.set("modeled", {
+      ...repo.agents.get("finch")!,
+      name: "modeled",
+      command: ["codex", "review", "--model", "{model}", "--input", "{task}"],
+      model: "claude-opus-4-8",
+    });
+    repo.teams.get("kestrel")!.members.push("modeled");
+    const spy: CliSpawn = {
+      run(argv): SpawnResult {
+        cap.argv = argv;
+        return { stdout: render("finch", "review", "checkout-flow", "storefront"), exitCode: 0, timedOut: false };
+      },
+    };
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "modeled", kind: "review" }], native: nativeMock, remote: remoteMock, spawn: spy });
+    runner.produce("modeled", "review", "checkout-flow", "storefront");
+    expect(cap.argv![3]).toBe("claude-opus-4-8");
+  });
+
+  test("an agent that declares no model leaves an unused {model} placeholder substituted to empty, never a template literal", () => {
+    const repo = loadRepo(ROOT);
+    const cap: { argv?: string[] } = {};
+    repo.agents.set("modelless", {
+      ...repo.agents.get("finch")!,
+      name: "modelless",
+      command: ["codex", "review", "--model", "{model}"],
+      model: undefined,
+    });
+    repo.teams.get("kestrel")!.members.push("modelless");
+    const spy: CliSpawn = {
+      run(argv): SpawnResult {
+        cap.argv = argv;
+        return { stdout: render("finch", "review", "checkout-flow", "storefront"), exitCode: 0, timedOut: false };
+      },
+    };
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "modelless", kind: "review" }], native: nativeMock, remote: remoteMock, spawn: spy });
+    runner.produce("modelless", "review", "checkout-flow", "storefront");
+    expect(cap.argv![3]).toBe("");
   });
 });
 
