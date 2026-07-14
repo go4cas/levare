@@ -168,7 +168,10 @@
     });
 
     /* ---------- composer ---------- */
-    document.querySelectorAll('.composer form').forEach(function (form) {
+    /* A disabled composer (no ANTHROPIC_API_KEY — see render.ts#orchestratorPanel) never attaches a
+       submit listener at all: the server-rendered `disabled` input already can't receive focus or
+       Enter, and this is the client-side half of the same "never pretend to talk" rule (NOTES C11). */
+    document.querySelectorAll('.composer:not(.is-disabled) form').forEach(function (form) {
       form.addEventListener('submit', function (e) {
         e.preventDefault();
         var input = form.querySelector('input');
@@ -190,6 +193,17 @@
           body.appendChild(r);
           body.scrollTop = body.scrollHeight;
         }
+        // An error or a disabled-state response is shown as what it is, never dressed up as an
+        // Orchestrator reply (NOTES C11 \u2014 the whole point of deleting the deterministic boundary was
+        // to stop a non-answer from impersonating a real one).
+        function showError(text) {
+          var r = document.createElement('div');
+          r.className = 'msg';
+          r.innerHTML = '<div class="msg__label"><span class="k">error</span><span class="t">now</span></div><p class="msg__body" style="color:var(--danger)"></p>';
+          r.querySelector('.msg__body').textContent = text;
+          body.appendChild(r);
+          body.scrollTop = body.scrollHeight;
+        }
         // Pending state (a real SDK call routinely takes seconds): quiet, non-attention-seeking per
         // the design brief's motion rules, cleared as soon as a reply (or a failure) arrives, so the
         // composer never just looks dead while the Orchestrator is working.
@@ -203,11 +217,15 @@
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ text: text })
-        }).then(function (res) { return res.json(); })
-          .then(function (data) { pending.remove(); showReply(data.reply || 'Noted.'); })
+        }).then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+          .then(function (r) {
+            pending.remove();
+            if (r.ok && r.data && r.data.ok) { showReply(r.data.reply || ''); }
+            else { showError((r.data && (r.data.reason || r.data.error)) || 'The Orchestrator could not answer.'); }
+          })
           .catch(function () {
             pending.remove();
-            showReply('Noted. I\u2019ll fold that into the next brief \u2014 nothing here changes state until you act on a gate.');
+            showError('Could not reach the board \u2014 check your connection and try again.');
           })
           .then(function () { input.disabled = false; input.focus(); });
       });

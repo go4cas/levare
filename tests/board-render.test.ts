@@ -7,6 +7,7 @@ import { loadRepo } from "../src/repo.ts";
 import { renderStudio, renderProject, renderRun, renderRegistry, renderArtifact, renderIdea, scoreNodeClass, projectStatusChip } from "../src/board/render.ts";
 import { scoreNodes, type NodeState } from "../src/board/derive.ts";
 import { resolveGate } from "../src/board/gateops.ts";
+import type { OrchestratorStatus } from "../src/orchestrator-status.ts";
 
 // PRD §9 / phase-4 acceptance: snapshot tests assert each screen's rendered HTML contains the
 // required structures — score with state nodes + team-avatar column, gate cards with
@@ -532,7 +533,7 @@ describe("the rail is identical navigation on every screen", () => {
     test(`${name}: rail carries exactly the approved nav-index sections, in order, and nothing else`, () => {
       const rail = railOf(html);
       const headings = [...rail.matchAll(/<h3 class="railsec__h">([^<]*)<\/h3>/g)].map((m) => m[1]);
-      expect(headings).toEqual(["Projects", "Registry", "Connectors", "Ideas"]);
+      expect(headings).toEqual(["Projects", "Registry", "Connectors", "Orchestrator", "Ideas"]);
       // Page-specific material must never leak back into the rail.
       expect(rail).not.toContain("Pointer");
       expect(rail).not.toContain("Constitution");
@@ -731,5 +732,71 @@ describe("registry cards are gridded, not one-per-row", () => {
         expect(kindIdx).toBeGreaterThan(titleIdx);
       }
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NOTES C11 part 3: a global status indicator in the app header, on every screen — "orchestrator: on"
+// with a credential and the SDK boundary live, "orchestrator: off" without. Quiet vocabulary reused
+// from the existing canonical state palette (status-dot is-ok/is-idle), not a new color.
+// ---------------------------------------------------------------------------
+
+describe("the header status indicator shows the Orchestrator's real state, on every screen", () => {
+  const ON: OrchestratorStatus = { available: true, reason: "The Orchestrator is live.", envVar: "ANTHROPIC_API_KEY" };
+  const OFF: OrchestratorStatus = { available: false, reason: "ANTHROPIC_API_KEY is not set", envVar: "ANTHROPIC_API_KEY" };
+
+  const screensWith = (status: OrchestratorStatus): Array<[string, string]> => [
+    ["studio", renderStudio(repo, root, now, [], status)],
+    ["project", renderProject(repo, "storefront", root, now, status)],
+    ["run", renderRun(repo, "storefront", "checkout-flow", root, now, status)],
+    ["registry", renderRegistry(repo, root, undefined, status)],
+    ["artifact", renderArtifact(repo, "storefront", "checkout-flow", "spec-checkout-flow-v1", root, now, status)],
+    ["idea", renderIdea(repo, root, "loyalty-program", status)],
+  ];
+
+  for (const [name, html] of screensWith(ON)) {
+    test(`${name}: shows "orchestrator: on" with a credential`, () => {
+      expect(html).toContain("orchestrator: on");
+      expect(html).not.toContain("orchestrator: off");
+      expect(html).toContain('class="status-dot is-ok"');
+    });
+  }
+
+  for (const [name, html] of screensWith(OFF)) {
+    test(`${name}: shows "orchestrator: off" without a credential`, () => {
+      expect(html).toContain("orchestrator: off");
+      expect(html).not.toContain("orchestrator: on");
+      expect(html).toContain('class="status-dot is-idle"');
+    });
+  }
+
+  test("when off, the Orchestrator panel is visible but disabled — never hidden", () => {
+    const html = renderStudio(repo, root, now, [], OFF);
+    expect(html).toContain('class="orch is-disabled"');
+    expect(html).toContain("Orchestrator unavailable");
+    expect(html).toContain("ANTHROPIC_API_KEY");
+    expect(html).toContain('class="composer is-disabled"');
+    expect(html).toContain("disabled");
+  });
+
+  test("when off, the run view's open gate still renders — a disabled Orchestrator never hides an actionable gate", () => {
+    const html = renderRun(repo, "storefront", "checkout-flow", root, now, OFF);
+    expect(html).toContain('class="orch is-disabled"');
+    expect(html).toContain('class="gate gate--cta"');
+    expect(html).toContain('data-verb="approve"');
+  });
+
+  test("when on, the panel is not disabled and the composer is enabled", () => {
+    const html = renderStudio(repo, root, now, [], ON);
+    expect(html).not.toContain('class="orch is-disabled"');
+    expect(html).not.toContain('class="composer is-disabled"');
+    expect(html).not.toContain("Orchestrator unavailable");
+  });
+
+  test("the rail carries an Orchestrator line alongside Connectors, using the same dot-and-status vocabulary", () => {
+    const on = renderStudio(repo, root, now, [], ON);
+    const off = renderStudio(repo, root, now, [], OFF);
+    expect(on).toMatch(/<h3 class="railsec__h">Orchestrator<\/h3><div class="crow"><span class="status-dot is-ok">/);
+    expect(off).toMatch(/<h3 class="railsec__h">Orchestrator<\/h3><div class="crow"><span class="status-dot is-idle">/);
   });
 });

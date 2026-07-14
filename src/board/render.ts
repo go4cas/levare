@@ -35,13 +35,14 @@ import { loadExtras, type RegistryExtras } from "./extra.ts";
 import { buildTimeline } from "./timeline.ts";
 import { diagnose } from "../doctor.ts";
 import type { DaemonInvocation } from "../daemon.ts";
+import { resolveOrchestratorStatus, type OrchestratorStatus } from "../orchestrator-status.ts";
 
 const ASSETS = `<link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
 <link rel="stylesheet" href="/styles.css?v=6"/>`;
 
-function shell(title: string, railToggleLabel: string, body: string): string {
+function shell(title: string, railToggleLabel: string, body: string, status: OrchestratorStatus): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -55,6 +56,7 @@ ${ASSETS}
   <button class="togglebtn" data-rail-toggle aria-label="${esc(railToggleLabel)}">&#9776;</button>
   <a class="logo" href="/studio"><span class="logo__mark"><i></i><b></b></span><span class="logo__word">levare</span></a>
   <span class="sp"></span>
+  ${orchestratorIndicator(status)}
   <button class="themebtn" data-theme-toggle></button>
 </div>
 ${body}
@@ -72,8 +74,66 @@ function orchHead(scope: string): string {
   return `<header class="orch__head"><span class="orch__mark"><i></i><b></b></span><span class="orch__title">Orchestrator</span><span class="orch__scope">${esc(scope)} scope</span></header>`;
 }
 
-function composer(): string {
+function composer(opts: { disabled?: boolean } = {}): string {
+  if (opts.disabled) {
+    return `<div class="composer is-disabled"><form data-orchestrator-form aria-disabled="true"><input type="text" placeholder="Orchestrator unavailable" aria-label="Message the Orchestrator" disabled/><span class="ret">&#8629;</span></form></div>`;
+  }
   return `<div class="composer"><form data-orchestrator-form><input type="text" placeholder="Message the Orchestrator" aria-label="Message the Orchestrator"/><span class="ret">&#8629;</span></form></div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator status — a whole-studio state, distinct from per-connector health (design brief §3:
+// "the rail answers 'is this connector configured?', the header answers 'what kind of studio am I
+// looking at?'"). `orchestratorIndicator` is the clickable header badge (present on every screen, in
+// the mobilebar and the rail's logo row so exactly one copy is ever visible at any viewport width — no
+// second header element invented); `orchestratorRailLine` is the plain, non-interactive rail row
+// alongside Connectors, using the identical dot-and-status vocabulary. Both reuse the canonical
+// `.status-dot` classes already established for connector health (is-ok/is-idle) rather than a new
+// color — "on" reads as the same quiet green as a healthy connector, "off" the same hollow neutral as
+// an unconfigured one; this is a configuration state, never a failure, so it is never red.
+// ---------------------------------------------------------------------------
+
+function orchestratorIndicator(status: OrchestratorStatus): string {
+  const dotCls = status.available ? "is-ok" : "is-idle";
+  const label = status.available ? "orchestrator: on" : "orchestrator: off";
+  return `<details class="orchind">
+    <summary class="orchind__sum"><span class="status-dot ${dotCls}"></span><span class="orchind__label mono">${esc(label)}</span></summary>
+    <div class="orchind__pop">
+      <p>${esc(status.reason)}</p>
+      <p>Env var: <span class="mono">${esc(status.envVar)}</span></p>
+      <p>The board, the registry, and every gate are unaffected: approvals, rejections, and the runner all keep working either way.</p>
+    </div>
+  </details>`;
+}
+
+function orchestratorRailLine(status: OrchestratorStatus): string {
+  const dotCls = status.available ? "is-ok" : "is-idle";
+  return `<section class="railsec"><h3 class="railsec__h">Orchestrator</h3><div class="crow"><span class="status-dot ${dotCls}"></span><span class="nm">${esc(status.envVar)}</span><span class="st">${status.available ? "on" : "off"}</span></div></section>`;
+}
+
+// NOTES C11 part 2: hiding the panel when the Orchestrator is unavailable would teach the operator
+// nothing; showing it disabled tells the truth about the system's shape. `briefingHtml` (narrated
+// prose — a briefing message, a summary) is suppressed when disabled, since it implies a live
+// conversation that isn't happening. `actionableHtml` (gate cards — the run view's only rendering of
+// its unit's open gate) is NOT suppressed: a gate card's verbs POST straight to the board's write
+// routes with no LLM involved, so "you can approve, reject, and the runner will advance" — the
+// disabled note's own promise — has to stay true regardless of the Orchestrator's state.
+function orchestratorPanel(scope: string, status: OrchestratorStatus, briefingHtml: string, actionableHtml: string = ""): string {
+  if (!status.available) {
+    return `<aside class="orch is-disabled">
+    ${orchHead(scope)}
+    <div class="orch__body">
+      <div class="msg"><p class="msg__body">Orchestrator unavailable — no ${esc(status.envVar)}. The board, the registry, and every gate still work: you can approve, reject, and the runner will advance. Set a key to talk.</p></div>
+      ${actionableHtml}
+    </div>
+    ${composer({ disabled: true })}
+  </aside>`;
+  }
+  return `<aside class="orch">
+    ${orchHead(scope)}
+    <div class="orch__body">${briefingHtml}${actionableHtml}</div>
+    ${composer()}
+  </aside>`;
 }
 
 function avatar(initials: string, color: string | undefined, opts: { size?: "sm" | "lg"; blink?: boolean } = {}): string {
@@ -155,7 +215,7 @@ function registryNavLinks(repo: Repo, extras: RegistryExtras, active?: RegistryK
   }).join("\n");
 }
 
-function railNav(repo: Repo, extras: RegistryExtras, derivText: string, opts: { activeRegistryEntity?: RegistryKind } = {}): string {
+function railNav(repo: Repo, extras: RegistryExtras, derivText: string, status: OrchestratorStatus, opts: { activeRegistryEntity?: RegistryKind } = {}): string {
   const projectRail = [...repo.projects.values()]
     .map((p) => {
       const units = repo.units.filter((u) => u.project === p.name).length;
@@ -176,11 +236,14 @@ function railNav(repo: Repo, extras: RegistryExtras, derivText: string, opts: { 
     ? extras.ideas.map((i) => `<a class="idea" href="${ideaHref(i.name)}">${esc(i.name)}</a>`).join("\n")
     : `<div class="idea" style="color:var(--fg-mute)">no ideas captured yet</div>`;
 
+  // The header indicator's one desktop copy — the mobilebar carries the other, so exactly one is ever
+  // visible at any viewport width (see orchestratorIndicator's own note).
   return `<aside class="rail">
-    ${logo()}
+    <div class="railhead">${logo()}${orchestratorIndicator(status)}</div>
     <section class="railsec"><h3 class="railsec__h">Projects</h3>${projectRail}</section>
     <section class="railsec"><h3 class="railsec__h">Registry</h3><nav class="reg-nav">${registryNavLinks(repo, extras, opts.activeRegistryEntity)}</nav></section>
     <section class="railsec"><h3 class="railsec__h">Connectors</h3>${connectorRows}</section>
+    ${orchestratorRailLine(status)}
     <section class="railsec"><h3 class="railsec__h">Ideas</h3>${ideasHtml}</section>
     <div class="railfoot"><button class="themebtn" data-theme-toggle></button>${derivFooter(derivText)}</div>
   </aside>`;
@@ -341,14 +404,14 @@ function runningNowHtml(running: DaemonInvocation[], now: Date): string {
 // STUDIO
 // ---------------------------------------------------------------------------
 
-export function renderStudio(repo: Repo, root: string, now: Date = new Date(), running: DaemonInvocation[] = []): string {
+export function renderStudio(repo: Repo, root: string, now: Date = new Date(), running: DaemonInvocation[] = [], status: OrchestratorStatus = resolveOrchestratorStatus()): string {
   const extras = loadExtras(root);
   const gates = openGates(repo);
   const spend = repoSpend(repo);
   const median = medianGateResponseDays(repo);
   const shippedUnits = repo.units.filter((u) => u.status === "shipped").length;
 
-  const rail = railNav(repo, extras, "derived from work/ on every request");
+  const rail = railNav(repo, extras, "derived from work/ on every request", status);
 
   const gateCards = gates.length
     ? gates.map((g) => gateCardHtml(repo, g, now)).join("\n")
@@ -413,23 +476,18 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date(), r
     </section>
   </main>`;
 
-  const orch = `<aside class="orch">
-    ${orchHead("studio")}
-    <div class="orch__body">
-      <div class="msg"><div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
-      <p class="msg__body">${gates.length ? `${gates.length} gate${gates.length === 1 ? " is" : "s are"} on you.` : "Nothing needs a decision right now."} Ask me about any project or open a gate to review it.</p></div>
-    </div>
-    ${composer()}
-  </aside>`;
+  const briefingBody = `<div class="msg"><div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
+      <p class="msg__body">${gates.length ? `${gates.length} gate${gates.length === 1 ? " is" : "s are"} on you.` : "Nothing needs a decision right now."} Ask me about any project or open a gate to review it.</p></div>`;
+  const orch = orchestratorPanel("studio", status, briefingBody);
 
-  return shell("levare · Studio", "Open registry", `<div class="app">${rail}${main}${orch}</div>`);
+  return shell("levare · Studio", "Open registry", `<div class="app">${rail}${main}${orch}</div>`, status);
 }
 
 // ---------------------------------------------------------------------------
 // PROJECT
 // ---------------------------------------------------------------------------
 
-export function renderProject(repo: Repo, projectName: string, root: string, now: Date = new Date()): string {
+export function renderProject(repo: Repo, projectName: string, root: string, now: Date = new Date(), status: OrchestratorStatus = resolveOrchestratorStatus()): string {
   const project = repo.projects.get(projectName);
   if (!project) throw new Error(`unknown project '${projectName}'`);
   const units = repo.units.filter((u) => u.project === projectName);
@@ -445,7 +503,7 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
         .join("\n")
     : `<div class="founding" style="color:var(--fg-mute)">no founding artifacts yet</div>`;
 
-  const rail = railNav(repo, loadExtras(root), `derived from work/${projectName}/ on every request`);
+  const rail = railNav(repo, loadExtras(root), `derived from work/${projectName}/ on every request`, status);
 
   // Gate-review round 2, item 1: the project pointer + constitution + releases move out of the rail
   // (which is nav-only now) into a compact content-column panel at the top of the page — the same
@@ -524,23 +582,18 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
     <section class="sec"><div class="sec__h"><h2>Work units</h2></div><div class="units">${unitRows}</div></section>
   </main>`;
 
-  const orch = `<aside class="orch">
-    ${orchHead("project")}
-    <div class="orch__body">
-      <div class="msg"><div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
-      <p class="msg__body">${esc(projectName)} has ${gates.length} unit${gates.length === 1 ? "" : "s"} at a gate. Expand a unit to open its run or summon its gate here.</p></div>
-    </div>
-    ${composer()}
-  </aside>`;
+  const briefingBody = `<div class="msg"><div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
+      <p class="msg__body">${esc(projectName)} has ${gates.length} unit${gates.length === 1 ? "" : "s"} at a gate. Expand a unit to open its run or summon its gate here.</p></div>`;
+  const orch = orchestratorPanel("project", status, briefingBody);
 
-  return shell(`levare · ${projectName}`, "Open context", `<div class="app">${rail}${main}${orch}</div>${templates}`);
+  return shell(`levare · ${projectName}`, "Open context", `<div class="app">${rail}${main}${orch}</div>${templates}`, status);
 }
 
 // ---------------------------------------------------------------------------
 // RUN
 // ---------------------------------------------------------------------------
 
-export function renderRun(repo: Repo, project: string, unitId: string, root: string, now: Date = new Date()): string {
+export function renderRun(repo: Repo, project: string, unitId: string, root: string, now: Date = new Date(), status: OrchestratorStatus = resolveOrchestratorStatus()): string {
   const unit = repo.units.find((u) => u.project === project && u.unit === unitId);
   if (!unit) throw new Error(`unknown unit '${project}/${unitId}'`);
   const type = repo.types.get(unit.type);
@@ -573,7 +626,7 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
     })
     .join("\n");
 
-  const rail = railNav(repo, loadExtras(root), `${unit.type} · derived from work/${project}/${unitId}/ on every request`);
+  const rail = railNav(repo, loadExtras(root), `${unit.type} · derived from work/${project}/${unitId}/ on every request`, status);
 
   const timeline = buildTimeline(root, unit.dir);
   const timelineHtml = timeline.length
@@ -605,17 +658,11 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
   </main>`;
 
   const gateHtml = gates.map((g) => gateCardHtml(repo, g, now, { cta: true })).join("\n");
-  const orch = `<aside class="orch">
-    ${orchHead("run")}
-    <div class="orch__body">
-      <div class="msg"><div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
-      <p class="msg__body">${gates.length ? `${esc(gates[0].label)} is ready for review below.` : "No open gate on this unit right now."}</p></div>
-      ${gateHtml}
-    </div>
-    ${composer()}
-  </aside>`;
+  const briefingBody = `<div class="msg"><div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
+      <p class="msg__body">${gates.length ? `${esc(gates[0].label)} is ready for review below.` : "No open gate on this unit right now."}</p></div>`;
+  const orch = orchestratorPanel("run", status, briefingBody, gateHtml);
 
-  return shell(`levare · run · ${unitId}`, "Open score", `<div class="app">${rail}${main}${orch}</div>`);
+  return shell(`levare · run · ${unitId}`, "Open score", `<div class="app">${rail}${main}${orch}</div>`, status);
 }
 
 // ---------------------------------------------------------------------------
@@ -659,7 +706,7 @@ function lineageUnresolved(id: string): string {
   return `<div class="founding" style="color:var(--fg-mute)"><span class="mono">${esc(id)}</span><span class="cite">unresolved</span></div>`;
 }
 
-export function renderArtifact(repo: Repo, project: string, unit: string, id: string, root: string, now: Date = new Date()): string {
+export function renderArtifact(repo: Repo, project: string, unit: string, id: string, root: string, now: Date = new Date(), status: OrchestratorStatus = resolveOrchestratorStatus()): string {
   const art = repo.artifacts.get(`${project}/${unit}`)?.get(id);
   if (!art) throw new Error(`unknown artifact '${project}/${unit}/${id}'`);
 
@@ -695,7 +742,7 @@ export function renderArtifact(repo: Repo, project: string, unit: string, id: st
 
   // Item 1, gate-review round 2: no page-specific "Context" section in the rail anymore — the
   // breadcrumb below already carries studio → project → unit → artifact as linked segments.
-  const rail = railNav(repo, loadExtras(root), `derived from work/${project}/${unit}/${artifactFileName(art)} on every request`);
+  const rail = railNav(repo, loadExtras(root), `derived from work/${project}/${unit}/${artifactFileName(art)} on every request`, status);
 
   const frontmatter = `<div class="card">
     <div class="card__h">Frontmatter</div>
@@ -733,19 +780,14 @@ export function renderArtifact(repo: Repo, project: string, unit: string, id: st
     ${lineageCard}
   </main>`;
 
-  const orch = `<aside class="orch">
-    ${orchHead("artifact")}
-    <div class="orch__body">
-      <div class="msg"><div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
-      <p class="msg__body">${esc(art.kind)} ${esc(art.id)}, produced by ${esc(art.produced_by)}. ${citedBy.length ? `Cited by ${citedBy.length} artifact${citedBy.length === 1 ? "" : "s"}.` : "Not cited by anything yet."}</p></div>
-    </div>
-    ${composer()}
-  </aside>`;
+  const briefingBody = `<div class="msg"><div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
+      <p class="msg__body">${esc(art.kind)} ${esc(art.id)}, produced by ${esc(art.produced_by)}. ${citedBy.length ? `Cited by ${citedBy.length} artifact${citedBy.length === 1 ? "" : "s"}.` : "Not cited by anything yet."}</p></div>`;
+  const orch = orchestratorPanel("artifact", status, briefingBody);
 
-  return shell(`levare · ${art.kind} · ${art.id}`, "Open context", `<div class="app">${rail}${main}${orch}</div>`);
+  return shell(`levare · ${art.kind} · ${art.id}`, "Open context", `<div class="app">${rail}${main}${orch}</div>`, status);
 }
 
-export function renderIdea(repo: Repo, root: string, name: string): string {
+export function renderIdea(repo: Repo, root: string, name: string, status: OrchestratorStatus = resolveOrchestratorStatus()): string {
   const extras = loadExtras(root);
   const idea = extras.ideas.find((i) => i.name === name);
   if (!idea) throw new Error(`unknown idea '${name}'`);
@@ -753,7 +795,7 @@ export function renderIdea(repo: Repo, root: string, name: string): string {
   const pitch = typeof idea.data.pitch === "string" ? idea.data.pitch : "";
   const tags = Array.isArray(idea.data.tags) ? (idea.data.tags as unknown[]).map((t) => String(t)) : [];
 
-  const rail = railNav(repo, extras, `derived from ideas/${name}.md on every request`);
+  const rail = railNav(repo, extras, `derived from ideas/${name}.md on every request`, status);
 
   const frontmatter = `<div class="card">
     <div class="card__h">Frontmatter</div>
@@ -784,16 +826,11 @@ export function renderIdea(repo: Repo, root: string, name: string): string {
     ${lineageCard}
   </main>`;
 
-  const orch = `<aside class="orch">
-    ${orchHead("idea")}
-    <div class="orch__body">
-      <div class="msg"><div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
-      <p class="msg__body">${esc(idea.name)} is a captured pitch with no project yet. Promoting it opens an inception unit.</p></div>
-    </div>
-    ${composer()}
-  </aside>`;
+  const briefingBody = `<div class="msg"><div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
+      <p class="msg__body">${esc(idea.name)} is a captured pitch with no project yet. Promoting it opens an inception unit.</p></div>`;
+  const orch = orchestratorPanel("idea", status, briefingBody);
 
-  return shell(`levare · idea · ${idea.name}`, "Open context", `<div class="app">${rail}${main}${orch}</div>`);
+  return shell(`levare · idea · ${idea.name}`, "Open context", `<div class="app">${rail}${main}${orch}</div>`, status);
 }
 
 // ---------------------------------------------------------------------------
@@ -829,11 +866,11 @@ function entityBlock(kind: RegistryKind, title: string, kindLabel: string, inner
   </article>`;
 }
 
-export function renderRegistry(repo: Repo, root: string, activeEntity?: string): string {
+export function renderRegistry(repo: Repo, root: string, activeEntity?: string, status: OrchestratorStatus = resolveOrchestratorStatus()): string {
   const extras = loadExtras(root);
   const active: RegistryKind = REGISTRY_KINDS.includes(activeEntity as RegistryKind) ? (activeEntity as RegistryKind) : "teams";
 
-  const rail = railNav(repo, extras, "derived from the repo root on every request", { activeRegistryEntity: active });
+  const rail = railNav(repo, extras, "derived from the repo root on every request", status, { activeRegistryEntity: active });
 
   // Item 1, gate-review round 2: the entity switcher moves out of the rail (nav-only now) into an
   // in-content tab strip at the top of the page — the exact same link list (`registryNavLinks`, so it
@@ -933,16 +970,11 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string):
     </div>
   </main>`;
 
-  const orch = `<aside class="orch">
-    ${orchHead("registry")}
-    <div class="orch__body">
-      <div class="msg"><div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
-      <p class="msg__body">This is the registry. The only write here is <span class="mono">Edit source</span>: raw markdown, a validity check, then <span class="mono">Save and commit</span>.</p></div>
-    </div>
-    ${composer()}
-  </aside>`;
+  const briefingBody = `<div class="msg"><div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
+      <p class="msg__body">This is the registry. The only write here is <span class="mono">Edit source</span>: raw markdown, a validity check, then <span class="mono">Save and commit</span>.</p></div>`;
+  const orch = orchestratorPanel("registry", status, briefingBody);
 
-  return shell("levare · registry", "Open registry nav", `<div class="app">${rail}${main}${orch}</div>`);
+  return shell("levare · registry", "Open registry nav", `<div class="app">${rail}${main}${orch}</div>`, status);
 }
 
 function rawFor(root: string, dir: string, name: string): string {

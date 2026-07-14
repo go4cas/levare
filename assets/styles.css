@@ -65,6 +65,26 @@ button{ font-family:inherit; }
 .railfoot{ margin-top:auto; display:flex; flex-direction:column; gap:12px; }
 .stamp{ font-family:var(--mono); font-size:10px; color:var(--fg-mute); line-height:1.5; }
 
+/* ---------- Orchestrator status — a whole-studio state, not a connector (design brief §3) ---------- */
+.railhead{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.orchind{ position:relative; }
+.orchind__sum{ display:flex; align-items:center; gap:7px; cursor:pointer; list-style:none; padding:3px 6px; border-radius:6px; }
+.orchind__sum::-webkit-details-marker{ display:none; }
+.orchind__sum:hover{ background:var(--panel-2); }
+.orchind__label{ font-size:10.5px; color:var(--fg-dim); }
+.orchind__pop{ position:absolute; right:0; top:calc(100% + 6px); z-index:30; width:240px;
+  background:var(--panel); border:1px solid var(--border); border-radius:10px; box-shadow:var(--shadow);
+  padding:12px 14px; display:flex; flex-direction:column; gap:7px; }
+.orchind__pop p{ margin:0; font-size:12px; line-height:1.5; color:var(--fg-dim); }
+.mobilebar .orchind__pop{ left:auto; right:0; }
+
+/* ---------- disabled Orchestrator panel — visible, never hidden (NOTES C11) ---------- */
+.orch.is-disabled .orch__mark{ opacity:.4; }
+.orch.is-disabled .msg__body{ color:var(--fg-mute); }
+.composer.is-disabled{ opacity:.55; }
+.composer.is-disabled form{ cursor:not-allowed; }
+.composer.is-disabled input{ cursor:not-allowed; }
+
 .tchip-row{ display:flex; align-items:center; gap:9px; padding:4px 0; text-decoration:none; }
 .tchip-row .sq{ width:10px; height:10px; border-radius:3px; flex:none; }
 .tchip-row .nm{ font-family:var(--mono); font-size:12.5px; color:var(--fg); font-weight:500; }
