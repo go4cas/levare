@@ -411,8 +411,8 @@ export class AdapterRunner implements MemberRunner {
    * drives a full scripted decision walk synchronously and is never reachable from a live `levare
    * serve` request path (invariant 10's native/remote deferral; the CLI kind's real, live spawn goes
    * through `produceAsync` instead — see NOTES F5). */
-  produce(member: string, kind: string, unit: string, project: string): { doc: string; receipt: Receipt } {
-    const { agent, req } = this.prepare(member, kind, unit, project);
+  produce(member: string, kind: string, unit: string, project: string, extraConsumes: string[] = []): { doc: string; receipt: Receipt } {
+    const { agent, req } = this.prepare(member, kind, unit, project, extraConsumes);
     let raw: string;
     let receipt: Receipt | undefined;
     switch (agent.kind) {
@@ -431,7 +431,7 @@ export class AdapterRunner implements MemberRunner {
       default:
         throw new AdapterError(`unknown agent kind '${(agent as Agent).kind}' for '${member}'`);
     }
-    return this.author(req, raw, receipt);
+    return this.author(req, raw, receipt, extraConsumes);
   }
 
   /**
@@ -442,8 +442,8 @@ export class AdapterRunner implements MemberRunner {
    * caller's thread for the member's entire run. Native/remote stay synchronous underneath (they are
    * mocked boundaries, not live — invariant 10) but are still awaited here uniformly.
    */
-  async produceAsync(member: string, kind: string, unit: string, project: string): Promise<{ doc: string; receipt: Receipt }> {
-    const { agent, req } = this.prepare(member, kind, unit, project);
+  async produceAsync(member: string, kind: string, unit: string, project: string, extraConsumes: string[] = []): Promise<{ doc: string; receipt: Receipt }> {
+    const { agent, req } = this.prepare(member, kind, unit, project, extraConsumes);
     let raw: string;
     let receipt: Receipt | undefined;
     switch (agent.kind) {
@@ -462,15 +462,15 @@ export class AdapterRunner implements MemberRunner {
       default:
         throw new AdapterError(`unknown agent kind '${(agent as Agent).kind}' for '${member}'`);
     }
-    return this.author(req, raw, receipt);
+    return this.author(req, raw, receipt, extraConsumes);
   }
 
   // Shared setup for both produce/produceAsync: resolve the agent, assemble its §6 context, scope its
   // env, and build the InvokeRequest every adapter kind reads from.
-  private prepare(member: string, kind: string, unit: string, project: string): { agent: Agent; req: InvokeRequest } {
+  private prepare(member: string, kind: string, unit: string, project: string, extraConsumes: string[] = []): { agent: Agent; req: InvokeRequest } {
     const agent = this.repo.agents.get(member);
     if (!agent) throw new AdapterError(`no agent definition for member '${member}'`);
-    const context = this.assemble(member, unit, project);
+    const context = this.assemble(member, unit, project, extraConsumes);
     const env = buildMemberEnv(this.repo, member, this.opts.baseEnv);
     const req: InvokeRequest = { agent, member, kind, unit, project, context, env, tools: allowedTools(agent) };
     return { agent, req };
@@ -484,7 +484,7 @@ export class AdapterRunner implements MemberRunner {
   // response) — used verbatim. Absent (every non-native adapter, and a mocked/stub native boundary
   // that doesn't report one) records `unreported`, honestly — never re-derived by parsing whatever
   // usage figures the member's own output happened to claim.
-  private author(req: InvokeRequest, raw: string, receipt?: Receipt): { doc: string; receipt: Receipt } {
+  private author(req: InvokeRequest, raw: string, receipt?: Receipt, extraConsumes: string[] = []): { doc: string; receipt: Receipt } {
     const content = stripFrontmatter(raw);
     if (!content) throw new AdapterError(`member '${req.member}' produced no usable content`);
     let finalReceipt = receipt ?? normalizeReceipt(null, this.opts.pricing);
@@ -513,8 +513,9 @@ export class AdapterRunner implements MemberRunner {
     }
     const team = teamOf(this.repo, req.member);
     const producedBy = team ? `${team.name}/${req.member}` : req.member;
+    const extraSet = new Set(extraConsumes);
     const consumes = unitArtifactPaths(this.repo.root, req.project, req.unit)
-      .filter((a) => a.status === "approved")
+      .filter((a) => a.status === "approved" || extraSet.has(a.id))
       .map((a) => a.id);
     const id = `${req.kind}-${req.unit}-v1`;
     const created = (this.opts.now ?? (() => new Date().toISOString().slice(0, 10)))();
@@ -601,9 +602,9 @@ export class AdapterRunner implements MemberRunner {
   // success — assembleContext simply returns a context with an empty consumed section. A THROW is a
   // genuine recipe error (missing agent/team/unit/step): that is surfaced on stderr, never silently
   // swallowed as if it were an empty context.
-  private assemble(member: string, unit: string, project: string): string {
+  private assemble(member: string, unit: string, project: string, extraConsumed: string[] = []): string {
     try {
-      return assembleContext(this.repo, { root: this.repo.root, agent: member, unit, capabilities: this.capabilities() });
+      return assembleContext(this.repo, { root: this.repo.root, agent: member, unit, capabilities: this.capabilities(), extraConsumed });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`levare: context assembly error for member '${member}' (${project}/${unit}): ${msg}`);

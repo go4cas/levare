@@ -13,28 +13,38 @@
 // C2/E10 — an artifact at in-review always means an open gate), so there is never a point where this
 // module produces past one.
 //
-// Scope boundary (documented, not silently handled), two parts:
-//   1. Within a loop, only the FIRST member (e.g. `spec`) is auto-advanced — never the companion
-//      SECOND member (e.g. `review`). Auto-producing a companion the instant a first-member artifact
-//      is merely observed in-review would retroactively "fill in" a companion for an artifact that may
-//      predate the daemon entirely (the golden fixture's own standing spec gate has no review file and
-//      never has — E3/NOTES), which on-disk state alone gives no way to distinguish from a companion
-//      that was genuinely never meant to be auto-produced. `until` (a Conductor approval, invariant 4)
-//      is what actually ends the loop; a missing companion review never blocks that.
-//   2. A loop round AFTER the first (following a Conductor's request-changes) is already produced
-//      synchronously by board/gateops.ts#doRequest at the moment the Conductor resolves the gate — by
-//      the time any walker looks again, that round's artifact already exists in-review on disk, which
-//      this module's own halt rule ("a live artifact of this kind already exists and is in-review →
-//      halt") already handles correctly with no extra logic.
+// Ruling C14 (NOTES.md): a loop must actually loop on the live path, not just in the phase-2 batch
+// Runner's simulated walk. The walk dispatches BOTH members of a `loop` node, in order, every round:
+//   1. The FIRST member (e.g. `spec`) is produced exactly like a plain step — nothing new there.
+//   2. The instant the first artifact reaches `in-review`, THIS module also dispatches the SECOND
+//      (companion/critic) member (e.g. `review`) for the same round, handing it the first artifact in
+//      its own context/`consumes:` even though that artifact is not yet approved (`extraConsumes` —
+//      see runner.ts's `MemberRunner.produce` doc). Producing both members is what makes a round a
+//      round; the golden fixture's own once-standing spec-with-no-review gate (E3/NOTES) is exactly
+//      the defect this closes, not a state this module still has to tolerate.
+//   3. Once both members of a round sit in-review, the walk HALTS — this is the loop's outcome gate.
+//      The Conductor's decision (approve/reject/request) on the FIRST artifact is what the Conductor
+//      actually consented to at the loop's start gate; nothing inside a round raises a second, separate
+//      human gate (`board/gateops.ts#applyLoopCompanionApproval` already resolves the companion
+//      alongside the first, mirroring runner.ts's own `runLoop` — ruling C2, unchanged by C14).
+//   4. A round AFTER the first (a Conductor's request-changes) re-invokes the first member via
+//      `board/gateops.ts#doRequest`, superseding its previous artifact — unchanged by C14. This module
+//      then sees the new round's first artifact in-review with no round-matched companion yet, and
+//      produces the companion for THAT round on its next walk, superseding the prior round's companion
+//      — the SAME code path as round 1, not a second one. `max_rounds`/`on_exhaust: gate` are enforced
+//      in `doRequest` (the one place a new round is ever requested), not here — this module never
+//      bumps a round on its own initiative, only ever completes the round the Conductor already
+//      authorized by producing the first artifact.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { validateArtifactSource } from "./validate.ts";
 import { parseArtifactDoc } from "./repo.ts";
 import type { Repo } from "./repo.ts";
-import { RunnerError, timeboxSeconds, bumpVersion } from "./runner.ts";
+import { RunnerError, timeboxSeconds, bumpVersion, roundOf } from "./runner.ts";
 import { responsibleTeamsFor, resolveStep, unmetAfter, patchFrontmatter, upsertFrontmatterField } from "./gates.ts";
 import { runnerCommit } from "./git.ts";
+import { locateArtifactFile } from "./board/locate.ts";
 import type { Artifact, FlowLoop, Receipt, Team, WorkUnit } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -50,7 +60,14 @@ import type { Artifact, FlowLoop, Receipt, Team, WorkUnit } from "./types.ts";
 // fully synchronous.
 export interface AsyncMemberRunner {
   capabilities(): Array<{ member: string; kind: string }>;
-  produce(member: string, kind: string, unit: string, project: string): { doc: string; receipt?: Receipt } | Promise<{ doc: string; receipt?: Receipt }>;
+  /** `extraConsumes` (ruling C14) — see runner.ts's `MemberRunner.produce` doc; the same optional seam. */
+  produce(
+    member: string,
+    kind: string,
+    unit: string,
+    project: string,
+    extraConsumes?: string[],
+  ): { doc: string; receipt?: Receipt } | Promise<{ doc: string; receipt?: Receipt }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -58,7 +75,20 @@ export interface AsyncMemberRunner {
 // ---------------------------------------------------------------------------
 
 export type NextAction =
-  | { type: "produce"; member: string; kind: string; stepLabel: string }
+  | {
+      type: "produce";
+      member: string;
+      kind: string;
+      stepLabel: string;
+      /**
+       * Ruling C14 — set only for a loop member: `round` is the round number this production belongs
+       * to (the id gets `bumpVersion(kind-unit, round)`, matching the first/second members' own
+       * lockstep convention); `supersedes` is the PRIOR round's live artifact of this same kind, when
+       * one exists (round > 1); `extraConsumes` is handed to the memberRunner so the companion's
+       * context/consumes includes the round's own author artifact even though it is still in-review.
+       */
+      loop?: { round: number; supersedes?: string; extraConsumes?: string[] };
+    }
   | { type: "halt"; reason: string }
   // NOTES F1: the flow step cannot be resolved to a member at all (none produces a matching kind, or
   // two do). This is NOT an ordinary halt — a halt means "something is legitimately in the way right
@@ -115,18 +145,11 @@ export function nextAction(repo: Repo, unit: WorkUnit, team: Team, capabilities:
       return { type: "halt", reason: `${current.id} is ${current.status}; awaiting Conductor` };
     }
     if (node.kind === "loop") {
-      // Scope boundary (documented — see this file's header note): the daemon auto-advances only the
-      // loop's FIRST member, treated exactly like a plain step. It never auto-produces the SECOND
-      // (companion review) member — doing so unconditionally the moment a first-member artifact is
-      // merely observed in-review would retroactively "fill in" a companion for an artifact that may
-      // predate the daemon entirely (e.g. a hand-authored fixture gate), which is both a surprising
-      // mutation of state the daemon didn't create and indistinguishable, from on-disk state alone,
-      // from a companion that genuinely was never meant to be auto-produced. `until` is what actually
-      // ends the loop (via a Conductor approval, invariant 4) — a missing companion review never
-      // blocks that.
+      // Ruling C14 (see this file's header note): the walk dispatches BOTH members of a loop, in
+      // order, every round — never just the first.
       const loop = node as FlowLoop;
       if (untilSatisfied(repo, unit, loop.until)) continue;
-      const [firstLabel] = loop.between;
+      const [firstLabel, secondLabel] = loop.between;
       let first: { member: string; kind: string };
       try {
         first = resolveStep(team, firstLabel, capabilities);
@@ -134,8 +157,35 @@ export function nextAction(repo: Repo, unit: WorkUnit, team: Team, capabilities:
         return { type: "unbindable", reason: e instanceof RunnerError ? e.message : String(e), stepLabel: firstLabel };
       }
       const firstArt = latestLiveArtifact(repo, unit, first.kind);
-      if (!firstArt) return { type: "produce", member: first.member, kind: first.kind, stepLabel: firstLabel };
-      if (firstArt.status === "in-review") return { type: "halt", reason: `gate open on ${firstArt.id}` };
+      if (!firstArt) return { type: "produce", member: first.member, kind: first.kind, stepLabel: firstLabel, loop: { round: 1 } };
+      if (firstArt.status === "in-review") {
+        let second: { member: string; kind: string };
+        try {
+          second = resolveStep(team, secondLabel, capabilities);
+        } catch (e) {
+          return { type: "unbindable", reason: e instanceof RunnerError ? e.message : String(e), stepLabel: secondLabel };
+        }
+        const round = roundOf(firstArt.id);
+        const expectedCompanionId = bumpVersion(`${second.kind}-${unit.unit}`, round);
+        const companion = repo.artifacts.get(`${unit.project}/${unit.unit}`)?.get(expectedCompanionId);
+        if (!companion) {
+          // This round's companion doesn't exist yet — produce it, superseding whatever the PRIOR
+          // round's live companion was (round 1 has none), with the author's own (still in-review)
+          // artifact in its context/consumes (extraConsumes) — that pairing IS the round.
+          const prevCompanion = latestLiveArtifact(repo, unit, second.kind);
+          return {
+            type: "produce",
+            member: second.member,
+            kind: second.kind,
+            stepLabel: secondLabel,
+            loop: { round, supersedes: prevCompanion?.id, extraConsumes: [firstArt.id] },
+          };
+        }
+        // Both members of this round already sit in-review — the round's outcome gate. The walk
+        // halts here; the Conductor's decision on the first artifact resolves BOTH (ruling C2,
+        // board/gateops.ts#applyLoopCompanionApproval), and this module never raises a second gate.
+        return { type: "halt", reason: `gate open on ${firstArt.id}` };
+      }
       if (firstArt.status === "approved") continue; // until would already have been true above unless loop.until names a different kind.
       return { type: "halt", reason: `${firstArt.id} is ${firstArt.status}; awaiting Conductor` };
     }
@@ -270,7 +320,7 @@ export async function advanceUnit(root: string, repo: Repo, unit: WorkUnit, memb
     if (action.type === "unbindable") return blockUnit(root, unit, team, action.reason, action.stepLabel, opts);
     if (action.type === "produce") {
       opts.onBeforeProduce?.(action.member, action.kind);
-      return await produceOne(root, unit, team, action.member, action.kind, memberRunner, opts);
+      return await produceOne(root, unit, team, action.member, action.kind, memberRunner, opts, action.loop);
     }
     // action.type === "nothing": this team's flow is fully satisfied — hand off to the next team.
   }
@@ -329,31 +379,39 @@ async function produceOne(
   kind: string,
   memberRunner: AsyncMemberRunner,
   opts: AdvanceOptions,
+  loop?: { round: number; supersedes?: string; extraConsumes?: string[] },
 ): Promise<AdvanceResult> {
   const today = opts.today ?? new Date().toISOString().slice(0, 10);
   const commitFn = opts.commit ?? runnerCommit;
   const verb = opts.verb ?? "advance";
-  // Every daemon-produced artifact gets the deterministic kind-unit-v1 slot id (matching the
+  // Every daemon-produced artifact gets the deterministic kind-unit-vN slot id (matching the
   // convention board/gateops.ts's doStart established for E5) rather than trusting whatever id the
   // member boundary happens to emit — a mocked/stub member (invariant 10) renders the same fixed id
   // regardless of which unit asked, which would collide under the validator's project-scoped
-  // DUPLICATE_ID check the moment a second unit produces the same kind. Only ever round 1: a later
-  // round is produced by board/gateops.ts#doRequest's own versioning (see this file's header note).
+  // DUPLICATE_ID check the moment a second unit produces the same kind. Round is always 1 for a plain
+  // step (a later round of a PLAIN step is produced by board/gateops.ts#doRequest's own versioning);
+  // for a loop member, round comes from `nextAction`'s own round-pairing (ruling C14, this file's
+  // header note) — 1 for the first member's opening round, or the round-matched value for a companion.
   // The `-vN` convention has one home — runner.ts#bumpVersion — rather than a literal string here.
-  const newId = bumpVersion(`${kind}-${unit.unit}`, 1);
+  const round = loop?.round ?? 1;
+  const newId = bumpVersion(`${kind}-${unit.unit}`, round);
 
   let baseDoc: string;
   try {
     // NOTES F5: awaits either a plain result (every sync test double/stub) or a genuine, non-blocking
     // Promise (the real live AdapterRunner.produceAsync's CLI path) — see AsyncMemberRunner's own doc.
-    ({ doc: baseDoc } = await memberRunner.produce(member, kind, unit.unit, unit.project));
+    // Ruling C14: `loop?.extraConsumes` hands a loop's companion (critic) member the round's own
+    // author artifact, even though it is still in-review — see runner.ts's `MemberRunner.produce` doc.
+    ({ doc: baseDoc } = await memberRunner.produce(member, kind, unit.unit, unit.project, loop?.extraConsumes));
   } catch (e) {
     return writeBlocked(root, unit, team, member, kind, newId, e, today, commitFn, verb);
   }
 
   let doc: string;
   try {
-    doc = patchFrontmatter(baseDoc, { id: newId });
+    const patches: Record<string, string | null> = { id: newId };
+    if (loop?.supersedes) patches.supersedes = loop.supersedes;
+    doc = patchFrontmatter(baseDoc, patches);
   } catch (e) {
     return writeBlocked(root, unit, team, member, kind, newId, e, today, commitFn, verb);
   }
@@ -365,8 +423,23 @@ async function produceOne(
 
   const art = parseArtifactDoc(doc);
   const file = join(unit.dir, `${art.id}.md`);
+  const files = [file];
+
+  // Ruling C14: a loop companion produced for round > 1 supersedes the PRIOR round's live companion —
+  // the same supersession board/gateops.ts#doRequest already does for the loop's first member, applied
+  // here to the second so both halves of a round stay in lockstep. Round 1 has nothing to supersede.
+  if (loop?.supersedes) {
+    const located = locateArtifactFile(unit.dir, loop.supersedes);
+    if (located) {
+      const oldSrc = readFileSync(located.file, "utf8");
+      writeFileSync(located.file, patchFrontmatter(oldSrc, { status: "superseded" }));
+      files.unshift(located.file);
+    }
+  }
+
   writeFileSync(file, doc);
-  const commit = commitFn(root, [file], `${verb} ${unit.unit} → ${team.name}/${member} produced ${art.kind} ${art.id}`);
+  const roundNote = loop ? ` (loop round ${round})` : "";
+  const commit = commitFn(root, files, `${verb} ${unit.unit} → ${team.name}/${member} produced ${art.kind} ${art.id}${roundNote}`);
   return { outcome: "produced", member, kind, artifactId: art.id, file, commit };
 }
 

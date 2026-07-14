@@ -39,21 +39,32 @@ function seedScratchRepo(): string {
   return root;
 }
 
-// A MemberRunner wrapper that records every (member, kind) call, in order — the causal-chain audit
-// trail these tests assert against.
-function countingRunner(root: string): { runner: MemberRunner; calls: Array<{ member: string; kind: string }> } {
-  const calls: Array<{ member: string; kind: string }> = [];
+// A MemberRunner wrapper that records every (member, kind, unit) call, in order — the causal-chain
+// audit trail these tests assert against. `unit` is recorded (not just member/kind) because ruling
+// C14 means the golden fixture's OWN static checkout-flow — seeded mid-loop (spec in-review, no
+// review, forever, exactly the standing state the pre-C14 defect left it in) — now completes its
+// round the instant any daemon walks it, alongside whichever unit a given test actually targets.
+function countingRunner(root: string): { runner: MemberRunner; calls: Array<{ member: string; kind: string; unit: string }> } {
+  const calls: Array<{ member: string; kind: string; unit: string }> = [];
   const inner = stubAdapterRunner(loadRepo(root));
   return {
     calls,
     runner: {
       capabilities: () => inner.capabilities(),
-      produce: (member, kind, unit, project) => {
-        calls.push({ member, kind });
-        return inner.produce(member, kind, unit, project);
+      produce: (member, kind, unit, project, extraConsumes) => {
+        calls.push({ member, kind, unit });
+        return inner.produce(member, kind, unit, project, extraConsumes);
       },
     },
   };
+}
+
+// Scope a countingRunner's calls to one unit, dropping the unit tag — the shape every pre-C14
+// assertion already expects. Ruling C14: checkout-flow's own frozen loop (see countingRunner's doc)
+// completes alongside whatever unit a test is actually driving, so tests that care about ONE unit's
+// causal chain filter to it explicitly rather than asserting on the raw, multi-unit call log.
+function callsFor(calls: Array<{ member: string; kind: string; unit: string }>, unit: string): Array<{ member: string; kind: string }> {
+  return calls.filter((c) => c.unit === unit).map(({ member, kind }) => ({ member, kind }));
 }
 
 let root: string;
@@ -73,28 +84,28 @@ describe("(a) the daemon walks between gates and halts at every gate", () => {
     // Invariant 1: a satisfied-but-unauthorized start gate is never crossed by the autonomous walk,
     // no matter how many times it ticks.
     for (let i = 0; i < 3; i++) await daemon.tick();
-    expect(calls).toEqual([]);
+    expect(callsFor(calls, "loyalty-flow")).toEqual([]);
     expect(readdirSync(unitDir)).toEqual(["unit.md"]);
 
     // The Conductor authorizes the start gate (the ONE call allowed to cross it — board/gateops.ts).
     const started = await resolveGate(root, "storefront", "loyalty-flow", "start", { memberRunner: runner, today: "2026-07-12" });
     expect(started.ok).toBe(true);
-    expect(calls).toEqual([{ member: "wren", kind: "product-brief" }]);
+    expect(callsFor(calls, "loyalty-flow")).toEqual([{ member: "wren", kind: "product-brief" }]);
     const brief = readFileSync(join(unitDir, "product-brief-loyalty-flow-v1.md"), "utf8");
     expect(brief).toContain("status: in-review");
 
     // Halts at the gate the start just reached: repeated ticks produce nothing further.
     for (let i = 0; i < 3; i++) await daemon.tick();
-    expect(calls).toEqual([{ member: "wren", kind: "product-brief" }]);
+    expect(callsFor(calls, "loyalty-flow")).toEqual([{ member: "wren", kind: "product-brief" }]);
 
     // Conductor approves → daemon advances exactly one more step (design), then halts again.
     const approve: Verb = "approve";
     const approved1 = await resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", approve, { memberRunner: runner, today: "2026-07-12" });
     expect(approved1.ok).toBe(true);
-    expect(calls).toEqual([{ member: "wren", kind: "product-brief" }]); // approval itself never invokes a member.
+    expect(callsFor(calls, "loyalty-flow")).toEqual([{ member: "wren", kind: "product-brief" }]); // approval itself never invokes a member.
 
     let result = await daemon.tick();
-    expect(calls).toEqual([{ member: "wren", kind: "product-brief" }, { member: "lyra", kind: "design" }]);
+    expect(callsFor(calls, "loyalty-flow")).toEqual([{ member: "wren", kind: "product-brief" }, { member: "lyra", kind: "design" }]);
     expect(existsSync(join(unitDir, "design-loyalty-flow-v1.md"))).toBe(true);
     let entry = result.entries.find((e) => e.unit === "loyalty-flow")!;
     expect(entry.outcome.outcome).toBe("produced");
@@ -103,13 +114,14 @@ describe("(a) the daemon walks between gates and halts at every gate", () => {
     result = await daemon.tick();
     entry = result.entries.find((e) => e.unit === "loyalty-flow")!;
     expect(entry.outcome.outcome).toBe("halted");
-    expect(calls.length).toBe(2);
+    expect(callsFor(calls, "loyalty-flow").length).toBe(2);
 
-    // Approve design → the loop's first member (spec) is produced, then the walk halts there too —
-    // never producing spec's companion review automatically (documented scope boundary, dagwalk.ts).
+    // Approve design → the loop's first member (spec) is produced; ruling C14: the walk then ALSO
+    // dispatches the loop's companion (review), in the same round, before halting at the round's
+    // outcome gate — the exact live defect this ruling fixes (previously spec sat alone forever).
     await resolveGate(root, "storefront", "design-loyalty-flow-v1", approve, { memberRunner: runner, today: "2026-07-12" });
     result = await daemon.tick();
-    expect(calls).toEqual([
+    expect(callsFor(calls, "loyalty-flow")).toEqual([
       { member: "wren", kind: "product-brief" },
       { member: "lyra", kind: "design" },
       { member: "lyra", kind: "spec" },
@@ -119,15 +131,30 @@ describe("(a) the daemon walks between gates and halts at every gate", () => {
     entry = result.entries.find((e) => e.unit === "loyalty-flow")!;
     expect(entry.outcome.outcome).toBe("produced");
 
-    // Invariant 1, the hard part: the daemon NEVER resolves the gate it just raised — spec sits at
-    // in-review indefinitely, and the daemon never invents a review artifact for it, no matter how
-    // many times it ticks.
+    // The NEXT tick dispatches the companion (review) — same round, second half — then the walk
+    // halts at the round's outcome gate: spec sits in-review, review sits in-review, awaiting the
+    // Conductor's decision on spec (which resolves both, ruling C2/C14).
+    result = await daemon.tick();
+    expect(callsFor(calls, "loyalty-flow")).toEqual([
+      { member: "wren", kind: "product-brief" },
+      { member: "lyra", kind: "design" },
+      { member: "lyra", kind: "spec" },
+      { member: "finch", kind: "review" },
+    ]);
+    expect(existsSync(join(unitDir, "review-loyalty-flow-v1.md"))).toBe(true);
+    const review = readFileSync(join(unitDir, "review-loyalty-flow-v1.md"), "utf8");
+    expect(review).toContain("status: in-review");
+    // The critic consumed the author's own artifact (spec) — still in-review at this moment — plus
+    // whatever else was already approved (design, product-brief); ruling C14's `extraConsumes` seam.
+    expect(review).toMatch(/consumes: \[.*spec-loyalty-flow-v1.*\]/);
+
+    // Invariant 1, the hard part: the daemon NEVER resolves the gate it just raised — both artifacts
+    // sit at in-review indefinitely, no matter how many times it ticks.
     for (let i = 0; i < 5; i++) await daemon.tick();
-    expect(calls.length).toBe(3);
+    expect(callsFor(calls, "loyalty-flow").length).toBe(4);
     const spec = readFileSync(join(unitDir, "spec-loyalty-flow-v1.md"), "utf8");
     expect(spec).toContain("status: in-review");
     expect(spec).toContain("approved_by: null");
-    expect(existsSync(join(unitDir, "review-loyalty-flow-v1.md"))).toBe(false);
 
     // Every commit whose CONTENT is a member's own output — including the `start` verb's own
     // production, not just the daemon's later autonomous ones — is attributed to the runner identity,
@@ -194,7 +221,7 @@ describe("(b) EVERY unit's first flow step raises a start gate — no auto-start
     // No `after:` at all — still a start gate, not a licence to begin (invariant 1): a hand-written
     // or injected unit.md causes NO member invocation, only a start gate, no matter how many ticks.
     for (let i = 0; i < 3; i++) await daemon.tick();
-    expect(calls).toEqual([]);
+    expect(callsFor(calls, "widget-tweak")).toEqual([]);
     expect(readdirSync(unitDir)).toEqual(["unit.md"]);
   });
 
@@ -217,11 +244,11 @@ describe("(b) EVERY unit's first flow step raises a start gate — no auto-start
     const { runner, calls } = countingRunner(root);
     const daemon = new Daemon(root, { memberRunner: () => runner });
     await daemon.tick();
-    expect(calls).toEqual([{ member: "lyra", kind: "design" }]);
+    expect(callsFor(calls, "widget-tweak")).toEqual([{ member: "lyra", kind: "design" }]);
     expect(existsSync(join(unitDir, "design-widget-tweak-v1.md"))).toBe(true);
     // Halts at design's gate — a second tick does not chase further without an approval.
     await daemon.tick();
-    expect(calls.length).toBe(1);
+    expect(callsFor(calls, "widget-tweak").length).toBe(1);
   });
 });
 
@@ -350,7 +377,7 @@ describe("(e) concurrency safety: a single-threaded work queue", () => {
     // 30 rapid repeated ticks — simulating a burst of repo-change signals — must produce `design`
     // exactly once (it halts there; spec is behind an unresolved gate).
     for (let i = 0; i < 30; i++) await daemon.tick();
-    expect(calls).toEqual([{ member: "lyra", kind: "design" }]);
+    expect(callsFor(calls, "loyalty-flow")).toEqual([{ member: "lyra", kind: "design" }]);
   });
 
   test("tick() refuses to run re-entrantly (the mutex itself), rather than interleaving", async () => {
@@ -402,7 +429,7 @@ describe("(f) budget halts stop the walk without crashing or silently dropping t
     const { runner, calls } = countingRunner(root);
     const daemon = new Daemon(root, { memberRunner: () => runner });
     const result = await daemon.tick();
-    expect(calls).toEqual([]); // never invoked — the budget check runs before production.
+    expect(callsFor(calls, "loyalty-flow")).toEqual([]); // never invoked — the budget check runs before production.
     const entry = result.entries.find((e) => e.unit === "loyalty-flow")!;
     expect(entry.outcome.outcome).toBe("budget-gate");
     expect((entry.outcome as { reason: string }).reason).toContain("budget");

@@ -36,8 +36,16 @@ export interface MemberRunner {
   /**
    * Return the raw artifact markdown; the Runner validates it at the boundary before trusting it.
    * Phase-3 adapters also return a normalized usage receipt (§10); phase-2 stubs may omit it.
+   *
+   * `extraConsumes` (ruling C14): artifact ids to include in this call's consumed set (context +
+   * the produced artifact's own `consumes:`) IN ADDITION to whatever is already approved — the one
+   * case this matters is a loop's second (companion/critic) member consuming the first (author)
+   * member's artifact from the SAME round, which is still `in-review` (not yet approved) at the
+   * moment the companion runs. Optional and ignored by every implementation that predates this —
+   * a JS/TS function assigned fewer parameters than an interface declares is still callable exactly
+   * as before; only NEW call sites (dagwalk.ts's loop-companion production) ever pass it.
    */
-  produce(member: string, kind: string, unit: string, project: string): { doc: string; receipt?: Receipt };
+  produce(member: string, kind: string, unit: string, project: string, extraConsumes?: string[]): { doc: string; receipt?: Receipt };
 }
 
 export type Verb =
@@ -285,10 +293,11 @@ export class Runner {
     stepLabel: string,
     round: number,
     supersedesId?: string,
+    extraConsumes?: string[],
   ): Produced | "budget-stop" | "timebox-stop" {
     this.pace(unit, project, stepLabel);
     const { member, kind } = this.resolveStep(team, stepLabel);
-    const { doc, receipt } = this.members.produce(member, kind, unit.unit, unit.project);
+    const { doc, receipt } = this.members.produce(member, kind, unit.unit, unit.project, extraConsumes);
 
     // Boundary contract enforcement (§6) with the same validator used on disk.
     const errs = validateArtifactSource(doc, `${member}:${kind}`);
@@ -370,7 +379,10 @@ export class Runner {
 
       const first = this.runStep(unit, team, project, firstLabel, round, prevFirstId);
       if (first === "budget-stop" || first === "timebox-stop") return "paused";
-      const second = this.runStep(unit, team, project, secondLabel, round, prevSecondId);
+      // Ruling C14: the companion (critic) consumes the round's own author artifact, even though it is
+      // still `in-review` (not yet approved) at this moment — `extraConsumes` is exactly the seam that
+      // lets a member's consumed set include an artifact beyond the ordinary approved-only set.
+      const second = this.runStep(unit, team, project, secondLabel, round, prevSecondId, [first.id]);
       if (second === "budget-stop" || second === "timebox-stop") return "paused";
       prevFirstId = first.id;
       prevSecondId = second.id;
@@ -629,6 +641,15 @@ export function kindMatches(kind: string, stepLabel: string): boolean {
 // reuse the exact same versioning rule the automated walk uses, rather than re-deriving it.
 export function bumpVersion(id: string, round: number): string {
   return /-v\d+$/.test(id) ? id.replace(/-v\d+$/, `-v${round}`) : `${id}-v${round}`;
+}
+
+// The round number encoded in an id's trailing -vN (bumpVersion's own convention); 1 when absent —
+// the exact inverse of bumpVersion(id, 1) being a no-op-shaped id. Ruling C14: dagwalk.ts uses this to
+// pair a loop's companion (second-member) artifact to the SAME round as the author (first-member)
+// artifact it reviews, and board/gateops.ts#doRequest uses it to detect max_rounds exhaustion.
+export function roundOf(id: string): number {
+  const m = /-v(\d+)$/.exec(id);
+  return m ? Number(m[1]) : 1;
 }
 
 // Parse a timebox string (e.g. "1d", "6h", "30m", "90s", "3600") into seconds; null when absent.

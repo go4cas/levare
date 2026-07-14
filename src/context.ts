@@ -82,6 +82,13 @@ export interface AssembleOptions {
   step?: string;
   /** Capability source (member→kind), same shape the Runner uses; provided by the caller. */
   capabilities: Capability[];
+  /**
+   * Ruling C14: artifact ids to include in the consumed set IN ADDITION to whatever is currently
+   * `approved` — a loop's companion (critic) member consumes the round's own author artifact even
+   * though it is still `in-review` at the moment the companion runs (the round's outcome, not each
+   * artifact individually, is what the Conductor gates — see dagwalk.ts).
+   */
+  extraConsumed?: string[];
 }
 
 /** Assemble the §6 context for an agent at a step in a unit and return it as an exact string. */
@@ -102,7 +109,8 @@ export function assembleContext(repo: Repo, opts: AssembleOptions): string {
   const chosen = opts.step ? steps.find((s) => s.label === opts.step) : steps[steps.length - 1];
   if (!chosen) throw new ContextError(`agent '${opts.agent}' has no flow step '${opts.step}' (has: ${steps.map((s) => s.label).join(", ")})`);
 
-  const consumed = unitArtifactPaths(opts.root, unitRow.project, opts.unit).filter((a) => a.status === "approved");
+  const extra = new Set(opts.extraConsumed ?? []);
+  const consumed = unitArtifactPaths(opts.root, unitRow.project, opts.unit).filter((a) => a.status === "approved" || extra.has(a.id));
   const inline = agent.context_artifacts === "inline";
 
   // ---- Render the recipe, section by section, in fixed order. ----
