@@ -70,6 +70,32 @@ describe("native adapter (mocked SDK boundary)", () => {
     expect(seen!.env.GITHUB_TOKEN).toBeUndefined();
     expect(seen!.env.PATH).toBe("/bin");
   });
+
+  // NOTES F8 — the fabricated-usage dogfood defect: a native member's receipt must come from the SDK's
+  // own report (whatever the boundary returns), never re-derived from the doc's frontmatter/pricing
+  // table when the boundary actually reported one.
+  test("a receipt reported by the native boundary is used verbatim, not re-priced from the doc", () => {
+    const repo = loadRepo(ROOT);
+    const sdkReceipt = { model: "claude-opus-4-8", tokens_in: 9001, tokens_out: 42, wall_clock_s: 3.5, usd: 0.0007, unreported: false };
+    const native: NativeBoundary = { invoke: (r) => ({ doc: render(r.member, r.kind, r.unit, r.project), receipt: sdkReceipt }) };
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native, remote: remoteMock });
+    const { receipt } = runner.produce("lyra", "spec", "checkout-flow", "storefront");
+    expect(receipt).toEqual(sdkReceipt);
+    // Not the pricing-table-derived figure the doc's own canned usage block would produce (0.24, 480s).
+    expect(receipt.usd).not.toBe(0.24);
+    expect(receipt.wall_clock_s).not.toBe(480);
+  });
+
+  test("produceAsync prefers `asyncNative` over `native` for a native member, and its receipt passes through the same way", async () => {
+    const repo = loadRepo(ROOT);
+    const sdkReceipt = { model: "claude-sonnet-5", tokens_in: 111, tokens_out: 22, wall_clock_s: 1.1, usd: 0.003, unreported: false };
+    const syncNative: NativeBoundary = { invoke: () => { throw new Error("must not be called — asyncNative takes precedence"); } };
+    const asyncNative = { invoke: async (r: InvokeRequest) => ({ doc: render(r.member, r.kind, r.unit, r.project), receipt: sdkReceipt }) };
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native: syncNative, asyncNative, remote: remoteMock });
+    const { doc, receipt } = await runner.produceAsync("lyra", "spec", "checkout-flow", "storefront");
+    expect(doc).toContain("id: spec-checkout-flow-v1");
+    expect(receipt).toEqual(sdkReceipt);
+  });
 });
 
 describe("cli adapter (against the fixture stub)", () => {
