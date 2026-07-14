@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { loadRepo } from "../src/repo.ts";
 import { runDoctor, formatDoctor, diagnose, type CliProbe, type EnvProbe } from "../src/doctor.ts";
 import type { OrchestratorStatus } from "../src/orchestrator-status.ts";
+import type { Connector } from "../src/types.ts";
 
 // `levare doctor` walks connectors and reports env presence + CLI/MCP reachability (§6). The fixture
 // has two connectors — github (cli, needs GITHUB_TOKEN) and linear (mcp, needs LINEAR_API_KEY). With
@@ -110,5 +111,56 @@ describe("doctor: reports the Orchestrator boundary (NOTES C11)", () => {
     const out = p.stdout.toString();
     expect(out).toContain("orchestrator: off");
     expect(out).toContain("ANTHROPIC_API_KEY");
+  });
+});
+
+// NOTES C13: connectors declare how they authenticate. `auth: env` connectors are unchanged; an
+// `auth: subscription` connector's credential is NOT scoped by levare — doctor must say so plainly,
+// every time, so the board never implies an enforcement guarantee it isn't providing.
+describe("doctor: reports auth mode, and warns plainly for auth: subscription (NOTES C13)", () => {
+  const withSubscription: Connector[] = [
+    ...connectors,
+    { name: "codex", kind: "cli", command: "codex", env: [], auth: "subscription", plan: "ChatGPT Plus — flat monthly rate" },
+  ];
+  const allPresent: EnvProbe = { has: () => true };
+  const foundGh: CliProbe = () => "found";
+
+  test("every connector's health record carries its auth mode", () => {
+    const health = diagnose(withSubscription, allPresent, foundGh);
+    const byAuth = Object.fromEntries(health.map((h) => [h.name, h.auth]));
+    expect(byAuth).toEqual({ github: "env", linear: "env", codex: "subscription" });
+  });
+
+  test("an auth: subscription connector carries a warning naming its command; auth: env connectors carry none", () => {
+    const health = diagnose(withSubscription, allPresent, foundGh);
+    const codex = health.find((h) => h.name === "codex")!;
+    expect(codex.warning).toBe(
+      "levare cannot scope this credential — any member that can spawn `codex` can use this login. The grant is documentation, not enforcement.",
+    );
+    expect(health.find((h) => h.name === "github")!.warning).toBeUndefined();
+    expect(health.find((h) => h.name === "linear")!.warning).toBeUndefined();
+  });
+
+  test("a subscription connector with no env vars to check is trivially 'ok' — env presence was never the thing being enforced", () => {
+    const health = diagnose(withSubscription, allPresent, foundGh);
+    const codex = health.find((h) => h.name === "codex")!;
+    expect(codex.status).toBe("ok");
+    expect(codex.env).toEqual([]);
+  });
+
+  test("formatDoctor prints the auth line and the warning for a subscription connector", () => {
+    const out = formatDoctor(diagnose(withSubscription, allPresent, foundGh));
+    expect(out).toContain("codex · cli");
+    expect(out).toContain("auth: subscription · ChatGPT Plus — flat monthly rate");
+    expect(out).toContain("⚠ levare cannot scope this credential");
+    expect(out).toContain("any member that can spawn `codex` can use this login");
+    expect(out).toContain("The grant is documentation, not enforcement.");
+  });
+
+  test("formatDoctor prints a plain 'auth: env' line, with no warning, for the unchanged connectors", () => {
+    const out = formatDoctor(diagnose(withSubscription, allPresent, foundGh));
+    const githubBlock = out.split("\n\n").find((b) => b.startsWith("github"))!;
+    expect(githubBlock).toContain("auth: env");
+    expect(githubBlock).not.toContain("⚠");
   });
 });

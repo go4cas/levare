@@ -963,9 +963,16 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
 
   const connectorBlocks = [...repo.connectors.values()]
     .map((c) => {
+      // NOTES C13: the board must never imply a scoping guarantee levare isn't providing — an
+      // `auth: subscription` connector's card says so plainly, not just its `auth` value.
+      const authWarning =
+        c.auth === "subscription"
+          ? `<div class="prow"><span class="k"></span><span class="v" style="color:var(--warn,#b45309)">levare cannot scope this credential — any member that can spawn \`${esc(c.command ?? c.name)}\` can use this login. The grant is documentation, not enforcement.</span></div>`
+          : "";
       const inner = `<div class="card__h">Definition</div>
       <div class="prow"><span class="k">kind</span><span class="v mono">${esc(c.kind)}</span></div>
-      <div class="prow"><span class="k">env</span><span class="v mono">${c.env.map(esc).join(", ")}</span></div>`;
+      <div class="prow"><span class="k">auth</span><span class="v mono">${esc(c.auth)}${c.plan ? ` · ${esc(c.plan)}` : ""}</span></div>
+      <div class="prow"><span class="k">env</span><span class="v mono">${c.env.map(esc).join(", ")}</span></div>${authWarning}`;
       return entityBlock("connectors", esc(c.name), "connector", inner, rawFor(root, "connectors", c.name), c.name, active === "connectors");
     })
     .join("\n");

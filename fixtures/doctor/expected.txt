@@ -1,11 +1,13 @@
 levare doctor · 2 connectors
 
 github · cli
+  auth: env
   env GITHUB_TOKEN present (shell)
   cli gh not found on PATH
   → ok
 
 linear · mcp
+  auth: env
   env LINEAR_API_KEY missing
   mcp linear-mcp
   → missing-env

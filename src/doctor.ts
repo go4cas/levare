@@ -23,6 +23,11 @@ export type CliProbe = (command: string) => "found" | "not-found";
 export interface ConnectorHealth {
   name: string;
   kind: "mcp" | "cli";
+  // NOTES C13: which mode this connector declares. "subscription" carries `warning` below — doctor
+  // must never let this connector's report read as "levare has this scoped" when it doesn't.
+  auth: "env" | "subscription";
+  plan?: string;
+  warning?: string;
   // NOTES C11 part 4: `provenance` names WHERE a present variable came from — '.env' or the shell —
   // so "why does this work on my machine and not in CI" has a visible answer. `undefined` when the
   // caller didn't pass a provenance map (every pre-C11 call site; presence-only, as before) or the
@@ -43,8 +48,16 @@ export function diagnose(connectors: Connector[], env: EnvProbe, probe: CliProbe
         const present = env.has(name);
         return { name, present, provenance: present ? (provenance?.get(name) ?? "shell") : undefined };
       });
+      // A subscription connector names no env (validated), so this is vacuously "ok" — env presence
+      // was never the thing to check for it; see `warning` for what IS true about it instead.
       const status: ConnectorHealth["status"] = envChecks.every((e) => e.present) ? "ok" : "missing-env";
-      const health: ConnectorHealth = { name: c.name, kind: c.kind, env: envChecks, status };
+      const health: ConnectorHealth = { name: c.name, kind: c.kind, auth: c.auth, env: envChecks, status };
+      if (c.plan) health.plan = c.plan;
+      if (c.auth === "subscription") {
+        // NOTES C13: stated plainly, every time — the board and this report must never imply a
+        // scoping guarantee levare is not providing.
+        health.warning = `levare cannot scope this credential — any member that can spawn \`${c.command ?? c.name}\` can use this login. The grant is documentation, not enforcement.`;
+      }
       if (c.kind === "cli" && c.command) health.cli = { command: c.command, probe: probe(c.command) };
       if (c.kind === "mcp" && c.server) health.mcp = { server: c.server };
       return health;
@@ -66,6 +79,8 @@ export function formatDoctor(health: ConnectorHealth[], orchestrator?: Orchestra
   for (const h of health) {
     out.push("");
     out.push(`${h.name} · ${h.kind}`);
+    out.push(`  auth: ${h.auth}${h.plan ? ` · ${h.plan}` : ""}`);
+    if (h.warning) out.push(`  ⚠ ${h.warning}`);
     for (const e of h.env) out.push(`  env ${e.name} ${e.present ? `present (${e.provenance})` : "missing"}`);
     if (h.cli) out.push(`  cli ${h.cli.command} ${h.cli.probe === "found" ? "on PATH" : "not found on PATH"}`);
     if (h.mcp) out.push(`  mcp ${h.mcp.server}`);
