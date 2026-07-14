@@ -3394,3 +3394,107 @@ state DURING the request, and cleared after.
 F8); `levare replay fixtures/golden --stubs` — final artifact statuses byte-for-byte against the
 regenerated `expected.json`; `deps:check` — `deps ok`; a `renderStudio`/`renderProject`/`renderRun`
 smoke check against the golden fixture confirmed the dispatching markup renders exactly as asserted.
+
+## F11. `model:` was decorative — enforced at run time, validated at neither
+
+**Finding, proven live.** Agent `scribe` declared `model: claude-sonnet-4-5`; two consecutive native
+invocations both actually ran on `claude-haiku-4-5-20251001` (visible in the artifacts' own usage
+receipts). `model:` was a field a studio author wrote and levare simply never checked against or acted
+on for every kind except the one that already happened to be correct — the native SDK call path
+(`adapters.ts#nativeWorkerRequest` → `sdk-worker.ts#buildQueryOptions`) had, since NOTES phase-7 K1,
+always passed `model: req.agent.model` straight through to the SDK's own `model?: string` option (never
+a hardcoded default), and `tests/native-sdk-boundary.test.ts` already asserted the transport receives
+the agent's own declared model. That half was correct and already covered; what was genuinely missing,
+audited fresh against this goal, were four real gaps:
+
+1. **A CLI member's declared model never reached the vendor CLI at all.** `defaultCliCommand`
+   (adapters.ts) substituted `{task}`/`{feature_repo}` into the command template but had no `{model}`
+   substitution — a CLI agent had no way to pass its declared model to the wrapped binary, ever, no
+   matter what its template said. Fixed: `{model}` now substitutes `req.agent.model ?? ""` the same way
+   the other two placeholders do (a shell-less, one-argv-element substitution, unchanged discipline).
+2. **Nothing validated a declared model at all — for any kind.** An agent could declare
+   `model: gibberish` and `levare validate` said nothing; the failure surfaced only live, as an SDK 400
+   or (worse) a silent SDK-side substitution. Fixed: `validate.ts#validateKnownModels` checks every
+   agent's declared `model:` (regardless of kind — native, cli, or remote) against
+   `knowledge/model-pricing.md`'s own model column, the SAME table `pricing.ts` already reads to price a
+   usage receipt. A model absent from that table is `UNKNOWN_MODEL`, naming the agent, the model, and
+   the file. This makes the known-model set and the priceable-model set the SAME set by construction —
+   "a model that cannot be priced cannot be declared" isn't a separate rule to keep in sync, it's the
+   same lookup. Fail-open when the table itself is absent or empty (no `knowledge/model-pricing.md` at
+   all): consistent with every other unverifiable-state posture in this validator (git-immutability
+   S0/S1, `.env`-tracked check's own `gitToplevel` fallback) — a target making no pricing claim has
+   nothing to check a declared model against, and dozens of ad hoc test-studio fixtures across the
+   suite (which predate F11 and declare a placeholder `model: claude-sonnet`) never grew a
+   `knowledge/` directory, so this posture is also what keeps them passing unchanged.
+3. **A CLI agent declaring a model with no `{model}` in its template was never caught.** Fixing (1)
+   without also validating it would just move the lie from "silently ignored" to "silently substituted
+   into nothing" — a declared model that can never reach the vendor is exactly as false as one that's
+   unknown. `validateAgentVariant` now rejects this as `MODEL_PLACEHOLDER_MISSING`, naming the agent,
+   the declared model, and the file. Only applies when BOTH `kind: cli` AND `model:` are present — a
+   CLI agent that declares no model is unaffected (its `command` never needs `{model}` at all).
+4. **The Orchestrator's model was an env-var-only interim mechanism (NOTES K16), never a registry
+   field.** K16 explicitly deferred this: "the goal's own language ('a studio-level setting') points at
+   a REGISTRY field... Building that properly means a new schema field, validator support, and deciding
+   where in the registry it belongs — real design work, not a live-gate fix." That design work is this
+   entry. A new root singleton, `studio.md`, distinct from `projects/studio.md` (a Project pointer to
+   the studio repo itself — different file, different purpose, no collision): one field so far,
+   `orchestrator_model`, validated by the same `validateKnownModels` pass as an agent's own `model:`.
+   `repo.ts#loadStudioSettings(root)` reads it (absent file → `{}`, the same "files are the truth,
+   nothing invented" posture every other loader here takes); `Repo.studio: StudioSettings` carries it
+   through `loadRepo`. `orchestrator-boundary.ts#resolveOrchestratorModel(env, root)` now checks, in
+   order: `LEVARE_ORCHESTRATOR_MODEL` (still a legitimate runtime OVERRIDE — a Conductor testing a
+   different model without editing the studio) → `studio.md#orchestrator_model` (the source of truth) →
+   `DEFAULT_MODEL` (`claude-sonnet-5`, unchanged from K16, the built-in cheap-but-capable fallback when
+   NEITHER declares one). `SdkOrchestratorBoundaryOptions` gained an optional `root?: string`, threaded
+   from `board/serve.ts`'s `POST /orchestrator/message` handler (`ctx.root` was already in scope there,
+   just never passed to `selectOrchestratorBoundary`). Optional throughout — every pre-F11 caller/test
+   that constructs `createSdkOrchestratorBoundary()` with no `root` keeps falling back to
+   `DEFAULT_MODEL` exactly as before this field existed.
+
+**`levare init`'s scaffold declared `claude-sonnet` — not a real model ID, and it fails on every new
+studio's first native run.** This was the live symptom the goal named directly. Fixed at the source:
+`AGENT_WREN`/`AGENT_LYRA` now declare `model: claude-sonnet-5`; `KNOWLEDGE_MODEL_PRICING` (the scaffold
+template) carries the real, current, PRICED model set (`claude-opus-4-8`, `claude-sonnet-5`,
+`claude-haiku-4-5`, `claude-sonnet-4-5`, `claude-opus-4-1`) instead of the fictitious `claude-sonnet`/
+`claude-opus` rows it shipped before; a new `studio.md` template (`orchestrator_model: claude-sonnet-5`)
+demonstrates and exercises the new registry field on every fresh scaffold. `fixtures/golden/agents/
+{wren,lyra}.md` and `fixtures/golden/knowledge/model-pricing.md` were updated the same way — the golden
+fixture is the reference implementation of a real studio, and a reference implementation declaring a
+fake model ID was itself part of the bug. Approved artifact `usage:` blocks under `fixtures/golden/work/`
+were deliberately left untouched: those are historical receipts of what a member actually reported, not
+declarations, and two of the three carry `status: approved` — editing them would trip the immutability
+check against their own committed history for no reason connected to this fix.
+
+**Remote/MCP: recorded, not enforced.** The goal asked what is and isn't controllable for a `kind:
+remote` member. Per adapters.ts's own module doc, remote/MCP is "still mocked in every path" — there is
+no real MCP call implementation anywhere in this codebase yet (a separate, already-documented
+deferral, predating F11). `validateKnownModels` still checks a `remote` agent's declared `model:`
+against the known set if one is present (the same check runs for every kind, uniformly), so a `remote`
+agent naming an unpriceable model is still caught at validation time. But there is no live MCP
+invocation path to thread an enforced model INTO — `RemoteBoundary.call(req)` never reads `req.agent.model`
+today, and there is nothing to fix there without first building a real MCP call, which is out of scope
+for this goal. When a real MCP boundary lands, its request shape should be audited against this same
+"declared model reaches the wire" standard `native`/`cli` now both meet.
+
+**Verification.** `bun test` — 535 pass, 1 pre-existing skip, 0 fail, across 45 files (up from 518/1/0 at
+C12/F10): `tests/adapters.test.ts` gained a `{model}` CLI-substitution describe block (present-model
+substitutes; absent-model substitutes to `""`, never a literal `{model}`) and an AdapterRunner-level
+end-to-end case (the agent's declared model reaches the native boundary's request AND the produced
+artifact's `usage:` block names that same model). `tests/native-sdk-boundary.test.ts` already covered
+the boundary-level half (unchanged, no new gap there). `tests/validate.test.ts` gained an F11 describe
+block: `UNKNOWN_MODEL` for an unknown agent model (naming agent + model + file) and for an unknown
+studio `orchestrator_model`; both validate clean on a known model; fail-open with no
+`knowledge/model-pricing.md` at all; `MODEL_PLACEHOLDER_MISSING` for a CLI agent with a model but no
+`{model}` in its command, clean when the placeholder is present, and never triggered when no model is
+declared at all. `tests/orchestrator-sdk.test.ts` gained a precedence describe block: no studio.md/no
+override → `DEFAULT_MODEL`; `studio.md` alone → the studio's declaration; `LEVARE_ORCHESTRATOR_MODEL`
+set → the override wins over the studio; an explicit `model` option wins over both; no `root` at all
+(every pre-F11 caller) → unchanged fallback behavior. `tests/init.test.ts` gained a test asserting the
+scaffold's own agents AND its `studio.md` are all in the known-model set, plus zero `UNKNOWN_MODEL`
+errors from a full `validatePath`. `tests/serve-native-e2e.test.ts` and `tests/context.test.ts`/
+`fixtures/context/lyra.txt` were updated for the golden fixture's `claude-sonnet` → `claude-sonnet-5`
+rename (frozen fixtures and hardcoded model-string assertions, not new behavior); `tests/receipts.test.ts`
+was updated for the real pricing-table model IDs. `levare replay fixtures/golden --stubs` — final
+artifact statuses byte-for-byte against `expected.json`; `deps:check` — `deps ok`; a manual `levare init`
+smoke test in a scratch directory confirmed the scaffolded studio validates clean and its `studio.md`
+carries a real, known `orchestrator_model`.
