@@ -106,7 +106,12 @@ describe("`./levare serve` — real subprocess over a real socket", () => {
     expect(res.status).toBe(200);
     const text = await res.text();
     expect(text).toContain('class="deriv"');
-    expect(text).toContain('class="gate"');
+    // A gate card is an `<article class="gate ...">` — asserted structurally (the "gate" class
+    // TOKEN, and the data attribute every gate card carries regardless of variant), not by an exact
+    // class-attribute string: render.ts legitimately appends modifier classes (e.g. `gate--start`,
+    // `is-dispatching`), and this test cares that a gate card rendered, not its exact markup.
+    expect(text).toMatch(/<article class="gate(?:\s|")/);
+    expect(text).toContain("data-gate-target=");
     expect(text).toContain("<!doctype html>");
   });
 

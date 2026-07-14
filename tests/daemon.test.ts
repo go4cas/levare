@@ -368,17 +368,27 @@ describe("(d2) NOTES F11: a native member's receipt naming a model other than th
 });
 
 describe("(e) concurrency safety: a single-threaded work queue", () => {
-  test("many rapid ticks never invoke a member twice for the same producible kind", async () => {
-    await resolveGate(root, "storefront", "loyalty-flow", "start", { memberRunner: stubAdapterRunner(loadRepo(root)), today: "2026-07-12" });
-    await resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
+  test(
+    "many rapid ticks never invoke a member twice for the same producible kind",
+    async () => {
+      await resolveGate(root, "storefront", "loyalty-flow", "start", { memberRunner: stubAdapterRunner(loadRepo(root)), today: "2026-07-12" });
+      await resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
 
-    const { runner, calls } = countingRunner(root);
-    const daemon = new Daemon(root, { memberRunner: () => runner });
-    // 30 rapid repeated ticks — simulating a burst of repo-change signals — must produce `design`
-    // exactly once (it halts there; spec is behind an unresolved gate).
-    for (let i = 0; i < 30; i++) await daemon.tick();
-    expect(callsFor(calls, "loyalty-flow")).toEqual([{ member: "lyra", kind: "design" }]);
-  });
+      const { runner, calls } = countingRunner(root);
+      const daemon = new Daemon(root, { memberRunner: () => runner });
+      // 30 rapid repeated ticks — simulating a burst of repo-change signals — must produce `design`
+      // exactly once (it halts there; spec is behind an unresolved gate). The property under test
+      // (the mutex holds; a member is never invoked twice for the same producible kind) is entirely
+      // deterministic — a fixed number of ticks, an exact invocation-count assertion — and has
+      // nothing to do with wall-clock time. Each tick does real git commits (spawnSync), so the WALL
+      // TIME to run all 30 varies with host load; the third `test()` argument below only raises the
+      // ceiling bun would otherwise kill a slow-but-correct run at — it is a generous "this should
+      // never hang" backstop, never part of what the assertion depends on.
+      for (let i = 0; i < 30; i++) await daemon.tick();
+      expect(callsFor(calls, "loyalty-flow")).toEqual([{ member: "lyra", kind: "design" }]);
+    },
+    30_000,
+  );
 
   test("tick() refuses to run re-entrantly (the mutex itself), rather than interleaving", async () => {
     // A member call that itself (synchronously) tries to trigger another tick — the one genuine
