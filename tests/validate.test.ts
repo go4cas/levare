@@ -319,6 +319,8 @@ describe("F11: known-model validation — a model that cannot be priced cannot b
     command?: string;
     studioModel?: string;
     withPricing?: boolean;
+    connectors?: Array<{ name: string; auth: "env" | "subscription"; env?: string[] }>;
+    agentConnectors?: string[];
   }): string {
     const dir = mkdtempSync(join(tmpdir(), "levare-known-model-"));
     mkdirSync(join(dir, "agents"), { recursive: true });
@@ -329,12 +331,23 @@ describe("F11: known-model validation — a model that cannot be priced cannot b
         ["---", "name: model-pricing", "---", "", "| model | tokens_in (/M) | tokens_out (/M) |", "| --- | --- | --- |", "| claude-sonnet-5 | 3.00 | 15.00 |", ""].join("\n"),
       );
     }
+    if (opts.connectors) {
+      mkdirSync(join(dir, "connectors"), { recursive: true });
+      for (const c of opts.connectors) {
+        const envLine = `env: [${(c.env ?? []).join(", ")}]`;
+        writeFileSync(
+          join(dir, "connectors", `${c.name}.md`),
+          ["---", `name: ${c.name}`, "kind: cli", `command: ${c.name}`, `auth: ${c.auth}`, envLine, "---", "", `# ${c.name}`, ""].join("\n"),
+        );
+      }
+    }
     const kind = opts.agentKind ?? "native";
     const lines = ["---", "name: scribe", `kind: ${kind}`, "produces: [report]"];
     if (opts.agentModel !== undefined) lines.push(`model: ${opts.agentModel}`);
     if (kind === "cli") {
       lines.push(`command: [${opts.command ?? "codex, review"}]`, 'result: "emits a report"');
     }
+    if (opts.agentConnectors) lines.push(`connectors: [${opts.agentConnectors.join(", ")}]`);
     lines.push("style:", "  avatar: Sc", "---", "", "Scribe.", "");
     writeFileSync(join(dir, "agents", "scribe.md"), lines.join("\n"));
     if (opts.studioModel !== undefined) {
@@ -431,6 +444,140 @@ describe("F11: known-model validation — a model that cannot be priced cannot b
     try {
       const r = validatePath(dir);
       expect(r.errors.map((e) => e.code)).not.toContain("MODEL_PLACEHOLDER_MISSING");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // NOTES C13: a subscription connector's cost is flat-rate — its granted agent's declared model is
+  // unpriceable by definition, not by an accounting gap, so UNKNOWN_MODEL must not fire for it.
+  test("an agent granted an auth: subscription connector is exempt from UNKNOWN_MODEL", () => {
+    const dir = buildStudio({
+      agentKind: "cli",
+      agentModel: "codex-cli-5",
+      command: "codex, review, --model, '{model}'",
+      connectors: [{ name: "codex", auth: "subscription" }],
+      agentConnectors: ["codex"],
+    });
+    try {
+      const r = validatePath(dir);
+      expect(r.errors.map((e) => e.code)).not.toContain("UNKNOWN_MODEL");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // An agent NOT granted the subscription connector still gets the ordinary UNKNOWN_MODEL check —
+  // the exemption follows the grant, not the mere existence of a subscription connector elsewhere.
+  test("an agent NOT granted the subscription connector is still subject to UNKNOWN_MODEL", () => {
+    const dir = buildStudio({
+      agentModel: "codex-cli-5",
+      connectors: [{ name: "codex", auth: "subscription" }],
+      // no agentConnectors: scribe is granted nothing.
+    });
+    try {
+      const r = validatePath(dir);
+      expect(r.errors.map((e) => e.code)).toContain("UNKNOWN_MODEL");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// NOTES C13: connectors declare how they authenticate. `auth: env` (default) requires a non-empty
+// `env:` list — levare enforces that grant. `auth: subscription` means the backend authenticates
+// itself from its own stored credentials — `env:` must be empty, because there is nothing for
+// levare to inject or scope. Both misdeclarations are definition errors, caught at validate time.
+describe("C13: connector auth mode", () => {
+  function connectorStudio(frontmatterExtra: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "levare-connector-auth-"));
+    mkdirSync(join(dir, "connectors"), { recursive: true });
+    writeFileSync(
+      join(dir, "connectors", "codex.md"),
+      ["---", "name: codex", "kind: cli", "command: codex", frontmatterExtra, "---", "", "# Codex connector", ""].join("\n"),
+    );
+    return dir;
+  }
+
+  test("a subscription connector with an empty env list validates clean", () => {
+    const dir = connectorStudio('auth: subscription\nenv: []\nplan: "ChatGPT Plus — flat monthly rate"');
+    try {
+      const r = validatePath(dir);
+      expect(r.ok).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a subscription connector with NO env field at all also validates clean (absent is allowed)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-connector-auth-"));
+    try {
+      mkdirSync(join(dir, "connectors"), { recursive: true });
+      writeFileSync(
+        join(dir, "connectors", "codex.md"),
+        ["---", "name: codex", "kind: cli", "command: codex", "auth: subscription", "---", "", "# Codex connector", ""].join("\n"),
+      );
+      const r = validatePath(dir);
+      expect(r.ok).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a subscription connector that ALSO declares env vars is rejected — nothing to declare, levare cannot scope it either way", () => {
+    const dir = connectorStudio("auth: subscription\nenv: [CODEX_TOKEN]");
+    try {
+      const r = validatePath(dir);
+      expect(r.ok).toBe(false);
+      const err = r.errors.find((e) => e.code === "SUBSCRIPTION_WITH_ENV");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("codex");
+      expect(err!.message).toContain("CODEX_TOKEN");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an env connector (default auth) with no env vars is rejected — nothing for levare to inject or scope", () => {
+    const dir = connectorStudio("env: []");
+    try {
+      const r = validatePath(dir);
+      expect(r.ok).toBe(false);
+      const err = r.errors.find((e) => e.code === "EMPTY_ENV");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("codex");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an explicit auth: env connector with no env vars is rejected the same way", () => {
+    const dir = connectorStudio("auth: env\nenv: []");
+    try {
+      const r = validatePath(dir);
+      expect(r.ok).toBe(false);
+      expect(r.errors.map((e) => e.code)).toContain("EMPTY_ENV");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an env connector naming at least one var validates clean — unchanged, default behaviour", () => {
+    const dir = connectorStudio("env: [CODEX_TOKEN]");
+    try {
+      const r = validatePath(dir);
+      expect(r.ok).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an unrecognised auth value is rejected by the ordinary enum check, not silently accepted", () => {
+    const dir = connectorStudio("auth: oauth\nenv: [CODEX_TOKEN]");
+    try {
+      const r = validatePath(dir);
+      expect(r.ok).toBe(false);
+      expect(r.errors.some((e) => e.code === "BAD_ENUM" && e.message.includes("auth"))).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -92,6 +92,9 @@ const ARTIFACT_SCHEMA: Schema = {
         tokens_out: { type: "num", nullable: true },
         usd: { type: "num", nullable: true },
         wall_clock_s: { type: "num", nullable: true },
+        // NOTES C13: set only when the member's receipt came from an auth: subscription connector —
+        // names the plan covering the cost, since usd above is always null for these.
+        plan: { type: "str", required: false, nullable: true },
       },
     },
   },
@@ -212,8 +215,15 @@ const CONNECTOR_SCHEMA: Schema = {
     kind: { type: "enum", required: true, enum: ["mcp", "cli"] },
     server: { type: "str", required: false },
     command: { type: "str", required: false },
-    env: { type: "str[]", required: true },
+    // Required-ness of `env` is auth-mode-dependent (NOTES C13) — enforced by validateConnectorAuth
+    // below, not by this shape-only schema, since "required" here would reject a bare-absent `env:`
+    // on an `auth: subscription` connector even though that's the correct shape for one.
+    env: { type: "str[]", required: false },
     scope: { type: "str", required: false },
+    // NOTES C13: how this connector's backend authenticates. Defaults to "env" when absent — the
+    // original, unchanged behaviour.
+    auth: { type: "enum", required: false, enum: ["env", "subscription"] },
+    plan: { type: "str", required: false },
   },
 };
 
@@ -423,6 +433,7 @@ function validateSingleFile(
     artifacts.push({ file, dir: dirname(file), isFolder: false, data });
   }
   if (kind.schema === AGENT_SCHEMA) validateAgentVariant(data, file, errors);
+  if (kind.schema === CONNECTOR_SCHEMA) validateConnectorAuth(data, file, errors);
 }
 
 function discoverFolderArtifacts(root: string, errors: ValidationError[], artifacts: DiscoveredArtifact[]): void {
@@ -665,6 +676,31 @@ function validateAgentVariant(data: Record<string, YamlValue>, file: string, err
   } else if (data.kind === "remote") need("server");
 }
 
+// NOTES C13: a connector's `auth:` and `env:` must agree. `auth: env` (default) is levare's
+// enforced grant — an empty env list declares nothing for the Runner to inject or scope, so it's a
+// definition error, not a connector with nothing to do. `auth: subscription` names a backend that
+// authenticates itself from its own stored credentials — declaring env vars there would claim an
+// enforcement levare does not and cannot provide, so it's rejected the same way.
+function validateConnectorAuth(data: Record<string, YamlValue>, file: string, errors: ValidationError[]): void {
+  const auth = data.auth === "subscription" ? "subscription" : "env";
+  const env = Array.isArray(data.env) ? data.env : [];
+  const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+  if (auth === "env" && env.length === 0) {
+    errors.push({
+      code: "EMPTY_ENV",
+      message: `connector '${name}' declares auth: env but names no env vars — an env-authenticated connector has nothing for levare to inject or scope; declare 'auth: subscription' if the backend authenticates itself instead`,
+      file,
+    });
+  }
+  if (auth === "subscription" && env.length > 0) {
+    errors.push({
+      code: "SUBSCRIPTION_WITH_ENV",
+      message: `connector '${name}' declares auth: subscription but also names env vars (${env.join(", ")}) — a subscription-authenticated backend has nothing to declare, and levare cannot scope its credential either way`,
+      file,
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Known-model validation (NOTES F11) — a model that cannot be priced cannot be declared
 // ---------------------------------------------------------------------------
@@ -702,11 +738,82 @@ function declaredAgentModels(agentsDir: string): Array<{ agentName: string; mode
   return out;
 }
 
+// NOTES C13: agent names granted (directly or via their team) at least one `auth: subscription`
+// connector — a subscription CLI's cost is flat-rate, not per-token, so its declared `model:` is
+// unpriceable BY DEFINITION, not by an accounting gap. These agents are exempt from UNKNOWN_MODEL
+// below. Hand-parsed straight off disk (not via repo.ts's loadRepo), matching every other
+// cross-entity check in this file, so validation stays independent of a fully-loadable repo.
+function subscriptionAuthAgents(root: string): Set<string> {
+  const out = new Set<string>();
+  const connectorsDir = join(root, "connectors");
+  if (!existsSync(connectorsDir)) return out;
+
+  const subscriptionConnectors = new Set<string>();
+  for (const file of readdirSync(connectorsDir).sort()) {
+    if (!file.endsWith(".md")) continue;
+    let data: Record<string, YamlValue>;
+    try {
+      ({ data } = parseFrontmatter(readFileSync(join(connectorsDir, file), "utf8")));
+    } catch {
+      continue;
+    }
+    if (data.auth === "subscription") {
+      subscriptionConnectors.add(typeof data.name === "string" ? data.name : basename(file, ".md"));
+    }
+  }
+  if (subscriptionConnectors.size === 0) return out;
+
+  // team name → its own connector grants, and which agents are its members.
+  const teamConnectorsByMember = new Map<string, Set<string>>();
+  const teamsDir = join(root, "teams");
+  if (existsSync(teamsDir)) {
+    for (const file of readdirSync(teamsDir).sort()) {
+      if (!file.endsWith(".md") || file.endsWith(".learnings.md")) continue;
+      let data: Record<string, YamlValue>;
+      try {
+        ({ data } = parseFrontmatter(readFileSync(join(teamsDir, file), "utf8")));
+      } catch {
+        continue;
+      }
+      const connectors = strList(data.connectors);
+      for (const member of strList(data.members)) {
+        const set = teamConnectorsByMember.get(member) ?? new Set<string>();
+        for (const c of connectors) set.add(c);
+        teamConnectorsByMember.set(member, set);
+      }
+    }
+  }
+
+  const agentsDir = join(root, "agents");
+  if (existsSync(agentsDir)) {
+    for (const file of readdirSync(agentsDir).sort()) {
+      if (!file.endsWith(".md") || file.endsWith(".learnings.md")) continue;
+      let data: Record<string, YamlValue>;
+      try {
+        ({ data } = parseFrontmatter(readFileSync(join(agentsDir, file), "utf8")));
+      } catch {
+        continue;
+      }
+      const agentName = typeof data.name === "string" ? data.name : basename(file, ".md");
+      const granted = new Set<string>([...strList(data.connectors), ...(teamConnectorsByMember.get(agentName) ?? [])]);
+      for (const g of granted) {
+        if (subscriptionConnectors.has(g)) {
+          out.add(agentName);
+          break;
+        }
+      }
+    }
+  }
+  return out;
+}
+
 function validateKnownModels(root: string, errors: ValidationError[]): void {
   const pricing: Pricing = loadPricing(root);
   if (pricing.size === 0) return; // no pricing table to check against — fail open.
+  const subscriptionAgents = subscriptionAuthAgents(root);
 
   for (const { agentName, model, file } of declaredAgentModels(join(root, "agents"))) {
+    if (subscriptionAgents.has(agentName)) continue; // C13: unpriceable by definition, not a defect.
     if (!pricing.has(model)) {
       errors.push({
         code: "UNKNOWN_MODEL",

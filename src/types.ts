@@ -115,6 +115,14 @@ export interface StudioSettings {
   orchestratorModel?: string;
 }
 
+// NOTES C13: how a connector's CLI/MCP backend authenticates. `env` (default) is the original
+// model — levare's allowlist (env.ts) injects exactly the named vars, and that grant IS the
+// enforcement. `subscription` names a backend that authenticates itself from its own stored
+// credentials (e.g. `codex login` writing a session to ~/.codex) — `env` must be empty for these,
+// because there is nothing for levare to inject or scope. Any member able to spawn the binary can
+// use the login, granted or not; the grant is documentation, not enforcement (see doctor.ts).
+export type ConnectorAuth = "env" | "subscription";
+
 export interface Connector {
   name: string;
   kind: "mcp" | "cli";
@@ -122,6 +130,10 @@ export interface Connector {
   command?: string;
   env: string[];
   scope?: string;
+  auth: ConnectorAuth;
+  /** Human-readable note on the subscription plan in use — required in practice for `auth:
+   * subscription` connectors so receipts and doctor can name what's covering the cost (§10). */
+  plan?: string;
 }
 
 export interface TypeTemplate {
@@ -224,7 +236,9 @@ export interface Receipt {
   wall_clock_s: number | null;
   usd: number | null;
   unreported: boolean;
-  /** Subscription-plan members price at 0 with the plan noted here (§10). */
+  /** NOTES C13: a subscription-authenticated member's `usd` above is always null — pricing per
+   * token would be a fiction for a flat-rate plan — and the plan is named here instead, so the
+   * gap in cost accounting is explained rather than left to look like a bug. */
   plan?: string;
 }
 

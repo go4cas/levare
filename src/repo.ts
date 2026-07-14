@@ -142,6 +142,10 @@ function toConnector(d: Record<string, YamlValue>): Connector {
     command: optStr(d.command),
     env: strArr(d.env),
     scope: optStr(d.scope),
+    // NOTES C13: defaults to "env" — unchanged behaviour for every connector defined before this
+    // field existed.
+    auth: d.auth === "subscription" ? "subscription" : "env",
+    plan: optStr(d.plan),
   };
 }
 
