@@ -1,5 +1,6 @@
 import { test, expect, describe, beforeEach } from "bun:test";
-import { readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, mkdtempSync, rmSync, cpSync, writeFileSync, mkdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deterministicBoundary } from "../src/orchestrator.ts";
@@ -29,6 +30,26 @@ import type { AsyncSdkTransport, SdkWorkerRequest, SdkWorkerResponse } from "../
 beforeEach(() => {
   resetSdkPreconditionCache();
 });
+
+// converse() (ruling C10) grounds itself in a real `loadRepo(root)` of the studio it's given, so —
+// unlike interpret()/narrate(), which never touch disk — its tests need a real, valid, committed
+// studio tree, not an arbitrary string. Mirrors orchestrator.test.ts's own `seedScratchRepo`.
+const HERMETIC_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
+function git(repoRoot: string, args: string[]): void {
+  const r = spawnSync("git", ["-C", repoRoot, "-c", "user.name=seed", "-c", "user.email=seed@levare.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main", ...args], {
+    encoding: "utf8",
+    env: HERMETIC_ENV,
+  });
+  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+}
+function seedScratchRepo(): string {
+  const root = mkdtempSync(join(tmpdir(), "levare-orch-sdk-"));
+  cpSync("fixtures/golden", root, { recursive: true });
+  git(root, ["init", "-q"]);
+  git(root, ["add", "-A"]);
+  git(root, ["commit", "-q", "-m", "seed golden fixture"]);
+  return root;
+}
 
 // Phase 7 acceptance: the real OrchestratorBoundary is driven by the Claude Agent SDK, but every
 // test here mocks the SDK at the TRANSPORT level (a fake `AsyncSdkTransport`, exactly like
@@ -230,41 +251,107 @@ describe("createSdkOrchestratorBoundary#narrate (mocked transport)", () => {
 // ---------------------------------------------------------------------------
 
 describe("createSdkOrchestratorBoundary#converse (mocked transport)", () => {
-  test("sends the Conductor's text verbatim (no task-framing wrapper) under the verbatim system prompt, with only Read/Grep/Glob tools", async () => {
-    const onDiskPrompt = readFileSync("docs/orchestrator-prompt.md", "utf8");
-    const { transport, calls } = fakeTransport(() => ({ ok: true, result: "The loyalty flow is in review, waiting on the spec gate." }));
-    const boundary = createSdkOrchestratorBoundary({ transport });
-    const reply = await boundary.converse("what's the story with the loyalty flow?", "/some/repo/root");
+  test("grants ZERO tools (ruling C10 — no Read/Grep/Glob, no cwd sandbox) and grounds the prompt in a real projection of the given studio, with the Conductor's text verbatim at the end", async () => {
+    const root = seedScratchRepo();
+    try {
+      const onDiskPrompt = readFileSync("docs/orchestrator-prompt.md", "utf8");
+      const { transport, calls } = fakeTransport(() => ({ ok: true, result: "The loyalty flow is in review, waiting on the spec gate." }));
+      const boundary = createSdkOrchestratorBoundary({ transport });
+      const reply = await boundary.converse("what's the story with the loyalty flow?", root);
 
-    expect(reply).toBe("The loyalty flow is in review, waiting on the spec gate.");
-    expect(calls).toHaveLength(1);
-    expect(calls[0].prompt).toBe("what's the story with the loyalty flow?");
-    expect(calls[0].systemPrompt).toBe(onDiskPrompt);
-    expect(calls[0].cwd).toBe("/some/repo/root");
-    // Read-only, never Write/Edit/Bash — the Orchestrator proposes, never writes, even with tool access.
-    expect(calls[0].tools).toEqual(["Read", "Grep", "Glob"]);
-    expect(calls[0].allowedTools).toEqual(["Read", "Grep", "Glob"]);
+      expect(reply).toBe("The loyalty flow is in review, waiting on the spec gate.");
+      expect(calls).toHaveLength(1);
+      expect(calls[0].systemPrompt).toBe(onDiskPrompt);
+      // The Orchestrator holds no filesystem tools at all — the exact fix for the live bug where
+      // Read/Grep/Glob let the model wander into levare's OWN source tree instead of the studio.
+      expect(calls[0].tools).toEqual([]);
+      expect(calls[0].allowedTools).toEqual([]);
+      expect(calls[0].cwd).toBeUndefined();
+      // The Conductor's raw text is carried verbatim at the very end (never edited), same pattern as
+      // interpret()'s INTERPRET_TASK_PREFIX — everything before it is the assembled studio projection.
+      expect(calls[0].prompt.endsWith("Conductor: what's the story with the loyalty flow?")).toBe(true);
+      // The projection is real, derived from THIS studio's own fixture content, not a stub.
+      expect(calls[0].prompt).toContain("kestrel");
+      expect(calls[0].prompt).toContain("storefront/checkout-flow");
+      expect(calls[0].prompt).toContain("loyalty-program");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("a transport failure throws OrchestratorSdkError — it never fabricates a conversational reply", async () => {
-    const { transport } = fakeTransport(() => ({ ok: false, error: "worker timed out after 90000ms" }));
-    const boundary = createSdkOrchestratorBoundary({ transport });
-    await expect(boundary.converse("summarize the loyalty-program idea", "/root")).rejects.toThrow(OrchestratorSdkError);
-    await expect(boundary.converse("summarize the loyalty-program idea", "/root")).rejects.toThrow(/worker timed out/);
+    const root = seedScratchRepo();
+    try {
+      const { transport } = fakeTransport(() => ({ ok: false, error: "worker timed out after 90000ms" }));
+      const boundary = createSdkOrchestratorBoundary({ transport });
+      await expect(boundary.converse("summarize the loyalty-program idea", root)).rejects.toThrow(OrchestratorSdkError);
+      await expect(boundary.converse("summarize the loyalty-program idea", root)).rejects.toThrow(/worker timed out/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("converse() gets its own (longer) timeout, independent of interpret()/narrate()'s", async () => {
-    const seen: Array<number | undefined> = [];
-    const transport: AsyncSdkTransport = {
-      async run(_req, opts) {
-        seen.push(opts.timeoutMs);
-        return { ok: true, result: "ok" };
-      },
-    };
-    const boundary = createSdkOrchestratorBoundary({ transport, timeoutMs: 45_000, converseTimeoutMs: 12_345 });
-    await boundary.interpret("stats");
-    await boundary.converse("hi", "/root");
-    expect(seen).toEqual([45_000, 12_345]);
+    const root = seedScratchRepo();
+    try {
+      const seen: Array<number | undefined> = [];
+      const transport: AsyncSdkTransport = {
+        async run(_req, opts) {
+          seen.push(opts.timeoutMs);
+          return { ok: true, result: "ok" };
+        },
+      };
+      const boundary = createSdkOrchestratorBoundary({ transport, timeoutMs: 45_000, converseTimeoutMs: 12_345 });
+      await boundary.interpret("stats");
+      await boundary.converse("hi", root);
+      expect(seen).toEqual([45_000, 12_345]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // Ruling C10's wiring fix: every boundary call must receive the served studio root explicitly —
+  // a call constructed without one is an error, never a silent default (e.g. to LEVARE_ROOT or cwd).
+  test("called without an explicit studio root, throws rather than defaulting to anything", async () => {
+    const { transport } = fakeTransport(() => ({ ok: true, result: "should never be reached" }));
+    const boundary = createSdkOrchestratorBoundary({ transport });
+    await expect(boundary.converse("hi", "")).rejects.toThrow(/studio root/);
+    await expect(boundary.converse("hi", undefined as unknown as string)).rejects.toThrow(/studio root/);
+  });
+
+  // The projection must contain ONLY the served studio's own content — nothing from any other
+  // directory (the exact live bug: the Orchestrator reported reading levare's own src/, tests/, and
+  // a fixture idea that doesn't exist in the studio it was actually serving).
+  test("the projection contains only the served studio's own teams/units/gates/ideas — never another studio's", async () => {
+    const golden = seedScratchRepo();
+    // A second, independently-seeded studio — copied from the same golden fixture (so it's
+    // guaranteed to validate) but with its idea swapped for one that exists ONLY here, proving the
+    // golden fixture's own projection never leaks into a DIFFERENT studio's, and vice versa.
+    const scratch = mkdtempSync(join(tmpdir(), "levare-orch-sdk-scratch-"));
+    try {
+      cpSync("fixtures/golden", scratch, { recursive: true });
+      rmSync(join(scratch, "ideas", "loyalty-program.md"));
+      writeFileSync(
+        join(scratch, "ideas", "underwater-basket-weaving.md"),
+        ["---", "name: underwater-basket-weaving", 'pitch: "A pitch that exists ONLY in the scratch studio."', "---", "", "# Underwater basket weaving", ""].join("\n"),
+      );
+      git(scratch, ["init", "-q"]);
+      git(scratch, ["add", "-A"]);
+      git(scratch, ["commit", "-q", "-m", "seed scratch studio"]);
+
+      const { transport: t1, calls: c1 } = fakeTransport(() => ({ ok: true, result: "ok" }));
+      await createSdkOrchestratorBoundary({ transport: t1 }).converse("what ideas do we have?", golden);
+      expect(c1[0].prompt).toContain("loyalty-program");
+      expect(c1[0].prompt).not.toContain("underwater-basket-weaving");
+
+      const { transport: t2, calls: c2 } = fakeTransport(() => ({ ok: true, result: "ok" }));
+      await createSdkOrchestratorBoundary({ transport: t2 }).converse("what ideas do we have?", scratch);
+      expect(c2[0].prompt).toContain("underwater-basket-weaving");
+      expect(c2[0].prompt).not.toContain("loyalty-program");
+    } finally {
+      rmSync(golden, { recursive: true, force: true });
+      rmSync(scratch, { recursive: true, force: true });
+    }
   });
 });
 
