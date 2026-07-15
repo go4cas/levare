@@ -5153,3 +5153,95 @@ mode: source/dev` ahead of the unchanged connector report. `levare replay fixtur
 (via the shim) still matches `fixtures/golden/expected.json` byte-for-byte. `deps:check` → `deps ok`
 (`bun build` is invoked only by the dev-time `build` script; no new runtime dependency). `dist/` is
 gitignored.
+
+## DIST2. The release pipeline — a GitHub Actions workflow that builds four platform binaries and publishes them
+
+Step 2 of distribution: `.github/workflows/release.yml`, triggered on push of a tag matching `v*`
+(`v0.1.0`, `v1.2.3-rc1`, ...) — deliberately distinct from the descriptive waypoint tags (`dist1`,
+`f11`, ...) used during development, which the `v*` glob does not match and must never publish a
+release. Three jobs, chained: `verify` (`bun test` + `deps:check`) → `build` (the four-platform
+matrix, gated on `verify` passing) → `release` (publishes, gated on every matrix leg succeeding). A
+build that fails the test suite or ships a forbidden dependency never reaches a published binary.
+
+**Reuses DIST1's build path, does not reinvent it.** `scripts/build.sh` gained two optional
+positional arguments — `[outfile] [bun-compile-target]` — so the exact same script now serves both
+`bun run build`'s no-arg dev build (`dist/levare`, host platform, unchanged byte-for-byte in
+behavior) and the release workflow's four cross-compiled legs (`scripts/build.sh
+dist/levare-darwin-arm64 bun-darwin-arm64`, etc.). The `--define __LEVARE_BUILD_COMMIT__` stamp and
+the scratch-directory cwd workaround (NOTES DIST1) are untouched, just parameterized. Confirmed
+locally: `bun run build` (no args) still produces `dist/levare` for the host platform with the exact
+same `--version` output as before this change.
+
+**The platform matrix — four targets, no Windows.** `bun-darwin-arm64`, `bun-darwin-x64`,
+`bun-linux-x64`, `bun-linux-arm64`, each producing an identically-named asset
+(`levare-<os>-<arch>`). All four cross-compile from a single `ubuntu-latest` runner via `bun build
+--compile --target=<t>` — confirmed locally that Bun cross-compiles a `bun-darwin-arm64` binary from
+this linux sandbox (downloading that target's runtime on demand), so the matrix does not need
+platform-specific runners. Windows is deliberately excluded: levare shells out to `git` and
+POSIX-oriented vendor CLIs (`claude`, `codex`) it has never been run against on Windows, and shipping
+a Windows binary without ever having tested one would be dishonest — exactly the kind of implied
+claim levare's own design tries not to make elsewhere (see doctor's `auth: subscription` warning,
+NOTES C13, for the same instinct applied to credential scoping).
+
+**Version stamping for a release build.** DIST1's `version.ts` reads the package version via a
+static `package.json` import — correct for a dev build, but a *release* binary must report the TAG's
+version, not whatever happens to be sitting in `package.json` (which can legitimately lag a release
+tag). The workflow's build job rewrites `package.json`'s `version` field from `GITHUB_REF_NAME`
+(stripping the leading `v`) in its own ephemeral checkout, immediately before calling
+`scripts/build.sh` — nothing is committed back to the repo or the tag; it only affects what gets
+bundled into that job's binary. This was the one place DIST2 could not simply reuse DIST1 unmodified
+end to end: DIST1 never needed the version to differ from what was already committed, because it only
+ever built from a working tree, not from a tag asserting a specific release version.
+
+**Checksums and publish.** After all four legs upload their binary as a build artifact, the `release`
+job downloads them all, flattens them into one directory (`actions/download-artifact`'s multi-artifact
+mode nests each under its own subdirectory by name), re-`chmod +x`s them (artifact zipping has a
+known history of not reliably preserving the executable bit), generates `SHA256SUMS` covering all
+four, and publishes a GitHub Release via `softprops/action-gh-release` with the four binaries and
+`SHA256SUMS` as assets, `generate_release_notes: true` for the auto commit-log section, plus an
+explicit `body` that is not left to auto-generation: a "Runtime prerequisites — this is NOT
+zero-setup" section stating plainly that the binary still needs `git` on `PATH` and a model provider
+(`ANTHROPIC_API_KEY` for native members and/or a wrapped vendor CLI for cli members) at runtime, and
+a reminder that Windows was not built. Putting this in the explicit `body` (rather than trusting
+`generate_release_notes` alone) guarantees the honesty section survives regardless of the auto-notes
+feature's own formatting.
+
+**README.** Added a "Distribution" section covering both the existing `bun run build` dev path
+(NOTES DIST1) and the new release-download path: platform asset names, the `sha256sum -c
+SHA256SUMS --ignore-missing` verify step, chmod+PATH install, and the identical "not zero-setup"
+runtime-prerequisites language (`git`, `ANTHROPIC_API_KEY`/a wrapped vendor CLI). Explicitly states an
+install script and Homebrew formula are deferred (step 3) rather than implying either exists.
+`tests/release-workflow.test.ts` asserts the README and the workflow can't silently drift apart:
+every matrix asset name appears in the README, the checksum filename matches, the verify command
+matches, and the README makes no premature `brew install`/`curl | sh` claim.
+
+**What was checked locally vs. what genuinely cannot be.** `Bun.YAML.parse` (built into this Bun
+version) confirms the workflow file is syntactically valid YAML and — more usefully than a bare
+syntax check — `tests/release-workflow.test.ts` parses it and asserts on its actual structure: the
+tag trigger is exactly `["v*"]` (and a small glob check confirms `v*` matches semver tags and rejects
+`dist1`/`f11`/`ui6`), the matrix is exactly the four named targets with no Windows entry, each build
+step invokes `scripts/build.sh` rather than a hand-rolled `bun build` line, `build` depends on
+`verify` and `release` depends on `build`, only the `release` job carries `contents: write`, and the
+release step's asset list and body text contain what NOTES DIST2 requires. What none of this can
+do — and what a YAML/structure check was never going to be able to do — is prove the workflow
+actually *runs* correctly on GitHub's own infrastructure: real `oven-sh/setup-bun`/`actions/
+upload-artifact`/`actions/download-artifact`/`softprops/action-gh-release` behavior, real
+cross-runner artifact permission handling, the real interaction between `generate_release_notes` and
+a supplied `body`, and whether GitHub's runners can actually reach whatever Bun downloads for
+cross-compilation. **The true test is pushing a real `v*` tag and watching the Actions run — that has
+not been done in this pass, and cannot be done from here.** Recorded as the acceptance criterion this
+step cannot self-certify, same as NOTES DIST1 recorded its own build-verification workaround as
+sandbox-specific and not a substitute for a real cross-platform run.
+
+**Deliberately deferred, per the goal's own step boundary.** An install script (e.g. a `curl | sh`
+one-liner) and a Homebrew formula are step 3, not attempted here — the README says so explicitly
+rather than silently omitting them. Signing/notarizing the macOS binaries (an unsigned binary
+downloaded from the internet will hit Gatekeeper friction on a Mac) was not asked for and is not
+attempted; worth flagging for whoever picks up step 3, since it directly affects whether "download
+and run" actually works painlessly on macOS even once the binary exists.
+
+**Verification.** `bun test` — 721 pass (up from 704: +17 new tests, `tests/release-workflow.test.ts`),
+1 pre-existing skip, 0 fail, across 57 files. `bun run build` (no args, unchanged dev path) still
+produces a working `dist/levare`; `./levare` shim regressions unchanged; `levare replay
+fixtures/golden --stubs` (via the shim) still matches the oracle byte-for-byte; `deps:check` → `deps
+ok`. The workflow YAML parses via `Bun.YAML.parse` and structurally matches every requirement above.
