@@ -4249,3 +4249,95 @@ the AdapterRunner's own `spawn`/`asyncSpawn`/`now` injection points. When review
 what it would take to make it fail SPURIOUSLY on a correct implementation — a busy CI runner, a
 long-lived developer shell, two people running the suite at once — and if the answer isn't "nothing,"
 it isn't testing what it claims to.
+
+---
+
+## UI1. The board never had a design round beyond the CD prototype's own information architecture —
+## a status colour could be set by any renderer that felt like it, and the nav still carried the shape
+## of a screen that predates the header
+
+**The complaint.** The Conductor's own review of the board found `active` rendering grey on the Studio
+project card (`.chip.is-progress`), grey on the Project page's work-unit rows (the same class), and
+blue on the run-view score rail (`.snode.active`) — three renderers, three independent colour
+decisions for one word, because nothing enforced a single status→colour map or a single card contract.
+Two more instances of the same root cause surfaced while fixing it: `.snode`/`.gate__badge`'s
+`blocked` state rendered the SAME red as `rejected` (the canonical palette's `blocked` is hollow
+neutral; only `failed`/`rejected` is red), and a registry connector's subscription-auth warning
+hardcoded `var(--warn,#b45309)` — a colour the design brief's palette doesn't contain at all.
+
+**The fix — one map, everywhere.** `src/board/status.ts` is now the ONLY place that decides what
+colour a lifecycle status gets. It defines `CanonicalStatus` (`done`/`active`/`waiting`/`blocked`/
+`needs-you`/`failed`/`exhausted` — the design brief's canonical state palette, plus `exhausted` for
+NOTES F20's own loop-exhaustion state, kept inside the gate-brass family since an exhausted loop is
+still a gate, still on the Conductor) and three pure `fromXxx` converters — `fromWorkUnitStatus`,
+`fromArtifactStatus`, `fromNodeState` — that turn a domain status into one of those seven values.
+`chipClass`/`dotClass`/`snodeClass` then turn a `CanonicalStatus` into the marker-family-appropriate
+CSS class (each of `.chip`/`.dot`/`.snode` keeps its own historical class spelling — a shape/spelling
+detail, not a second colour decision) and `statusChip()` renders the whole `<span>`. Every call site
+in `render.ts` that used to hand-pick a class — `projectStatusChip` (Studio card + the new project-
+header badge), the project page's work-unit row chip, the run-view `sstep` chip, the artifact render
+view's status chip, the gate card's `blocked`/`exhausted` badges, and `miniScoreHtml`'s dots — now
+goes through this module. `miniScoreHtml` had a second, independent bug of the same shape: it
+collapsed `active` AND `blocked` into the same hollow `is-wait` dot even though `.dot.is-active`/
+`.dot.is-blocked` already existed in assets/styles.css, dormant — the same "rule exists, renderer
+never emits it" defect NOTES.md's G1 named for `.snode.is-danger`. Fixed by wiring `dotClass`/
+`fromNodeState` through instead of a bespoke three-way ternary. The connector auth-warning now
+renders `var(--fg-dim)` (neutral text, per the brief: "anything tempted toward amber is either
+needs-you, or failed, or it renders neutral with text") instead of a colour outside the palette.
+
+**The header (item 3).** New, top-level, spans the full width above the nav and content on every
+screen at every viewport — `appHeader()` in render.ts, `.apphead` in the stylesheet. Left cluster: the
+podium mark, the wordmark, and levare's own release version (read once from this repo's own
+`package.json` via `sdk-transport.ts`'s existing `LEVARE_ROOT`, not a project's `deploy`/`pace`/
+release vocabulary) as a quiet muted mono chip. Right cluster: the Orchestrator status — the same
+`orchestratorIndicator()` component that already existed, unchanged in behavior (dot filled/green for
+on, hollow/neutral for off, never red — a configuration state, never a failure) — a hairline divider,
+then the theme toggle. This retires the old mobile-only `.mobilebar`, which duplicated the same three
+elements only below 1080px; the header now renders them exactly once, at every width, and the old
+rail-open hamburger moved into it (CSS-hidden above 1080px, same breakpoint).
+
+**The left nav (item 4).** `railNav()` lost its `derivText` parameter and the "derived from ... on
+every request" footer entirely (item 4c — a deliberate removal, not an oversight; the derivation-line
+convention from phase 7.5 is explicitly superseded here). The Orchestrator section is gone (item 4a —
+its status is now a header-level fact, not a duplicate rail row); the rail's old `railhead` (logo +
+indicator) is gone too, since both now live in the header. Connector rows (item 4b) no longer print
+their health as trailing text (`ok`/`missing-env`) — the dot alone still carries the signal — and are
+now real links: `entityBlock()` gives every registry entity card a stable `id="${kind}-${name}"`, so a
+connector row links straight to `/registry?entity=connectors#connectors-${name}`, plain browser anchor
+scrolling, no new client-side JS.
+
+**Studio (item 5).** Needs You, Running Now, and Projects now share ONE counter treatment
+(`sectionCount()`) — a plain neutral mono badge, not a colored pill. Needs You's old brass-tinted
+counter couldn't generalize to the other two without violating the brief's gate-colour scarcity rule
+("gate brass ... appears exclusively on gates"); the gate CARDS themselves already carry that brass
+wash inside `#needs`, so the heading count doesn't need to repeat it. A project card's meta line drops
+"no deploy target" entirely (absence is shown by absence) and shows a release line only when the
+project actually has one — no "no releases yet" text.
+
+**Project page (item 6).** `project.repo`/`project.deploy` moved from left-aligned label rows in the
+pointer card to right-aligned icon links beside the title (`iconLink()`, one reused external-link SVG,
+`aria-label`/`title` distinguishing repo from deploy; the repo link prefers `project.remote`'s
+browsable https form over the raw `repo` field, and is omitted entirely for a project like `studio`
+whose `repo: .` points at levare's own working tree with no real external target). The page header
+carries a status badge from the SAME `projectStatusChip` call the Studio card uses, so the two can
+never independently drift. `pace` renders as a badge (`auto` reads as the in-flight blue, `step` as
+the hollow-neutral waiting tone — never a new colour). `derive.ts#recentReleases` (a generalization of
+the pre-existing `latestRelease`, which is now its own head) replaces the pointer card's hardcoded "no
+releases tracked yet" stub with the project's actual most-recent shipped units, capped at 3, the
+latest visually distinguished with the same canonical `done` green a shipped-status chip already uses.
+
+**Verification.** `bun test` — 628 pass, 1 pre-existing skip, 0 fail, across 52 files, including new
+coverage: `chipClass`/`fromWorkUnitStatus` cross-checks proving the map is a single source, and a
+synthetic-repo render test proving the Studio project card, the project header badge, and a work-unit
+row all emit the identical `is-active` class for the identical underlying status (never the old
+`is-progress`). `levare replay fixtures/golden --stubs` — final artifact statuses still byte-for-byte
+against `expected.json`. `deps:check` — `deps ok`.
+
+**Deliberately out of scope.** The registry's entity-card internals (team/agent/skill/etc. layout)
+are untouched beyond the connector auth-warning colour and the new stable `id` — the registry never
+had its own design pass (NOTES E8) and doesn't get one here. The Orchestrator chat panel's own
+message/composer markup is untouched. The "single card contract" (item 2) turned out to be mostly
+already-true structurally — the project card, gate card, and work-unit row already put a title
+top-left and a status badge top-right via the same `.pcard__top`/`.gate__top`/`.unit__head` flex
+pattern before this pass; what was missing was never layout, it was the status colour disagreeing
+across them, which item 1's canonical map now closes.
