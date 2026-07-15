@@ -6317,3 +6317,145 @@ to `main` / tagging a release) — not something this sandbox can execute — so
 Node 20 deprecation warnings on a real run is asserted from each new major's own release notes
 (runtime bumped to Node 24, as GitHub's deprecation notice requires) rather than independently
 re-observed in a live Actions run.
+
+# NOTES UI11 — the long-list treatment, the types/connectors registry-card sweep, and Orchestrator/user timestamp captions
+
+## Item 1: long lists
+
+**Left nav (Projects/Ideas).** `railNav`'s two long-lived rail sections now cap at 7 rows
+(`RAIL_LONGLIST_CAP`, `render.ts#railLongList`); at 7 or fewer a section renders exactly the same
+markup as before (verified against the existing "rail is byte-identical across all six screens"
+test, unchanged). Past 7, the remaining rows still render server-side — inside a `hidden`
+`.railsec__overflow` div — followed by a `<button data-rail-expand>+ N more</button>`;
+`assets/app.js`'s one new `click` delegate un-hides the overflow div and removes the button. No new
+route, no fetch: the "expansion reveals the rest client-side" requirement is just un-hiding markup
+that was already in the DOM.
+
+Projects order by real recency now (`derive.ts#projectLastActivity`: the newest `created` date among
+any artifact anywhere in the project), most-recently-active first — never filesystem mtime, same
+reasoning `mostRelevantUnit` already established. **Ideas get no such reordering**: the `idea`
+frontmatter schema (`validate.ts#IDEA_SCHEMA`) carries no timestamp field at all, and NOTES UI1's own
+precedent already rejected filesystem mtime as a recency signal ("a fresh git checkout stamps [it]
+uniformly and so carries no real recency signal"). Rather than fabricate a signal that doesn't exist
+on disk, ideas keep their existing order (`extra.ts#loadDir`'s own `readdirSync().sort()`) — the cap
++ expand mechanic applies identically regardless, which is the actual behavioural contract the goal's
+achieved-when criteria test.
+
+**Registry list filter.** `renderRegistry` now renders a `<input data-registry-filter>` above the
+card grid when the *active* kind's own count exceeds 10 (`registryKindCount`); at 10 or fewer, no
+input. `assets/app.js`'s one new `input` delegate filters `.entity.card` elements by their visible
+`.entity__title` + `.rendered` text (never the hidden `.rawmd-source` raw-markdown textarea — that's
+"Edit source" material, not what's on screen), toggling a plain `.is-filtered-out` class rather than
+touching `style.display` (which `entityBlock` already uses, per-kind, for the inactive-kind cards —
+two independent hiding mechanisms compose fine since "hidden OR hidden" is still hidden).
+
+Both features are pure delegated listeners on `document` (`click`/`input`), matching the codebase's
+own established idiom for anything that must survive a UI10 client-side navigation swap without a
+rebind step (see app.js's own comment on the editor-overlay's two document-delegated listeners) — the
+rail is never one of the two regions a swap replaces at all, and the registry filter input is
+re-created fresh by every swap into `.main`, so neither needs special-casing.
+
+## Item 2: types cards
+
+Dropped the `glyph` prow row (RULE A, same ruling UI7 already applied to teams/agents/skills — the
+title already shows it via `${t.glyph} ${esc(t.name)}`). `expects`/`gates` now render as chip rows
+through the same `tag()` primitive agents' `produces` already uses, replacing the old
+arrow-joined/comma-joined plain strings.
+
+## Item 3: connectors cards
+
+**Kind badge.** `connectorKindBadge` (render.ts) reuses the exact `.kindbadge` shape-treatment system
+UI7 built for agent kinds — `cli` shares the agent kind's own outlined `--cli` variant (identical
+concept), and a new `.kindbadge--mcp` (filled, like `--native`) was added so the two connector kinds
+read as a clear filled/outlined pair. Neither draws from the status palette — confirmed by extending
+the existing "`.kindbadge` rules never contain `var(--active/--ok/--gate/--danger)`" test, which
+already sweeps every `.kindbadge*` rule in the stylesheet including the new one.
+
+**The C13 scoping warning — a deliberate tension with NOTES UI1, resolved without reopening the
+brief's colour ban.** NOTES UI1 previously stripped this exact note down to plain neutral text,
+because the design brief bans a general-purpose amber "warn" hue outright ("anything tempted toward
+amber is either needs-you (brass, gate-shaped) or failed (red), or it renders neutral with text").
+This goal explicitly asks for real warning styling on the *same* note ("it IS a warning and must get
+proper warning styling"). Read literally, those two rulings collide; the resolution kept here is that
+the brief's ban is specifically about the amber/red *hues* (gate brass and failure red are
+semantically reserved), not about whether a warning may ever look distinct at all — so
+`components.ts#noticeWarning` gives it a bordered/tinted panel plus a small vendored alert-triangle
+icon, entirely in the neutral ink scale (`var(--fg)`/`var(--panel)`/`var(--border-strong)`, the exact
+same "shape/treatment, never colour" reasoning `agentKindBadge` already established for RULE B). No
+amber, no red, no new hue anywhere — just more visual weight than a plain `<div class="prow">` row.
+Checked whether this warning renders anywhere else on the board (the goal named "doctor's board
+rendering" as a second possible site): `doctor.ts`'s own `health.warning` field is only ever consumed
+by the CLI text formatter (`doctor.ts:109`, unchanged per the goal) — `railNav`'s connector rows
+(`render.ts`) show only a status dot and name, never this warning text, so the registry card is the
+only board surface that ever renders it.
+
+## Item 4: Orchestrator/user timestamp captions
+
+`components.ts#orchTurn` took a plain `caption?: string`; it now takes a structured
+`{ captionTime?: { text, title }, captionLabel? }`, rendered by the new `turnCaption()` primitive as
+`<label · ><span class="turn__time" title="<full ISO>"><relative text></span>` — every caption's
+relative text is now a real computed value (`derive.ts#captionTime`: "now"/"2m"/"1h"/"3d", the same
+coarse buckets as the existing `ageLabel` but "now" instead of "just now" for the first minute, since
+a conversation caption reads more naturally that way) with the full ISO timestamp in the `title`
+attribute, never just a hardcoded string. The three screens that already used `orchTurn`
+(studio/project/run) pass `captionLabel: "briefing"` unchanged in spirit; the three that had never
+been migrated off UI8's predecessor (`renderArtifact`/`renderIdea`/`renderRegistry`, still on the old
+raw `<div class="msg"><div class="msg__label">` markup — apparently missed when UI8 introduced the
+turn/caption anatomy) are migrated onto `orchTurn` here too, since leaving them behind would mean 3 of
+6 screens didn't get this goal's spacing/timestamp fix at all. `renderIdea`/`renderRegistry` gained a
+`now: Date = new Date()` parameter (both previously had none) to compute the caption's timestamp;
+every existing positional call site is unaffected since both new params are appended, not inserted.
+
+**Every turn, not just the opening briefing, now carries a caption** — the goal's achieved-when
+explicitly names both "orchestrator AND user messages" (plural), and generalizing the mechanism (not
+just fixing its CSS) is what makes the two speakers' captions genuinely "visually consistent with
+each other," not one one-off case and one absent one. `assets/app.js#appendTurnMessage` stamps a
+caption (`buildCaption()`) once per NEW turn (never on a same-speaker message merging into an
+existing turn — matching the pre-existing "no later message repeats the caption" rule, just widened
+from "the opening message only" to "every turn"), using `new Date()` at the moment of creation — every
+client-appended turn is definitionally "now" (zero elapsed time between creating it and stamping it),
+so the relative text is always `"now"`; the bucketing logic exists client-side purely to mirror
+`derive.ts#captionTime`'s markup shape exactly, not because this call site needs anything else today.
+
+**The CSS fix for "the caption currently crowds the message."** `.turn` was `display:flex` with no
+`flex-direction` (a row) and `.turn__caption` was a third flex sibling next to `.turn__mark` +
+`.turn__content` — despite the pre-existing doc comment already claiming it rendered "beneath the
+whole turn," it did not; it sat in the same row, which is the actual crowding this goal names.
+Fixed with the standard flex-wrap trick: `.turn{ flex-wrap:wrap }` plus `.turn__caption{ flex:0 0
+100% }` forces the caption onto its own line under the fixed-width mark + flexible content, with
+`margin-left:21px` aligning it under the message text (mark width + row gap) rather than under the
+mark glyph. The Conductor's turn (no mark, right-aligned bubble) gets `margin-left:0; text-align:right`
+instead, so its caption reads as "beneath the bubble" rather than under a mark that isn't there — both
+speakers share the identical `.turn__caption`/`.turn__time` classes and only this one alignment rule
+differs.
+
+## Test coverage
+
+New `tests/board-ui11.test.ts`: server-rendered structure for the nav long-list (9-project and
+11-idea synthetic/scratch repos: exactly 7 visible, the rest in a hidden overflow, exact "+ N more"
+count; a 7-and-fewer case renders no wrapper at all) and the registry filter (11 vs. 10 synthetic
+teams; every golden-fixture kind, all small, renders no input); the types card sweep (no glyph row,
+expects/gates as chips); the connectors sweep (kind badge shape, no forbidden status-palette colour;
+a synthetic `auth: subscription` connector's note carries the `notice--warning` treatment and its
+icon, while `auth: env` connectors carry no warning at all); and a hand-rolled DOM harness (same
+no-framework approach as `tests/board-orchestrator-conversation.test.ts`) proving the rail-expand
+click and the registry-filter input actually work against the real `assets/app.js`, not just that the
+server emits the right markup.
+
+Extended `tests/board-orchestrator-conversation.test.ts`: the existing "briefing · now" caption
+assertion updated for the new `<span class="turn__time" title="...">` markup; three new tests assert
+a client-appended Orchestrator turn and a Conductor turn both carry the identical caption treatment
+(relative text "now", full-ISO `title`), and that a second message merging into an existing turn does
+not add a second caption.
+
+## Verification
+
+`bun test` — 827 pass (+19 from the two new/extended files), 1 pre-existing skip, 0 fail, across 66
+files (up from 808/65 pre-UI11). `levare replay fixtures/golden --stubs` matches
+`fixtures/golden/expected.json` byte-for-byte. `bun run deps:check` → `deps ok`.
+
+**What could not be verified.** No browser/devtools tooling exists in this sandbox (the same
+limitation NOTES UI9/UI10 already logged), so the actual pixel-level result — whether the caption
+genuinely reads as "unobtrusive," whether the filter input's placeholder wraps sensibly at narrow
+widths — is asserted from markup/class structure and the hand-rolled DOM harness's behavioural
+checks, not from an observed render.
