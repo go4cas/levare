@@ -334,14 +334,19 @@ export function mostRelevantUnit(repo: Repo, project: string): WorkUnit | undefi
 }
 
 /**
- * Most recently shipped unit in a project — the closest honest proxy for "latest release" the
- * schema supports today (there is no dedicated release/changelog concept; see NOTES.md).
+ * Shipped units in a project, most recent first — the closest honest proxy for "releases" the
+ * schema supports today (there is no dedicated release/changelog concept; see NOTES.md). Capped at
+ * `limit` (project view item 6d: show the most recent few, not all).
  */
-export function latestRelease(repo: Repo, project: string): WorkUnit | undefined {
+export function recentReleases(repo: Repo, project: string, limit = 3): WorkUnit[] {
   const shipped = repo.units.filter((u) => u.project === project && u.status === "shipped");
-  if (shipped.length === 0) return undefined;
   const recency = (u: WorkUnit) => leadingArtifact(repo, u)?.created ?? "";
-  return [...shipped].sort((a, b) => recency(b).localeCompare(recency(a)))[0];
+  return [...shipped].sort((a, b) => recency(b).localeCompare(recency(a))).slice(0, limit);
+}
+
+/** Most recently shipped unit in a project — `recentReleases`'s own head. */
+export function latestRelease(repo: Repo, project: string): WorkUnit | undefined {
+  return recentReleases(repo, project, 1)[0];
 }
 
 // ---------------------------------------------------------------------------

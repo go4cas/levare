@@ -10,6 +10,7 @@
   --shadow:0 1px 2px rgba(25,27,33,.05), 0 10px 28px rgba(25,27,33,.05);
   --sans:'Hanken Grotesk', system-ui, -apple-system, sans-serif;
   --mono:'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+  --headerh:52px;
   color-scheme:light;
 }
 [data-theme="dark"]{
@@ -42,14 +43,24 @@ button{ font-family:inherit; }
 .muted{ color:var(--fg-mute); }
 .dim{ color:var(--fg-dim); }
 
+/* ---------- app header (item 3) — new, top-level, spans the full width above the nav and content,
+   at every viewport. Left cluster: mark, wordmark, release-version chip. Right cluster: Orchestrator
+   status, a hairline divider, the theme toggle. Replaces the old mobile-only `.mobilebar`. ---------- */
+.apphead{ height:var(--headerh); display:flex; align-items:center; gap:12px; padding:0 18px;
+  background:var(--panel); border-bottom:1px solid var(--border); position:sticky; top:0; z-index:40; }
+.apphead__railtoggle{ display:none; }
+.apphead .sp{ flex:1; }
+.apphead__ver{ color:var(--fg-mute); font-size:11px; }
+.apphead__divider{ width:1px; height:18px; background:var(--border-strong); flex:none; }
+
 /* ---------- app shell ---------- */
-.app{ display:grid; grid-template-columns:246px 1fr 348px; min-height:100vh; }
+.app{ display:grid; grid-template-columns:246px 1fr 348px; min-height:calc(100vh - var(--headerh)); }
 .app--run{ grid-template-columns:308px 1fr 360px; }
 .rail{ background:var(--panel); border-right:1px solid var(--border); padding:18px 16px 20px;
-  display:flex; flex-direction:column; gap:24px; position:sticky; top:0; height:100vh; overflow-y:auto; }
+  display:flex; flex-direction:column; gap:24px; position:sticky; top:var(--headerh); height:calc(100vh - var(--headerh)); overflow-y:auto; }
 .main{ padding:26px 34px 60px; display:flex; flex-direction:column; gap:26px; min-width:0; }
 .orch{ background:var(--panel); border-left:1px solid var(--border); display:flex; flex-direction:column;
-  position:sticky; top:0; height:100vh; }
+  position:sticky; top:var(--headerh); height:calc(100vh - var(--headerh)); }
 
 /* ---------- logo ---------- */
 .logo{ display:flex; align-items:center; gap:9px; padding:2px 2px 0; text-decoration:none; }
@@ -62,21 +73,17 @@ button{ font-family:inherit; }
 /* ---------- rail sections ---------- */
 .railsec{ display:flex; flex-direction:column; gap:9px; }
 .railsec__h{ margin:0; font-size:10px; letter-spacing:.13em; text-transform:uppercase; color:var(--fg-mute); font-weight:600; }
-.railfoot{ margin-top:auto; display:flex; flex-direction:column; gap:12px; }
-.stamp{ font-family:var(--mono); font-size:10px; color:var(--fg-mute); line-height:1.5; }
 
 /* ---------- Orchestrator status — a whole-studio state, not a connector (design brief §3) ---------- */
-.railhead{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .orchind{ position:relative; }
 .orchind__sum{ display:flex; align-items:center; gap:7px; cursor:pointer; list-style:none; padding:3px 6px; border-radius:6px; }
 .orchind__sum::-webkit-details-marker{ display:none; }
 .orchind__sum:hover{ background:var(--panel-2); }
 .orchind__label{ font-size:10.5px; color:var(--fg-dim); }
-.orchind__pop{ position:absolute; right:0; top:calc(100% + 6px); z-index:30; width:240px;
+.orchind__pop{ position:absolute; left:auto; right:0; top:calc(100% + 6px); z-index:30; width:240px;
   background:var(--panel); border:1px solid var(--border); border-radius:10px; box-shadow:var(--shadow);
   padding:12px 14px; display:flex; flex-direction:column; gap:7px; }
 .orchind__pop p{ margin:0; font-size:12px; line-height:1.5; color:var(--fg-dim); }
-.mobilebar .orchind__pop{ left:auto; right:0; }
 
 /* ---------- disabled Orchestrator panel — visible, never hidden (NOTES C11) ---------- */
 .orch.is-disabled .orch__mark{ opacity:.4; }
@@ -90,9 +97,12 @@ button{ font-family:inherit; }
 .tchip-row .nm{ font-family:var(--mono); font-size:12.5px; color:var(--fg); font-weight:500; }
 .tchip-row .ct{ margin-left:auto; font-family:var(--mono); font-size:11px; color:var(--fg-mute); }
 
-.crow{ display:flex; align-items:center; gap:9px; padding:5px 0; }
+/* Item 4b: a connector row is a real link into its registry card now, not a static status line —
+   `.crow` styled like `.rel`'s hover affordance so both nav-row families read as one family. */
+.crow{ display:flex; align-items:center; gap:9px; padding:5px 8px; margin:0 -8px; border-radius:7px; text-decoration:none; }
+.crow:hover{ background:var(--panel-2); }
+.crow:hover .nm{ color:var(--fg); }
 .crow .nm{ font-family:var(--mono); font-size:12px; color:var(--fg-dim); }
-.crow .st{ margin-left:auto; font-size:10.5px; color:var(--fg-mute); }
 .status-dot{ width:7px; height:7px; border-radius:50%; flex:none; }
 .status-dot.is-ok{ background:var(--ok); }
 .status-dot.is-danger{ background:var(--danger); }
@@ -114,10 +124,16 @@ button{ font-family:inherit; }
 /* ---------- page header ---------- */
 .phead{ display:flex; flex-direction:column; gap:5px; }
 .phead h1{ margin:0; font-size:23px; font-weight:600; letter-spacing:-.01em; }
-.phead .deriv{ font-family:var(--mono); font-size:11.5px; color:var(--fg-mute); }
 .crumb{ display:flex; align-items:center; gap:8px; font-family:var(--mono); font-size:11.5px; color:var(--fg-mute); margin-bottom:2px; }
 .crumb a{ color:var(--fg-mute); }
 .crumb a:hover{ color:var(--fg-dim); }
+/* Item 6a/6b: the project page's title row — h1, canonical status badge, then the repo/deploy icon
+   links pinned to the far right. */
+.phead__title{ display:flex; align-items:center; gap:11px; flex-wrap:wrap; }
+.phead__links{ margin-left:auto; display:flex; gap:6px; }
+.iconlink{ display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px;
+  border:1px solid var(--border); border-radius:7px; color:var(--fg-mute); flex:none; }
+.iconlink:hover{ color:var(--fg); border-color:var(--border-strong); }
 
 /* ---------- stat strip ---------- */
 .statstrip{ display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--border);
@@ -131,8 +147,12 @@ button{ font-family:inherit; }
 .sec{ display:flex; flex-direction:column; gap:13px; }
 .sec__h{ display:flex; align-items:center; gap:10px; }
 .sec__h h2{ margin:0; font-size:12.5px; letter-spacing:.02em; font-weight:600; }
-.sec__count{ font-family:var(--mono); font-size:11px; color:var(--gate);
-  background:color-mix(in oklab, var(--gate) 13%, transparent); padding:2px 7px; border-radius:5px; }
+/* Item 5a: ONE counter treatment for Needs You / Running Now / Projects — plain neutral, not gate
+   brass. Brass stays scoped to gates themselves (the design brief's colour-means-team/status system:
+   "gate colour ... appears exclusively on gates"); the gate CARDS in the Needs You section already
+   carry the brass wash (`#needs .gate` below), so this heading count doesn't need to repeat it. */
+.sec__count{ font-family:var(--mono); font-size:11px; color:var(--fg-mute);
+  background:var(--panel-2); border:1px solid var(--border); padding:2px 7px; border-radius:5px; }
 
 /* ---------- gate card ---------- */
 .gate{ background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:15px 17px;
@@ -149,7 +169,13 @@ button{ font-family:inherit; }
 .gate__badge{ font-family:var(--mono); font-size:9.5px; letter-spacing:.09em; text-transform:uppercase; color:var(--gate);
   background:color-mix(in oklab, var(--gate) 12%, transparent); padding:3px 7px; border-radius:5px; flex:none; }
 .gate__badge.is-start{ background:none; border:1px dashed color-mix(in oklab, var(--gate) 55%, transparent); }
-.gate__badge.is-blocked{ color:var(--danger); background:color-mix(in oklab, var(--danger) 12%, transparent); }
+/* Canonical palette: "blocked" is hollow neutral plus an explicit label, never red — red is `failed`
+   (a content rejection), a different state entirely. This badge used to be red for both. */
+.gate__badge.is-blocked{ color:var(--fg-mute); background:var(--panel-2); border:1px solid var(--border-strong); }
+/* "exhausted" (NOTES F20) is still a gate — still on the Conductor — so it stays in the brass family
+   (the only amber-adjacent hue the product ever uses), but as a solid-outline variant distinct from
+   the tinted "needs you" badge, so an exhausted loop reads as its own state at a glance. */
+.gate__badge.is-exhausted{ color:var(--gate); background:transparent; border:1px solid var(--gate); }
 .gate__verbs{ display:flex; gap:8px; flex-wrap:wrap; }
 .verb{ background:transparent; color:var(--fg-mute); border:1px solid var(--border-strong); padding:7px 14px;
   border-radius:7px; font-size:12.5px; font-weight:500; cursor:pointer; transition:.12s; }
@@ -305,11 +331,19 @@ button{ font-family:inherit; }
 .arow .nm{ width:210px; flex:none; }
 .arow .sm{ font-size:12.5px; color:var(--fg-dim); flex:1; min-width:0; }
 .arow .ln{ font-family:var(--mono); font-size:11px; color:var(--fg-mute); }
+/* ---------- canonical status palette (design brief: "status is the canonical state palette") ----------
+   ONE set of rules for every `.chip` a status can render as — src/board/status.ts is the only code
+   that ever picks one of these classes; nothing else in the renderer is allowed to hand-pick a status
+   colour (NOTES UI1). `is-approved`/`is-progress`/`is-superseded` (the pre-UI1 ad hoc classes) are
+   retired — every call site now asks status.ts for `is-done`/`is-active`/`is-waiting`/etc. instead. */
 .chip{ font-size:10.5px; font-weight:600; font-family:var(--mono); letter-spacing:.04em; padding:3px 8px; border-radius:5px; }
-.chip.is-approved{ color:var(--ok); background:color-mix(in oklab, var(--ok) 14%, transparent); }
+.chip.is-done{ color:var(--ok); background:color-mix(in oklab, var(--ok) 14%, transparent); }
+.chip.is-active{ color:var(--active); background:color-mix(in oklab, var(--active) 14%, transparent); }
+.chip.is-waiting{ color:var(--fg-mute); background:color-mix(in oklab, var(--fg) 8%, transparent); }
+.chip.is-blocked{ color:var(--fg-mute); background:var(--panel-2); border:1px solid var(--border-strong); }
 .chip.is-gate{ color:var(--gate); background:color-mix(in oklab, var(--gate) 13%, transparent); }
-.chip.is-progress{ color:var(--fg-dim); background:color-mix(in oklab, var(--fg) 8%, transparent); }
-.chip.is-superseded{ color:var(--fg-mute); border:1px solid var(--border-strong); padding:2px 8px; }
+.chip.is-failed{ color:var(--danger); background:color-mix(in oklab, var(--danger) 14%, transparent); }
+.chip.is-exhausted{ color:var(--gate); background:transparent; border:1px solid var(--gate); }
 
 /* ---------- pointer / constitution (project view) ---------- */
 .card{ background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:15px 17px;
@@ -322,6 +356,10 @@ button{ font-family:inherit; }
 .founding:last-child{ border-bottom:none; }
 .founding .cite{ margin-left:auto; font-family:var(--mono); font-size:10.5px; color:var(--fg-mute);
   background:var(--panel-2); border:1px solid var(--border); padding:2px 7px; border-radius:5px; }
+/* Item 6d: the latest release reads distinctly from its siblings — the same canonical "done" green
+   the shipped-status chip already uses (a shipped unit IS the palette's `done` state). */
+.release--latest{ border-left:2px solid var(--ok); padding-left:9px; margin-left:-11px; }
+.release--latest .cite{ color:var(--ok); background:color-mix(in oklab, var(--ok) 14%, transparent); border-color:transparent; }
 
 /* ---------- work unit rows (project view) ---------- */
 .units{ display:flex; flex-direction:column; gap:10px; }
@@ -402,15 +440,12 @@ textarea.rawmd:focus{ border-color:var(--border-strong); }
 .themebtn:hover{ border-color:var(--border-strong); color:var(--fg); }
 
 /* ---------- mobile ---------- */
-.mobilebar{ display:none; }
 @media (max-width:1080px){
+  .apphead__railtoggle{ display:inline-flex; }
   .app{ grid-template-columns:1fr; }
   .rail{ display:none; position:static; height:auto; }
   .orch{ position:static; height:auto; border-left:none; border-top:1px solid var(--border); }
-  .rail.is-open{ display:flex; position:fixed; inset:0 auto 0 0; width:80%; max-width:320px; z-index:40; box-shadow:var(--shadow); }
-  .mobilebar{ display:flex; align-items:center; gap:12px; padding:12px 16px; border-bottom:1px solid var(--border);
-    position:sticky; top:0; background:var(--panel); z-index:30; }
-  .mobilebar .sp{ flex:1; }
+  .rail.is-open{ display:flex; position:fixed; top:var(--headerh); bottom:0; left:0; width:80%; max-width:320px; z-index:40; box-shadow:var(--shadow); }
   .main{ padding:20px 18px 40px; }
   .statstrip{ grid-template-columns:repeat(2,1fr); }
   .pcards{ grid-template-columns:1fr 1fr; }
@@ -449,7 +484,6 @@ textarea.rawmd:focus{ border-color:var(--border-strong); }
 .sstep.upcoming .sstep__label, .sstep.blocked .sstep__label{ color:var(--fg-dim); }
 .sstep__sub{ font-family:var(--mono); font-size:11px; color:var(--fg-mute); line-height:1.4; }
 .sstep__chip{ align-self:flex-start; margin-top:4px; }
-.chip.is-blocked{ color:var(--fg-mute); background:var(--panel-2); border:1px solid var(--border-strong); }
 
 /* ---------- timeline (timestamped) ---------- */
 .tl-date{ font-family:var(--mono); font-size:12px; color:var(--fg-dim); padding:2px 0 10px; border-bottom:1px solid var(--border); }
