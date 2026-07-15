@@ -5245,3 +5245,56 @@ and run" actually works painlessly on macOS even once the binary exists.
 produces a working `dist/levare`; `./levare` shim regressions unchanged; `levare replay
 fixtures/golden --stubs` (via the shim) still matches the oracle byte-for-byte; `deps:check` → `deps
 ok`. The workflow YAML parses via `Bun.YAML.parse` and structurally matches every requirement above.
+
+## DIST3. `scripts/build.sh` crashed on macOS's system bash — a fixture-vs-reality gap one level down, in the build script itself
+
+The first command a macOS contributor runs, `bun run build` (no args), aborted with `line 35:
+target_args[@]: unbound variable`. Root cause: macOS ships bash 3.2 (Apple has never shipped a
+GPLv3-licensed bash newer than that), and bash 3.2 throws "unbound variable" under `set -u` when
+`"${arr[@]}"` expands an *empty* array — a bug fixed upstream in bash 4.4. `scripts/build.sh`'s dev
+build leaves `target_args` empty (no cross-compile target), so every dev build on a stock Mac hit
+this. The script was correct on the bash used by CI and the devcontainer (both far newer than 3.2),
+so every existing check passed while the actual entry point contributors use was broken.
+
+**The fix.** `"${target_args[@]}"` → `${target_args[@]+"${target_args[@]}"}`, the standard portable
+guard: it expands to nothing when the array is unset/empty and to the quoted elements when set,
+correct on bash 3.2 through the newest bash and on zsh. Both call shapes verified locally:
+`bun run build` (empty array, dev build) and `scripts/build.sh dist/levare-test bun-linux-x64`
+(populated array, the shape release.yml's matrix uses) both compile successfully; the resulting
+`dist/levare` still passes `levare replay fixtures/golden --stubs` byte-for-byte against the oracle.
+
+**Why this passed every existing check: the same lesson as F-series fixture-vs-reality bugs, one
+level down.** Earlier NOTES entries in this series describe *levare's own* fixtures diverging from
+real member/vendor behavior. This is the identical shape applied to the tooling that builds levare:
+release.yml's four-platform matrix cross-compiles `bun-darwin-arm64`/`bun-darwin-x64` from a single
+`ubuntu-latest` runner (NOTES DIST2 — deliberate, since Bun can cross-compile without a Mac runner at
+all). That means `scripts/build.sh` has *targeted* macOS from day one but never *executed* on macOS
+in CI — cross-compilation exercises the output binary's target triple, not the shell interpreting the
+build script that produces it. A script that must run on a platform has to be run there to be tested
+there; being merely a compile target for that platform proves nothing about the script's own
+compatibility with it. Heuristic worth keeping: for any script gated on "works on platform X", ask
+whether CI actually *executes* it on X, or only asks a cross-compiler to *target* X — those are not
+the same coverage.
+
+**Closing the gap: `.github/workflows/ci.yml`, a new workflow distinct from `release.yml`.**
+`release.yml` triggers only on `v*` tags (NOTES DIST2, deliberately) and its `verify` job runs on
+`ubuntu-latest`, so it was never going to catch this either way. The new `ci.yml` runs on every
+push/PR to `main`: an `ubuntu-latest` leg (`bun test` + `deps:check`, the same gate `release.yml`'s
+`verify` job runs) plus a `macos-latest` leg that runs `bun run build` for real — not to produce or
+upload a release artifact, just to prove the dev build command executes on the OS most contributors
+actually use. Kept as a separate workflow file rather than folded into `release.yml` so the tag-only
+trigger there (and `tests/release-workflow.test.ts`'s assertions on it) stay untouched.
+
+**What was checked locally vs. what genuinely cannot be.** `Bun.YAML.parse` confirms `ci.yml` is
+syntactically valid YAML with the expected `push`/`pull_request` triggers on `main`, an
+`ubuntu-latest` test job, and a `macos-latest` job that runs `bun run build`. It cannot prove the
+workflow *runs* correctly on GitHub's actual macOS runners — same caveat NOTES DIST2 recorded for
+`release.yml` itself: the true test is a real push/PR against `main` on GitHub's infrastructure,
+which has not happened from here and cannot happen from here.
+
+**Verification.** `bun test` — 721 pass, 1 pre-existing skip, 0 fail, across 57 files (unchanged
+count; no new test file was added for `ci.yml`, since `tests/release-workflow.test.ts`'s existing
+structural-assertion pattern is scoped to `release.yml` specifically and this workflow has no README
+claims to drift against). `bun run build` (no args) and `scripts/build.sh dist/levare-test
+bun-linux-x64` (with target) both succeed; `deps:check` → `deps ok`; `levare replay fixtures/golden
+--stubs` (via the `./levare` shim, compiled binary) matches the oracle byte-for-byte.
