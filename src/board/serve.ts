@@ -6,12 +6,12 @@
 
 import { watch, type FSWatcher } from "node:fs";
 import { readFileSync, existsSync, statSync } from "node:fs";
-import { join, extname, dirname, resolve, sep } from "node:path";
+import { join, extname, dirname, resolve, relative, sep } from "node:path";
 import { loadRepo, type Repo } from "../repo.ts";
 import { renderStudio, renderProject, renderRun, renderRegistry, renderArtifact, renderIdea } from "./render.ts";
 import { resolveGate } from "./gateops.ts";
 import type { AsyncMemberRunner } from "../dagwalk.ts";
-import { validatePath, formatValidationErrors } from "../validate.ts";
+import { validatePath, formatValidationErrors, type ValidationError } from "../validate.ts";
 import type { Verb } from "../runner.ts";
 import { conductorCommit, CONDUCTOR_NAME } from "../git.ts";
 import { handle as orchestratorHandle, type HandleResult, type OrchestratorBoundary } from "../orchestrator.ts";
@@ -241,6 +241,44 @@ export const ROUTES: RouteDef[] = [
       // the walk visibly continues in the same interaction the Conductor just made.
       ctx.daemon?.notify();
       return json({ ok: true, commit: result.commit, changedFiles: result.changedFiles });
+    },
+  },
+  // Live validation of an UNSAVED buffer (item 3, UI3): the overlay editor debounces keystrokes and
+  // POSTs the candidate content here on every settle. This never writes to disk — `validatePath`'s
+  // `overlay` param substitutes the buffer for the on-disk file everywhere the SAME validator the CLI
+  // and the save route use would otherwise read it, cross-reference checks (UNKNOWN_MODEL,
+  // AGENT_IN_MULTIPLE_TEAMS, model-pricing) included. Matched ahead of `/registry/*path` below (first
+  // match wins in `matchRoute`) so its literal `check` segment is consumed before the wildcard would
+  // swallow it. `mutating: false`: no write happens, so it's exempt from the read-only-server gate
+  // (harmless against a fixtures/ demo tree) and from the CSRF check that guards routes with real
+  // side effects — a cross-site page that fires this can neither read the JSON response (no ACAO
+  // header) nor cause any repo change.
+  {
+    method: "POST",
+    pattern: "/registry/check/*path",
+    mutating: false,
+    handler: async (req, params, ctx) => {
+      const relPath = params.path;
+      if (!isRegistryEditablePath(ctx.root, relPath)) {
+        return json({ ok: false, error: "invalid path", errors: [] }, 400);
+      }
+      const file = join(ctx.root, relPath);
+      if (!existsSync(file)) return json({ ok: false, error: "unknown entity", errors: [] }, 404);
+      let content: string;
+      try {
+        const body = await req.json();
+        content = String(body?.content ?? "");
+      } catch {
+        return json({ ok: false, error: "expected JSON body { content }", errors: [] }, 400);
+      }
+      const result = validatePath(ctx.root, { path: resolve(file), content });
+      const errors = result.errors.map((e: ValidationError) => ({
+        code: e.code,
+        message: e.message,
+        file: relative(ctx.root, e.file) || e.file,
+        line: e.line,
+      }));
+      return json({ ok: result.ok, errors, error: result.ok ? undefined : formatValidationErrors(result.errors) });
     },
   },
   {

@@ -18,9 +18,14 @@ describe("route table", () => {
     ]);
   });
 
-  test("every non-mutating route is a GET", () => {
+  // UI3: the registry overlay editor's live-validation route is the one deliberate exception — a
+  // POST (it carries the candidate buffer as a JSON body) that performs no write, so it stays
+  // `mutating: false` (exempt from the read-only-server gate and the write-route CSRF check) without
+  // widening invariant 9's "exactly three write routes" count above.
+  test("every non-mutating route is a GET, except the documented live-validation check route", () => {
     const nonMutating = ROUTES.filter((r) => !r.mutating);
-    expect(nonMutating.every((r) => r.method === "GET")).toBe(true);
+    const nonGetPatterns = nonMutating.filter((r) => r.method !== "GET").map((r) => `${r.method} ${r.pattern}`);
+    expect(nonGetPatterns).toEqual(["POST /registry/check/*path"]);
     expect(nonMutating.length).toBeGreaterThan(0);
   });
 

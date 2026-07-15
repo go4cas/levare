@@ -55,7 +55,7 @@ const LEVARE_VERSION: string = (() => {
 const ASSETS = `<link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
-<link rel="stylesheet" href="/styles.css?v=7"/>`;
+<link rel="stylesheet" href="/styles.css?v=8"/>`;
 
 // ---------------------------------------------------------------------------
 // The app header (item 3, gate-review round UI1) — new, top-level, spans the full width above the
@@ -91,7 +91,7 @@ ${ASSETS}
 <body>
 ${appHeader(status, railToggleLabel)}
 ${body}
-<script src="/app.js?v=5"></script>
+<script src="/app.js?v=6"></script>
 </body>
 </html>
 `;
@@ -1020,18 +1020,19 @@ export function renderIdea(repo: Repo, root: string, name: string, status: Orche
 // One bordered container per entity — the same `.card` recipe (background, border, radius, padding)
 // every other screen's bordered containers use (gate cards, unit rows, project cards each have their
 // own such class; the registry reuses `.card`, the one already used for a labeled panel, rather than
-// inventing a new one). `.entity` stays alongside it purely for the kind-switch/is-editing JS hooks
-// in app.js — it contributes no visual styling of its own beyond the flex layout `.card` already sets.
-// Header, body, and the edit-source actions all live inside this one element; nothing floats beside it.
-// E8: the registry's one write is "Edit source" — raw markdown, the same validator, "Save and commit"
-// as the Conductor (design brief; PRD §9). The prototype only ever revealed a read-only <pre>; the
-// editbar (with its Save button) lived INSIDE `.rendered`, which is hidden in edit mode — so editing
-// was preview-only. Here the raw surface is an editable <textarea class="rawmd"> (still just raw
-// markdown — no form fields, honoring "no form-based authoring, ever"), the editbar is a sibling of
-// `.rendered` so its Save button is reachable while editing, and `data-path` carries the entity's
-// repo-relative file so app.js can POST it to the existing `POST /registry/*path` route (validate →
-// write → commit as the Conductor). The server runs the SAME validator the whole repo is checked
-// against; the client only relays the raw text and shows the verdict.
+// inventing a new one). `.entity` stays alongside it purely for the kind-switch JS hook in app.js —
+// it contributes no visual styling of its own beyond the flex layout `.card` already sets.
+//
+// UI3: "Edit source" no longer reveals an inline, wrapping-cramped textarea inside the card — it opens
+// the SHARED overlay editor (one instance per page, see `editorOverlay()` below) as a proper overlay
+// above the board, per the design brief's "Registry" section ("Edit source toggles raw markdown") read
+// together with the goal's overlay requirement. The card itself carries only: the trigger button
+// (`data-edit-open`, plus the entity's plain name/kind as data attributes so the overlay can title
+// itself without a second fetch) and a HIDDEN `<textarea class="rawmd-source">` holding the entity's
+// on-disk raw markdown — still just raw text, no form fields (honoring "no form-based authoring,
+// ever"), just no longer the editing surface itself. `data-path` (on both the article and the trigger)
+// carries the entity's repo-relative file so app.js can target both `POST /registry/*path` (save) and
+// `POST /registry/check/*path` (live validation of the unsaved buffer) without a second lookup.
 function entityBlock(kind: RegistryKind, title: string, kindLabel: string, inner: string, raw: string, name: string, active: boolean): string {
   const relPath = `${kind}/${name}.md`;
   // `id` (item 4b): a stable per-entity anchor so a rail row can deep-link to exactly this card
@@ -1040,13 +1041,43 @@ function entityBlock(kind: RegistryKind, title: string, kindLabel: string, inner
   return `<article class="entity card" id="${kind}-${esc(name)}" data-entity="${kind}" data-path="${esc(relPath)}"${active ? "" : ' style="display:none"'}>
     <div class="entity__head"><span class="entity__title">${title}</span><span class="entity__kind">${esc(kindLabel)}</span></div>
     <div class="rendered">${inner}</div>
-    <textarea class="rawmd rawmd-edit" data-path="${esc(relPath)}" spellcheck="false">${esc(raw)}</textarea>
+    <textarea class="rawmd-source" data-path="${esc(relPath)}" hidden>${esc(raw)}</textarea>
     <div class="editbar">
-      <button class="togglebtn" data-edit-toggle>Edit source</button>
-      <span class="validity"><span class="status-dot is-ok"></span>valid</span>
-      <button class="togglebtn" data-save style="display:none;background:var(--fg);color:var(--bg);border-color:var(--fg)">Save and commit</button>
+      <button class="togglebtn" data-edit-open data-path="${esc(relPath)}" data-editor-name="${esc(name)}" data-editor-kind="${esc(kindLabel)}">Edit source</button>
     </div>
   </article>`;
+}
+
+// UI3: the overlay editor itself — ONE instance per registry page (not one per entity), populated by
+// app.js from whichever card's `data-edit-open` was clicked. A centered panel over a dimmed backdrop
+// (design brief: "a centered panel over a dimmed backdrop"), not a route — `hidden` by default so it
+// never changes what's in the DOM's flow, only whether it paints; the board underneath is untouched.
+// `role="dialog" aria-modal="true"` for assistive tech; the heading is populated from the trigger's
+// `data-editor-name`/`data-editor-kind` (the entity's name and kind, per the goal). The validity
+// indicator and error list are live — app.js debounces keystrokes into `POST /registry/check/*path`,
+// which runs the SAME validator `levare validate` and the save route both use, against the unsaved
+// buffer (see validate.ts's `overlay` param) — never a second, client-side implementation of any rule.
+function editorOverlay(): string {
+  return `<div class="editor-overlay" id="editor-overlay" hidden>
+    <div class="editor-overlay__backdrop" data-editor-backdrop></div>
+    <div class="editor-overlay__panel" role="dialog" aria-modal="true" aria-labelledby="editor-overlay-title">
+      <header class="editor-overlay__head">
+        <h2 class="editor-overlay__title" id="editor-overlay-title"></h2>
+        <span class="editor-overlay__kind mono"></span>
+      </header>
+      <textarea class="editor-overlay__textarea" spellcheck="false"></textarea>
+      <div class="editor-overlay__foot">
+        <div class="editor-overlay__status">
+          <span class="validity"><span class="status-dot is-ok"></span>valid</span>
+          <div class="editor-overlay__errors"></div>
+        </div>
+        <div class="editor-overlay__actions">
+          <button class="togglebtn" data-editor-cancel>Cancel</button>
+          <button class="togglebtn is-primary" data-editor-save disabled>Save and commit</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
 }
 
 export function renderRegistry(repo: Repo, root: string, activeEntity?: string, status: OrchestratorStatus = resolveOrchestratorStatus()): string {
@@ -1165,10 +1196,13 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
   </main>`;
 
   const briefingBody = `<div class="msg"><div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
-      <p class="msg__body">This is the registry. The only write here is <span class="mono">Edit source</span>: raw markdown, a validity check, then <span class="mono">Save and commit</span>.</p></div>`;
+      <p class="msg__body">This is the registry. The only write here is <span class="mono">Edit source</span>: raw markdown, live validation, then <span class="mono">Save and commit</span>.</p></div>`;
   const orch = orchestratorPanel("registry", status, briefingBody);
 
-  return shell("levare · registry", "Open registry nav", `<div class="app">${rail}${main}${orch}</div>`, status);
+  // The overlay is a sibling of `.app`, not nested inside it and not a second page — the board (rail,
+  // main, orchestrator) stays exactly as rendered whether or not the overlay is open (UI3 requirement:
+  // "does not change the URL or unmount the page behind it").
+  return shell("levare · registry", "Open registry nav", `<div class="app">${rail}${main}${orch}</div>${editorOverlay()}`, status);
 }
 
 function rawFor(root: string, dir: string, name: string): string {

@@ -429,17 +429,40 @@ button{ font-family:inherit; }
 .togglebtn{ background:var(--panel); border:1px solid var(--border-strong); color:var(--fg-dim);
   padding:6px 12px; border-radius:7px; font-size:12px; font-weight:500; cursor:pointer; font-family:var(--mono); }
 .togglebtn:hover{ color:var(--fg); }
-.rawmd{ display:none; font-family:var(--mono); font-size:12px; line-height:1.7; color:var(--fg-dim);
-  background:var(--panel-2); border:1px solid var(--border); border-radius:12px; padding:18px 20px; white-space:pre-wrap; margin:0; }
-.entity.is-editing .rendered{ display:none; }
-.entity.is-editing .rawmd{ display:block; }
-/* E8: the raw-markdown surface is an editable textarea in edit mode — same mono/panel treatment as
-   the read-only <pre>, plus the box-model a textarea needs (full width, vertical resize, a usable
-   editing height). Still raw markdown, never form fields (no form-based authoring). */
-textarea.rawmd{ width:100%; box-sizing:border-box; resize:vertical; min-height:240px; tab-size:2; outline:none; }
-textarea.rawmd:focus{ border-color:var(--border-strong); }
+.togglebtn:disabled{ opacity:.45; cursor:not-allowed; }
+.togglebtn.is-primary{ background:var(--fg); color:var(--bg); border-color:var(--fg); }
+.togglebtn.is-primary:disabled{ background:var(--panel-2); color:var(--fg-mute); border-color:var(--border-strong); }
 .validity.is-invalid{ color:var(--danger); }
 .validity{ display:inline-flex; align-items:center; gap:7px; font-family:var(--mono); font-size:11px; color:var(--ok); }
+
+/* ---------- registry: overlay editor (UI3) — a centered panel over a dimmed backdrop, per the design
+   brief's "no modals" interaction constitution read together with this one deliberate exception the
+   goal calls for: the registry's raw-source editor. It is a sibling of `.app`, toggled by the `hidden`
+   attribute alone — the board underneath never unmounts, no route changes. ---------- */
+.editor-overlay{ position:fixed; inset:0; z-index:200; display:flex; align-items:center; justify-content:center;
+  padding:5vh 20px; }
+.editor-overlay[hidden]{ display:none; }
+.editor-overlay__backdrop{ position:absolute; inset:0; background:color-mix(in oklab, var(--fg) 45%, transparent); }
+.editor-overlay__panel{ position:relative; width:min(760px, 100%); max-height:88vh; display:flex; flex-direction:column;
+  background:var(--panel); border:1px solid var(--border-strong); border-radius:14px; box-shadow:var(--shadow);
+  padding:20px 22px; gap:14px; animation:editor-in .16s ease-out; }
+@keyframes editor-in{ from{ opacity:0; transform:translateY(4px) scale(.99); } to{ opacity:1; transform:none; } }
+@media (prefers-reduced-motion: reduce){ .editor-overlay__panel{ animation:none; } }
+.editor-overlay__head{ display:flex; align-items:baseline; gap:10px; }
+.editor-overlay__title{ font-size:19px; font-weight:600; letter-spacing:-.01em; margin:0; }
+.editor-overlay__kind{ font-size:11px; color:var(--fg-mute); border:1px solid var(--border); padding:2px 8px;
+  border-radius:5px; margin-left:auto; }
+.editor-overlay__textarea{ flex:1; width:100%; box-sizing:border-box; resize:vertical; min-height:360px;
+  font-family:var(--mono); font-size:12.5px; line-height:1.7; color:var(--fg); background:var(--panel-2);
+  border:1px solid var(--border); border-radius:12px; padding:16px 18px; tab-size:2; outline:none; white-space:pre; }
+.editor-overlay__textarea:focus{ border-color:var(--border-strong); }
+.editor-overlay__foot{ display:flex; align-items:flex-start; gap:16px; justify-content:space-between; }
+.editor-overlay__status{ display:flex; flex-direction:column; gap:6px; min-width:0; }
+.editor-overlay__errors{ display:flex; flex-direction:column; gap:6px; }
+.editor-overlay__err{ font-size:12px; line-height:1.5; }
+.editor-overlay__err .mono{ display:block; color:var(--danger); font-size:11px; }
+.editor-overlay__err p{ margin:2px 0 0; color:var(--fg-dim); }
+.editor-overlay__actions{ display:flex; align-items:center; gap:10px; flex:none; }
 
 /* ---------- theme toggle ---------- */
 .themebtn{ display:flex; align-items:center; gap:8px; background:transparent; border:1px solid var(--border);

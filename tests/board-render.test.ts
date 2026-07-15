@@ -331,33 +331,58 @@ describe("registry screen", () => {
     // carries the "card" class now.
     expect(html).not.toContain('<div class="card">');
 
-    // Sanity: for a specific entity (kestrel), the header, the flow-strip body, and the edit actions
+    // Sanity: for a specific entity (kestrel), the header, the flow-strip body, and the edit trigger
     // all sit between the same opening <article> and its closing </article> — genuinely one container.
     const kestrelCard = /<article class="entity card"[^>]*data-entity="teams"[^>]*>[\s\S]*?<\/article>/.exec(html)![0];
     expect(kestrelCard).toContain('class="entity__head"');
     expect(kestrelCard).toContain('class="flowstrip"');
     expect(kestrelCard).toContain('class="editbar"');
-    expect(kestrelCard).toContain("data-edit-toggle");
+    expect(kestrelCard).toContain("data-edit-open");
   });
 
-  // E8: the registry editor is no longer preview-only. Each entity card now carries an editable raw-
-  // markdown control wired to the write route: an actual <textarea> (raw markdown, not form fields),
-  // a data-path naming the entity's repo-relative file, and a Save button — the pieces that were
-  // missing when "Edit source" only ever revealed a read-only <pre>. (The server route that consumes
-  // this — validate → write → commit as the Conductor — is exercised in board-serve.test.ts.)
-  test("each entity exposes an editable raw-markdown control wired to POST /registry/*path (E8)", () => {
+  // UI3: "Edit source" no longer reveals an inline, card-cramped textarea — each card carries only
+  // the trigger (data-edit-open, naming the entity's path/name/kind) and a HIDDEN <textarea
+  // class="rawmd-source"> holding the on-disk raw markdown, which app.js copies into the ONE shared
+  // overlay editor on click. (Overlay behavior — open/close/validate/save — is exercised against the
+  // real app.js in board-editor-overlay.test.ts; the write route itself in board-serve.test.ts.)
+  test("each entity carries a hidden raw-markdown source plus an Edit-source trigger naming its path/name/kind (UI3)", () => {
     const cardOpens = (html.match(/<article class="entity card"/g) || []).length;
-    // One editable textarea per card, and each is the raw-markdown editor (not a preview <pre>).
-    const textareas = (html.match(/<textarea class="rawmd rawmd-edit"[^>]*>/g) || []);
-    expect(textareas.length).toBe(cardOpens);
-    // A Save button per card, and every card names the file the editor will POST to.
-    expect((html.match(/data-save/g) || []).length).toBe(cardOpens);
-    // The kestrel card's editor targets teams/kestrel.md — the exact path the write route confines to.
+    const sources = html.match(/<textarea class="rawmd-source"[^>]*hidden>/g) || [];
+    expect(sources.length).toBe(cardOpens);
+    expect((html.match(/data-edit-open/g) || []).length).toBe(cardOpens);
+    // The kestrel card's trigger targets teams/kestrel.md — the exact path both the write route and
+    // the live-validation check route confine to — and names the entity for the overlay's heading.
     const kestrelCard = /<article class="entity card"[^>]*data-entity="teams"[^>]*>[\s\S]*?<\/article>/.exec(html)![0];
     expect(kestrelCard).toContain('data-path="teams/kestrel.md"');
-    expect(kestrelCard).toMatch(/<textarea class="rawmd rawmd-edit" data-path="teams\/kestrel\.md"/);
-    // The raw markdown source is inside the textarea (the entity's own frontmatter is editable).
+    expect(kestrelCard).toMatch(/<button class="togglebtn" data-edit-open data-path="teams\/kestrel\.md" data-editor-name="kestrel" data-editor-kind="team">/);
+    expect(kestrelCard).toMatch(/<textarea class="rawmd-source" data-path="teams\/kestrel\.md" hidden>/);
+    // The raw markdown source is inside the hidden textarea (the entity's own frontmatter is there).
     expect(kestrelCard).toContain("name: kestrel");
+  });
+
+  // UI3 (1): the editor is an OVERLAY over the board, not a route — one shared instance, hidden by
+  // default, a sibling of `.app` (never nested inside it, never replacing it) so the board's rail/
+  // main/orchestrator markup is still present in the DOM whether or not the overlay is open.
+  test("the overlay editor is a hidden sibling of the board, not nested inside it", () => {
+    const appIdx = html.indexOf('<div class="app">');
+    const appEndIdx = html.indexOf("</html>");
+    expect(appIdx).toBeGreaterThan(-1);
+    // The overlay root sits after the app's own content, not inside `.app`'s subtree.
+    const overlayIdx = html.indexOf('<div class="editor-overlay" id="editor-overlay" hidden>');
+    expect(overlayIdx).toBeGreaterThan(appIdx);
+    expect(overlayIdx).toBeLessThan(appEndIdx);
+    // Board content — rail, an entity card, the Orchestrator panel — is present in the same document.
+    expect(html).toContain('class="rail"');
+    expect(html).toContain('data-entity="teams"');
+    expect(html).toContain('class="orch__head"');
+    // The overlay carries the heading, textarea, validity indicator, and both dismiss/save controls.
+    expect(html).toContain('class="editor-overlay__title"');
+    expect(html).toContain('class="editor-overlay__kind mono"');
+    expect(html).toContain('class="editor-overlay__textarea"');
+    expect(html).toContain('data-editor-backdrop');
+    expect(html).toContain('data-editor-cancel');
+    expect(html).toContain('data-editor-save');
+    expect(html).toContain('role="dialog" aria-modal="true"');
   });
 });
 

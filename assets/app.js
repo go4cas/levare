@@ -278,54 +278,170 @@
         if (m) m.scrollTop = 0;
       });
     }
-    document.addEventListener('click', function (e) {
-      var t = e.target.closest('[data-edit-toggle]');
-      if (!t) return;
-      var ent = t.closest('.entity');
-      var editing = ent.classList.toggle('is-editing');
-      t.textContent = editing ? 'View rendered' : 'Edit source';
-      var save = ent.querySelector('[data-save]');
-      if (save) save.style.display = editing ? '' : 'none';
-    });
-    /* E8: "Save and commit" POSTs the edited raw markdown to the existing POST /registry/*path route
-       (validate -> write -> commit as the Conductor, server-side, with the SAME validator the whole
-       repo is checked against). The client only relays the raw text and renders the verdict \u2014 no form
-       fields, no client-side authoring. On success the page reloads to re-derive from the committed
-       file (invariant 2); on a validation failure the server rolls the file back and returns the
-       error, which is shown inline without leaving edit mode so the Conductor can fix and retry. */
-    document.addEventListener('click', function (e) {
-      var sv = e.target.closest('[data-save]');
-      if (!sv) return;
-      var ent = sv.closest('.entity');
-      if (!ent) return;
-      var ta = ent.querySelector('.rawmd-edit');
-      var path = ta && ta.getAttribute('data-path');
-      var validity = ent.querySelector('.validity');
-      if (!ta || !path) return;
-      sv.disabled = true;
-      sv.textContent = 'Saving\u2026';
-      fetch('/registry/' + path, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ content: ta.value })
-      }).then(function (r) {
-        return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, body: j }; });
-      }).then(function (res) {
-        if (res.ok && res.body && res.body.ok) {
-          sv.textContent = 'Committed \u2713';
-          if (validity) { validity.classList.remove('is-invalid'); validity.innerHTML = '<span class="status-dot is-ok"></span>valid'; }
-          setTimeout(function () { location.reload(); }, 500);
-        } else {
-          sv.disabled = false;
-          sv.textContent = 'Save and commit';
-          var msg = (res.body && res.body.error) ? res.body.error : 'save failed';
-          if (validity) { validity.classList.add('is-invalid'); validity.innerHTML = '<span class="status-dot is-danger"></span>' + msg; }
-        }
-      }).catch(function () {
-        sv.disabled = false;
-        sv.textContent = 'Save and commit';
-        if (validity) { validity.classList.add('is-invalid'); validity.innerHTML = '<span class="status-dot is-danger"></span>save failed'; }
+    /* ---------- registry: overlay editor (UI3) ----------
+       "Edit source" opens the ONE shared overlay (render.ts#editorOverlay) instead of an inline,
+       card-cramped textarea. As the Conductor types, the buffer is debounced (~250ms after the last
+       keystroke) into POST /registry/check/*path \u2014 the SAME validator `levare validate` and the
+       save route both run, just pointed at the unsaved buffer instead of the file on disk (see
+       validate.ts's `overlay` param); never a second, client-side validation implementation. Save
+       stays blocked (button disabled) until that check comes back valid. Cancel, Escape, and a
+       backdrop click all dismiss the overlay; each first checks whether the buffer differs from what
+       was loaded (`isDirty()`) and only prompts "Discard unsaved changes?" when it does \u2014 an
+       unchanged buffer closes immediately. Saving successfully closes the overlay itself (in addition
+       to the existing full-page reload that re-derives from the newly committed file). */
+    var overlay = document.getElementById('editor-overlay');
+    if (overlay) {
+      var ovTitle = overlay.querySelector('.editor-overlay__title');
+      var ovKind = overlay.querySelector('.editor-overlay__kind');
+      var ovTextarea = overlay.querySelector('.editor-overlay__textarea');
+      var ovValidity = overlay.querySelector('.validity');
+      var ovErrors = overlay.querySelector('.editor-overlay__errors');
+      var ovSave = overlay.querySelector('[data-editor-save]');
+      var ovCancel = overlay.querySelector('[data-editor-cancel]');
+      var ovBackdrop = overlay.querySelector('[data-editor-backdrop]');
+      var current = null; // { path, original } \u2014 null whenever the overlay is closed
+      var checkTimer = null;
+      var checkToken = 0;
+
+      function isDirty() {
+        return !!current && ovTextarea.value !== current.original;
+      }
+
+      function renderErrors(errors) {
+        ovErrors.innerHTML = '';
+        (errors || []).forEach(function (er) {
+          var row = document.createElement('div');
+          row.className = 'editor-overlay__err';
+          var loc = document.createElement('span');
+          loc.className = 'mono';
+          loc.textContent = er.code + '  ' + er.file + (er.line ? ':' + er.line : '');
+          var msg = document.createElement('p');
+          msg.textContent = er.message;
+          row.appendChild(loc);
+          row.appendChild(msg);
+          ovErrors.appendChild(row);
+        });
+      }
+
+      function setValid() {
+        ovValidity.classList.remove('is-invalid');
+        ovValidity.innerHTML = '<span class="status-dot is-ok"></span>valid';
+        renderErrors([]);
+        ovSave.disabled = false;
+      }
+      function setInvalid(errors, label) {
+        ovValidity.classList.add('is-invalid');
+        ovValidity.innerHTML = '<span class="status-dot is-danger"></span>' + (label || 'invalid');
+        renderErrors(errors);
+        ovSave.disabled = true;
+      }
+      function setChecking() {
+        ovValidity.classList.remove('is-invalid');
+        ovValidity.innerHTML = '<span class="status-dot is-idle"></span>checking\u2026';
+        ovSave.disabled = true;
+      }
+
+      function runCheck() {
+        if (!current) return;
+        var path = current.path;
+        var token = ++checkToken;
+        setChecking();
+        fetch('/registry/check/' + path, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ content: ovTextarea.value })
+        }).then(function (r) {
+          return r.json().catch(function () { return { ok: false, errors: [] }; });
+        }).then(function (body) {
+          if (token !== checkToken || !current) return; // stale response or overlay closed meanwhile
+          if (body && body.ok) setValid(); else setInvalid(body && body.errors, 'invalid');
+        }).catch(function () {
+          if (token !== checkToken || !current) return;
+          setInvalid([{ code: 'CHECK_FAILED', message: 'could not reach the board to validate', file: path }], 'unknown');
+        });
+      }
+
+      function scheduleCheck() {
+        if (checkTimer) clearTimeout(checkTimer);
+        checkTimer = setTimeout(runCheck, 250);
+      }
+
+      function openEditor(path, name, kind, raw) {
+        current = { path: path, original: raw };
+        ovTitle.textContent = name;
+        ovKind.textContent = kind;
+        ovTextarea.value = raw;
+        ovSave.textContent = 'Save and commit';
+        overlay.hidden = false;
+        runCheck();
+        ovTextarea.focus();
+      }
+
+      function closeEditor() {
+        if (checkTimer) clearTimeout(checkTimer);
+        checkToken++; // invalidate any in-flight check response
+        current = null;
+        overlay.hidden = true;
+      }
+
+      /** Cancel / Escape / backdrop all funnel through here \u2014 the one dirty-check gate. */
+      function requestDismiss() {
+        if (isDirty() && !window.confirm('Discard unsaved changes?')) return;
+        closeEditor();
+      }
+
+      document.addEventListener('click', function (e) {
+        var t = e.target.closest('[data-edit-open]');
+        if (!t) return;
+        var card = t.closest('.entity');
+        if (!card) return;
+        var src = card.querySelector('.rawmd-source');
+        openEditor(
+          t.getAttribute('data-path'),
+          t.getAttribute('data-editor-name') || '',
+          t.getAttribute('data-editor-kind') || '',
+          src ? src.value : '',
+        );
       });
-    });
+
+      ovCancel.addEventListener('click', requestDismiss);
+      ovBackdrop.addEventListener('click', requestDismiss);
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && !overlay.hidden) requestDismiss();
+      });
+      ovTextarea.addEventListener('input', function () {
+        ovSave.disabled = true; // stays blocked until the debounced re-check comes back valid
+        scheduleCheck();
+      });
+
+      ovSave.addEventListener('click', function () {
+        if (!current || ovSave.disabled) return;
+        var path = current.path;
+        ovSave.disabled = true;
+        ovSave.textContent = 'Saving\u2026';
+        fetch('/registry/' + path, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ content: ovTextarea.value })
+        }).then(function (r) {
+          return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, body: j }; });
+        }).then(function (res) {
+          if (res.ok && res.body && res.body.ok) {
+            ovSave.textContent = 'Committed \u2713';
+            closeEditor();
+            setTimeout(function () { location.reload(); }, 400);
+          } else {
+            ovSave.disabled = false;
+            ovSave.textContent = 'Save and commit';
+            var msg = (res.body && res.body.error) ? res.body.error : 'save failed';
+            setInvalid([{ code: 'SAVE_FAILED', message: msg, file: path }], 'save failed');
+          }
+        }).catch(function () {
+          ovSave.disabled = false;
+          ovSave.textContent = 'Save and commit';
+          setInvalid([{ code: 'SAVE_FAILED', message: 'could not reach the board', file: path }], 'save failed');
+        });
+      });
+    }
   });
 })();

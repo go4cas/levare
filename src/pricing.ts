@@ -13,8 +13,9 @@
 // *unpriceable* — `priceUsd` returns null rather than guessing, so an unknown model surfaces as
 // `usd: null` on the receipt (a quiet, honest gap) instead of a fabricated figure.
 
-import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { readOverlaid, type OverlayFile } from "./overlay.ts";
 
 export interface Rate {
   in_per_m: number;
@@ -63,11 +64,11 @@ export function baselinePricing(): Pricing {
  * entry-by-entry, never replaces it. A studio with no pricing file of its own still prices and
  * validates against every baseline model.
  */
-export function loadPricing(root: string): Pricing {
+export function loadPricing(root: string, overlay?: OverlayFile): Pricing {
   const pricing = baselinePricing();
   const file = join(root, "knowledge", "model-pricing.md");
-  if (existsSync(file)) {
-    for (const [model, rate] of parsePricing(readFileSync(file, "utf8"))) pricing.set(model, rate);
+  if (existsSync(file) || (overlay && overlay.path === resolve(file))) {
+    for (const [model, rate] of parsePricing(readOverlaid(file, overlay))) pricing.set(model, rate);
   }
   return pricing;
 }

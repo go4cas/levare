@@ -11,6 +11,8 @@ import { join, relative, dirname, basename, sep, isAbsolute, resolve } from "nod
 import { spawnSync } from "node:child_process";
 import { parseFrontmatter, YamlError, type YamlValue } from "./yaml.ts";
 import { loadPricing, type Pricing } from "./pricing.ts";
+import { readOverlaid, type OverlayFile } from "./overlay.ts";
+export type { OverlayFile } from "./overlay.ts";
 
 export interface ValidationError {
   code: string;
@@ -320,8 +322,17 @@ export function validateArtifactSource(src: string, file = "<member-output>", di
   return errors;
 }
 
-/** Validate a path (single file or a directory tree). */
-export function validatePath(target: string): ValidationResult {
+/**
+ * Validate a path (single file or a directory tree).
+ *
+ * `overlay`, when given, substitutes `overlay.content` for `overlay.path` (a resolved absolute path)
+ * everywhere this pass would otherwise read that file off disk — the registry editor's live-validation
+ * route (board/serve.ts) uses this to check an unsaved buffer against the real repo (cross-reference
+ * checks like UNKNOWN_MODEL and AGENT_IN_MULTIPLE_TEAMS included) without writing it to disk first.
+ * `overlay.path` must name a file that already exists on disk; validating a not-yet-created entity is
+ * not a case the registry editor needs (it only ever opens on an existing entity).
+ */
+export function validatePath(target: string, overlay?: OverlayFile): ValidationResult {
   const errors: ValidationError[] = [];
   let fileCount = 0;
   const artifacts: DiscoveredArtifact[] = [];
@@ -338,13 +349,13 @@ export function validatePath(target: string): ValidationResult {
 
   if (st.isFile()) {
     fileCount = 1;
-    validateSingleFile(target, classify(target), errors, artifacts);
+    validateSingleFile(target, classify(target), errors, artifacts, overlay);
   } else {
     // Directory tree: walk registry folders + work/.
     const mdFiles = walkMarkdown(target);
     fileCount = mdFiles.length;
     for (const f of mdFiles) {
-      validateSingleFile(f, classify(relative(target, f)), errors, artifacts);
+      validateSingleFile(f, classify(relative(target, f)), errors, artifacts, overlay);
     }
     // Folder-artifact discovery + index-count check on work/ subdirectories.
     discoverFolderArtifacts(target, errors, artifacts);
@@ -352,12 +363,12 @@ export function validatePath(target: string): ValidationResult {
 
   // Cross-entity structural checks: can this studio actually RUN? (only meaningful for a whole tree)
   if (st.isDirectory()) {
-    validateStudioBindings(target, errors);
-    validateAgentTeamMembership(target, errors);
-    validateResponsibleTeam(target, errors);
-    validateAgentContextScope(target, errors);
+    validateStudioBindings(target, errors, overlay);
+    validateAgentTeamMembership(target, errors, overlay);
+    validateResponsibleTeam(target, errors, overlay);
+    validateAgentContextScope(target, errors, overlay);
     validateEnvNotTracked(target, errors);
-    validateKnownModels(target, errors);
+    validateKnownModels(target, errors, overlay);
   }
 
   // Cross-artifact checks over everything discovered.
@@ -437,11 +448,12 @@ function validateSingleFile(
   kind: Kind,
   errors: ValidationError[],
   artifacts: DiscoveredArtifact[],
+  overlay?: OverlayFile,
 ): void {
   if (!kind.schema) return; // unknown location or non-schema file (e.g. README) — skip.
   let data: Record<string, YamlValue>;
   try {
-    ({ data } = parseFrontmatter(readFileSync(file, "utf8")));
+    ({ data } = parseFrontmatter(readOverlaid(file, overlay)));
   } catch (e) {
     if (e instanceof YamlError) {
       errors.push({ code: "PARSE_ERROR", message: e.message, file, line: e.line });
@@ -741,7 +753,10 @@ function validateConnectorAuth(data: Record<string, YamlValue>, file: string, er
 // pricing claim this check could meaningfully validate.
 
 /** Every agent name → its declared `model:`, when present, from `agents/*.md`. */
-function declaredAgentModels(agentsDir: string): Array<{ agentName: string; model: string; file: string }> {
+function declaredAgentModels(
+  agentsDir: string,
+  overlay?: OverlayFile,
+): Array<{ agentName: string; model: string; file: string }> {
   const out: Array<{ agentName: string; model: string; file: string }> = [];
   if (!existsSync(agentsDir)) return out;
   for (const name of readdirSync(agentsDir).sort()) {
@@ -749,7 +764,7 @@ function declaredAgentModels(agentsDir: string): Array<{ agentName: string; mode
     const file = join(agentsDir, name);
     let data: Record<string, YamlValue>;
     try {
-      ({ data } = parseFrontmatter(readFileSync(file, "utf8")));
+      ({ data } = parseFrontmatter(readOverlaid(file, overlay)));
     } catch {
       continue; // its own PARSE_ERROR was already recorded by the per-file pass.
     }
@@ -766,7 +781,7 @@ function declaredAgentModels(agentsDir: string): Array<{ agentName: string; mode
 // unpriceable BY DEFINITION, not by an accounting gap. These agents are exempt from UNKNOWN_MODEL
 // below. Hand-parsed straight off disk (not via repo.ts's loadRepo), matching every other
 // cross-entity check in this file, so validation stays independent of a fully-loadable repo.
-function subscriptionAuthAgents(root: string): Set<string> {
+function subscriptionAuthAgents(root: string, overlay?: OverlayFile): Set<string> {
   const out = new Set<string>();
   const connectorsDir = join(root, "connectors");
   if (!existsSync(connectorsDir)) return out;
@@ -776,7 +791,7 @@ function subscriptionAuthAgents(root: string): Set<string> {
     if (!file.endsWith(".md")) continue;
     let data: Record<string, YamlValue>;
     try {
-      ({ data } = parseFrontmatter(readFileSync(join(connectorsDir, file), "utf8")));
+      ({ data } = parseFrontmatter(readOverlaid(join(connectorsDir, file), overlay)));
     } catch {
       continue;
     }
@@ -794,7 +809,7 @@ function subscriptionAuthAgents(root: string): Set<string> {
       if (!file.endsWith(".md") || file.endsWith(".learnings.md")) continue;
       let data: Record<string, YamlValue>;
       try {
-        ({ data } = parseFrontmatter(readFileSync(join(teamsDir, file), "utf8")));
+        ({ data } = parseFrontmatter(readOverlaid(join(teamsDir, file), overlay)));
       } catch {
         continue;
       }
@@ -813,7 +828,7 @@ function subscriptionAuthAgents(root: string): Set<string> {
       if (!file.endsWith(".md") || file.endsWith(".learnings.md")) continue;
       let data: Record<string, YamlValue>;
       try {
-        ({ data } = parseFrontmatter(readFileSync(join(agentsDir, file), "utf8")));
+        ({ data } = parseFrontmatter(readOverlaid(join(agentsDir, file), overlay)));
       } catch {
         continue;
       }
@@ -830,14 +845,14 @@ function subscriptionAuthAgents(root: string): Set<string> {
   return out;
 }
 
-function validateKnownModels(root: string, errors: ValidationError[]): void {
+function validateKnownModels(root: string, errors: ValidationError[], overlay?: OverlayFile): void {
   // NOTES F23: `loadPricing` always includes the binary's own baseline table now, so this never
   // fails open on an unconfigured studio — a fresh studio with no knowledge/model-pricing.md at all
   // is still checked against every real, currently-callable model the binary ships.
-  const pricing: Pricing = loadPricing(root);
-  const subscriptionAgents = subscriptionAuthAgents(root);
+  const pricing: Pricing = loadPricing(root, overlay);
+  const subscriptionAgents = subscriptionAuthAgents(root, overlay);
 
-  for (const { agentName, model, file } of declaredAgentModels(join(root, "agents"))) {
+  for (const { agentName, model, file } of declaredAgentModels(join(root, "agents"), overlay)) {
     if (subscriptionAgents.has(agentName)) continue; // C13: unpriceable by definition, not a defect.
     if (!pricing.has(model)) {
       errors.push({
@@ -852,7 +867,7 @@ function validateKnownModels(root: string, errors: ValidationError[]): void {
   if (existsSync(studioFile)) {
     let data: Record<string, YamlValue>;
     try {
-      ({ data } = parseFrontmatter(readFileSync(studioFile, "utf8")));
+      ({ data } = parseFrontmatter(readOverlaid(studioFile, overlay)));
     } catch {
       data = {};
     }
@@ -914,7 +929,7 @@ function strList(v: YamlValue): string[] {
  * subtree with only one of them (a rejection fixture, a single registry file) is not a studio and
  * has nothing to bind.
  */
-function validateStudioBindings(root: string, errors: ValidationError[]): void {
+function validateStudioBindings(root: string, errors: ValidationError[], overlay?: OverlayFile): void {
   const teamsDir = join(root, "teams");
   const agentsDir = join(root, "agents");
   if (!existsSync(teamsDir) || !existsSync(agentsDir)) return;
@@ -925,7 +940,7 @@ function validateStudioBindings(root: string, errors: ValidationError[]): void {
     if (!name.endsWith(".md") || name.endsWith(".learnings.md")) continue;
     let data: Record<string, YamlValue>;
     try {
-      ({ data } = parseFrontmatter(readFileSync(join(agentsDir, name), "utf8")));
+      ({ data } = parseFrontmatter(readOverlaid(join(agentsDir, name), overlay)));
     } catch {
       continue; // its own PARSE_ERROR was already recorded by the per-file pass.
     }
@@ -937,7 +952,7 @@ function validateStudioBindings(root: string, errors: ValidationError[]): void {
     const path = join(teamsDir, file);
     let data: Record<string, YamlValue>;
     try {
-      ({ data } = parseFrontmatter(readFileSync(path, "utf8")));
+      ({ data } = parseFrontmatter(readOverlaid(path, overlay)));
     } catch {
       continue;
     }
@@ -1030,7 +1045,7 @@ function validateStudioBindings(root: string, errors: ValidationError[]): void {
  * agent and every team that lists it. The fix is never to share one agent definition across teams —
  * duplicate and rename the agent per team instead (e.g. `scribe-press`, `scribe-docs`).
  */
-function validateAgentTeamMembership(root: string, errors: ValidationError[]): void {
+function validateAgentTeamMembership(root: string, errors: ValidationError[], overlay?: OverlayFile): void {
   const teamsDir = join(root, "teams");
   if (!existsSync(teamsDir)) return;
 
@@ -1039,7 +1054,7 @@ function validateAgentTeamMembership(root: string, errors: ValidationError[]): v
     if (!file.endsWith(".md") || file.endsWith(".learnings.md")) continue;
     let data: Record<string, YamlValue>;
     try {
-      ({ data } = parseFrontmatter(readFileSync(join(teamsDir, file), "utf8")));
+      ({ data } = parseFrontmatter(readOverlaid(join(teamsDir, file), overlay)));
     } catch {
       continue; // its own PARSE_ERROR was already recorded by the per-file pass.
     }
@@ -1078,7 +1093,7 @@ function validateAgentTeamMembership(root: string, errors: ValidationError[]): v
  * team must actually be able to produce something the unit's type expects (otherwise the override just
  * relocates the "nothing can run this unit" failure UNBINDABLE_STEP/UNPRODUCIBLE_KIND already catch).
  */
-function validateResponsibleTeam(root: string, errors: ValidationError[]): void {
+function validateResponsibleTeam(root: string, errors: ValidationError[], overlay?: OverlayFile): void {
   const workRoot = join(root, "work");
   const teamsDir = join(root, "teams");
   const typesDir = join(root, "types");
@@ -1089,7 +1104,7 @@ function validateResponsibleTeam(root: string, errors: ValidationError[]): void 
     if (!file.endsWith(".md") || file.endsWith(".learnings.md")) continue;
     let data: Record<string, YamlValue>;
     try {
-      ({ data } = parseFrontmatter(readFileSync(join(teamsDir, file), "utf8")));
+      ({ data } = parseFrontmatter(readOverlaid(join(teamsDir, file), overlay)));
     } catch {
       continue; // its own PARSE_ERROR was already recorded by the per-file pass.
     }
@@ -1102,7 +1117,7 @@ function validateResponsibleTeam(root: string, errors: ValidationError[]): void 
     if (!file.endsWith(".md")) continue;
     let data: Record<string, YamlValue>;
     try {
-      ({ data } = parseFrontmatter(readFileSync(join(typesDir, file), "utf8")));
+      ({ data } = parseFrontmatter(readOverlaid(join(typesDir, file), overlay)));
     } catch {
       continue;
     }
@@ -1179,7 +1194,7 @@ function validateResponsibleTeam(root: string, errors: ValidationError[]): void 
  * A `cwd` still holding an unresolved `{…}` template (NOTES D9) resolves only at spawn time, not
  * definition time, so its eventual location is unknowable here and is skipped, not guessed at.
  */
-function validateAgentContextScope(root: string, errors: ValidationError[]): void {
+function validateAgentContextScope(root: string, errors: ValidationError[], overlay?: OverlayFile): void {
   const agentsDir = join(root, "agents");
   if (!existsSync(agentsDir)) return;
   const resolvedRoot = resolve(root);
@@ -1188,7 +1203,7 @@ function validateAgentContextScope(root: string, errors: ValidationError[]): voi
     const file = join(agentsDir, name);
     let data: Record<string, YamlValue>;
     try {
-      ({ data } = parseFrontmatter(readFileSync(file, "utf8")));
+      ({ data } = parseFrontmatter(readOverlaid(file, overlay)));
     } catch {
       continue; // its own PARSE_ERROR was already recorded by the per-file pass.
     }
