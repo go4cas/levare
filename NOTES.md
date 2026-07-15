@@ -5918,3 +5918,214 @@ before this goal — NOTES DIST4; net +3 tests: the compiled-smoke file gained m
 rewritten describe blocks lost). `bun run deps:check` → `deps ok`. `bun run build` succeeds; the
 resulting `dist/levare` passes every manual check above. `./levare replay fixtures/golden --stubs`
 matches the oracle byte-for-byte.
+
+# NOTES UI10 — client-side navigation: the content column swaps in place; the hang, the conversation wipe, and the per-click waste were one architectural gap, not three bugs
+
+## The hang, precisely diagnosed (per the goal's own directive — recorded here, not independently
+## re-reproduced live: this sandbox has no browser/devtools tooling, the same limitation NOTES UI9
+## already logged for pixel-level verification)
+
+Every in-app link was a plain `<a href>` to a fresh document (UI4's own deliberate choice — see
+below). A burst of rapid navigations — the Conductor clicking through several gates or registry
+entities in quick succession — each fires a full document GET, a re-fetch of `styles.css`/`app.js`
+(cached after the first load, but still a request), and a teardown-then-reopen of the SSE
+`/events` connection (the old connection's `abort` fires as the page unloads; the new page's
+`app.js` opens a fresh one at `DOMContentLoaded`). Chrome allows at most ~6 simultaneous
+connections per origin over HTTP/1.1; the permanent SSE stream already holds one of those six for
+the page's entire lifetime, so a burst of navigations needs only 5 more in-flight requests to hit
+the ceiling — a document request plus two assets is 3, and if the previous page's own SSE
+teardown hasn't finished draining before the next navigation's asset requests land, the burst
+routinely eats the rest. The newest navigation's own document request then queues client-side,
+invisible to any server-side instrumentation: Chrome's Network panel shows "Provisional headers
+are shown" — a request that was handed to the browser's own connection scheduler but has not yet
+been placed on the wire, so there is no response to inspect and nothing server-side to blame it
+on. The server itself was never slow: `curl`ing the exact same URL during a live episode answered
+in 0.138s. That's the exoneration — the bottleneck was never `levare serve`'s own request
+handling, it was the browser running out of places to put the next request while an unrelated
+permanent connection (the SSE stream) sat on one of its six slots for the whole session.
+
+## The design
+
+The app shell — the header, the left rail, the Orchestrator panel (and thus its conversation), and
+the one persistent `/events` SSE connection — now persists across every in-app navigation. Clicking
+a same-origin, unmodified, left-click link on an in-app href fetches ONLY the new page's content
+column and swaps it into `<main class="main">` in place; the URL updates via `history.pushState`.
+This directly removes all three problems the goal named as one architectural gap:
+
+1. **The hang** — an in-app click no longer fires a document request, an asset re-fetch, or an SSE
+   teardown/reopen at all. There is nothing left to exhaust the connection pool with.
+2. **The conversation wipe** — the Orchestrator `<aside class="orch">` and everything inside it
+   (`.orch__body`'s turn history) is never touched by a swap; it is the same DOM subtree before and
+   after every in-app navigation.
+3. **The waste** — `styles.css`/`app.js` are fetched once, ever, per page load; the SSE connection
+   opens once, ever, per page load — regardless of how many in-app navigations follow.
+
+## Re: UI4's own prior removal of client-side interception — this is not the same mistake again
+
+NOTES UI4 deliberately deleted an earlier, naive `[data-goto]` click interceptor for the registry's
+kind-switch links: `preventDefault()` plus a DOM swap that never touched the URL or `history` at
+all — so the browser's back/forward buttons had nothing to restore to; back from a client-switched
+registry kind just left the page state and the address bar out of sync. That interceptor is not
+being reintroduced. This goal's mechanism differs in the one respect that actually mattered:
+**every** in-app navigation calls `history.pushState` with the real target URL, and a `popstate`
+listener re-fetches and re-swaps for whatever URL the browser restores — so Back/Forward re-derive
+the page from the server exactly as a real navigation would, just without the network round-trip
+for assets/SSE. A cold GET of any URL (a pasted deep link, a bookmark, a shared link) is completely
+unaffected — the fragment mechanism is opt-in via a request header only this project's own
+`app.js` ever sends; every route's ordinary GET response is byte-for-byte what it always rendered.
+
+## One rendering path — the fragment is sliced out of the SAME render call, never a second one
+
+`src/board/render.ts#pageBody()` (used by all six screen renderers — studio, project, run,
+artifact, idea, registry) wraps the content column and a page's own "extras" (gate-summon
+`<template>`s on the project page; the shared registry editor overlay on the registry page — both
+recreated per navigation, unlike the Orchestrator's conversation, which has real state worth
+keeping) in plain HTML comment markers: `<!--main-->...<!--/main-->` and
+`<!--extras-->...<!--/extras-->`. These markers are inert in every existing code path — invisible
+in the rendered page, untouched by any existing test's `.toContain(...)` assertions (additive
+only), and never reachable from escaped user content (`derive.ts#esc()` turns any literal `<`/`>`
+in interpolated data into `&lt;`/`&gt;`, so a comment delimiter can never appear inside data by
+accident).
+
+`src/board/serve.ts#extractFragment()` is pure string slicing against that marker output — no HTML
+parser, no DOM library (this project has neither, by design). `createBoard`'s router calls the
+route's ordinary handler FIRST, exactly as a cold GET would (same function, same repo read, same
+render call) — a fragment request (`X-Levare-Fragment: 1`, sent only by this project's own
+`app.js`) then slices the already-rendered HTML string into `{title, main, extras, highlightId}`
+and returns that as JSON instead of the full document; a non-fragment request is returned
+completely unchanged. `tests/board-fragment.test.ts` proves this directly rather than by
+inspection: for `/studio`, `/project/storefront`, and `/registry/teams`, it fetches BOTH the
+ordinary HTML response and the fragment response for the same URL and asserts the fragment's
+`main`/`title`/`extras` are byte-identical to the same regions sliced out of the ordinary
+response — the fragment path cannot have forked the render logic, because both assertions are
+computed from what the exact same route handler produced.
+
+Onboarding (`renderOnboarding`, an unrelated standalone screen that never goes through
+`pageBody()`) has no markers; `extractFragment` returns `null` for it, and the route falls back to
+serving the real, unmodified onboarding HTML even under a fragment request — the client's job is to
+notice the non-JSON response and fall back to a real navigation (FAILURE HONESTY, below), not to
+special-case onboarding itself.
+
+## The client: interception, the swap, and failure honesty
+
+`assets/app.js`'s new navigation block: a delegated `document` click listener intercepts a link
+click only when it is same-origin, left-click (`button === 0`), carries no modifier key
+(ctrl/meta/shift/alt), has no `download` attribute, no `target` other than `_self`, and is not a
+bare `#` fragment link — everything else (external links, modified clicks, downloads, in-page
+anchors) navigates exactly as an ordinary `<a>` always has, untouched. On an intercepted click:
+`fetchFragment(url)` sends the request with the fragment header and validates the response is
+`ok`, carries an `application/json` content-type, and its `main` field is a string; anything short
+of that (network failure, a non-200, a non-JSON reply) resolves to `null`. `navigate()` then either
+applies the swap (`swapFragment`: replaces `<main class="main">` outright via
+`document.createElement('div').innerHTML = data.main` then `replaceChild`, refills
+`[data-extras-host]`, updates `document.title` — decoding the handful of entities `esc()` can
+produce, since a raw `document.title = "..."` assignment does not decode HTML entities the way an
+initial `<title>` parse does — reapplies the registry deep-link highlight/scroll behavior, and
+scrolls to top) or, if the fetch failed for any reason, falls back to `location.href = url` — a
+real navigation, never a broken half-swap (the goal's own FAILURE HONESTY requirement). A
+navigation token guards against a slow, superseded fetch applying its stale swap after a newer
+click has already landed.
+
+`history.pushState` fires only for a genuine click-driven navigation; a `popstate` listener and the
+SSE `reload` trigger both call the same `navigate()` with `push:false` — a `popstate` (the browser
+has already moved `location` before firing the event) or an SSE-driven repo change is a content
+REFRESH of a URL the history stack already has an entry for, not a new one.
+
+## The registry editor overlay needed a rebind hook, not just a swap target
+
+The registry editor overlay (`editorOverlay()`) lives inside the swappable `extras` region — its
+concrete DOM node is destroyed and a fresh one created by every navigation into or within the
+registry (and re-created as *absent* on every navigation away from it). The overlay's direct
+element listeners (Cancel/backdrop/Save/textarea-input — all bound to specific button/textarea
+node instances at setup time, matching `tests/board-editor-overlay.test.ts`'s existing direct-
+dispatch test style, which this change deliberately preserves rather than rewriting to full
+delegation) would otherwise silently stop working the first time the Conductor client-navigates
+into the registry from any other screen — `bindEditorOverlay()` (unchanged in *body* from the
+pre-UI10 code, just wrapped so it is re-callable) now runs once at startup and again inside
+`swapFragment()` after `[data-extras-host]` is refilled. The two handlers that genuinely don't
+need rebinding — the `[data-edit-open]` open-trigger and Escape-to-dismiss, both already
+`document`-delegated before this goal — are attached exactly once and call through
+`openEditor`/`requestDismiss`, two outer `var`s `bindEditorOverlay()` reassigns on every call, so
+they always resolve to whichever overlay instance is current without accumulating duplicate
+`document`-level listeners across repeated registry navigations.
+
+A successful registry save (`ovSave`'s click handler) and the SSE `reload` broadcast both used to
+call `location.reload()` — both now call the shared `refreshCurrent()` (a same-URL, `push:false`
+navigate) instead, so neither one tears down the SSE connection this goal exists to stop doing
+that to. This does not change one pre-existing, unrelated risk: an SSE-driven refresh that lands
+while the editor overlay is open with unsaved changes already discarded that buffer under the old
+`location.reload()` behavior; it still does under the new swap-based refresh, for the same reason
+(the extras region, overlay included, is unconditionally replaced) — noted as an accepted,
+unchanged tradeoff, not a new regression this goal introduced.
+
+## Test coverage
+
+`tests/board-fragment.test.ts` (new) — `extractFragment` unit tests (marker slicing, a null result
+when markers are absent, an empty-string `extras` when a page has none, `highlightId` parsing);
+`isFragmentRequest`; a live `createBoard("fixtures/golden")` suite: every parameterless `page`
+route's cold GET (no fragment header) is still the complete, unaffected HTML document; a fragment
+GET returns the JSON envelope and never leaks rail/orch markup into `main`; the byte-identity proof
+against the ordinary response described above; the registry deep-link highlight id; extras
+containing the editor overlay on a registry page and the empty string elsewhere; a project page's
+gate-summon template landing in `extras`, never inside `main`; a non-page route (an asset) ignoring
+the fragment header entirely; an unknown route still a plain 404 JSON envelope under the fragment
+header; and a fragment GET against an uninitialized studio falling back to the real onboarding HTML
+(content-type `text/html`, no markers) rather than a fragment envelope.
+
+`tests/board-client-navigation.test.ts` (new) — the same "load the real `assets/app.js` verbatim
+into a hand-rolled fake DOM via `node:vm`" pattern `tests/board-orchestrator-conversation.test.ts`
+and `tests/board-editor-overlay.test.ts` already established, extended with a real (not mocked)
+small tag-soup HTML parser backing a `FakeElement.innerHTML` setter — since the swap's whole
+mechanism IS "parse fetched HTML into DOM nodes," the harness needs an `innerHTML` that actually
+parses, not a stub — plus a fake `history` (records `pushState` calls, exposes the current
+entry), a `location` whose `pathname`/`search` a test can move (mirroring a real browser moving
+`location` before firing `popstate`) and whose `href` setter is observable (proving a real-
+navigation fallback occurred), and a `window` with `addEventListener`/`dispatchEvent` for
+`popstate`. Asserts, all against the real `app.js`: an in-app click fetches the fragment with the
+`X-Levare-Fragment` header and swaps `.main` without any document navigation; the swap pushes
+history with the clicked URL; `popstate` re-fetches and re-swaps for the restored URL and never
+pushes a new entry (back/forward parity with real navigation — the exact property NOTES UI4's own
+removed interceptor lacked); the Orchestrator panel's conversation turn is the SAME DOM node,
+untouched, before and after a swap; the rail is likewise untouched; the SSE `EventSource` is
+constructed exactly once regardless of how many in-app navigations follow; the SSE `reload`
+message refreshes the CURRENT url's content in place without pushing history or opening a second
+`EventSource`; a modified click (ctrl/meta/shift/alt, or a non-primary mouse button), an external
+(cross-origin) link, and a `download` link are each never intercepted (`preventDefault` never
+called, no fetch ever issued); and, twice over — a rejected fetch, and a resolved-but-non-JSON
+response (the onboarding-fallback shape) — a failed fragment fetch falls back to a real navigation
+(`location.href` assignment) rather than a broken half-swap, leaving the existing DOM exactly as it
+was.
+
+`tests/board-editor-overlay.test.ts` (existing suite, one test updated) — the "Save closes the
+overlay" test now asserts the post-save refresh is a THIRD fragment fetch (`/registry/teams` with
+the `X-Levare-Fragment` header), not a `location.reload()` call — the same behavioral change
+`refreshCurrent()` makes in production, proven against the exact same suite that already drives
+the real overlay code end-to-end. The suite's fake `location`/`window`/`history` objects gained the
+minimal surface (`pathname`, `search`, `href`, a no-op `history.pushState`) `refreshCurrent()`
+now touches; every other fixture and assertion in that file is unchanged, and every other test in
+it still passes unmodified — the `bindEditorOverlay()` refactor preserves the exact direct-listener
+behavior that suite exercises (see above), it only wraps it so it is re-callable.
+
+## Verification
+
+`bun test` — 804 pass, 1 pre-existing skip, 0 fail, across 64 files (was 778 pass/1 skip/62 files
+before this goal — NOTES DIST5; net +26 tests: 15 in the new `board-fragment.test.ts`, 11 in the new
+`board-client-navigation.test.ts`). `bun run deps:check` → `deps ok`. `./levare replay fixtures/golden
+--stubs` matches `fixtures/golden/expected.json` byte-for-byte, unaffected — this goal touches only
+`render.ts`/`serve.ts`/`app.js`, never the runner or replay path. Manually verified against a live
+`levare serve` instance pointed at a scratch copy of `fixtures/golden`: a cold `GET /studio` is still
+a complete `<!doctype html>` document carrying the `<!--main-->` marker (present but inert — the
+marker changes nothing about what a cold GET renders); a fragment `GET /project/storefront` (with
+`X-Levare-Fragment: 1`) returns a `200 application/json` envelope whose `main` is the real,
+server-rendered project page's content column; a fragment `GET /registry/connectors/linear` reports
+`highlightId: "connectors-linear"`, matching the cold page's own `data-highlight` deep-link target.
+
+**What could not be verified live, and why.** The Chrome connection-exhaustion hang itself (per-tab
+Network-panel behavior, "Provisional headers are shown") was not independently reproduced in this
+sandbox — there is no headless-browser or devtools-protocol tooling available here (the same,
+already-logged limitation as NOTES UI9's pixel-level screenshot gap); the diagnosis above is
+recorded as directed by the goal, not re-derived from a fresh repro. What WAS verified live is the
+mechanism that removes the hang's precondition: an in-app navigation, exercised end-to-end against
+the real server above, issues exactly one request (the fragment fetch) — no document GET, no asset
+re-fetch, no SSE reconnect — which is the structural fix regardless of whether this sandbox can put
+a real Chrome tab through the original failure to confirm it no longer occurs.
