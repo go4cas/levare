@@ -4669,3 +4669,145 @@ route's 404-on-missing-file behavior reflects that scope, not an oversight. The 
 gate cards, and every other registry-adjacent screen are untouched. `crossReference` and
 `gitImmutabilityCheck` (work/ artifact consumes/supersedes and approved-immutability) were not made
 overlay-aware, since the registry editor never edits a `work/` file — see "the hard part" above.
+
+---
+
+# NOTES UI4 — registry consistency: the confirm modal, human-only validation messages, the bare
+# entity tag, and registry URLs as path segments
+
+**The goal.** Four independent rough edges in the registry surface UI3 shipped: (1) the overlay
+editor's dirty-dismiss called the browser's native `confirm()` — off-palette, thread-blocking, and
+needed to become a reusable in-app primitive, not a one-off; (2) the editor's inline validation
+echoed the CLI's own `CODE  file:line` format verbatim, which is meaningless in a buffer with no
+visible line numbers; (3) an agent's registry tag read "agent · &lt;team&gt;" while every other kind
+shows only its bare type; (4) registry URLs still used `?entity=` query params and `#fragment`
+anchors while `/project/<name>` and `/idea/<name>` are paths. All four are presentation/routing
+fixes — no validation rule, CLI output, or client-side schema changed anywhere in this round.
+
+## Item 1: the confirm-modal primitive
+
+**The mechanism.** `render.ts#confirmModalHtml()` — one `<div id="confirm-modal" hidden>` per page,
+a sibling of `.app` inside `shell()` (same "hidden by default, painted on demand" shape as UI3's
+`editorOverlay()`), so it renders on every screen, not just the registry — the goal's explicit
+requirement that the upcoming visual-standardisation pass can adopt it as the board's standard
+confirmation surface rather than build a second one. Centered panel, dimmed backdrop, a plain
+question (`<p class="confirm-modal__question">`, populated at open time) and two actions
+(`data-confirm-keep` / `data-confirm-discard`) — same recipe as the editor overlay (`--panel`,
+`--border-strong`, `--shadow`), `z-index:220` (above the editor overlay's own `200`, since the
+dirty-dismiss confirmation opens ON TOP of the overlay it's confirming the dismissal of).
+
+`app.js#confirmModal(question, opts)` — a small IIFE returning a function that shows the modal,
+sets the question text and (optional) button labels, and returns a `Promise<boolean>` (`true` = the
+destructive action was confirmed) resolved by whichever of Discard / Keep editing / backdrop /
+Escape fires first. Callers read like `window.confirm` used to (`confirmModal(q).then(discard =>
+...)`) without ever calling it. The overlay's `requestDismiss()` is now: a clean buffer closes
+immediately; a dirty one calls `confirmModal('Discard unsaved changes?')` and only discards if it
+resolves `true`. No native `confirm()`/`alert()` remains anywhere in `assets/app.js` — asserted by a
+new test in `tests/board-editor-overlay.test.ts` that strips comments (the file's own prose
+legitimately says "confirm()" by name, documenting what was replaced) and regexes the remaining code
+for `window.confirm(`/`confirm(`/`alert(`.
+
+**Tests.** `tests/board-editor-overlay.test.ts`'s hand-rolled DOM fixture grew a `#confirm-modal`
+sibling (backdrop, question, keep/discard buttons) alongside the existing editor-overlay fixture; the
+fake `window` in `setupOverlay()` now carries no `confirm`/`alert` at all — a regression back to the
+native dialog would throw `window.confirm is not a function` straight out of the click handler and
+fail loudly, not silently pass. The dismiss-path tests were rewritten against the modal: a clean
+buffer never opens it; a dirty buffer opens it with the question text set, Keep-editing leaves the
+editor overlay open, Discard closes it, and the modal's own backdrop click behaves the same as
+Keep-editing. `tests/board-render.test.ts` asserts the modal markup is present, hidden, and carries
+its three `data-confirm-*` hooks on every screen (studio/project/run/registry), not just the
+registry.
+
+## Item 2: the editor shows the human message, not the CLI's code/file/line
+
+**The change.** `app.js#renderErrors` used to build one `<span class="mono">` per error reading
+`${code}  ${file}${line ? ':' + line : ''}` plus a `<p>` for the message — exactly
+`cli.ts#formatResult`'s own format, mirrored verbatim. The editor shows no line numbers anywhere in
+its buffer, so a bare `:line` locator pointed at nothing the Conductor could see, and the code/file
+prefix is a grep target for a script, not something a human editing a buffer needs. `renderErrors`
+now emits the message alone; the removed CSS rule for the code/location line
+(`.editor-overlay__err .mono`) is gone, and the message paragraph itself now carries the danger
+tint that line used to.
+
+**What did NOT change.** `POST /registry/check/*path` (serve.ts) still returns the full
+`{ code, message, file, line }` per error — verified live against a running server (unchanged JSON
+payload) and by a `tests/board-editor-overlay.test.ts` assertion that feeds the SAME
+code/file/line-bearing error object through the real `renderErrors` and asserts only the message
+survives. `levare validate`'s own CLI output is untouched — a new test in `tests/validate.test.ts`
+runs `./levare validate fixtures/rejections/malformed-frontmatter` and asserts the real stderr still
+contains `PARSE_ERROR`, the `file:line` locator, and the message, proving one validator and one rule
+set, two presentations rather than a second, quietly-diverging implementation.
+
+## Item 3: the bare entity tag
+
+**The change.** `renderRegistry`'s agent-card mapper called `entityBlock` with
+`` `agent${team ? ` · ${team.name}` : ""}` `` as the kind label — the one entity kind whose tag
+carried a second field. Every other kind (`team`, `skill`, `knowledge`, `type`, `connector`, `eval`)
+passes its bare type string. Changed to the literal `"agent"`; the team association is unaffected —
+it was already rendered separately on the card body via the existing "wears" row
+(`agentBlocks`'s `inner` string), so nothing about *which* information is available regressed, only
+where the tag itself lives.
+
+**Tests.** `tests/board-render.test.ts`: an agent card's `.entity__kind` text is exactly `"agent"`,
+never containing `"agent &middot;"` or `"agent ·"`; a second test walks every `.entity__kind` span on
+the whole registry page and asserts each is one of the seven bare type words.
+
+## Item 4: registry URLs become path segments
+
+**The routes.** Two new GET routes in `serve.ts`, both `page: true` (same onboarding gate every
+other screen route gets): `/registry/:entity` (the list view for that kind) and
+`/registry/:entity/:name` (the SAME list view, with `renderRegistry`'s new `highlightName` param
+naming the one entity to scroll to and highlight — explicitly NOT a second detail-page screen, per
+the goal). The existing `GET /registry` (query-param form) is untouched — a cold `?entity=connectors`
+link or bookmark still resolves exactly as before; nothing in this round required a redirect. Because
+`matchRoute` requires an exact path-segment-count match, `/registry`, `/registry/:entity`, and
+`/registry/:entity/:name` never collide with each other regardless of table order.
+
+**The highlight mechanism.** `renderRegistry` resolves `highlightName` into the exact `id`
+`entityBlock` already gives that card (`${activeKind}-${name}`, e.g. `connectors-linear`) and stamps
+it as `data-highlight="..."` on the page's `<main>` — computed once, server-side, so app.js never has
+to re-derive an id from the URL itself. `app.js` reads that attribute on `DOMContentLoaded`
+unconditionally (no dependency on any interactive tab-switch state) and, if the named element exists,
+calls `scrollIntoView({block:'center'})` and adds `.is-highlighted` — a quiet 1.6s ink-neutral ring
+(`assets/styles.css`, respecting `prefers-reduced-motion`), never the accent (design brief: accent is
+the Orchestrator's voice only) and never a team hue or gate brass (both already mean something else).
+This is the path-based replacement for the old `#<kind>-<name>` fragment anchor's plain browser
+scroll-to-anchor behavior, which a path segment (no URL fragment) can't trigger natively.
+
+**Link updates + back/forward.** `registryNavLinks` (the rail's Registry section and the in-content
+tab strip — one shared list, so the two can't drift) and `railNav`'s connector rows now emit
+`/registry/<kind>` and `/registry/connectors/<name>` instead of `/registry?entity=<kind>` and
+`/registry?entity=connectors#connectors-<name>`. The pre-existing client-side interception on
+`[data-goto]` clicks (`app.js`'s old "registry: entity switch" block — `preventDefault()` plus a DOM
+swap, never touching the URL or browser history) is deleted outright: switching kinds is now a plain
+`<a href>` navigation, a fresh server render on every click (PRD invariant 2). This is also what
+makes browser back/forward behave correctly across registry navigation for free — there is no
+client-side router state to get out of sync with history, because there is no client-side router.
+
+**Tests.** `tests/board-render.test.ts`: the rail/tab-strip links point at `/registry/<kind>`, never
+`?entity=`; connector rows point at `/registry/connectors/<name>`; `renderRegistry(kind)` alone
+carries no `data-highlight`; `renderRegistry(kind, name)` carries the exact expected
+`data-highlight` value while the list view still renders every other entity's card (not a detail
+screen). `tests/board-serve.test.ts` — the routing-level proof the goal calls for by name: a cold,
+in-process `board.fetch()` GET (no prior navigation, no client state) of `/registry/teams` and of
+`/registry/connectors/linear` both return 200 with the right kind active and (for the second) the
+right highlight target, never a 404 or a blank fallback; every one of the seven kinds resolves as a
+cold path GET; the legacy `?entity=` form still resolves unchanged; the rail/tab links in the served
+HTML never contain the old `?entity=` string.
+
+**Verification (all four items).** `bun test` — 665 pass, 1 pre-existing skip, 0 fail, across 53
+files. `levare replay fixtures/golden --stubs` — final artifact statuses still byte-for-byte against
+`expected.json`. `deps:check` — `deps ok`. Manually verified against a live `levare serve` instance:
+`GET /registry/connectors/linear` cold (no prior page load) returns 200 with `connectors` active and
+`data-highlight="connectors-linear"` present, both connector cards rendered; `GET /registry/teams`
+and the legacy `GET /registry?entity=connectors` both 200; every rail/tab link in the served HTML is
+path-form; `POST /registry/check/agents/lyra.md` with a deliberately broken buffer still returns the
+full `code`/`file`/`line`-bearing error array unchanged (proving item 2 is a display choice, not a
+payload change).
+
+**Deliberately out of scope.** No redirect from the legacy `?entity=` form to the path form — the
+goal accepts either "still resolve or redirect," and resolving unchanged is the smaller, lower-risk
+change. The visual-standardisation pass that will adopt the confirm-modal primitive elsewhere (e.g.
+future destructive actions outside the registry editor) is not part of this round — only the
+primitive and its one current caller (the editor's dirty-dismiss) are built here. `assets/registry.html`
+(the superseded CD prototype file, never served by `serve.ts`) was left untouched.
