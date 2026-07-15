@@ -6220,3 +6220,54 @@ replay fixtures/golden --stubs` matches `fixtures/golden/expected.json` byte-for
 changes which pre-existing single-index folder artifact wins a tie that never occurs in the golden
 fixture — its own folder artifacts each already have exactly one `.md`). `bun run deps:check` → `deps
 ok`.
+
+# NOTES: RENAME-ORPHANS-REFERENCES — a hint, not a rewrite, when a broken reference is clearly a rename
+
+## Scope, deliberately minimal
+
+Full guided-rename (rewriting every stale reference automatically) is out of scope per the goal. This
+only makes an existing failure explain itself when the evidence for "this is a rename" is
+unambiguous — it never rewrites anything and never guesses when the evidence is merely suggestive.
+
+## Where it applies
+
+`UNKNOWN_TEAM` (`validateResponsibleTeam` in `validate.ts`) is the one place in this validator where
+a reference names an *entity* (a `name:`-bearing registry file — team/agent/type/project/connector/
+knowledge/eval/skill) that doesn't resolve. (`UNRESOLVED_CONSUMES`/`UNRESOLVED_SUPERSEDES` are the
+closest cousins, but those reference artifact `id`s, not entity `name:` declarations, so a rename
+there has no analogous "does a file exist under the declared name" evidence to check — left alone,
+per "never guess wildly.")
+
+## The signal used
+
+A team file whose FILENAME still matches the unresolved name (e.g. a reference says `team: kestrel`
+and `teams/kestrel.md` still exists) but whose own `name:` field now declares something else (e.g.
+`name: raven`) — the entity itself was renamed (its declared identity changed) but the file wasn't
+moved and the reference wasn't updated. This is the one conservative case the fix checks; an
+unresolved name with no file at all behind it (an ordinary typo, or a genuinely deleted team) gets no
+hint, since there is no on-disk evidence to hint from.
+
+## The fix
+
+`validateResponsibleTeam` now also builds `teamNameByFileStem` (file stem → declared `name:`) while
+it walks `teams/`, and collects every `UNKNOWN_TEAM` error it emits into a `Map<oldName,
+ValidationError[]>`. After the unit walk, for each unresolved name with a file-stem match whose
+declared name differs, it appends one line to EVERY error object already naming that reference (there
+can be more than one unit still pointing at the old name): `"if you renamed an entity, every
+reference to the old name must be updated — N reference(s) still point at '<old>'; teams/<old>.md now
+declares name: '<new>'"` — the exact count and the concrete new name, both read off disk, never
+guessed.
+
+## Test coverage
+
+Two new tests in `tests/validate.test.ts` (reusing the existing `F10 defect 2`describe block's
+`buildStudio` fixture helper): (1) rewriting `teams/kestrel.md`'s `name:` to `raven` while the unit
+still says `team: kestrel` — asserts the hint appears, names the count and both the old and new name;
+(2) the pre-existing "team: naming a team that doesn't exist" ghost-team case — asserts the hint does
+NOT appear, since no file exists under that name at all (an ordinary typo, not a rename).
+
+## Verification
+
+`bun test` — 808 pass (+2), 1 pre-existing skip, 0 fail, across 65 files. `levare replay
+fixtures/golden --stubs` matches `fixtures/golden/expected.json` byte-for-byte (golden's own teams
+are never renamed, so this path is never exercised there). `bun run deps:check` → `deps ok`.

@@ -400,6 +400,47 @@ describe("F10 defect 2: two teams producing the same kind a unit needs is AMBIGU
     }
   });
 
+  // RENAME-ORPHANS-REFERENCES: the minimal cross-reference hint. A rename is unmistakable when a
+  // team file still sits at the old name's path but its own `name:` field now says something else —
+  // that's the one signal the fix checks for, deliberately not a broader "looks similar" guess.
+  test("UNKNOWN_TEAM gets a rename hint when teams/<old-name>.md still exists but now declares a different name", () => {
+    const dir = buildStudio("kestrel");
+    try {
+      // Simulate the rename: kestrel's OWN `name:` field changed to 'raven', but the file is still
+      // teams/kestrel.md and the unit (built above) still says `team: kestrel` — exactly what a
+      // rename that updated the entity but missed a reference looks like on disk.
+      writeFileSync(
+        join(dir, "teams", "kestrel.md"),
+        ["---", "name: raven", "consumes: []", "produces: [product-brief]", "members: [wren]", "flow:", "  - step: brief", "style:", "  color: '#000'", "---", "", "Kestrel, renamed to raven.", ""].join("\n"),
+      );
+      const r = validatePath(dir);
+      const err = r.errors.find((e) => e.code === "UNKNOWN_TEAM");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("no such team is defined");
+      expect(err!.message).toContain("if you renamed an entity");
+      expect(err!.message).toContain("1 reference(s) still point at 'kestrel'");
+      expect(err!.message).toContain("now declares name: 'raven'");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // The contrasting negative case: an ordinary typo/missing-reference name with no entity file at
+  // all behind it must NOT get a rename hint — there's no evidence to hint from, so hinting would be
+  // a wild guess, which the goal explicitly rules out.
+  test("UNKNOWN_TEAM gets NO rename hint for an ordinary typo — no file exists under the unresolved name at all", () => {
+    const dir = buildStudio("ghost-team");
+    try {
+      const r = validatePath(dir);
+      const err = r.errors.find((e) => e.code === "UNKNOWN_TEAM");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("no such team is defined");
+      expect(err!.message).not.toContain("if you renamed an entity");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("team: naming a real team that can't produce what the type expects fails with TEAM_CANNOT_PRODUCE", () => {
     const dir = buildStudio();
     try {

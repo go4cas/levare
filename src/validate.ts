@@ -1100,6 +1100,10 @@ function validateResponsibleTeam(root: string, errors: ValidationError[], overla
   if (!existsSync(workRoot) || !existsSync(teamsDir) || !existsSync(typesDir)) return;
 
   const teamProduces = new Map<string, string[]>();
+  // file stem → its own declared `name:` — lets an UNKNOWN_TEAM hint recognize the specific rename
+  // shape "the file that used to be named/referenced this still exists, but its `name:` field now
+  // says something else" (see the RENAME_HINT block below), without guessing at any other shape.
+  const teamNameByFileStem = new Map<string, string>();
   for (const file of readdirSync(teamsDir).sort()) {
     if (!file.endsWith(".md") || file.endsWith(".learnings.md")) continue;
     let data: Record<string, YamlValue>;
@@ -1110,6 +1114,7 @@ function validateResponsibleTeam(root: string, errors: ValidationError[], overla
     }
     const name = typeof data.name === "string" ? data.name : basename(file, ".md");
     teamProduces.set(name, strList(data.produces));
+    teamNameByFileStem.set(basename(file, ".md"), name);
   }
 
   const typeExpects = new Map<string, string[]>();
@@ -1124,6 +1129,10 @@ function validateResponsibleTeam(root: string, errors: ValidationError[], overla
     const name = typeof data.name === "string" ? data.name : basename(file, ".md");
     typeExpects.set(name, strList(data.expects));
   }
+
+  // Old (unresolved) team name → every UNKNOWN_TEAM error object that named it, so a rename hint
+  // (below) can be appended to all of them at once, however many units still reference it.
+  const unknownTeamErrorsByName = new Map<string, ValidationError[]>();
 
   for (const project of listDirs(workRoot)) {
     for (const unitName of listDirs(join(workRoot, project))) {
@@ -1141,7 +1150,11 @@ function validateResponsibleTeam(root: string, errors: ValidationError[], overla
 
       if (team) {
         if (!teamProduces.has(team)) {
-          errors.push({ code: "UNKNOWN_TEAM", message: `unit '${unitName}' declares team: '${team}', but no such team is defined`, file: unitFile });
+          const err: ValidationError = { code: "UNKNOWN_TEAM", message: `unit '${unitName}' declares team: '${team}', but no such team is defined`, file: unitFile };
+          errors.push(err);
+          const bucket = unknownTeamErrorsByName.get(team);
+          if (bucket) bucket.push(err);
+          else unknownTeamErrorsByName.set(team, [err]);
           continue;
         }
         const produces = teamProduces.get(team)!;
@@ -1179,6 +1192,22 @@ function validateResponsibleTeam(root: string, errors: ValidationError[], overla
         file: unitFile,
       });
     }
+  }
+
+  // RENAME-ORPHANS-REFERENCES (minimal, honest version): every UNKNOWN_TEAM error above already names
+  // the broken reference — this only ADDS a hint when the pattern clearly looks like a rename, never
+  // reference-rewriting and never a guess. The one conservative signal used: a team file whose own
+  // FILENAME still matches the unresolved name, but whose own declared `name:` field now says
+  // something else — i.e. the entity itself moved on, and these references are the ones that didn't
+  // follow. A name that simply never existed anywhere (an ordinary typo) triggers no such file match,
+  // so it gets no hint.
+  for (const [oldName, refs] of unknownTeamErrorsByName) {
+    const newName = teamNameByFileStem.get(oldName);
+    if (!newName || newName === oldName) continue;
+    const hint =
+      ` (if you renamed an entity, every reference to the old name must be updated — ${refs.length} reference(s) ` +
+      `still point at '${oldName}'; teams/${oldName}.md now declares name: '${newName}')`;
+    for (const err of refs) err.message += hint;
   }
 }
 
