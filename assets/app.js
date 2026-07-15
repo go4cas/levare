@@ -96,14 +96,43 @@
       resolveGate(card, m[0], m[1]);
     });
 
+    /* Local, in-place pending feedback (NOTES UI6 — the goal's one intended behaviour change):
+       a Start/Request-changes/Retry click used to wipe the WHOLE card's innerHTML with a bare
+       "dispatching…" line, losing the title/producer/context underneath it until the next SSE
+       reload — the anti-pattern the Conductor flagged. Mirrors render.ts#dispatchingHtml's own
+       server-rendered dispatching state exactly (components.ts#pendingState's shape): only the
+       verbs row and the badge text change; everything else on the card stays exactly where it was. */
     function markDispatching(card) {
-      card.classList.add('is-resolved', 'is-dispatching');
-      card.classList.remove('gate--start', 'gate--cta');
-      card.innerHTML =
-        '<span class="resolved-line" style="display:flex;align-items:center;gap:11px;width:100%">' +
-          '<span class="msg msg--pending" style="display:inline-flex"><span class="msg__dots"><span></span><span></span><span></span></span></span>' +
-          '<span class="gate__dispatching">dispatching…</span>' +
-        '</span>';
+      card.classList.add('is-dispatching');
+      // Only the start-gate badge's text ever reads "dispatching" server-side (render.ts#gateCardHtml:
+      // the default/artifact-blocked badges — "on you"/"exhausted"/"blocked" — never change on
+      // dispatch, only their verbs row does) — match that exactly rather than overwriting a badge
+      // whose text the server would never have changed either.
+      var badge = card.querySelector('.gate__badge.is-start');
+      if (badge) badge.textContent = 'dispatching';
+      // `request`/`rescope` open a note (openNote, below) that appends a SECOND `.gate__verbs` (its
+      // own Send/Cancel row) alongside the original, now-hidden one — target whichever is the one
+      // actually on screen, via `card._note` when a note is open.
+      var verbs = card._note ? card._note.querySelector('.gate__verbs') : card.querySelector('.gate__verbs');
+      if (!verbs) return;
+      var note = card._note ? card._note.querySelector('.gate__note') : null;
+      if (note) note.disabled = true;
+      verbs.classList.add('gate__verbs--pending');
+      verbs.textContent = '';
+      var pending = document.createElement('span');
+      pending.classList.add('pending');
+      var dots = document.createElement('span');
+      dots.classList.add('msg', 'msg--pending');
+      var dotsInner = document.createElement('span');
+      dotsInner.classList.add('msg__dots');
+      for (var i = 0; i < 3; i++) dotsInner.appendChild(document.createElement('span'));
+      dots.appendChild(dotsInner);
+      var label = document.createElement('span');
+      label.classList.add('pending__label');
+      label.textContent = 'dispatching…';
+      pending.appendChild(dots);
+      pending.appendChild(label);
+      verbs.appendChild(pending);
     }
 
     function openNote(card, verb) {
