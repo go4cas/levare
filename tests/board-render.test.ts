@@ -1091,13 +1091,16 @@ describe("registry cards are gridded, not one-per-row", () => {
       expect(css).toMatch(/\.editbar\{[^}]*margin-top:auto/);
     });
 
-    test("entity__head puts the title before the (now right-aligned) kind badge, for every entity kind", () => {
+    // UI7 (RULE A): team/agent/skill cards no longer carry a kind tag at all (that's covered by its
+    // own describe block below) — this only pins the ordering for entity kinds that still show one.
+    test("entity__head puts the title before the (now right-aligned) kind badge, for every entity kind that still shows one", () => {
       const html = renderRegistry(repo, root);
       for (const m of html.matchAll(/<div class="entity__head">([\s\S]*?)<\/div>/g)) {
         const head = m[1];
         const titleIdx = head.indexOf('class="entity__title"');
         const kindIdx = head.indexOf('class="entity__kind"');
         expect(titleIdx).toBeGreaterThanOrEqual(0);
+        if (kindIdx === -1) continue;
         expect(kindIdx).toBeGreaterThan(titleIdx);
       }
     });
@@ -1105,26 +1108,140 @@ describe("registry cards are gridded, not one-per-row", () => {
 });
 
 // ---------------------------------------------------------------------------
-// UI4 item 3: every registry entity tag is the bare entity type — "team", "connector", "agent" — no
-// exceptions. Agent cards used to carry a two-part tag ("agent · <team>"); the team association is
-// still on the card (the "wears" row), just not riding along in the top-right kind tag.
+// UI7 (RULE A): a card on its own entity's page doesn't repeat its kind — team/agent/skill cards drop
+// the top-right `.entity__kind` tag entirely (superseding UI4 item 3's "bare type, no exceptions"
+// ruling for these three kinds specifically). knowledge/type/connector/eval are untouched by this goal
+// and keep their bare-type tag.
 // ---------------------------------------------------------------------------
 
-describe("UI4 item 3: every registry entity tag is the bare type", () => {
-  test("an agent's kind tag is exactly 'agent', never 'agent · <team>'", () => {
+describe("UI7: team/agent/skill cards carry no kind tag (RULE A)", () => {
+  test("a team card has no 'team' kind tag", () => {
+    const html = renderRegistry(repo, root, "teams");
+    const card = /<article class="entity card" id="teams-kestrel"[\s\S]*?<\/article>/.exec(html);
+    expect(card).not.toBeNull();
+    expect(card![0]).not.toContain('class="entity__kind"');
+  });
+
+  test("an agent card has no 'agent' kind tag", () => {
     const html = renderRegistry(repo, root, "agents");
     const card = /<article class="entity card" id="agents-lyra"[\s\S]*?<\/article>/.exec(html);
     expect(card).not.toBeNull();
-    expect(card![0]).toContain('<span class="entity__kind">agent</span>');
-    expect(card![0]).not.toContain("agent &middot;");
-    expect(card![0]).not.toContain("agent ·");
+    expect(card![0]).not.toContain('class="entity__kind"');
   });
 
-  test("every entity kind tag across the whole registry page is a bare type word", () => {
+  test("a skill card has no 'skill' kind tag", () => {
+    const html = renderRegistry(repo, root, "skills");
+    const cards = [...html.matchAll(/<article class="entity card" id="skills-[^"]*"[\s\S]*?<\/article>/g)];
+    expect(cards.length).toBeGreaterThan(0);
+    for (const c of cards) expect(c[0]).not.toContain('class="entity__kind"');
+  });
+
+  test("knowledge/type/connector/eval cards still show their bare-type kind tag", () => {
     const html = renderRegistry(repo, root);
     const kinds = [...html.matchAll(/<span class="entity__kind">([^<]*)<\/span>/g)].map((m) => m[1]);
     expect(kinds.length).toBeGreaterThan(0);
-    for (const k of kinds) expect(["team", "agent", "skill", "knowledge", "type", "connector", "eval"]).toContain(k);
+    for (const k of kinds) expect(["knowledge", "type", "connector", "eval"]).toContain(k);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// UI7: the registry card sweep. docs/levare-design-brief.md's identity/status split (RULE B — colour
+// means status only, except a team's own declared hue) applied to teams/agents/skills/knowledge.
+// ---------------------------------------------------------------------------
+
+describe("UI7: team cards show colour as identity (border), not as a printed value", () => {
+  const html = renderRegistry(repo, root, "teams");
+  const card = /<article class="entity card" id="teams-kestrel"[\s\S]*?<\/article>/.exec(html)![0];
+
+  test("the card's own left-edge border carries the team's declared colour, not a hex/swatch value printed in the body", () => {
+    const article = /<article class="entity card" id="teams-kestrel"[^>]*>/.exec(html)![0];
+    expect(article).toContain("border-left:2px solid #2E6FB0");
+    // No standalone hex-value text and no "color" definition row printing it.
+    expect(card).not.toContain(">#2E6FB0<");
+    expect(card).not.toMatch(/<span class="k">color<\/span>/);
+  });
+
+  test("members render as avatars with the member's name on hover, not a plain name list", () => {
+    expect(card).toMatch(/<span class="k">members<\/span><span class="v chiprow">(<span class="avatar[^>]*title="[a-z]+"[^>]*>[a-z]{2}<\/span>)+<\/span>/);
+    // No plain comma-joined name list survives in the rendered body (the raw markdown source, kept
+    // verbatim in the hidden edit-source textarea, legitimately still contains prose naming members).
+    const rendered = card.replace(/<textarea class="rawmd-source"[\s\S]*?<\/textarea>/, "");
+    expect(rendered).not.toContain("wren, lyra, finch");
+  });
+
+  test("produces renders as chips, not a plain comma-joined string", () => {
+    expect(card).toMatch(/<span class="k">produces<\/span><span class="v chiprow">(<span class="tag">[a-z-]+<\/span>)+<\/span>/);
+  });
+
+  test("no 'team' kind tag", () => {
+    expect(card).not.toContain('class="entity__kind"');
+  });
+
+  test("the declared flow shows member avatars, not member name text", () => {
+    const flow = /<div class="flowstrip">([\s\S]*?)<\/div>/.exec(card)![1];
+    expect(flow).toContain('class="avatar');
+    expect(flow).not.toContain('class="mn"');
+  });
+});
+
+describe("UI7: agent cards drop kind/wears text, show a shape-based kind badge, kind+model adjacent, produces as chips", () => {
+  const html = renderRegistry(repo, root, "agents");
+  const card = /<article class="entity card" id="agents-lyra"[\s\S]*?<\/article>/.exec(html)![0];
+
+  test("no 'agent' kind tag and no 'wears <team>' row", () => {
+    expect(card).not.toContain('class="entity__kind"');
+    expect(card).not.toMatch(/<span class="k">wears<\/span>/);
+  });
+
+  test("kind renders as a shape/treatment badge that does not use a status-palette colour", () => {
+    expect(card).toContain('<span class="kindbadge kindbadge--native">native</span>');
+    const css = readFileSync("assets/styles.css", "utf8");
+    const kindbadgeRules = css.match(/\.kindbadge[^{]*\{[^}]*\}/g) || [];
+    expect(kindbadgeRules.length).toBeGreaterThan(0);
+    for (const rule of kindbadgeRules) {
+      for (const forbidden of ["var(--active)", "var(--ok)", "var(--gate)", "var(--danger)"]) {
+        expect(rule).not.toContain(forbidden);
+      }
+    }
+  });
+
+  test("kind and model render adjacent in one row, not separate rows", () => {
+    expect(card).toMatch(/<span class="k">kind<\/span><span class="v"><span class="kindbadge[^>]*>native<\/span>[^<]*<span class="mono">&middot; claude-sonnet-5<\/span><\/span>/);
+    expect((card.match(/<div class="prow">/g) || []).length).toBeLessThan(4);
+  });
+
+  test("produces renders as chips", () => {
+    expect(card).toMatch(/<span class="k">produces<\/span><span class="v chiprow">(<span class="tag">[a-z-]+<\/span>)+<\/span>/);
+  });
+});
+
+describe("UI7: skill cards drop the kind tag and the SKILL.md label", () => {
+  test("no 'skill' kind tag and no 'SKILL.md' heading", () => {
+    const html = renderRegistry(repo, root, "skills");
+    const cards = [...html.matchAll(/<article class="entity card" id="skills-[^"]*"[\s\S]*?<\/article>/g)];
+    expect(cards.length).toBeGreaterThan(0);
+    for (const c of cards) {
+      expect(c[0]).not.toContain('class="entity__kind"');
+      expect(c[0]).not.toContain("SKILL.md<");
+    }
+  });
+});
+
+describe("UI7: knowledge cards show frontmatter tags as chips, not an Injected-into backlink section", () => {
+  test("tags render as chips and no 'Injected into' section survives", () => {
+    const html = renderRegistry(repo, root, "knowledge");
+    const cards = [...html.matchAll(/<article class="entity card" id="knowledge-[^"]*"[\s\S]*?<\/article>/g)];
+    expect(cards.length).toBeGreaterThan(0);
+    // The rendered body must not carry the old backlink section; the raw markdown source (verbatim
+    // in the hidden edit-source textarea) legitimately still mentions "Injected into" in its own prose.
+    for (const c of cards) {
+      const rendered = c[0].replace(/<textarea class="rawmd-source"[\s\S]*?<\/textarea>/, "");
+      expect(rendered).not.toContain("Injected into");
+    }
+    const houseStyle = /<article class="entity card" id="knowledge-house-style"[\s\S]*?<\/article>/.exec(html)![0];
+    expect(houseStyle).toMatch(/<div class="chiprow">(<span class="tag">[a-z]+<\/span>)+<\/div>/);
+    expect(houseStyle).toContain('<span class="tag">voice</span>');
+    expect(houseStyle).toContain('<span class="tag">reference</span>');
   });
 });
 

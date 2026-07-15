@@ -422,6 +422,16 @@ button{ font-family:inherit; }
   border:1px solid var(--border); padding:4px 9px; border-radius:20px; text-decoration:none; }
 .pill:hover{ border-color:var(--border-strong); color:var(--fg); }
 .backlink{ display:flex; align-items:center; gap:8px; padding:5px 0; }
+/* UI7: a horizontal row of chips/avatars (team produces, agent produces, knowledge tags, team member
+   avatars) — the same gap/wrap rhythm `.recipe` already established, under its own name since it's a
+   generic layout wrapper, not specific to the agent context-recipe pills. */
+.chiprow{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+/* UI7 (RULE B): an agent's kind (native/cli/remote) is distinguished by badge TREATMENT — filled,
+   outlined, dashed — never by colour; every variant below draws only from the neutral ink scale. */
+.kindbadge{ display:inline-flex; align-items:center; font-family:var(--mono); font-size:10.5px; letter-spacing:.02em; padding:2px 8px; border-radius:5px; }
+.kindbadge--native{ background:var(--fg); color:var(--bg); border:1px solid var(--fg); }
+.kindbadge--cli{ background:transparent; color:var(--fg-dim); border:1px solid var(--border-strong); }
+.kindbadge--remote{ background:transparent; color:var(--fg-mute); border:1px dashed var(--border-strong); }
 /* margin-top:auto pins this row to the bottom of .rendered's (now flex:1) box, so every entity
    kind's actions row lands on a consistent baseline regardless of its own content's natural height —
    the fix for the chip/actions-row misalignment across teams/agents/skills/etc. sharing a grid row. */

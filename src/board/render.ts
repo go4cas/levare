@@ -157,11 +157,12 @@ function orchestratorPanel(scope: string, status: OrchestratorStatus, briefingHt
   </aside>`;
 }
 
-function avatar(initials: string, color: string | undefined, opts: { size?: "sm" | "lg"; blink?: boolean } = {}): string {
+function avatar(initials: string, color: string | undefined, opts: { size?: "sm" | "lg"; blink?: boolean; title?: string } = {}): string {
   const size = opts.size ?? "sm";
   const bg = color && color.trim() ? color : "#666";
   const blinkCls = opts.blink ? " blink" : "";
-  return `<span class="avatar ${size}${blinkCls}" style="background:${esc(bg)}">${esc(initials.toLowerCase())}</span>`;
+  const titleAttr = opts.title ? ` title="${esc(opts.title)}"` : "";
+  return `<span class="avatar ${size}${blinkCls}"${titleAttr} style="background:${esc(bg)}">${esc(initials.toLowerCase())}</span>`;
 }
 
 function memberAvatar(repo: Repo, producedBy: string, opts: { size?: "sm" | "lg"; blink?: boolean } = {}): string {
@@ -171,6 +172,13 @@ function memberAvatar(repo: Repo, producedBy: string, opts: { size?: "sm" | "lg"
   const team = repo.teams.get(teamName);
   const initials = agent?.style.avatar || memberName.slice(0, 2);
   return avatar(initials, team?.style.color, opts);
+}
+
+// RULE B: an agent's kind (native/cli/remote) is distinguished by badge TREATMENT — filled, outlined,
+// dashed-outlined — never by colour; `.kindbadge--*` (assets/styles.css) only ever draws from the
+// neutral ink scale (--fg/--fg-dim/--fg-mute/--border-strong), none of which is a status-palette hue.
+function agentKindBadge(kind: "native" | "cli" | "remote"): string {
+  return `<span class="kindbadge kindbadge--${kind}">${esc(kind)}</span>`;
 }
 
 function artifactFileName(art: Artifact): string {
@@ -1020,7 +1028,19 @@ export function renderIdea(repo: Repo, root: string, name: string, status: Orche
 // ever"), just no longer the editing surface itself. `data-path` (on both the article and the trigger)
 // carries the entity's repo-relative file so app.js can target both `POST /registry/*path` (save) and
 // `POST /registry/check/*path` (live validation of the unsaved buffer) without a second lookup.
-function entityBlock(kind: RegistryKind, title: string, kindLabel: string, inner: string, relPath: string, raw: string, name: string, active: boolean): string {
+// UI7 (RULE A): a card on its own entity's page doesn't repeat its kind — the kind is already the
+// URL/page it lives on (`/registry/<kind>`). `showKindTag` lets a call site drop the top-right
+// `.entity__kind` tag entirely rather than printing e.g. "team" on every team card; `data-editor-kind`
+// (the overlay's heading) still gets the real kind label regardless, since the overlay is a shared
+// modal that needs to say what it's editing.
+// `accentColor`, when given, replaces the identity swatch/hex text some entities used to print with a
+// left-edge border in the entity's own declared colour — the colour becomes the card's identity, not a
+// value rendered on it (RULE B: a team's declared hue is the one colour-as-identity exception).
+function entityBlock(kind: RegistryKind, title: string, kindLabel: string, inner: string, relPath: string, raw: string, name: string, active: boolean, opts: { showKindTag?: boolean; accentColor?: string } = {}): string {
+  const showKindTag = opts.showKindTag ?? true;
+  const styleParts: string[] = [];
+  if (!active) styleParts.push("display:none");
+  if (opts.accentColor) styleParts.push(`border-left:2px solid ${opts.accentColor}`);
   // `id` (item 4b): a stable per-entity anchor so a rail row can deep-link to exactly this card
   // (e.g. a connector row → `/registry?entity=connectors#connectors-github`) with plain browser
   // anchor scrolling — no new client-side JS.
@@ -1031,12 +1051,12 @@ function entityBlock(kind: RegistryKind, title: string, kindLabel: string, inner
       id: `${kind}-${name}`,
       "data-entity": kind,
       "data-path": relPath,
-      ...(active ? {} : { style: "display:none" }),
+      ...(styleParts.length ? { style: styleParts.join(";") } : {}),
     },
     topCls: "entity__head",
     title,
     titleCls: "entity__title",
-    status: tag(kindLabel),
+    status: showKindTag ? tag(kindLabel) : "",
     body: `<div class="rendered">${inner}</div>`,
     meta: `<textarea class="rawmd-source" data-path="${esc(relPath)}" hidden>${esc(raw)}</textarea>
     <div class="editbar">
@@ -1065,14 +1085,20 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
 
   const teamBlocks = [...repo.teams.values()]
     .map((t) => {
-      const inner = `<div class="card__h">Declared flow</div><div class="flowstrip">${t.members
-        .map((m) => `<div class="m">${avatar(repo.agents.get(m)?.style.avatar ?? m.slice(0, 2), t.style.color)}<span class="mn">${esc(m)}</span></div>`)
-        .join('<span class="arr">&rarr;</span>')}</div>
+      // UI7: the flow strip shows who runs each step by avatar alone — the name moves to the
+      // avatar's hover title (RULE A/B: shape+colour carry identity, no name text printed per step).
+      const flow = t.members
+        .map((m) => `<div class="m">${avatar(repo.agents.get(m)?.style.avatar ?? m.slice(0, 2), t.style.color, { title: m })}</div>`)
+        .join('<span class="arr">&rarr;</span>');
+      const memberAvatars = t.members.map((m) => avatar(repo.agents.get(m)?.style.avatar ?? m.slice(0, 2), t.style.color, { title: m })).join("");
+      const producesChips = t.produces.map((p) => tag(p, "tag")).join("");
+      const inner = `<div class="card__h">Declared flow</div><div class="flowstrip">${flow}</div>
       <div class="card__h">Definition</div>
-      <div class="prow"><span class="k">color</span><span class="v mono" style="color:${esc(t.style.color)}">${esc(t.style.color)}</span></div>
-      <div class="prow"><span class="k">members</span><span class="v">${t.members.length} &middot; ${t.members.map(esc).join(", ")}</span></div>
-      <div class="prow"><span class="k">produces</span><span class="v mono">${t.produces.map(esc).join(", ")}</span></div>`;
-      return entityBlock("teams", `<span class="sq" style="width:16px;height:16px;border-radius:4px;background:${esc(t.style.color)}"></span> ${esc(t.name)}`, "team", inner, `teams/${t.name}.md`, rawFor(root, "teams", t.name), t.name, active === "teams");
+      <div class="prow"><span class="k">members</span><span class="v chiprow">${memberAvatars}</span></div>
+      <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>`;
+      // UI7: no "team" kind tag (RULE A) — the declared colour, now a left-edge card border, is the
+      // card's identity instead of a swatch/hex value printed inside it.
+      return entityBlock("teams", esc(t.name), "team", inner, `teams/${t.name}.md`, rawFor(root, "teams", t.name), t.name, active === "teams", { showKindTag: false, accentColor: t.style.color });
     })
     .join("\n");
 
@@ -1080,33 +1106,33 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
     .map((a) => {
       const team = [...repo.teams.values()].find((t) => t.members.includes(a.name));
       const recipe = [...(a.skills ?? []), ...(a.knowledge ?? [])].map((p) => `<a class="pill" href="#">${esc(p)}</a>`).join("\n");
+      const producesChips = a.produces.map((p) => tag(p, "tag")).join("");
+      // UI7: kind+model render adjacent ("native · claude-sonnet-5") in one row, the kind itself a
+      // shape/treatment badge (RULE B — never colour); no "wears <team>" row (RULE A — the avatar
+      // above is already tinted with the team's colour, so the team is shown, not told).
       const inner = `<div class="card__h">Context recipe</div><div class="recipe">${recipe || '<span style="color:var(--fg-mute)">none declared</span>'}</div>
       <div class="card__h">Definition</div>
-      <div class="prow"><span class="k">kind</span><span class="v mono">${esc(a.kind)}</span></div>
-      ${a.model ? `<div class="prow"><span class="k">model</span><span class="v mono">${esc(a.model)}</span></div>` : ""}
-      ${team ? `<div class="prow"><span class="k">wears</span><span class="v"><span class="sq" style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${esc(team.style.color)};vertical-align:middle"></span> ${esc(team.name)}</span></div>` : ""}`;
-      // UI4 item 3: the top-right tag is the bare entity type, same as every other kind ("team",
-      // "connector", ...) — an agent's team association stays visible on the card via the "wears" row
-      // above, it just no longer rides along in the kind tag itself.
-      return entityBlock("agents", `${avatar(a.style.avatar || a.name.slice(0, 2), team?.style.color, { size: "lg" })} ${esc(a.name)}`, "agent", inner, `agents/${a.name}.md`, rawFor(root, "agents", a.name), a.name, active === "agents");
+      <div class="prow"><span class="k">kind</span><span class="v">${agentKindBadge(a.kind)}${a.model ? ` <span class="mono">&middot; ${esc(a.model)}</span>` : ""}</span></div>
+      <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>`;
+      // UI7: no "agent" kind tag (RULE A) — the kind is already the page/URL this card lives on.
+      return entityBlock("agents", `${avatar(a.style.avatar || a.name.slice(0, 2), team?.style.color, { size: "lg" })} ${esc(a.name)}`, "agent", inner, `agents/${a.name}.md`, rawFor(root, "agents", a.name), a.name, active === "agents", { showKindTag: false });
     })
     .join("\n");
 
   const skillBlocks = extras.skills
     .map((s) => {
-      const inner = `<div class="card__h">SKILL.md</div><p style="margin:0;font-size:13.5px;line-height:1.6;color:var(--fg-dim)">${esc(String(s.data.description ?? firstParagraph(s.body)))}</p>`;
-      return entityBlock("skills", esc(s.name), "skill", inner, s.file, rawForPath(root, s.file), s.name, active === "skills");
+      // UI7: no "SKILL.md" heading (an implementation detail, not information) and no "skill" kind
+      // tag (RULE A) — just the description.
+      const inner = `<p style="margin:0;font-size:13.5px;line-height:1.6;color:var(--fg-dim)">${esc(String(s.data.description ?? firstParagraph(s.body)))}</p>`;
+      return entityBlock("skills", esc(s.name), "skill", inner, s.file, rawForPath(root, s.file), s.name, active === "skills", { showKindTag: false });
     })
     .join("\n");
 
   const knowledgeBlocks = extras.knowledge
     .map((k) => {
-      const referencedBy: string[] = [];
-      for (const a of repo.agents.values()) if ((a.knowledge ?? []).includes(k.name)) referencedBy.push(`${a.name} (agent)`);
-      for (const t of repo.teams.values()) if ((t.knowledge ?? []).includes(k.name)) referencedBy.push(`${t.name} (team default)`);
-      const inner = `<div class="card__h">Injected into</div>${
-        referencedBy.length ? referencedBy.map((r) => `<div class="backlink">${esc(r)}</div>`).join("\n") : '<span style="color:var(--fg-mute)">not referenced yet</span>'
-      }`;
+      // UI7: no "Injected into" backlink section — the item's own declared tags render as chips instead.
+      const tags = Array.isArray(k.data.tags) ? (k.data.tags as unknown[]).map(String) : [];
+      const inner = tags.length ? `<div class="chiprow">${tags.map((t) => tag(t, "tag")).join("")}</div>` : '<span style="color:var(--fg-mute)">no tags declared</span>';
       return entityBlock("knowledge", esc(k.name), "knowledge", inner, k.file, rawForPath(root, k.file), k.name, active === "knowledge");
     })
     .join("\n");
