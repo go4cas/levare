@@ -261,6 +261,146 @@ describe("levare serve — POST /registry validate → write → commit", () => 
   });
 });
 
+// UI3: the registry overlay editor's live-validation route. The critical property (goal item 3): it
+// must run the exact same validator `levare validate` and the save route both use, against the
+// UNSAVED buffer — including cross-reference checks that read other files off disk (here,
+// UNKNOWN_MODEL, which cross-references knowledge/model-pricing.md across every agent in the tree) —
+// without ever writing the candidate content to disk first.
+describe("levare serve — POST /registry/check/*path (live validation of an unsaved buffer)", () => {
+  let root: string;
+  let board: ReturnType<typeof createBoard>;
+
+  beforeAll(() => {
+    root = seedScratchRepo();
+    board = createBoard(root);
+  });
+  afterAll(() => {
+    board.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("a buffer that would pass `levare validate` reports ok:true, unchanged from disk", async () => {
+    const file = join(root, "knowledge/house-style.md");
+    const content = readFileSync(file, "utf8");
+    const res = await board.fetch(
+      req("/registry/check/knowledge/house-style.md", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; errors: unknown[] };
+    expect(body.ok).toBe(true);
+    expect(body.errors).toEqual([]);
+    // Never written — a live-typing check has no write side effect at all.
+    expect(readFileSync(file, "utf8")).toBe(content);
+  });
+
+  test("a buffer that would fail `levare validate` (malformed frontmatter) reports ok:false with the real error, and writes nothing to disk", async () => {
+    const file = join(root, "knowledge/house-style.md");
+    const before = readFileSync(file, "utf8");
+    const badFrontmatter = "---\nname: house-style\nbogus_key: 1\n---\nbroken\n";
+    const res = await board.fetch(
+      req("/registry/check/knowledge/house-style.md", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: badFrontmatter }),
+      }),
+    );
+    expect(res.status).toBe(200); // a live check reports its verdict in the body, never a write-route status code
+    const body = (await res.json()) as { ok: boolean; errors: Array<{ code: string; message: string; file: string }> };
+    expect(body.ok).toBe(false);
+    expect(body.errors.some((e) => e.code === "UNKNOWN_KEY")).toBe(true);
+    // Untouched on disk — the whole point of validating the buffer, not the file.
+    expect(readFileSync(file, "utf8")).toBe(before);
+  });
+
+  // The CRITICAL case: a cross-reference check (UNKNOWN_MODEL, validate.ts#validateKnownModels) reads
+  // EVERY agent file off disk to build its known-model set check — for the entity being edited
+  // (agents/lyra.md) to be checked against its OWN unsaved edit, the overlay has to reach into that
+  // cross-entity walk, not just the single-file schema pass. This is exactly "overlaid on the real
+  // repo for cross-reference checks" from the goal, exercised end to end through the real route.
+  test("cross-reference checks (UNKNOWN_MODEL) see the unsaved buffer, not the on-disk agent file", async () => {
+    const file = join(root, "agents/lyra.md");
+    const original = readFileSync(file, "utf8");
+    expect(original).toContain("model: claude-sonnet-5");
+    const withFakeModel = original.replace("model: claude-sonnet-5", "model: totally-fake-model-xyz");
+
+    const res = await board.fetch(
+      req("/registry/check/agents/lyra.md", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: withFakeModel }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; errors: Array<{ code: string; message: string }> };
+    expect(body.ok).toBe(false);
+    const unknownModel = body.errors.find((e) => e.code === "UNKNOWN_MODEL");
+    expect(unknownModel).toBeTruthy();
+    expect(unknownModel!.message).toContain("lyra");
+    expect(unknownModel!.message).toContain("totally-fake-model-xyz");
+    // The buffer was never written — `levare validate` run directly against the repo right now would
+    // still say valid, proving this checked the unsaved candidate, not the file on disk.
+    expect(readFileSync(file, "utf8")).toBe(original);
+
+    // And the original, unedited content reports ok:true through the identical route/entity.
+    const res2 = await board.fetch(
+      req("/registry/check/agents/lyra.md", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: original }),
+      }),
+    );
+    const body2 = (await res2.json()) as { ok: boolean };
+    expect(body2.ok).toBe(true);
+  });
+
+  test("an unknown entity path 404s; a path outside the registry allowlist 400s", async () => {
+    const res1 = await board.fetch(
+      req("/registry/check/agents/does-not-exist.md", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: "anything" }),
+      }),
+    );
+    expect(res1.status).toBe(404);
+
+    const res2 = await board.fetch(
+      req("/registry/check/.git/hooks/pre-commit", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: "anything" }),
+      }),
+    );
+    expect(res2.status).toBe(400);
+  });
+
+  // Not a write route (see board-routes.test.ts): a read-only server still answers it, since checking
+  // an unsaved buffer never mutates the repo it's pointed at.
+  test("answers even against a read-only board", async () => {
+    const roRoot = seedScratchRepo();
+    const roBoard = createBoard(roRoot, { readOnly: true });
+    try {
+      const file = join(roRoot, "knowledge/house-style.md");
+      const res = await roBoard.fetch(
+        req("/registry/check/knowledge/house-style.md", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ content: readFileSync(file, "utf8") }),
+        }),
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { ok: boolean };
+      expect(body.ok).toBe(true);
+    } finally {
+      roBoard.close();
+      rmSync(roRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("levare serve — POST /orchestrator/message", () => {
   // NOTES C11: with no ANTHROPIC_API_KEY (the case for this whole test suite — see the top-of-file
   // hermetic env), there is no deterministic stand-in boundary to answer in the Orchestrator's voice
