@@ -1020,8 +1020,7 @@ export function renderIdea(repo: Repo, root: string, name: string, status: Orche
 // ever"), just no longer the editing surface itself. `data-path` (on both the article and the trigger)
 // carries the entity's repo-relative file so app.js can target both `POST /registry/*path` (save) and
 // `POST /registry/check/*path` (live validation of the unsaved buffer) without a second lookup.
-function entityBlock(kind: RegistryKind, title: string, kindLabel: string, inner: string, raw: string, name: string, active: boolean): string {
-  const relPath = `${kind}/${name}.md`;
+function entityBlock(kind: RegistryKind, title: string, kindLabel: string, inner: string, relPath: string, raw: string, name: string, active: boolean): string {
   // `id` (item 4b): a stable per-entity anchor so a rail row can deep-link to exactly this card
   // (e.g. a connector row → `/registry?entity=connectors#connectors-github`) with plain browser
   // anchor scrolling — no new client-side JS.
@@ -1073,7 +1072,7 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
       <div class="prow"><span class="k">color</span><span class="v mono" style="color:${esc(t.style.color)}">${esc(t.style.color)}</span></div>
       <div class="prow"><span class="k">members</span><span class="v">${t.members.length} &middot; ${t.members.map(esc).join(", ")}</span></div>
       <div class="prow"><span class="k">produces</span><span class="v mono">${t.produces.map(esc).join(", ")}</span></div>`;
-      return entityBlock("teams", `<span class="sq" style="width:16px;height:16px;border-radius:4px;background:${esc(t.style.color)}"></span> ${esc(t.name)}`, "team", inner, rawFor(root, "teams", t.name), t.name, active === "teams");
+      return entityBlock("teams", `<span class="sq" style="width:16px;height:16px;border-radius:4px;background:${esc(t.style.color)}"></span> ${esc(t.name)}`, "team", inner, `teams/${t.name}.md`, rawFor(root, "teams", t.name), t.name, active === "teams");
     })
     .join("\n");
 
@@ -1089,14 +1088,14 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
       // UI4 item 3: the top-right tag is the bare entity type, same as every other kind ("team",
       // "connector", ...) — an agent's team association stays visible on the card via the "wears" row
       // above, it just no longer rides along in the kind tag itself.
-      return entityBlock("agents", `${avatar(a.style.avatar || a.name.slice(0, 2), team?.style.color, { size: "lg" })} ${esc(a.name)}`, "agent", inner, rawFor(root, "agents", a.name), a.name, active === "agents");
+      return entityBlock("agents", `${avatar(a.style.avatar || a.name.slice(0, 2), team?.style.color, { size: "lg" })} ${esc(a.name)}`, "agent", inner, `agents/${a.name}.md`, rawFor(root, "agents", a.name), a.name, active === "agents");
     })
     .join("\n");
 
   const skillBlocks = extras.skills
     .map((s) => {
       const inner = `<div class="card__h">SKILL.md</div><p style="margin:0;font-size:13.5px;line-height:1.6;color:var(--fg-dim)">${esc(String(s.data.description ?? firstParagraph(s.body)))}</p>`;
-      return entityBlock("skills", esc(s.name), "skill", inner, rawFor(root, "skills", s.name), s.name, active === "skills");
+      return entityBlock("skills", esc(s.name), "skill", inner, s.file, rawForPath(root, s.file), s.name, active === "skills");
     })
     .join("\n");
 
@@ -1108,7 +1107,7 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
       const inner = `<div class="card__h">Injected into</div>${
         referencedBy.length ? referencedBy.map((r) => `<div class="backlink">${esc(r)}</div>`).join("\n") : '<span style="color:var(--fg-mute)">not referenced yet</span>'
       }`;
-      return entityBlock("knowledge", esc(k.name), "knowledge", inner, rawFor(root, "knowledge", k.name), k.name, active === "knowledge");
+      return entityBlock("knowledge", esc(k.name), "knowledge", inner, k.file, rawForPath(root, k.file), k.name, active === "knowledge");
     })
     .join("\n");
 
@@ -1118,7 +1117,7 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
       <div class="prow"><span class="k">glyph</span><span class="v mono">${t.glyph}</span></div>
       <div class="prow"><span class="k">expects</span><span class="v mono">${t.expects.map(esc).join(" &rarr; ")}</span></div>
       <div class="prow"><span class="k">gates</span><span class="v">${t.gates.map(esc).join(", ")}</span></div>`;
-      return entityBlock("types", `<span style="font-family:var(--mono)">${t.glyph} ${esc(t.name)}</span>`, "type", inner, rawFor(root, "types", t.name), t.name, active === "types");
+      return entityBlock("types", `<span style="font-family:var(--mono)">${t.glyph} ${esc(t.name)}</span>`, "type", inner, `types/${t.name}.md`, rawFor(root, "types", t.name), t.name, active === "types");
     })
     .join("\n");
 
@@ -1138,7 +1137,7 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
       <div class="prow"><span class="k">kind</span><span class="v mono">${esc(c.kind)}</span></div>
       <div class="prow"><span class="k">auth</span><span class="v mono">${esc(c.auth)}${c.plan ? ` · ${esc(c.plan)}` : ""}</span></div>
       <div class="prow"><span class="k">env</span><span class="v mono">${c.env.map(esc).join(", ")}</span></div>${authWarning}`;
-      return entityBlock("connectors", esc(c.name), "connector", inner, rawFor(root, "connectors", c.name), c.name, active === "connectors");
+      return entityBlock("connectors", esc(c.name), "connector", inner, `connectors/${c.name}.md`, rawFor(root, "connectors", c.name), c.name, active === "connectors");
     })
     .join("\n");
 
@@ -1146,7 +1145,7 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
     .map((e) => {
       const rubric = Array.isArray(e.data.rubric) ? (e.data.rubric as string[]) : [];
       const inner = `<div class="card__h">Rubric</div>${rubric.map((r) => `<div class="prow"><span class="v">${esc(String(r))}</span></div>`).join("\n")}`;
-      return entityBlock("evals", esc(e.name), "eval", inner, rawFor(root, "evals", e.name), e.name, active === "evals");
+      return entityBlock("evals", esc(e.name), "eval", inner, e.file, rawForPath(root, e.file), e.name, active === "evals");
     })
     .join("\n");
 
@@ -1179,8 +1178,16 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
 }
 
 function rawFor(root: string, dir: string, name: string): string {
+  return rawForPath(root, `${dir}/${name}.md`);
+}
+
+// Reads an entity's raw markdown for the editor textarea from its ACTUAL backing file — the same
+// root-relative path (`relPath`) embedded as `data-path` on the card, never a name-reconstructed one.
+// A directory-form extra (skills/knowledge/evals) carries this path on its `Entity.file` (extra.ts);
+// teams/agents/types/connectors are always flat, so `${kind}/${name}.md` (via `rawFor` above) is exact.
+function rawForPath(root: string, relPath: string): string {
   try {
-    return readFileSync(`${root}/${dir}/${name}.md`, "utf8");
+    return readFileSync(`${root}/${relPath}`, "utf8");
   } catch {
     return "";
   }

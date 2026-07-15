@@ -1,5 +1,5 @@
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, rmSync, cpSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, cpSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -324,6 +324,97 @@ describe("levare serve — POST /registry validate → write → commit", () => 
     );
     expect(res2.status).toBe(422);
     expect(readFileSync(file, "utf8")).not.toBe(badFrontmatter);
+  });
+
+  // A skill (like every extra — knowledge/evals/ideas too) is bare acceptance-tested here in its flat
+  // `<name>.md` form as well: the fix that makes a directory-form skill's card embed its real SKILL.md
+  // path (below) must leave this untouched form's behavior exactly as it was.
+  test("a flat-file skill (skills/flow-design.md) loads and saves exactly as before", async () => {
+    const file = join(root, "skills/flow-design.md");
+    const before = readFileSync(file, "utf8");
+    const html = await (await board.fetch(req("/registry/skills"))).text();
+    expect(html).toContain('data-path="skills/flow-design.md"');
+
+    const content = before + "\n<!-- edited -->\n";
+    const res = await board.fetch(
+      req("/registry/skills/flow-design.md", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(readFileSync(file, "utf8")).toBe(content);
+  });
+});
+
+// The registry DISPLAY path (board/extra.ts) already resolved a directory-form skill (the Agent
+// Skills convention: a folder carrying its own SKILL.md plus optional supporting files, e.g. the
+// scaffolded `skills/new-project/`, NOTES H5) to its real backing file. The registry CARD used to
+// reconstruct `skills/<name>.md` from the entity's name instead — a path that never exists for a
+// directory-form skill — so opening one in the editor loaded an empty, invalid buffer, and a save
+// would have written a stray flat file beside the real directory. `Entity.file` (board/extra.ts) is
+// now the single source of truth the card, the live-check route, and the save route all agree on.
+describe("levare serve — registry editor round-trip for a directory-form skill (Agent Skills SKILL.md convention)", () => {
+  let root: string;
+  let board: ReturnType<typeof createBoard>;
+  const BUNDLE_BODY = "Bundle body for the round-trip test.";
+
+  beforeAll(() => {
+    root = seedScratchRepo();
+    mkdirSync(join(root, "skills", "test-bundle", "scripts"), { recursive: true });
+    writeFileSync(
+      join(root, "skills", "test-bundle", "SKILL.md"),
+      `---\nname: test-bundle\ndescription: A bundled skill exercising the directory-form editor round trip.\n---\n\n${BUNDLE_BODY}\n`,
+    );
+    writeFileSync(join(root, "skills", "test-bundle", "scripts", "helper.sh"), "#!/bin/sh\necho hi\n");
+    git(root, ["add", "-A"]);
+    git(root, ["commit", "-q", "-m", "add a directory-form skill fixture for the editor round-trip test"]);
+    board = createBoard(root);
+  });
+  afterAll(() => {
+    board.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("the registry card embeds the skill's real SKILL.md path, not a name-reconstructed flat one, and shows its actual content", async () => {
+    const html = await (await board.fetch(req("/registry/skills"))).text();
+    expect(html).toContain('data-path="skills/test-bundle/SKILL.md"');
+    expect(html).not.toContain('data-path="skills/test-bundle.md"');
+    // The raw source textarea carries the real on-disk content — not empty, the empty-buffer symptom
+    // of the bug this test pins.
+    expect(html).toContain(BUNDLE_BODY);
+  });
+
+  test("live-check against the directory-form skill's real path validates the unsaved buffer", async () => {
+    const content = readFileSync(join(root, "skills/test-bundle/SKILL.md"), "utf8");
+    const res = await board.fetch(
+      req("/registry/check/skills/test-bundle/SKILL.md", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean };
+    expect(body.ok).toBe(true);
+  });
+
+  test("saving writes back to SKILL.md in place and creates no stray skills/test-bundle.md", async () => {
+    const file = join(root, "skills/test-bundle/SKILL.md");
+    const content = readFileSync(file, "utf8").replace(BUNDLE_BODY, "Updated bundle body.");
+    const res = await board.fetch(
+      req("/registry/skills/test-bundle/SKILL.md", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(readFileSync(file, "utf8")).toBe(content);
+    expect(existsSync(join(root, "skills/test-bundle.md"))).toBe(false);
+    // The bundled supporting file survives the save untouched — the fix targets SKILL.md alone.
+    expect(existsSync(join(root, "skills/test-bundle/scripts/helper.sh"))).toBe(true);
   });
 });
 
