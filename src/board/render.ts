@@ -39,7 +39,7 @@ import type { DaemonInvocation } from "../daemon.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../orchestrator-status.ts";
 import { getVersionInfo } from "../version.ts";
 import { dotClass, snodeClass, statusLabel, fromWorkUnitStatus, fromArtifactStatus, fromNodeState } from "./status.ts";
-import { statusBadge, paceBadge, tag, iconLink, statStrip, counter, emptyState, pendingState, card, confirmModal, editorOverlay } from "./components.ts";
+import { statusBadge, paceBadge, tag, iconLink, statStrip, counter, emptyState, pendingState, card, confirmModal, editorOverlay, orchTurn } from "./components.ts";
 
 // levare's own release version (item 3: "the release version as a quiet muted mono chip" beside the
 // wordmark) — never from a project's data (that's the `pace`/`deploy`/release vocabulary, a
@@ -52,7 +52,7 @@ const LEVARE_VERSION: string = getVersionInfo().version;
 const ASSETS = `<link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
-<link rel="stylesheet" href="/styles.css?v=9"/>`;
+<link rel="stylesheet" href="/styles.css?v=10"/>`;
 
 // ---------------------------------------------------------------------------
 // The app header (item 3, gate-review round UI1) — new, top-level, spans the full width above the
@@ -89,7 +89,7 @@ ${ASSETS}
 ${appHeader(status, railToggleLabel)}
 ${body}
 ${confirmModal()}
-<script src="/app.js?v=7"></script>
+<script src="/app.js?v=8"></script>
 </body>
 </html>
 `;
@@ -144,7 +144,7 @@ function orchestratorPanel(scope: string, status: OrchestratorStatus, briefingHt
     return `<aside class="orch is-disabled">
     ${orchHead(scope)}
     <div class="orch__body">
-      <div class="msg"><p class="msg__body">Orchestrator unavailable — no ${esc(status.envVar)}. The board, the registry, and every gate still work: you can approve, reject, and the runner will advance. Set a key to talk.</p></div>
+      ${orchTurn(`<p class="msg__body">Orchestrator unavailable — no ${esc(status.envVar)}. The board, the registry, and every gate still work: you can approve, reject, and the runner will advance. Set a key to talk.</p>`)}
       ${actionableHtml}
     </div>
     ${composer({ disabled: true })}
@@ -604,8 +604,10 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date(), r
     </section>
   </main>`;
 
-  const briefingBody = `<div class="msg"><div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
-      <p class="msg__body">${gates.length ? `${gates.length} gate${gates.length === 1 ? " is" : "s are"} on you.` : "Nothing needs a decision right now."} Ask me about any project or open a gate to review it.</p></div>`;
+  const briefingBody = orchTurn(
+    `<p class="msg__body">${gates.length ? `${gates.length} gate${gates.length === 1 ? " is" : "s are"} on you.` : "Nothing needs a decision right now."} Ask me about any project or open a gate to review it.</p>`,
+    { caption: "briefing · now" },
+  );
   const orch = orchestratorPanel("studio", status, briefingBody);
 
   return shell("levare · Studio", "Open registry", `<div class="app">${rail}${main}${orch}</div>`, status);
@@ -753,8 +755,10 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
     <section class="sec"><div class="sec__h"><h2>Work units</h2></div><div class="units">${unitRows}</div></section>
   </main>`;
 
-  const briefingBody = `<div class="msg"><div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
-      <p class="msg__body">${esc(projectName)} has ${gates.length} unit${gates.length === 1 ? "" : "s"} at a gate. Expand a unit to open its run or summon its gate here.</p></div>`;
+  const briefingBody = orchTurn(
+    `<p class="msg__body">${esc(projectName)} has ${gates.length} unit${gates.length === 1 ? "" : "s"} at a gate. Expand a unit to open its run or summon its gate here.</p>`,
+    { caption: "briefing · now" },
+  );
   const orch = orchestratorPanel("project", status, briefingBody);
 
   return shell(`levare · ${projectName}`, "Open context", `<div class="app">${rail}${main}${orch}</div>${templates}`, status);
@@ -833,8 +837,10 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
   </main>`;
 
   const gateHtml = gates.map((g) => gateCardHtml(repo, g, now, { cta: true, dispatching: dispatchingFor(running, g) })).join("\n");
-  const briefingBody = `<div class="msg"><div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
-      <p class="msg__body">${gates.length ? `${esc(gates[0].label)} is ready for review below.` : "No open gate on this unit right now."}</p></div>`;
+  const briefingBody = orchTurn(
+    `<p class="msg__body">${gates.length ? `${esc(gates[0].label)} is ready for review below.` : "No open gate on this unit right now."}</p>`,
+    { caption: "briefing · now" },
+  );
   const orch = orchestratorPanel("run", status, briefingBody, gateHtml);
 
   return shell(`levare · run · ${unitId}`, "Open score", `<div class="app">${rail}${main}${orch}</div>`, status);

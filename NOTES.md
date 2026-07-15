@@ -5497,3 +5497,102 @@ directly (no browser available in this environment for a pixel screenshot): team
 member, no model) shows `kindbadge--cli` alone, confirming the adjacent-model rendering is conditional and
 doesn't leave a stray separator when no model is declared; `flow-design` shows only its description
 paragraph; `house-style` shows `voice`/`reference` as chips and no backlink section.
+
+# NOTES UI8 — the Orchestrator panel reads as a conversation, not a labelled log
+
+Presentation-only redesign of the Orchestrator panel's message history (docs/levare-design-brief.md):
+every message used to carry a "RESPONSE now" / "BRIEFING now" header, the Conductor's and the
+Orchestrator's own messages were visually identical, and there was no turn-taking signal — it read as a
+transcript with repeated chrome, not a chat. Message content, the composer, and the request/response
+flow are all unchanged; conversation persistence across navigation stays explicitly out of scope (a
+separate future goal).
+
+**The header is gone.** `src/board/components.ts` gains `orchMark()`/`orchTurn()` — the ONE place the
+Orchestrator conversation's turn markup is built (same "shared component vocabulary, built once" pattern
+UI6 established): `orchMark()` renders the same podium glyph the app header/panel head already draw
+(`.turn__mark`, styled identically to `.orch__mark`); `orchTurn(bodyHtml, { caption })` wraps one or more
+message bodies in `<div class="turn turn--orch">`, left-aligned by default (no `justify-content`
+override), with `caption` rendering a quiet `.turn__caption` line beneath the WHOLE turn. All three
+screens' `briefingBody` (`render.ts#renderStudio/renderProject/renderRun`) and the disabled-panel's
+unavailability notice now build through `orchTurn()` instead of hand-rolled `<div class="msg">...
+<div class="msg__label">...` markup. Only the three real briefings pass `{ caption: "briefing · now" }`
+— the opening message is a genuinely distinct one worth marking (item 2); the disabled-panel notice does
+NOT get the caption (it's an availability notice, not a briefing, even though it's still rendered as the
+Orchestrator speaking — mark, left-aligned).
+
+**Conductor messages** never come from the server (every one is composer-submitted) — they render
+client-side as `<div class="turn turn--user">`, right-aligned via `justify-content:flex-end` on the turn
+plus a `.msg__body` styled with `background:var(--bg-accent); color:var(--text-accent)` — two NEW
+derived CSS variables (`assets/styles.css` `:root`), both expressed purely as `color-mix()`/`var()` over
+the EXISTING `--accent`/`--panel` tokens (no new colour literal, per the design brief's "no new colours"
+constraint) — so both light and dark values fall out of the existing per-theme `--accent`/`--panel`
+overrides with no separate dark-mode redeclaration needed.
+
+**Turn-merging (item 4)** is inherently a client concern (message history isn't persisted — out of
+scope — so there's no server-side "list of prior messages" to merge across; each page load server-
+renders exactly one opening turn). `assets/app.js` gains `appendTurnMessage(body, speaker, buildBodyEl)`:
+if `.orch__body`'s last child is already a turn of the same speaker, the new message's element (always
+built via `textContent`, never string-concatenated HTML — the same "untrusted text is never parsed as
+markup" discipline the old code already had) is appended into that turn's existing `.turn__content`
+(mark shown once, no new spacing/turn wrapper); otherwise a fresh turn is created. Both the summon-gate
+narration handler and the composer's reply/error handlers now go through this one function, so a
+narration that lands right after another Orchestrator message (or the opening briefing, if summoned
+before any Conductor message) merges instead of repeating the mark.
+
+**The in-flight state (item 5)** is local and inline: the composer's submit handler now creates a
+pending turn via `appendTurnMessage(body, 'orch', ...)` immediately after appending the Conductor's own
+turn (so it always lands as a fresh turn, never merged into the user's) with `.msg__body.msg--pending`
+(mark + blinking dots + "thinking…" text) and a `turn--pending` marker class; the panel (`.orch`) itself
+never gains a loading class, and nothing but this one inline element changes while a real SDK call is in
+flight. On resolution the pending turn is `.remove()`d and the real reply/error is appended through the
+same `appendTurnMessage` path — reusing the exact dots primitive already built for the gate composer's
+own dispatching state (`components.ts#pendingState`), per the "feedback is local" principle from UI6.
+
+**CSS**: the old `.msg`, `.msg__label` (`.k`/`.t` spans), and `.msg--user` rules are gone outright,
+replaced by `.turn`/`.turn__mark`/`.turn__content`/`.turn__caption`/`.turn--user`. The pending-dots
+animation rule (`.msg--pending .msg__dots` and its `nth-child` delays) is generalised to `.msg__dots`
+directly — dropping the `.msg--pending` ancestor requirement was safe to verify: `.msg__dots` never
+appears anywhere it wouldn't also want the blink (the gate's own `pendingState()` output still nests it
+under `.msg--pending`, unaffected; the Orchestrator's new inline "thinking…" paragraph now reuses the
+same rule directly). `styles.css?v=9` → `v=10`, `app.js?v=7` → `v=8` (cache-busting, existing convention).
+
+## Test coverage
+
+New `tests/board-orchestrator-conversation.test.ts` (14 tests), two halves:
+- Server-rendered string assertions (all three screens, on/off): the opening turn is `turn turn--orch`
+  with a `turn__mark`, no `msg__label`/"RESPONSE"/"BRIEFING" text anywhere; exactly one `turn__caption`
+  reading "briefing · now"; the disabled panel gets the mark but no caption; the composer's enabled/
+  disabled markup is asserted byte-identical to its pre-goal form (item 6 — composer unchanged).
+- A vm-based fake-DOM harness (same no-DOM-dependency approach as `tests/board-pending-state.test.ts`,
+  extended with `lastElementChild`/`createTextNode`/`documentElement`) loading the real `assets/app.js`
+  verbatim: two consecutive summoned narrations merge into one `turn--orch` with exactly one
+  `turn__mark` and two `msg__body` paragraphs; a composer submission renders `turn--user` right-aligned
+  with the typed text and no mark; immediately after submitting, a `turn--pending` Orchestrator turn
+  (mark + dots + "thinking…") is the last child of `.orch__body` while the panel's own class is
+  untouched and the input is disabled; once a mocked `fetch` resolves, the pending turn is gone and the
+  real reply (or, in a second scenario, an error) lands as a fresh Orchestrator turn.
+
+## Verification
+
+`bun test` — 758 pass (14 new, all in the new suite), 1 pre-existing skip, 0 fail, across 59 files (was
+744 pass/1 skip/58 files before this goal). `bun run deps:check` → `deps ok`.
+`bun run src/cli.ts replay fixtures/golden --stubs` matches `fixtures/golden/expected.json` byte-for-byte
+(unaffected — this goal touches only the Orchestrator panel's client/server rendering, never the
+runner). `bun build src/cli.ts` compiles clean. Manually verified against a live
+`levare serve fixtures/golden` (no ANTHROPIC_API_KEY in this environment, so the disabled-panel path):
+fetched `/project/storefront` and confirmed the rendered panel shows the mark, left-aligned, with no
+"briefing"/"RESPONSE" label text and no caption (the disabled notice correctly withholds it); fetched
+`/styles.css` and `/app.js` and confirmed the new `--bg-accent`/`--text-accent` variables, `.turn*`
+rules, and `appendTurnMessage`/`turn--pending` code are all served correctly.
+
+## Uncertainty recorded
+
+The goal's "consecutive same-speaker messages merge" ask is proven for the Orchestrator side (summon
+narrations landing back-to-back) since that's the one path where it's reachable today: the composer
+disables its input for the duration of a request, so two Conductor messages can never be submitted
+back-to-back through the real UI — `appendTurnMessage`'s merge logic is speaker-symmetric (it would
+merge consecutive `turn--user` calls exactly the same way), but there's no live code path that exercises
+that specific case today, only the shared primitive. Left as-is rather than special-cased, since the
+composer's disable-while-pending behaviour is explicitly out of scope to change (item 6/composer
+unchanged), and a generic primitive that's symmetric by construction is preferable to one hand-tuned to
+today's only reachable case.

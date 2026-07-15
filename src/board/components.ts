@@ -127,6 +127,27 @@ export function pendingState(opts: { label: string }): string {
 }
 
 // ---------------------------------------------------------------------------
+// orchTurn / orchMark — the Orchestrator conversation's one message-group primitive (NOTES UI8). The
+// old per-message header ("RESPONSE"/"BRIEFING" + a timestamp on every line) is gone; instead the
+// Orchestrator's speech is marked ONCE per unbroken run of its own messages by `orchMark()` — the same
+// podium glyph the app header and panel head already use — with left alignment doing the rest. A
+// message's `caption`, when given, renders as a quiet line beneath the WHOLE turn: reserved for the
+// panel's very first message (the opening briefing is a genuinely distinct message worth marking; no
+// later message — including any that merge into this same turn via the client's own turn-grouping,
+// assets/app.js#appendTurnMessage — repeats it). The Conductor's own messages never call this; they
+// render via the client-side `turn--user` path (right-aligned, accent bubble) since every user message
+// is composer-submitted, never server-rendered.
+// ---------------------------------------------------------------------------
+export function orchMark(): string {
+  return `<span class="turn__mark" aria-hidden="true"><i></i><b></b></span>`;
+}
+
+export function orchTurn(bodyHtml: string, opts: { caption?: string } = {}): string {
+  const captionHtml = opts.caption ? `<div class="turn__caption mono">${esc(opts.caption)}</div>` : "";
+  return `<div class="turn turn--orch">${orchMark()}<div class="turn__content">${bodyHtml}</div>${captionHtml}</div>`;
+}
+
+// ---------------------------------------------------------------------------
 // card — the canonical card contract (design brief: title top-left, status badge top-right,
 // supporting tags/meta along the bottom). Used by the studio project card, the registry entity card,
 // and the project page's work-unit row. Every surface keeps its own CSS class family (`.pcard`,

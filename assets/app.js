@@ -191,6 +191,42 @@
       }
     }
 
+    /* ---------- Orchestrator conversation turns (UI8) ---------- */
+    /* One turn per unbroken run of same-speaker messages: the mark (Orchestrator) or right-aligned
+       accent bubble (Conductor) is the only speaker signal now, shown/applied once per turn rather
+       than a "RESPONSE"/"BRIEFING" header repeated on every message (design brief item 1/4). A
+       same-speaker message immediately following the last turn in `.orch__body` merges into it —
+       `buildBodyEl` returns the new message element (a `<p class="msg__body">`, built via textContent
+       so untrusted reply/user text is never parsed as markup); a different speaker (or an empty panel)
+       starts a fresh turn instead. */
+    function lastTurn(body) {
+      var last = body.lastElementChild;
+      return (last && last.classList.contains('turn')) ? last : null;
+    }
+    function appendTurnMessage(body, speaker, buildBodyEl) {
+      var last = lastTurn(body);
+      var turn = (last && last.classList.contains('turn--' + speaker)) ? last : null;
+      if (!turn) {
+        turn = document.createElement('div');
+        turn.className = 'turn turn--' + speaker;
+        if (speaker === 'orch') {
+          var mark = document.createElement('span');
+          mark.className = 'turn__mark';
+          mark.setAttribute('aria-hidden', 'true');
+          mark.appendChild(document.createElement('i'));
+          mark.appendChild(document.createElement('b'));
+          turn.appendChild(mark);
+        }
+        var content = document.createElement('div');
+        content.className = 'turn__content';
+        turn.appendChild(content);
+        body.appendChild(turn);
+      }
+      turn.querySelector('.turn__content').appendChild(buildBodyEl());
+      body.scrollTop = body.scrollHeight;
+      return turn;
+    }
+
     /* ---------- summon gate into orchestrator ---------- */
     document.addEventListener('click', function (e) {
       var s = e.target.closest('[data-summon]');
@@ -200,13 +236,13 @@
       if (!body) return;
       var tplId = s.getAttribute('data-summon');
       var tpl = document.getElementById(tplId);
-      var msg = document.createElement('div');
-      msg.className = 'msg';
-      msg.innerHTML =
-        '<div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>' +
-        '<p class="msg__body">' + (s.getAttribute('data-narrate') ||
-          'Here is the gate you asked to review.') + '</p>';
-      body.appendChild(msg);
+      var narrate = s.getAttribute('data-narrate') || 'Here is the gate you asked to review.';
+      appendTurnMessage(body, 'orch', function () {
+        var p = document.createElement('p');
+        p.className = 'msg__body';
+        p.textContent = narrate;
+        return p;
+      });
       if (tpl) {
         var node = tpl.content.cloneNode(true);
         body.appendChild(node);
@@ -225,40 +261,51 @@
         var text = (input.value || '').trim();
         if (!text) return;
         var body = form.closest('.orch').querySelector('.orch__body');
-        var u = document.createElement('div');
-        u.className = 'msg msg--user';
-        u.innerHTML = '<p class="msg__body"></p>';
-        u.querySelector('.msg__body').textContent = text;
-        body.appendChild(u);
+        // The Conductor's own message: right-aligned, accent bubble (item 3) \u2014 merges into the
+        // previous turn if the last thing said was also the Conductor's (item 4).
+        appendTurnMessage(body, 'user', function () {
+          var p = document.createElement('p');
+          p.className = 'msg__body';
+          p.textContent = text;
+          return p;
+        });
         input.value = '';
-        body.scrollTop = body.scrollHeight;
-        function showReply(text) {
-          var r = document.createElement('div');
-          r.className = 'msg';
-          r.innerHTML = '<div class="msg__label"><span class="k">reply</span><span class="t">now</span></div><p class="msg__body"></p>';
-          r.querySelector('.msg__body').textContent = text;
-          body.appendChild(r);
-          body.scrollTop = body.scrollHeight;
+
+        function showReply(replyText) {
+          appendTurnMessage(body, 'orch', function () {
+            var p = document.createElement('p');
+            p.className = 'msg__body';
+            p.textContent = replyText;
+            return p;
+          });
         }
         // An error or a disabled-state response is shown as what it is, never dressed up as an
         // Orchestrator reply (NOTES C11 \u2014 the whole point of deleting the deterministic boundary was
         // to stop a non-answer from impersonating a real one).
-        function showError(text) {
-          var r = document.createElement('div');
-          r.className = 'msg';
-          r.innerHTML = '<div class="msg__label"><span class="k">error</span><span class="t">now</span></div><p class="msg__body" style="color:var(--danger)"></p>';
-          r.querySelector('.msg__body').textContent = text;
-          body.appendChild(r);
-          body.scrollTop = body.scrollHeight;
+        function showError(errText) {
+          appendTurnMessage(body, 'orch', function () {
+            var p = document.createElement('p');
+            p.className = 'msg__body';
+            p.style.color = 'var(--danger)';
+            p.textContent = errText;
+            return p;
+          });
         }
-        // Pending state (a real SDK call routinely takes seconds): quiet, non-attention-seeking per
-        // the design brief's motion rules, cleared as soon as a reply (or a failure) arrives, so the
-        // composer never just looks dead while the Orchestrator is working.
-        var pending = document.createElement('div');
-        pending.className = 'msg msg--pending';
-        pending.innerHTML = '<div class="msg__dots"><span></span><span></span><span></span></div>';
-        body.appendChild(pending);
-        body.scrollTop = body.scrollHeight;
+        // In-flight state (item 5): local and inline, exactly where the reply will land \u2014 the mark
+        // plus an animated "thinking\u2026" indicator, a fresh turn right after the Conductor's own (never
+        // merged into it, since the speaker differs), cleared as soon as a reply or failure arrives.
+        // Never a bar/spinner that replaces more of the panel than this.
+        var pendingTurn = appendTurnMessage(body, 'orch', function () {
+          var p = document.createElement('p');
+          p.className = 'msg__body msg--pending';
+          var dots = document.createElement('span');
+          dots.className = 'msg__dots';
+          for (var i = 0; i < 3; i++) dots.appendChild(document.createElement('span'));
+          p.appendChild(dots);
+          p.appendChild(document.createTextNode('thinking\u2026'));
+          return p;
+        });
+        pendingTurn.classList.add('turn--pending');
         input.disabled = true;
         fetch('/orchestrator/message', {
           method: 'POST',
@@ -266,12 +313,12 @@
           body: JSON.stringify({ text: text })
         }).then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
           .then(function (r) {
-            pending.remove();
+            pendingTurn.remove();
             if (r.ok && r.data && r.data.ok) { showReply(r.data.reply || ''); }
             else { showError((r.data && (r.data.reason || r.data.error)) || 'The Orchestrator could not answer.'); }
           })
           .catch(function () {
-            pending.remove();
+            pendingTurn.remove();
             showError('Could not reach the board \u2014 check your connection and try again.');
           })
           .then(function () { input.disabled = false; input.focus(); });
