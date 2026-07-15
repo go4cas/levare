@@ -5772,3 +5772,149 @@ here.
 combined new-test count across both defects in this goal). `bun run deps:check` → `deps ok`.
 `./levare replay fixtures/golden --stubs` matches `fixtures/golden/expected.json` byte-for-byte,
 unaffected — this fix touches only `assets/styles.css`, never runner/replay behavior.
+
+## DIST5. The SDK worker now runs from a compiled binary too — self-invocation, the standard `bun build --compile` pattern; correcting DIST4's "does not run from a compiled binary yet"
+
+DIST4 found the SDK worker spawn structurally broken under `--compile` and, correctly for that step's
+scope, made the Orchestrator refuse honestly instead of crashing — but that refusal papered over the
+actual defect rather than fixing it. This goal fixes it: the compiled `dist/levare` binary can now run
+the SDK worker, so native members AND the Orchestrator both work from a compiled binary, not just from
+source.
+
+### The fix — self-invocation, not a resolved script path
+
+`sdk-transport.ts#createBunSdkTransport`/`createAsyncSdkTransport` used to spawn `[process.execPath,
+SDK_WORKER_PATH]` — a generic script interpreter against a resolved file path. Correct in a source run
+(`process.execPath` is the real `bun` interpreter); broken under `--compile`, where `process.execPath`
+IS the compiled binary itself, which only knows how to run its own embedded entrypoint (confirmed live
+in DIST4: `dist/levare <any script path>` printed `unknown command: <path>`).
+
+The fix: spawn a FRESH COPY OF THIS SAME PROCESS, told to run in worker mode via a hidden internal CLI
+subcommand (`__worker`, `sdk-transport.ts#WORKER_COMMAND`) — the standard Bun `--compile` self-invocation
+pattern, rather than a separately-resolved script. `cli.ts#runCli` intercepts `__worker` BEFORE `main()`'s
+own switch/usage() — deliberately never added to that switch, which is what keeps it out of
+`--help`/usage() without a separate allowlist mechanism; a bare `main(["__worker"])` call (bypassing
+`runCli`) still falls through to the ordinary "unknown command" response, exactly as before this command
+existed. The worker's own logic (`sdk-worker.ts`) was refactored from an unconditional module-level
+`main(); ` call into an exported `runSdkWorkerFromStdin()`, invoked either by `cli.ts`'s `__worker`
+dispatch (in-process) or by the file's own `if (import.meta.main)` guard (when a test spawns it, or any
+script, standalone) — the auto-run guard matters because `cli.ts` now imports this module directly, and
+an unconditional `main()` call would have run a real SDK query every time anything imported it.
+
+**The argv shape genuinely differs between the two run modes, and that's fine — it's the standard
+pattern, not a special-case being smuggled back in.** Confirmed empirically (a scratch `bun build
+--compile` reproduction, not assumed): a compiled binary spawning itself as `[execPath, "flag"]`
+reports `process.argv.slice(2) === ["flag"]` in the child — the compiled binary always synthesizes its
+own `argv[0]`/`argv[1]` (`["bun", "/$bunfs/root/<name>", ...]`), so anything passed after `execPath` in
+the spawn array lands as user-facing args, identical to how `runCli(process.argv.slice(2))` already
+reads every other command. A raw `bun` interpreter, by contrast, has no script bound to it — `bun
+__worker` alone fails with `error: Script not found "__worker"` (confirmed directly) — so the source-run
+spawn hands it this file's own entry point (`cli.ts`, resolved via the same `import.meta.url` idiom
+`SDK_WORKER_PATH` already used, safe here specifically because it's only ever read when
+`isCompiledBuild()` is false). Either way the child's `process.argv.slice(2)` ends up exactly
+`[WORKER_COMMAND]` — one `workerSpawnArgv()` helper (sdk-transport.ts) branches on run mode so every
+call site stays identical.
+
+### A second, distinct compiled-only bug this surfaced live, not by inspection: the spawn's own `cwd`
+
+Fixing the argv shape alone was not enough — a live compiled-binary test still failed, with a NEW
+error: `ENOENT: no such file or directory, posix_spawn '<execPath>'`. Every worker spawn pins an
+explicit `cwd` (`LEVARE_ROOT`, derived from `SDK_WORKER_PATH`'s `import.meta.url` resolution) so the
+worker script resolves its own `node_modules` regardless of the caller's cwd (NOTES phase-7 K13).
+`LEVARE_ROOT` is a real, walkable on-disk directory in a source run — but under `--compile`,
+`import.meta.url` resolves into Bun's virtual `$bunfs` tree, so `LEVARE_ROOT` becomes an unwalkable
+path. `Bun.spawn` cannot `chdir` into a `cwd` that doesn't exist on the real filesystem, so
+`posix_spawn` fails outright and the child never starts — a DIFFERENT failure mode than the argv bug,
+one DIST4 never reached because its blanket refusal short-circuited before any real spawn was ever
+attempted. This was never caught by reading the code; it only showed up running the actual compiled
+binary's real `serve` against a real studio and POSTing `/orchestrator/message` — exactly the
+"verify against the real thing" discipline DIST4 itself established.
+
+**The fix.** A compiled self-invocation needs no pinned cwd at all: the worker's own module resolution
+is irrelevant under `--compile` (everything is embedded), and the native-binary path is already
+resolved once by the caller and passed explicitly (`pathToClaudeCodeExecutable`) — so `workerSpawnCwd()`
+omits `cwd` entirely for a compiled self-invocation, which makes `Bun.spawn` inherit the running
+process's own (real) cwd instead. The explicit-`workerPath` test-injection shape (see below) is
+untouched — those scripts are always spawned from a `bun test` process, i.e. never compiled, so
+`LEVARE_ROOT` is always a real, valid directory there.
+
+### Both native members and the Orchestrator are fixed by the identical change (goal's point 5, confirmed by reading, not assumed)
+
+`adapters.ts#createSdkNativeBoundary`/`createAsyncSdkNativeBoundary` (the native-member boundary) and
+`orchestrator-boundary.ts#createSdkOrchestratorBoundary` (the Orchestrator) both default to the SAME
+transport singletons — `bunSdkTransport`/`asyncSdkTransport` (`sdk-transport.ts`, both constructed via
+`createBunSdkTransport()`/`createAsyncSdkTransport()` with no `workerPath` argument). There is no
+per-caller branch in the spawn shape at all: a native member's request and the Orchestrator's request
+differ only in the `SdkWorkerRequest` PAYLOAD (agent context + tool allowlist vs. the Orchestrator's
+system prompt + schema), never in how the worker process itself is reached. Confirmed live, not just by
+reading the code: piping a native-member-shaped request (`{prompt, model, tools: [], allowedTools:
+[]}` — the exact shape `adapters.ts#nativeWorkerRequest` builds) directly to the real compiled
+`dist/levare __worker` produced a real completion through the self-invoked worker, the identical
+mechanism the Orchestrator's own live test exercises. DIST4's framing ("SDK worker spawn genuinely
+cannot be fixed the same way [as the prompt-path bug]") was about why the FIX shape had to differ from
+`ORCHESTRATOR_PROMPT_PATH`'s `{ type: "file" }` fix, not about the Orchestrator being uniquely affected
+— the underlying defect and this fix both apply identically to every caller of `sdk-transport.ts`.
+
+### The Orchestrator no longer forces "off" under a compiled binary
+
+`orchestrator-status.ts#resolveOrchestratorStatus` and `orchestrator-boundary.ts#selectOrchestratorBoundary`
+both dropped their `compiled` parameter and the `if (compiled) return null/unavailable` branch DIST4
+added — that branch existed ONLY because the old spawn genuinely could not run under `--compile`; now
+that it self-invokes correctly either way, the credential/native-binary precondition
+(`checkSdkPreconditionsCached`) is the only thing either function still needs to check, compiled or
+source. `levare doctor` reflects this directly: a compiled binary with `ANTHROPIC_API_KEY` unset still
+honestly reports `orchestrator: off · ANTHROPIC_API_KEY is not set` (a genuinely missing prerequisite,
+per the goal's own carve-out), while a compiled binary with a credential present now reports
+`orchestrator: on · The Orchestrator is live.` — identical to a source run, where DIST4 always forced
+`off` regardless.
+
+### Test coverage
+
+`tests/orchestrator-status.test.ts` — rewritten (the DIST4 version tested the now-removed
+compiled-forces-off branch): asserts `resolveOrchestratorStatus` has no compiled/source branch left —
+only the credential/native-binary precondition decides the outcome, with a case for each missing
+prerequisite (no key; a key but an unresolvable binary, via the existing `requireFrom` test seam).
+`tests/orchestrator-sdk.test.ts` — the `selectOrchestratorBoundary — refuses under a compiled binary`
+describe block (which asserted the removed `compiled` parameter) is replaced with a describe block
+pinning the new API surface: no third argument exists, and a present key + fake transport selects a
+real boundary unconditionally. `tests/orchestrator-compiled-smoke.test.ts` (extended, not rewritten —
+the DIST4 tests that are still true, like the prompt-byte-count check, are kept) gained:
+- `` `<compiled> doctor` reports 'orchestrator: on' when a credential is present `` — the direct proof
+  of the status-reporting fix above; the no-credential case now also asserts the OLD "compiled binary"
+  reason string is gone.
+- A describe block spawning `<compiled> __worker` directly: piping empty stdin returns a
+  worker-shaped `{ok:false, error:"...malformed request JSON..."}` response — proving dispatch reached
+  `runSdkWorkerFromStdin`, not `main()`'s "unknown command" fallback — fast, offline, deterministic (no
+  network or credential needed, unlike the full round-trip below). A second test confirms `--help`
+  never lists `__worker`.
+- The old "`serve` never 500s with the `$bunfs` ENOENT" test is replaced by two: one confirming a
+  genuinely absent credential still reports the honest `disabled` state (not a compiled-binary
+  limitation), and one — the core proof — confirming that with a credential present, a real
+  `/orchestrator/message` call is ACTUALLY ATTEMPTED end-to-end through the real self-invoked worker
+  (never `disabled`, never `ENOENT`/`$bunfs`/`unknown command`), asserting on the SHAPE of the outcome
+  (a real reply or a real, never dispatch-shaped, SDK error) rather than which branch — this
+  environment's outcome depends on whether a live, authenticated `claude` CLI session is available
+  under the worker's hermetic `CLAUDE_CONFIG_DIR` isolation (NOTES phase-7 K15), which the test
+  deliberately doesn't assume either way.
+
+### What was actually run, live, to prove this — not just `bun test`
+
+Beyond the automated smoke test, manually verified against the REAL `bun run build` output
+(`dist/levare`, not just the test's own scratch binary): `dist/levare --help` never lists `__worker`;
+`dist/levare doctor fixtures/golden` reports `orchestrator: off`/`on` correctly for absent/present
+credentials; a real `dist/levare serve <studio>` with a fake key, POSTed `/orchestrator/message`,
+dispatched a real self-invoked worker call that reached the real `claude` CLI and got a real (hermetic,
+correctly-isolated-from-the-operator's-own-session) `Not logged in` rejection — never `ENOENT`,
+`$bunfs`, or `unknown command`; and piping a native-member-shaped request directly to `dist/levare
+__worker` under this sandbox's own ambient `claude` session produced a genuine model completion
+end-to-end. `./levare replay fixtures/golden --stubs` (source shim) still matches the oracle
+byte-for-byte, unaffected — this fix touches only the SDK worker spawn, never the batch runner's
+stub-member path.
+
+### Verification
+
+`bun test` — 778 pass, 1 pre-existing skip, 0 fail, across 62 files (was 775 pass/1 skip/62 files
+before this goal — NOTES DIST4; net +3 tests: the compiled-smoke file gained more cases than the two
+rewritten describe blocks lost). `bun run deps:check` → `deps ok`. `bun run build` succeeds; the
+resulting `dist/levare` passes every manual check above. `./levare replay fixtures/golden --stubs`
+matches the oracle byte-for-byte.
