@@ -123,7 +123,7 @@ members: [wren, lyra, finch]
 name: lyra
 kind: native
 produces: [design, spec]        # ← this is what binds lyra to a flow step
-model: claude-sonnet
+model: claude-sonnet-5
 ```
 
 That `produces:` declaration is load-bearing. A team can promise a `spec`, but if no member of it
@@ -200,7 +200,7 @@ something without retraining anything.
 
 A **connector** is an external system a member can be granted — GitHub, Linear, a model vendor's CLI.
 It declares the *names* of the environment variables it needs. **Never their values.** Secrets live in
-your shell; the repo names them.
+your shell (or a gitignored `.env`); the repo names them.
 
 ```yaml
 # connectors/github.md
@@ -215,7 +215,31 @@ the baseline (`PATH`, `HOME`) plus the variables its granted connectors name —
 Not your other keys. Not your shell. A member that wasn't granted `github` cannot see `GITHUB_TOKEN`,
 because nothing copied it through.
 
-`levare doctor` tells you which connectors are actually ready.
+### Two ways to authenticate
+
+A connector declares *how* its backend authenticates, and the two modes differ in what levare can
+actually guarantee:
+
+```yaml
+auth: env             # the default — levare injects and scopes the named vars
+auth: subscription    # the CLI authenticates itself from its own stored login
+```
+
+**`auth: env`** is the model above: levare injects the named variables, and that grant *is* the
+enforcement. An `env` connector must name at least one variable — one that names none has nothing to
+inject, and `levare validate` rejects it.
+
+**`auth: subscription`** is for a CLI that logs itself in and stores a session on disk — Codex via a
+ChatGPT plan, for instance. There's nothing for levare to inject, so `env:` must be empty. And here
+levare is honest about a limit: it **cannot** scope a credential a CLI reads from your home directory.
+Any member that can spawn that binary can use the login, granted or not. `levare doctor` says so
+plainly. The grant is documentation, not enforcement.
+
+Prefer `env` where the vendor offers it. A subscription member's cost is also unpriceable — a flat
+plan doesn't bill per token — so its receipts record `usd: null` with the plan named, rather than a
+fictional `$0`.
+
+`levare doctor` tells you which connectors are ready, and which mode each one is in.
 
 ---
 
