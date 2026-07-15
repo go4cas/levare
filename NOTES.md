@@ -5722,3 +5722,53 @@ doctor.test.ts, 2 in orchestrator-compiled-smoke.test.ts), 1 pre-existing skip, 
 SDK-worker limitation plainly instead of guessing. `./levare replay fixtures/golden --stubs` (via the
 shim) still matches `fixtures/golden/expected.json` byte-for-byte, unaffected — this fix touches only
 the Orchestrator boundary's path resolution and status reporting, never the runner.
+
+## UI9. The user-message bubble read as an error — the accent role is vermilion, not a neutral
+
+UI8 gave the Conductor's own message bubble (`.turn--user .msg__body`) the accent role
+(`--bg-accent`/`--text-accent`, both `color-mix`-derived from `--accent`). The chosen accent direction
+in this codebase, per `docs/levare-design-brief.md`, is **Podium — opera-house vermilion, around
+`#C2402A`** — a warm red/coral, the same hue family as `--danger` (`#A81F1A` light / `#EC6A62` dark,
+also warm red). Styling the Conductor's OWN message in that hue makes a normal chat bubble read as an
+alert, exactly the failure mode the design brief's canonical state palette exists to prevent ("Gates
+must never become red: red means error"). It also quietly broke the brief's own accent-scarcity rule —
+"the accent appears sparingly in-product (only as the Orchestrator's voice; color otherwise belongs to
+teams)" — the accent is supposed to BE the Orchestrator's identity marker specifically, not something
+the Conductor's own words wear too.
+
+**The fix — swap the ingredient, keep the recipe.** `--bg-accent`/`--text-accent` are gone entirely
+(not left unused — grepped and confirmed no other reference existed), replaced by `--bg-user`/
+`--text-user`: `color-mix(in oklab, var(--fg) 12%, var(--panel))` and `var(--fg)`. Same derivation
+shape UI8 already established for `--bg-accent` (a `color-mix` of an existing token over `--panel`, no
+new colour literal, no separate dark-mode redeclaration needed since `--fg`/`--panel` already flip
+per-theme) — only the ingredient hue changed, from `--accent` (a colour) to `--fg` (ink, i.e. no hue at
+all). `.turn--user .msg__body` also gained a `1px solid var(--border)` edge — the neutral fill alone
+sits close enough to `--panel` in value that a hairline border (the same device `.tchip`/`.gate` already
+use for neutral surfaces) keeps the bubble reading as a distinct shape without reintroducing colour.
+The Orchestrator's own turns are untouched — still left-aligned, mark, `--accent`-colored mark/plain
+`--fg-dim` text, exactly as the goal asked.
+
+**Test coverage.** `tests/user-bubble-color.test.ts` (new file) reads `assets/styles.css` directly and
+asserts: `.turn--user .msg__body` contains neither `var(--accent)` nor `var(--danger)` (nor either
+token's derived variants) in any form; it does use `background:var(--bg-user)`/`color:var(--text-user)`;
+those two tokens are themselves derived from `--fg`/`--panel`, never `--accent`/`--danger`; the old
+`--bg-accent`/`--text-accent` tokens are gone from the file, not merely unreferenced; and
+`[data-theme="dark"]` declares no separate override for the new tokens (confirming the "falls out of
+the existing per-theme values" claim above is actually true, not just asserted).
+
+**What was checked and what genuinely could not be, in this sandbox.** The CSS-derivation logic was
+verified directly (no `--accent`/`--danger` reachable from the new rule, confirmed by both the test
+above and by reading the resulting `color-mix()` calls) and the resulting page was fetched via
+`GET /` against a real `levare serve` instance to confirm the new rule and class markup are actually
+served. A rendered, pixel-level screenshot of the bubble (light and dark) was NOT captured: this
+sandbox has no headless-browser tooling available (`chromium-cli` and `npx`/`playwright` both absent,
+and installing one was out of scope for a bug-fix pass) — noted here rather than silently claimed,
+the same discipline DIST2 used for the parts of its own release workflow that could not be run from
+here.
+
+### Verification
+
+`bun test` — 775 pass, 1 pre-existing skip, 0 fail, across 62 files (see NOTES DIST4 above for the
+combined new-test count across both defects in this goal). `bun run deps:check` → `deps ok`.
+`./levare replay fixtures/golden --stubs` matches `fixtures/golden/expected.json` byte-for-byte,
+unaffected — this fix touches only `assets/styles.css`, never runner/replay behavior.
