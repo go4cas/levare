@@ -4516,3 +4516,156 @@ against it — 637 pass, 1 pre-existing skip, 0 fail, identical to a clean run w
 **Deliberately out of scope.** No other test file spawns `./levare` as a subprocess (confirmed by grep
 before starting), so no fifth fixed-port site was left behind. The registry's other entity-card/render
 internals, the Orchestrator panel, and every other test file are untouched.
+
+---
+
+# NOTES UI3 — the registry editor becomes an overlay, live-validated against the real validator
+
+**The goal.** "Edit source" opened a textarea inline inside the entity's card — cramped (the card's
+own width forces YAML lines to wrap), the only validity check ran on load/save rather than while
+typing, and the only way out was "Save and commit" or navigating away entirely. Turn it into a proper
+overlay editor: a centered panel over a dimmed backdrop, sized for YAML; a Cancel button beside Save;
+Escape and a backdrop click as equivalent dismiss paths; a dirty-check gate on every dismiss path; and
+live validation as the Conductor types, reusing the exact validator `levare validate` runs — never a
+second, client-side implementation of any rule.
+
+## The hard part: threading an unsaved buffer through the real validator, not a second one
+
+`validatePath` (validate.ts) and every cross-entity check it calls (`validateStudioBindings`,
+`validateAgentTeamMembership`, `validateResponsibleTeam`, `validateAgentContextScope`,
+`validateKnownModels`, and the two helpers it depends on — `declaredAgentModels`,
+`subscriptionAuthAgents` — plus `pricing.ts#loadPricing`, which UNKNOWN_MODEL's cross-reference walk
+calls) all read their inputs straight off disk via `readFileSync`, at more than a dozen call sites.
+Doing this cleanly (the goal's stated preference over a validate-on-temp-write fallback) meant every
+one of those call sites had to become overlay-aware, not just the single-file schema pass — otherwise
+an edit to `agents/lyra.md` that would trip `UNKNOWN_MODEL`, or a team-membership edit that would trip
+`AGENT_IN_MULTIPLE_TEAMS`, would validate clean until the Conductor actually saved.
+
+**The mechanism.** A new leaf module, `src/overlay.ts`: `OverlayFile { path: string; content: string }`
+(a resolved absolute path plus the candidate content standing in for it) and `readOverlaid(file,
+overlay)` — reads `overlay.content` when `resolve(file) === overlay.path`, else falls through to the
+real `readFileSync`. `validatePath` gained an optional `overlay?: OverlayFile` parameter, threaded
+downward as an added last argument to every function above (and to `loadPricing`, which needed the
+same treatment for the case where the entity being edited IS `knowledge/model-pricing.md` itself — the
+goal's own named example of a cross-reference check). Every `readFileSync(file, "utf8")` inside those
+call chains became `readOverlaid(file, overlay)`. This is additive-only (all new parameters optional,
+defaulting to `undefined` — real disk reads, unchanged) — `bun test` before this pass and after are the
+same 638 tests, still green, before any new test was added for this round. `crossReference` and
+`gitImmutabilityCheck` (work/ artifacts, consumes/supersedes resolution, approved-immutability) were
+deliberately left untouched: the registry editor only ever edits registry entity files (teams/ agents/
+skills/ knowledge/ types/ connectors/ projects/ evals/ ideas/), never a `work/` artifact, so those two
+checks never see an overlay path and don't need to be overlay-aware.
+
+**The route.** `POST /registry/check/*path` (serve.ts), matched ahead of the existing `POST
+/registry/*path` write route in `ROUTES` (`matchRoute` is first-match-wins, so the more specific
+literal `check` segment has to come first or the wildcard would swallow it). Confines to the same
+`isRegistryEditablePath` allowlist the write route uses, 404s on an entity that doesn't exist on disk
+yet (the overlay editor only ever opens on an existing entity — creating new ones isn't in scope),
+parses `{ content }`, and calls `validatePath(ctx.root, { path: resolve(file), content })` — the WHOLE
+tree, exactly as the write route's own post-write `validatePath(ctx.root)` call does, so the live
+verdict is always identical to what saving would produce (the goal's explicit invariant). It never
+writes anything, so it's `mutating: false` — exempt from the read-only-server gate (harmless against a
+`fixtures/` demo tree; a Conductor should still be able to see live validation there) and from the
+write-route CSRF check (a cross-site page that fires it can neither read the JSON response back,
+having no ACAO header, nor cause a repo change). This is the one deliberate exception to
+`board-routes.test.ts`'s "every non-mutating route is a GET" invariant, documented in that test rather
+than silently loosened.
+
+## The overlay itself
+
+`render.ts#editorOverlay()` — ONE instance per registry page (not one per entity), a sibling of
+`.app` inside `shell()`'s body, `hidden` by default. `entityBlock()` shrank: each card now carries only
+the "Edit source" trigger (`data-edit-open`, plus `data-editor-name`/`data-editor-kind` so the overlay
+can title itself without a second fetch) and a hidden `<textarea class="rawmd-source">` holding the raw
+on-disk content — still raw markdown, no form fields, just no longer the editing surface itself.
+`app.js`'s click handler on `data-edit-open` copies that hidden textarea's value into the overlay's own
+editable textarea, shows the overlay, and fires an immediate check. Typing debounces ~250ms into
+`POST /registry/check/*path`; the existing `.validity` dot and a new `.editor-overlay__errors` list
+update from the response — `${code}  ${file}:${line}` plus the message, i.e. exactly what
+`formatValidationErrors`/`levare validate`'s own CLI formatter (`cli.ts#formatResult`) already show,
+never a re-worded version. Save stays `disabled` any time the buffer is anything other than
+confirmed-valid (typing immediately disables it again, before the debounced re-check has even started
+— never a stale-valid button). Cancel, Escape (`document`-level `keydown`, only acted on while the
+overlay is open), and a backdrop click all funnel through one `requestDismiss()`: dirty (buffer differs
+from what was loaded) prompts `window.confirm('Discard unsaved changes?')`; clean closes immediately.
+Save itself is unchanged in behavior (`POST /registry/*path`, validate → write → commit as the
+Conductor) but now also closes the overlay on success, in addition to the existing full-page reload.
+
+**Styling** (`styles.css`) follows the design brief's existing vocabulary rather than inventing a new
+one: `--panel`/`--border-strong`/`--shadow`/`--mono` (the same `.card` recipe every other bordered
+surface uses), `z-index:200` (above the `52px` sticky header's `40`), a `min(760px, 100%)` panel wide
+enough that YAML stops wrapping, a quiet `.16s` open transition respecting `prefers-reduced-motion`,
+and an explicit `.editor-overlay[hidden]{ display:none; }` override — without it, the UA stylesheet's
+`[hidden]{display:none}` and this file's own `.editor-overlay{display:flex}` are equal-specificity
+author-vs-UA rules and the author rule silently wins, which would have made `hidden` a no-op bug
+invisible until manually clicking around a live server (caught here before it shipped, not after).
+
+## Testing app.js's real behavior without a browser-automation dependency
+
+The goal's achieved-when list requires a render test proving Cancel/Escape/backdrop dismiss the
+overlay — genuine DOM/event behavior, not just markup presence. This project has zero dependencies
+beyond `@anthropic-ai/claude-agent-sdk` (`deps:check` enforces it) and zero precedent anywhere in its
+600+ test suite for DOM/browser-automation testing; reaching for `happy-dom` or similar was tried and
+reverted (`bun add -D happy-dom` pulled in 36 transitive packages, at odds with a project whose whole
+posture — hand-rolled YAML parser, hand-rolled validator, no front-end framework — is minimal and
+dependency-free by design).
+
+**The choice:** `tests/board-editor-overlay.test.ts` hand-rolls a deliberately small DOM (~250 lines):
+an `EventTarget`/`Element`/`Document` triad supporting exactly the attribute/classList/value/
+textContent/querySelector-family surface `app.js`'s overlay block touches, a minimal selector matcher
+(single-class/attr/tag/id, comma lists, one descendant level — enough for every selector the overlay
+code actually calls, and harmless-by-construction for the handful of unrelated selectors elsewhere in
+`app.js` that this fixture simply doesn't contain elements for), and controllable fake `setTimeout`/
+`clearTimeout` (so the 250ms debounce is provably exercised — including that two rapid keystrokes
+coalesce into exactly one re-check — without costing real wall-clock time) plus a scriptable
+`fetch`/`window.confirm`/`location.reload`. The real `assets/app.js` is loaded verbatim via `node:vm`
+(confirmed available under Bun) and executed against this fixture; DOMContentLoaded is dispatched
+exactly once, same as a browser. This tests the ACTUAL shipped file, not a reimplementation of its
+logic — the one path that couldn't accidentally drift from what a browser really runs. A companion
+string-assertion test in `board-render.test.ts` (`renderRegistry`'s real HTML output) keeps the
+hand-built fixture's classes/attributes honest against the real templates.
+
+## Tests
+
+`tests/board-serve.test.ts`: a passing buffer against `POST /registry/check/*path` reports `ok:true`
+without writing; a malformed one reports the real `UNKNOWN_KEY` error, also without writing; the
+critical case — an `agents/lyra.md` buffer with an unknown model trips the cross-reference
+`UNKNOWN_MODEL` check via the unsaved content (proven by asserting the file on disk is byte-identical
+before and after, and that the SAME unedited content round-trips as `ok:true` through the identical
+route); a 404 for an entity that doesn't exist and a 400 for a path outside the registry allowlist; and
+a read-only board still answers it (no write side effect, unlike the save route it sits beside).
+
+`tests/board-editor-overlay.test.ts`: opening populates the overlay's title/kind/textarea from the
+clicked card and fires an immediate check; rapid keystrokes debounce into exactly one re-check and Save
+stays disabled until it resolves `ok`; an invalid response renders the real error code/location/message
+inline and keeps Save blocked; clicking a disabled Save does nothing (no POST); a successful Save
+targets the write route (not the check route), closes the overlay, and reloads; and — the dismiss-path
+requirement — Cancel, Escape, and the backdrop each close immediately with no prompt on a clean buffer,
+and each prompt `"Discard unsaved changes?"` on a dirty one (declining leaves the overlay open,
+confirming closes it).
+
+`tests/board-render.test.ts`: the two pre-overlay tests describing the old inline `rawmd-edit`
+textarea/per-card Save button were rewritten for the new architecture (hidden `rawmd-source` +
+`data-edit-open` trigger, one shared overlay instead of N inline editors) rather than deleted; a new
+test asserts the overlay is a hidden sibling of `.app` (not nested inside it, present after it in the
+document, before `</html>`) while board content (rail, an entity card, the Orchestrator panel) remains
+in the same document — the "overlay, not a route" requirement, proven on the real render output.
+
+`tests/board-routes.test.ts`: the "every non-mutating route is a GET" invariant test now documents and
+asserts its one exception (`POST /registry/check/*path`) by name, rather than being loosened silently.
+
+**Verification.** `bun test` — 650 pass, 1 pre-existing skip, 0 fail, across 53 files. `levare replay
+fixtures/golden --stubs` — final artifact statuses still byte-for-byte against `expected.json`.
+`deps:check` — `deps ok`. Manually verified against a live `levare serve <scratch>` instance (not just
+render-function/test output): `GET /registry` carries the overlay markup and one `data-edit-open`
+trigger per entity card; `POST /registry/check/teams/kestrel.md` with the unedited on-disk content returns
+`{"ok":true,"errors":[]}`; the same route with a deliberately malformed buffer
+(`bogus_key`, several fields dropped) returns the real `UNKNOWN_KEY`/`MISSING_FIELD` errors while the
+file on disk is confirmed byte-unchanged afterward; served CSS parses with balanced braces.
+
+**Deliberately out of scope.** Creating a NEW registry entity (there's no "new" affordance today,
+inline or otherwise — "Edit source" only ever opens on an entity that already exists) — the check
+route's 404-on-missing-file behavior reflects that scope, not an oversight. The Orchestrator panel,
+gate cards, and every other registry-adjacent screen are untouched. `crossReference` and
+`gitImmutabilityCheck` (work/ artifact consumes/supersedes and approved-immutability) were not made
+overlay-aware, since the registry editor never edits a `work/` file — see "the hard part" above.
