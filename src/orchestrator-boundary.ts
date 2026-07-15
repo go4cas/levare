@@ -29,7 +29,6 @@ import {
   type AsyncSdkTransport,
   type SdkPreconditionOptions,
 } from "./sdk-transport.ts";
-import { isCompiledBuild } from "./version.ts";
 
 // `{ type: "file" }` import, not `new URL("../docs/orchestrator-prompt.md", import.meta.url).pathname`
 // (NOTES DIST1/DIST4): the latter resolves into Bun's virtual `$bunfs` tree under `bun build
@@ -335,21 +334,15 @@ export type SelectOrchestratorBoundaryOptions = Omit<SdkOrchestratorBoundaryOpti
  * one seam `levare serve`/the CLI call; it never inspects the key's value, only its presence
  * (invariant 11).
  *
- * NOTES DIST4: also refuses under a COMPILED binary, regardless of what the precondition check says —
- * `createAsyncSdkTransport`'s worker spawn (`Bun.spawn([process.execPath, SDK_WORKER_PATH])`) cannot
- * work there (confirmed live: `process.execPath` under `--compile` is `dist/levare` itself, which
- * treats the worker script path as an unrecognized CLI subcommand, not a script to run — see
- * `orchestrator-status.ts`). Returning `null` here — the same "unavailable" outcome board/serve.ts
- * already handles — keeps this function's own promise ("the badge says on" and "the route actually
- * answers" never disagree) true under `--compile` too, instead of letting the route select a boundary
- * that is certain to fail on its very first call.
+ * NOTES DIST5: no longer refuses under a compiled binary. DIST4 forced `null` here because
+ * `createAsyncSdkTransport`'s worker spawn (`Bun.spawn([process.execPath, SDK_WORKER_PATH])`) could
+ * not work there — `process.execPath` under `--compile` is `dist/levare` itself, which treated the
+ * worker script path as an unrecognized CLI subcommand rather than a script to run. That spawn now
+ * self-invokes this same process in worker mode instead (`workerSpawnArgv`, sdk-transport.ts), which
+ * works identically compiled or source, so the credential/native-binary precondition below is the
+ * only thing this function still needs to check.
  */
-export function selectOrchestratorBoundary(
-  env: Record<string, string | undefined> = process.env,
-  opts: SelectOrchestratorBoundaryOptions = {},
-  compiled: boolean = isCompiledBuild(),
-): OrchestratorBoundary | null {
-  if (compiled) return null;
+export function selectOrchestratorBoundary(env: Record<string, string | undefined> = process.env, opts: SelectOrchestratorBoundaryOptions = {}): OrchestratorBoundary | null {
   const { precondition, ...boundaryOpts } = opts;
   const check = checkSdkPreconditionsCached(env, precondition);
   if (!check.viable) return null;

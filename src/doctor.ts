@@ -14,10 +14,10 @@ import type { OrchestratorStatus } from "./orchestrator-status.ts";
 import type { VersionInfo } from "./version.ts";
 
 /** Whether `docs/orchestrator-prompt.md` was actually readable at doctor-run time, and from where —
- * NOTES DIST4: independent of `orchestrator`'s on/off state above, which now reports "off" under a
- * compiled binary regardless of the prompt (the SDK worker spawn is the thing that can't run there,
- * not the prompt read). This line is the one place a compiled binary can prove the prompt-loading fix
- * itself, separate from whether the Orchestrator is otherwise reachable. */
+ * NOTES DIST4/DIST5: independent of `orchestrator`'s on/off state above, which (since DIST5) reflects
+ * only the credential/native-binary precondition, compiled or not — the SDK worker spawn that DIST4
+ * once couldn't run under `--compile` now self-invokes correctly either way. This line remains its
+ * own, separate proof that the prompt itself loads correctly under `--compile`. */
 export interface PromptCheck {
   path: string;
   ok: boolean;

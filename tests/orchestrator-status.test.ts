@@ -1,27 +1,47 @@
-import { test, expect, describe } from "bun:test";
+import { test, expect, describe, beforeEach } from "bun:test";
 import { resolveOrchestratorStatus, ORCHESTRATOR_ENV_VAR } from "../src/orchestrator-status.ts";
+import { resetSdkPreconditionCache } from "../src/sdk-transport.ts";
 
-// NOTES DIST4: a compiled `dist/levare` can never actually run the Orchestrator (its SDK worker spawn
-// requires a real `bun` interpreter — see orchestrator-boundary.ts's `selectOrchestratorBoundary`),
-// so `resolveOrchestratorStatus` must report "off" under a compiled binary regardless of what the
-// local credential/native-binary precondition says — this module's own job is to keep "the badge says
-// on" and "the route actually answers" from ever disagreeing.
-describe("resolveOrchestratorStatus — refuses under a compiled binary regardless of credentials (NOTES DIST4)", () => {
-  test("compiled=true → unavailable even with a present ANTHROPIC_API_KEY", () => {
-    const status = resolveOrchestratorStatus({ ANTHROPIC_API_KEY: "sk-ant-test-not-real" }, {}, true);
+// The precondition cache (sdk-transport.ts) is a module-level singleton shared across every test file
+// in this `bun test` process — reset it before each test so no test's result depends on what ran
+// before it (same discipline tests/orchestrator-sdk.test.ts already applies).
+beforeEach(() => {
+  resetSdkPreconditionCache();
+});
+
+// NOTES DIST5: `resolveOrchestratorStatus` no longer forces "off" under a compiled binary — DIST4's
+// forced-off special-case existed only because the SDK worker spawn genuinely could not run under
+// `--compile` (a script-path spawn against the running executable's own path). Now that the worker
+// self-invokes (sdk-transport.ts's `workerSpawnArgv`), that spawn works identically compiled or
+// source, so this function reports exactly what the credential/native-binary precondition says,
+// with no run-mode branch left to test.
+describe("resolveOrchestratorStatus — reflects the local precondition only, no compiled/source branch (NOTES DIST5)", () => {
+  test("no ANTHROPIC_API_KEY → unavailable, with the missing-key reason", () => {
+    const status = resolveOrchestratorStatus({});
     expect(status.available).toBe(false);
-    expect(status.reason).toContain("compiled binary");
+    expect(status.reason).not.toContain("compiled binary");
     expect(status.envVar).toBe(ORCHESTRATOR_ENV_VAR);
   });
 
-  test("compiled=true → unavailable even with no key set (still the compiled reason, not the missing-key one)", () => {
-    const status = resolveOrchestratorStatus({}, {}, true);
+  test("empty-string ANTHROPIC_API_KEY is treated as absent, same as missing", () => {
+    const status = resolveOrchestratorStatus({ ANTHROPIC_API_KEY: "" });
     expect(status.available).toBe(false);
-    expect(status.reason).toContain("compiled binary");
   });
 
-  test("compiled=false (a source run) falls through to the ordinary credential/binary precondition", () => {
-    const status = resolveOrchestratorStatus({}, {}, false);
-    expect(status.reason).not.toContain("compiled binary");
+  // Drives the SAME local check `selectOrchestratorBoundary` uses — a genuinely unresolvable native
+  // binary (simulated via `requireFrom` pointed at an empty scratch dir, never touching the real
+  // installed packages) reports unavailable with that specific reason, regardless of the credential.
+  test("a present key but an unresolvable native binary → unavailable, with the binary reason", async () => {
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "levare-status-nobinary-"));
+    try {
+      const status = resolveOrchestratorStatus({ ANTHROPIC_API_KEY: "sk-ant-test-not-real" }, { requireFrom: join(dir, "scratch.ts") });
+      expect(status.available).toBe(false);
+      expect(status.reason).toContain("native CLI binary");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

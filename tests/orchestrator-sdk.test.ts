@@ -467,23 +467,25 @@ describe("selectOrchestratorBoundary — key-present vs. key-absent", () => {
   });
 });
 
-// NOTES DIST4: `createAsyncSdkTransport`'s worker spawn (`Bun.spawn([process.execPath,
-// SDK_WORKER_PATH])`) cannot work under `bun build --compile` — `process.execPath` there is the
-// compiled `dist/levare` binary itself, not a `bun` interpreter, so the spawn re-enters levare's own
-// CLI parser instead of running the worker script (confirmed live: `dist/levare <any script path>`
-// prints `unknown command: <path>`). `selectOrchestratorBoundary` refuses up front under a compiled
-// binary — regardless of credentials/binary resolution — so the route reports the honest disabled
-// state instead of selecting a boundary that is certain to fail on its first call.
-describe("selectOrchestratorBoundary — refuses under a compiled binary, regardless of credentials (NOTES DIST4)", () => {
-  test("a compiled build → null, even with a present key and a resolvable native binary", () => {
-    const boundary = selectOrchestratorBoundary({ ANTHROPIC_API_KEY: "sk-ant-test-not-real" }, {}, true);
-    expect(boundary).toBeNull();
-  });
-
-  test("a source run (the default `compiled` param) is unaffected — same as the key-present case above", () => {
-    const { transport } = fakeTransport(() => ({ ok: true, result: "{}", structuredOutput: { kind: "stats" } }));
-    const boundary = selectOrchestratorBoundary({ ANTHROPIC_API_KEY: "sk-ant-test-not-real" }, { transport }, false);
+// NOTES DIST5: `selectOrchestratorBoundary` no longer takes (or needs) a `compiled` parameter.
+// DIST4's forced-`null`-under-compiled special-case existed only because `createAsyncSdkTransport`'s
+// worker spawn (`Bun.spawn([process.execPath, SDK_WORKER_PATH])`) genuinely could not work under
+// `bun build --compile` — `process.execPath` there was the compiled binary itself, not a `bun`
+// interpreter, so the spawn re-entered levare's own CLI parser instead of running the worker script.
+// That spawn now self-invokes this same process in worker mode (`workerSpawnArgv`, sdk-transport.ts),
+// which works identically compiled or source — so there is no run-mode branch left for
+// `selectOrchestratorBoundary` to special-case; the credential/native-binary precondition is the only
+// thing that decides its outcome, and this file's other describe blocks already cover that. The
+// PROOF that a compiled binary's real self-invoked spawn actually works lives in
+// tests/orchestrator-compiled-smoke.test.ts — this test only pins the API surface (no third
+// `compiled` argument exists any more).
+describe("selectOrchestratorBoundary — no compiled/source branch, only the credential/binary precondition matters (NOTES DIST5)", () => {
+  test("a present key and a fake transport (bypassing the real spawn) select a real boundary, unconditionally", async () => {
+    const { transport, calls } = fakeTransport(() => ({ ok: true, result: "{}", structuredOutput: { kind: "stats" } }));
+    const boundary = selectOrchestratorBoundary({ ANTHROPIC_API_KEY: "sk-ant-test-not-real" }, { transport });
     expect(boundary).not.toBeNull();
+    await boundary!.interpret("stats");
+    expect(calls).toHaveLength(1);
   });
 });
 
