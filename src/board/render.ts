@@ -1136,7 +1136,10 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
       <div class="prow"><span class="k">kind</span><span class="v mono">${esc(a.kind)}</span></div>
       ${a.model ? `<div class="prow"><span class="k">model</span><span class="v mono">${esc(a.model)}</span></div>` : ""}
       ${team ? `<div class="prow"><span class="k">wears</span><span class="v"><span class="sq" style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${esc(team.style.color)};vertical-align:middle"></span> ${esc(team.name)}</span></div>` : ""}`;
-      return entityBlock("agents", `${avatar(a.style.avatar || a.name.slice(0, 2), team?.style.color, { size: "lg" })} ${esc(a.name)}`, `agent${team ? ` · ${team.name}` : ""}`, inner, rawFor(root, "agents", a.name), a.name, active === "agents");
+      // UI4 item 3: the top-right tag is the bare entity type, same as every other kind ("team",
+      // "connector", ...) — an agent's team association stays visible on the card via the "wears" row
+      // above, it just no longer rides along in the kind tag itself.
+      return entityBlock("agents", `${avatar(a.style.avatar || a.name.slice(0, 2), team?.style.color, { size: "lg" })} ${esc(a.name)}`, "agent", inner, rawFor(root, "agents", a.name), a.name, active === "agents");
     })
     .join("\n");
 

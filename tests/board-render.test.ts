@@ -1107,6 +1107,30 @@ describe("registry cards are gridded, not one-per-row", () => {
 });
 
 // ---------------------------------------------------------------------------
+// UI4 item 3: every registry entity tag is the bare entity type — "team", "connector", "agent" — no
+// exceptions. Agent cards used to carry a two-part tag ("agent · <team>"); the team association is
+// still on the card (the "wears" row), just not riding along in the top-right kind tag.
+// ---------------------------------------------------------------------------
+
+describe("UI4 item 3: every registry entity tag is the bare type", () => {
+  test("an agent's kind tag is exactly 'agent', never 'agent · <team>'", () => {
+    const html = renderRegistry(repo, root, "agents");
+    const card = /<article class="entity card" id="agents-lyra"[\s\S]*?<\/article>/.exec(html);
+    expect(card).not.toBeNull();
+    expect(card![0]).toContain('<span class="entity__kind">agent</span>');
+    expect(card![0]).not.toContain("agent &middot;");
+    expect(card![0]).not.toContain("agent ·");
+  });
+
+  test("every entity kind tag across the whole registry page is a bare type word", () => {
+    const html = renderRegistry(repo, root);
+    const kinds = [...html.matchAll(/<span class="entity__kind">([^<]*)<\/span>/g)].map((m) => m[1]);
+    expect(kinds.length).toBeGreaterThan(0);
+    for (const k of kinds) expect(["team", "agent", "skill", "knowledge", "type", "connector", "eval"]).toContain(k);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // UI4 item 1: the reusable confirm-modal primitive — a small centered panel over a dimmed backdrop,
 // present as a sibling of `.app` on every screen (not just the registry), hidden by default.
 // ---------------------------------------------------------------------------
