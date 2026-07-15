@@ -279,8 +279,9 @@ function registryKindCount(repo: Repo, extras: RegistryExtras, k: RegistryKind):
     : extras.evals.length;
 }
 
-/** The registry entity-kind link list — shared by the rail's Registry section and the registry
- * page's own in-content tab strip, so the two never drift into two different lists of kinds.
+/** The registry entity-kind link list, rendered once: in the rail's Registry section — the only
+ * place it appears now that UI5 removed the redundant in-page tab strip (every registry kind is
+ * already reachable from the rail, count included).
  * UI4 item 4: paths, not query params — `/registry/<kind>`, matching `/project/<name>` and
  * `/idea/<name>` elsewhere in the product. A plain `<a href>`, no client-side interception: switching
  * kinds is a real navigation (a fresh server render, PRD invariant 2), which is also what makes
@@ -1120,13 +1121,7 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
   const highlightId = highlightName ? `${active}-${highlightName}` : undefined;
 
   const rail = railNav(repo, extras, { activeRegistryEntity: active });
-
-  // Item 1, gate-review round 2: the entity switcher moves out of the rail (nav-only now) into an
-  // in-content tab strip at the top of the page — the exact same link list (`registryNavLinks`, so it
-  // can never drift from the rail's own Registry section), just laid out horizontally via an inline
-  // style override on the existing `.reg-nav` rule (the same "reuse the rule, override the one layout
-  // property inline" pattern the stat strips already use for their grid-template-columns).
-  const tabStrip = `<nav class="reg-nav" style="flex-direction:row;flex-wrap:wrap;gap:4px 18px">${registryNavLinks(repo, extras, active)}</nav>`;
+  const title = active.charAt(0).toUpperCase() + active.slice(1);
 
   const teamBlocks = [...repo.teams.values()]
     .map((t) => {
@@ -1225,9 +1220,8 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
   const main = `<main class="main"${highlightId ? ` data-highlight="${esc(highlightId)}"` : ""}>
     <header class="phead">
       <div class="crumb"><a href="/studio">studio</a><span>/</span><span>registry</span></div>
-      <h1>Registry</h1>
+      <h1>${title}</h1>
     </header>
-    ${tabStrip}
     <div class="pcards" style="grid-template-columns:repeat(auto-fill,minmax(320px,1fr))">
       ${teamBlocks}${agentBlocks}${skillBlocks}${knowledgeBlocks}${typeBlocks}${connectorBlocks}${evalBlocks}
     </div>

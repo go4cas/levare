@@ -1048,7 +1048,10 @@ describe("project card layout consistency", () => {
 
 // ---------------------------------------------------------------------------
 // Gate-review round 2, item 3: registry cards grid (repeat(auto-fill, minmax(320px,1fr))) instead of
-// one full-width card per row, and the entity switcher moved into an in-content tab strip.
+// one full-width card per row.
+// UI5: the entity switcher briefly lived as an in-content tab strip above the grid; now that every
+// registry kind is a real route reachable from the rail, that in-page strip is gone — the rail's own
+// Registry section (registryNavLinks, still shared) is the only place the kind list renders.
 // ---------------------------------------------------------------------------
 
 describe("registry cards are gridded, not one-per-row", () => {
@@ -1057,24 +1060,19 @@ describe("registry cards are gridded, not one-per-row", () => {
     expect(html).toContain('<div class="pcards" style="grid-template-columns:repeat(auto-fill,minmax(320px,1fr))">');
   });
 
-  test("the in-content tab strip lists every entity kind and highlights the active one", () => {
+  test("UI5: the in-page registry tab strip is gone; the rail alone lists every entity kind with its count", () => {
     const html = renderRegistry(repo, root, "agents");
-    const tabMatch = /<nav class="reg-nav" style="flex-direction:row[^"]*">[\s\S]*?<\/nav>/.exec(html);
-    expect(tabMatch).not.toBeNull();
-    expect(tabMatch![0]).toContain('data-goto="agents" class="is-active"');
-    for (const k of ["teams", "agents", "skills", "knowledge", "types", "connectors", "evals"]) {
-      expect(tabMatch![0]).toContain(`data-goto="${k}"`);
-    }
-  });
-
-  test("the rail's own Registry section and the in-content tab strip never drift apart (same shared link list)", () => {
-    const html = renderRegistry(repo, root, "skills");
+    // No horizontal in-content nav strip above the cards anymore.
+    expect(html).not.toMatch(/<nav class="reg-nav" style="flex-direction:row/);
+    const main = /<main class="main"[^>]*>[\s\S]*?<\/main>/.exec(html)![0];
+    expect(main).not.toContain('class="reg-nav"');
+    // The rail's Registry section is the sole surface for the kind list, and still carries counts.
     const railHtml = /<aside class="rail">[\s\S]*?<\/aside>/.exec(html)![0];
-    const tabHtml = /<nav class="reg-nav" style="flex-direction:row[^"]*">[\s\S]*?<\/nav>/.exec(html)![0];
     for (const k of ["teams", "agents", "skills", "knowledge", "types", "connectors", "evals"]) {
       expect(railHtml).toContain(`data-goto="${k}"`);
-      expect(tabHtml).toContain(`data-goto="${k}"`);
+      expect(railHtml).toMatch(new RegExp(`data-goto="${k}"[^>]*>${k} <span class="ct">\\d+</span>`));
     }
+    expect(railHtml).toContain('data-goto="agents" class="is-active"');
   });
 
   // Gate-review round 3, item 3: the kind chip and the Edit-source action row weren't on consistent
@@ -1136,8 +1134,8 @@ describe("UI4 item 3: every registry entity tag is the bare type", () => {
 // entity renders the same list view, scrolled to and highlighting that entity — not a new screen.
 // ---------------------------------------------------------------------------
 
-describe("UI4 item 4: registry URLs are path segments, and the rail/tab links emit them", () => {
-  test("the registry nav links (rail + tab strip) point at /registry/<kind>, not ?entity=<kind>", () => {
+describe("UI4 item 4: registry URLs are path segments, and the rail links emit them", () => {
+  test("the registry nav links (rail) point at /registry/<kind>, not ?entity=<kind>", () => {
     const html = renderRegistry(repo, root, "agents");
     for (const k of ["teams", "agents", "skills", "knowledge", "types", "connectors", "evals"]) {
       expect(html).toContain(`href="/registry/${k}"`);
@@ -1164,7 +1162,36 @@ describe("UI4 item 4: registry URLs are path segments, and the rail/tab links em
     // Still the list view, not a detail screen — the other connector's card is present too.
     expect(html).toContain('id="connectors-github"');
     expect(html).toContain('id="connectors-linear"');
-    expect(html).toContain('<h1>Registry</h1>');
+    expect(html).toContain('<h1>Connectors</h1>');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NOTES UI5: the registry page's H1 names the entity kind being viewed ("Agents", "Teams", ...), not
+// the section ("Registry") — matching how project and idea pages title themselves by their content.
+// The breadcrumb above it still reads "studio / registry".
+// ---------------------------------------------------------------------------
+
+describe("NOTES UI5: the registry H1 is the entity kind, not the section", () => {
+  for (const [kind, title] of [
+    ["teams", "Teams"],
+    ["agents", "Agents"],
+    ["skills", "Skills"],
+    ["knowledge", "Knowledge"],
+    ["types", "Types"],
+    ["connectors", "Connectors"],
+    ["evals", "Evals"],
+  ] as const) {
+    test(`/registry/${kind} titles its H1 "${title}", not "Registry"`, () => {
+      const html = renderRegistry(repo, root, kind);
+      expect(html).toContain(`<h1>${title}</h1>`);
+      expect(html).not.toContain("<h1>Registry</h1>");
+    });
+  }
+
+  test("the breadcrumb above the H1 still reads studio / registry", () => {
+    const html = renderRegistry(repo, root, "agents");
+    expect(html).toContain('<div class="crumb"><a href="/studio">studio</a><span>/</span><span>registry</span></div>');
   });
 });
 

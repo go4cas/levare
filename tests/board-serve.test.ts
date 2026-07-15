@@ -134,7 +134,7 @@ describe("levare serve — GET /registry/<kind> and /registry/<kind>/<name> (pat
     expect(res.status).toBe(200);
     const text = await res.text();
     expect(text).toContain("<!doctype html>");
-    expect(text).toContain("<h1>Registry</h1>");
+    expect(text).toContain("<h1>Teams</h1>");
     expect(text).toContain('data-goto="teams" class="is-active"');
     expect(text).not.toContain("data-highlight"); // no specific entity named — no highlight target
   });
@@ -144,7 +144,7 @@ describe("levare serve — GET /registry/<kind> and /registry/<kind>/<name> (pat
     expect(res.status).toBe(200);
     const text = await res.text();
     expect(text).toContain("<!doctype html>");
-    expect(text).toContain("<h1>Registry</h1>");
+    expect(text).toContain("<h1>Connectors</h1>");
     expect(text).toContain('data-goto="connectors" class="is-active"');
     expect(text).toContain('data-highlight="connectors-linear"');
     // still the list view, not a detail screen — every connector's card is present, not just linear's.
@@ -167,7 +167,7 @@ describe("levare serve — GET /registry/<kind> and /registry/<kind>/<name> (pat
     expect(text).toContain('data-goto="connectors" class="is-active"');
   });
 
-  test("the rail and the in-content tab strip both emit path-form links, never the old ?entity= form", async () => {
+  test("the rail emits path-form links, never the old ?entity= form", async () => {
     const res = await board.fetch(req("/registry/agents"));
     const text = await res.text();
     expect(text).toContain('href="/registry/teams"');
