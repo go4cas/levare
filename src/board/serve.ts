@@ -133,6 +133,47 @@ function html(body: string, status = 200): Response {
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
+
+// ---------------------------------------------------------------------------
+// Client-side navigation (NOTES UI10) — a fragment request re-uses the EXACT SAME render-and-render-
+// full-page path every cold GET already takes (never a second, forked render call); this just slices
+// the swappable regions back out of that one rendered string, via the plain HTML comment markers
+// `render.ts#pageBody` already wraps them in (`<!--main-->`/`<!--extras-->`). No HTML parser, no DOM
+// library — this project has neither, by design (see the hand-rolled selector engine in
+// tests/board-orchestrator-conversation.test.ts) — just the two markers a real render call already
+// emitted moments earlier in the SAME request.
+export interface Fragment {
+  title: string;
+  main: string;
+  extras: string;
+  highlightId: string | null;
+}
+
+const FRAGMENT_HEADER = "x-levare-fragment";
+
+export function isFragmentRequest(req: Request): boolean {
+  return req.headers.get(FRAGMENT_HEADER) === "1";
+}
+
+/** Returns null when `html` doesn't carry both markers — e.g. the first-run onboarding screen, which
+ * renders its own standalone page with none of `shell()`'s furniture. A null result tells the caller
+ * to fall back to serving the real, unmodified HTML response instead (see `fetch()` below) — the
+ * client then treats a non-JSON response as a failed fragment fetch and does a real navigation
+ * (FAILURE HONESTY: never a broken half-swap). */
+export function extractFragment(rendered: string): Fragment | null {
+  const titleMatch = /<title>([\s\S]*?)<\/title>/.exec(rendered);
+  const mainMatch = /<!--main-->([\s\S]*?)<!--\/main-->/.exec(rendered);
+  const extrasMatch = /<!--extras-->([\s\S]*?)<!--\/extras-->/.exec(rendered);
+  if (!titleMatch || !mainMatch) return null;
+  const mainHtml = mainMatch[1];
+  const highlightMatch = /<main[^>]*\sdata-highlight="([^"]*)"/.exec(mainHtml);
+  return {
+    title: titleMatch[1],
+    main: mainHtml,
+    extras: extrasMatch ? extrasMatch[1] : "",
+    highlightId: highlightMatch ? highlightMatch[1] : null,
+  };
+}
 function serveAsset(name: string): Response {
   const file = ASSET_PATHS[name];
   if (!file || !existsSync(file)) return new Response("not found", { status: 404 });
@@ -628,7 +669,22 @@ export function createBoard(
         );
       }
       try {
-        return await matched.route.handler(req, matched.params, ctx);
+        const res = await matched.route.handler(req, matched.params, ctx);
+        // NOTES UI10: client-side navigation. Only a `page` GET route (a real server-rendered screen)
+        // can answer a fragment request — never assets, SSE, or a write route, none of which this
+        // header would even be sent to by a real in-app link click. The handler above already ran and
+        // rendered the COMPLETE page exactly as a cold GET would (same call, same function, same repo
+        // read) — this is packaging, not a second render. A non-200 (e.g. a route that throws its own
+        // 4xx) or a page whose HTML carries no marker (onboarding's standalone screen) falls through to
+        // the real Response unchanged; the client treats a non-JSON reply as a failed fragment fetch
+        // and does a real navigation instead (never a broken half-swap).
+        if (matched.route.page && isFragmentRequest(req) && res.status === 200) {
+          const rendered = await res.text();
+          const fragment = extractFragment(rendered);
+          if (fragment) return json({ ok: true, ...fragment });
+          return html(rendered, res.status);
+        }
+        return res;
       } catch (e) {
         return json({ ok: false, error: String(e instanceof Error ? e.message : e) }, 500);
       }

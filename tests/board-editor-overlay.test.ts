@@ -337,7 +337,7 @@ const APP_JS_SOURCE = readFileSync(new URL("../assets/app.js", import.meta.url),
 
 interface FetchCall {
   url: string;
-  init: { method?: string; body?: string };
+  init: { method?: string; body?: string; headers?: Record<string, string> };
   resolve: (v: any) => void;
 }
 
@@ -378,7 +378,11 @@ function setupOverlay() {
     window: { matchMedia: undefined, EventSource: undefined },
     location: {
       reload: () => reloadCalls.push(1),
+      pathname: "/registry/teams",
+      search: "",
+      href: "http://localhost/registry/teams",
     },
+    history: { pushState: () => {} },
     fetch: fakeFetch,
     setTimeout: fakeSetTimeout,
     clearTimeout: fakeClearTimeout,
@@ -513,8 +517,14 @@ describe("registry overlay editor — real app.js exercised against a fake DOM",
     h.fetchCalls[1].resolve({ ok: true, commit: "deadbeef" });
     await flush();
     expect(h.overlay.hidden).toBe(true); // the overlay itself closes on a successful save
-    h.flushTimers(); // the short delay before the full-page reload that re-derives from the commit
-    expect(h.reloadCalls.length).toBe(1);
+    // NOTES UI10: a successful save no longer forces a full-page reload — it refreshes the swapped
+    // content region via the same fragment fetch an in-app navigation uses (never `location.reload`,
+    // which would tear down the SSE connection this goal exists to stop doing that to).
+    h.flushTimers(); // the short delay before the content refresh that re-derives from the commit
+    expect(h.reloadCalls.length).toBe(0);
+    expect(h.fetchCalls.length).toBe(3);
+    expect(h.fetchCalls[2].url).toBe("/registry/teams");
+    expect(h.fetchCalls[2].init.headers["X-Levare-Fragment"]).toBe("1");
   });
 
   test("Save is blocked while invalid — clicking a disabled Save button does nothing", async () => {

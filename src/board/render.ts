@@ -95,6 +95,20 @@ ${confirmModal()}
 `;
 }
 
+// UI10: client-side navigation swaps the CONTENT COLUMN in place instead of a full page load — the
+// rail and Orchestrator panel persist untouched (never re-rendered client-side; see NOTES). To do
+// that without forking rendering logic into the client, the swappable regions are marked with plain
+// HTML comments (`<!--main-->`/`<!--extras-->`) around the exact same strings every screen already
+// produces — `board/serve.ts#extractFragment` slices the SAME rendered HTML a cold GET would return,
+// never a second render path. `main` stays a direct grid child of `.app` (between rail and orch, so
+// the 3-column grid layout is untouched); `extras` (per-page templates/the registry editor overlay —
+// content with no state worth preserving across a navigation, unlike the Orchestrator's conversation)
+// moves into a stable `[data-extras-host]` sibling so the client has one fixed element to swap into,
+// instead of guessing where a page's extras begin/end in the live DOM.
+function pageBody(rail: string, main: string, orch: string, extras: string = ""): string {
+  return `<div class="app">${rail}<!--main-->${main}<!--/main-->${orch}</div><div data-extras-host><!--extras-->${extras}<!--/extras--></div>`;
+}
+
 function orchHead(scope: string): string {
   return `<header class="orch__head"><span class="orch__mark"><i></i><b></b></span><span class="orch__title">Orchestrator</span><span class="orch__scope">${esc(scope)} scope</span></header>`;
 }
@@ -610,7 +624,7 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date(), r
   );
   const orch = orchestratorPanel("studio", status, briefingBody);
 
-  return shell("levare · Studio", "Open registry", `<div class="app">${rail}${main}${orch}</div>`, status);
+  return shell("levare · Studio", "Open registry", pageBody(rail, main, orch), status);
 }
 
 // ---------------------------------------------------------------------------
@@ -761,7 +775,7 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
   );
   const orch = orchestratorPanel("project", status, briefingBody);
 
-  return shell(`levare · ${projectName}`, "Open context", `<div class="app">${rail}${main}${orch}</div>${templates}`, status);
+  return shell(`levare · ${projectName}`, "Open context", pageBody(rail, main, orch, templates), status);
 }
 
 // ---------------------------------------------------------------------------
@@ -843,7 +857,7 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
   );
   const orch = orchestratorPanel("run", status, briefingBody, gateHtml);
 
-  return shell(`levare · run · ${unitId}`, "Open score", `<div class="app">${rail}${main}${orch}</div>`, status);
+  return shell(`levare · run · ${unitId}`, "Open score", pageBody(rail, main, orch), status);
 }
 
 // ---------------------------------------------------------------------------
@@ -965,7 +979,7 @@ export function renderArtifact(repo: Repo, project: string, unit: string, id: st
       <p class="msg__body">${esc(art.kind)} ${esc(art.id)}, produced by ${esc(art.produced_by)}. ${citedBy.length ? `Cited by ${citedBy.length} artifact${citedBy.length === 1 ? "" : "s"}.` : "Not cited by anything yet."}</p></div>`;
   const orch = orchestratorPanel("artifact", status, briefingBody);
 
-  return shell(`levare · ${art.kind} · ${art.id}`, "Open context", `<div class="app">${rail}${main}${orch}</div>`, status);
+  return shell(`levare · ${art.kind} · ${art.id}`, "Open context", pageBody(rail, main, orch), status);
 }
 
 export function renderIdea(repo: Repo, root: string, name: string, status: OrchestratorStatus = resolveOrchestratorStatus()): string {
@@ -1011,7 +1025,7 @@ export function renderIdea(repo: Repo, root: string, name: string, status: Orche
       <p class="msg__body">${esc(idea.name)} is a captured pitch with no project yet. Promoting it opens an inception unit.</p></div>`;
   const orch = orchestratorPanel("idea", status, briefingBody);
 
-  return shell(`levare · idea · ${idea.name}`, "Open context", `<div class="app">${rail}${main}${orch}</div>`, status);
+  return shell(`levare · idea · ${idea.name}`, "Open context", pageBody(rail, main, orch), status);
 }
 
 // ---------------------------------------------------------------------------
@@ -1206,7 +1220,7 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
   // The overlay is a sibling of `.app`, not nested inside it and not a second page — the board (rail,
   // main, orchestrator) stays exactly as rendered whether or not the overlay is open (UI3 requirement:
   // "does not change the URL or unmount the page behind it").
-  return shell("levare · registry", "Open registry nav", `<div class="app">${rail}${main}${orch}</div>${editorOverlay()}`, status);
+  return shell("levare · registry", "Open registry nav", pageBody(rail, main, orch, editorOverlay()), status);
 }
 
 function rawFor(root: string, dir: string, name: string): string {

@@ -368,36 +368,146 @@
       };
     })();
 
-    /* ---------- SSE: reload on a repo change (fs.watch-driven re-render trigger) ---------- */
+    /* ---------- client-side navigation (NOTES UI10) ----------
+       In-app link clicks swap the CONTENT COLUMN (the server-rendered `<main class="main">`, plus its
+       page's own extras — gate-summon templates, the registry editor overlay — swapped into a stable
+       `[data-extras-host]` sibling) instead of a full page load. The app shell — header, rail, the
+       Orchestrator panel (and thus its conversation), and the one persistent SSE connection below — is
+       never touched by a swap: only `.main` and `[data-extras-host]` are ever replaced. This fixes the
+       hang (rapid full navigations were exhausting Chrome's ~6-connections-per-origin HTTP/1.1 limit —
+       curl answered the server in 0.138s during the episode; the browser just had nowhere left to
+       queue the newest request), the conversation wipe, and the per-click asset/SSE churn, all at
+       once — see NOTES UI10 for the full diagnosis.
+       Correctness (the goal's own CRITICAL CONSTRAINT, re: NOTES UI4 — naive tab interception was
+       removed once already because it broke back/forward): every in-app navigation calls
+       history.pushState; a popstate listener re-fetches and swaps for the restored URL, so back/
+       forward behave exactly like real navigation; a cold GET of any URL is untouched — the fragment
+       path is opt-in via a request header only this code ever sends. A failed fetch (server down,
+       network error, or a non-fragment response — e.g. the onboarding screen) never shows a broken
+       half-swap: it falls back to a real navigation instead (FAILURE HONESTY). */
+    function decodeTitleEntities(s) {
+      return String(s).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+    }
+
+    function isInAppAnchor(a) {
+      if (!a || a.tagName !== 'A') return false;
+      var href = a.getAttribute('href');
+      if (!href || href.charAt(0) === '#') return false;
+      if (a.hasAttribute('download')) return false;
+      var target = a.getAttribute('target');
+      if (target && target !== '_self') return false;
+      if (href.slice(0, 2) === '//') return false; // protocol-relative — a different origin
+      if (/^https?:\/\//i.test(href)) {
+        var origin = /^https?:\/\/[^/]+/i.exec(href);
+        if (!origin || origin[0].toLowerCase() !== location.origin.toLowerCase()) return false;
+      } else if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(href)) {
+        return false; // mailto:, tel:, etc. — never an in-app screen route
+      } else if (href.charAt(0) !== '/') {
+        return false; // this app only ever emits root-relative screen links
+      }
+      return true;
+    }
+
+    /* Registry deep-link highlight (UI4 item 4), now reusable across a swap, not just the initial
+       load: `/registry/<kind>/<name>` renders the same list view as `/registry/<kind>` with
+       `data-highlight="<kind>-<name>"` on `.main` — the exact `id` `entityBlock` already gives that
+       card. Scrolls to it and flashes `.is-highlighted` once per (real or swapped-in) load. */
+    function applyHighlight(mainEl) {
+      var host = mainEl || document.querySelector('.main[data-highlight]');
+      var name = host && host.getAttribute && host.getAttribute('data-highlight');
+      if (!name) return;
+      var target = document.getElementById(name);
+      if (target) {
+        target.scrollIntoView({ block: 'center' });
+        target.classList.add('is-highlighted');
+      }
+    }
+
+    function fetchFragment(url) {
+      return fetch(url, { headers: { 'X-Levare-Fragment': '1' } }).then(function (res) {
+        var ct = (res.headers && res.headers.get && res.headers.get('content-type')) || '';
+        if (!res.ok || ct.indexOf('application/json') === -1) return null;
+        return res.json().then(
+          function (data) { return (data && data.ok && typeof data.main === 'string') ? data : null; },
+          function () { return null; }
+        );
+      }, function () { return null; });
+    }
+
+    /* Replaces `.main` outright (its own opening-tag attributes, e.g. `data-highlight`, differ per
+       page) and re-fills `[data-extras-host]` — never the rail, the Orchestrator `<aside>`, or the app
+       header, which this function never even looks at. */
+    function swapFragment(data) {
+      var oldMain = document.querySelector('.main');
+      if (!oldMain || !oldMain.parentNode) return false;
+      var wrap = document.createElement('div');
+      wrap.innerHTML = data.main;
+      var newMain = wrap.firstElementChild;
+      if (!newMain) return false;
+      oldMain.parentNode.replaceChild(newMain, oldMain);
+
+      var extrasHost = document.querySelector('[data-extras-host]');
+      if (extrasHost) extrasHost.innerHTML = data.extras || '';
+      // The registry editor overlay (when present) is part of `extras` — its old DOM node (and every
+      // listener attached directly to it) was just discarded along with the innerHTML above. Rebind
+      // to whichever instance exists now (a fresh one, or none at all on a non-registry page).
+      bindEditorOverlay();
+
+      if (typeof data.title === 'string' && data.title) document.title = decodeTitleEntities(data.title);
+      applyHighlight(newMain);
+      if (window.scrollTo) window.scrollTo(0, 0);
+      return true;
+    }
+
+    var navToken = 0;
+    function navigate(url, opts) {
+      opts = opts || {};
+      var token = ++navToken;
+      return fetchFragment(url).then(function (data) {
+        if (token !== navToken) return; // superseded by a newer navigation — never apply a stale swap
+        if (!data || !swapFragment(data)) {
+          location.href = url; // FAILURE HONESTY: never a broken half-swap — a real navigation instead
+          return;
+        }
+        if (opts.push) history.pushState({ levare: true }, '', url);
+      });
+    }
+
+    /* Used for a same-URL content refresh (the SSE reload trigger below, and a successful registry
+       save) — never pushes a new history entry, since the URL itself hasn't changed. */
+    function refreshCurrent() {
+      return navigate(location.pathname + location.search, { push: false });
+    }
+
+    document.addEventListener('click', function (e) {
+      if (e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+      var a = e.target.closest('a[href]');
+      if (!isInAppAnchor(a)) return;
+      var href = a.getAttribute('href');
+      e.preventDefault();
+      navigate(href, { push: true });
+    });
+
+    if (window.addEventListener) {
+      window.addEventListener('popstate', function () {
+        navigate(location.pathname + location.search, { push: false });
+      });
+    }
+
+    applyHighlight(); // the cold-loaded page's own deep-link highlight, if any
+
+    /* ---------- SSE: swap the content region on a repo change (fs.watch-driven re-render trigger) ----------
+       Used to be `location.reload()` — a full page load that tore down and reopened this very
+       connection on every repo change, and wiped the Orchestrator conversation besides. The stream
+       itself is untouched by navigation now (see above): this is the ONE EventSource for the page's
+       entire lifetime, reload pushes included. */
     if (window.EventSource) {
       try {
         var es = new EventSource('/events');
         es.onmessage = function (e) {
-          if (e.data === 'reload') location.reload();
+          if (e.data === 'reload') refreshCurrent();
         };
       } catch (e) { /* no SSE support; the board still works as plain server-rendered pages */ }
-    }
-
-    /* ---------- registry: entity-kind links (UI4 item 4) ----------
-       Switching kinds (the rail's Registry section, the in-content tab strip) is a real navigation to
-       `/registry/<kind>` now — a path segment, matching `/project/<name>`/`/idea/<name>` elsewhere in
-       the product — not a client-side swap. No click interception here on purpose: a plain <a href>
-       re-derives the page from the server on every kind switch (PRD invariant 2), which is also what
-       makes the browser's back/forward buttons behave correctly across registry navigation for free. */
-
-    /* ---------- registry: deep-link highlight (UI4 item 4) ----------
-       `/registry/<kind>/<name>` renders the SAME list view as `/registry/<kind>` with
-       `data-highlight="<kind>-<name>"` on `.main` (render.ts#renderRegistry) — the exact `id`
-       `entityBlock` already gives that card. Scrolls to it and flashes `.is-highlighted` once per
-       load; preserves what the old `#connectors-<name>` fragment anchor used to do (scroll + point at
-       the entity), now driven by the path instead of a fragment. */
-    var highlightHost = document.querySelector('.main[data-highlight]');
-    if (highlightHost) {
-      var highlightEl = document.getElementById(highlightHost.getAttribute('data-highlight'));
-      if (highlightEl) {
-        highlightEl.scrollIntoView({ block: 'center' });
-        highlightEl.classList.add('is-highlighted');
-      }
     }
 
     /* ---------- registry: overlay editor (UI3) ----------
@@ -410,9 +520,27 @@
        backdrop click all dismiss the overlay; each first checks whether the buffer differs from what
        was loaded (`isDirty()`) and only prompts "Discard unsaved changes?" when it does \u2014 an
        unchanged buffer closes immediately. Saving successfully closes the overlay itself (in addition
-       to the existing full-page reload that re-derives from the newly committed file). */
-    var overlay = document.getElementById('editor-overlay');
-    if (overlay) {
+       to the existing content refresh that re-derives from the newly committed file).
+       NOTES UI10: the overlay lives in the swappable "extras" region (render.ts#pageBody) \u2014 a
+       fresh `#editor-overlay` element is created by every registry-page swap, and is simply absent on
+       any other screen. `bindEditorOverlay()` (re)attaches this section's direct element listeners
+       (Cancel/backdrop/Save/textarea-input \u2014 the ones a real DOM swap discards along with the old
+       nodes they were attached to) to whichever overlay instance currently exists; it runs once at
+       startup and again after every swap (see `swapFragment` above) that might have replaced it. The
+       two document-delegated listeners below (the "Edit source" trigger and Escape) are attached only
+       ONCE \u2014 delegation already finds the live target dynamically, so rebinding them per swap
+       would just accumulate duplicate handlers \u2014 and call through `openEditor`/`requestDismiss`,
+       which `bindEditorOverlay()` reassigns to close over whichever overlay instance is current. */
+    var openEditor = function () {};
+    var requestDismiss = function () {};
+
+    function bindEditorOverlay() {
+      var overlay = document.getElementById('editor-overlay');
+      if (!overlay) {
+        openEditor = function () {};
+        requestDismiss = function () {};
+        return;
+      }
       var ovTitle = overlay.querySelector('.editor-overlay__title');
       var ovKind = overlay.querySelector('.editor-overlay__kind');
       var ovTextarea = overlay.querySelector('.editor-overlay__textarea');
@@ -489,7 +617,7 @@
         checkTimer = setTimeout(runCheck, 250);
       }
 
-      function openEditor(path, name, kind, raw) {
+      openEditor = function (path, name, kind, raw) {
         current = { path: path, original: raw };
         ovTitle.textContent = name;
         ovKind.textContent = kind;
@@ -498,7 +626,7 @@
         overlay.hidden = false;
         runCheck();
         ovTextarea.focus();
-      }
+      };
 
       function closeEditor() {
         if (checkTimer) clearTimeout(checkTimer);
@@ -510,32 +638,15 @@
       /** Cancel / Escape / backdrop all funnel through here \u2014 the one dirty-check gate. A clean
           buffer closes immediately; a dirty one asks via the shared in-app confirm modal (UI4 item 1)
           \u2014 never the browser's native confirm(). */
-      function requestDismiss() {
+      requestDismiss = function () {
         if (!isDirty()) { closeEditor(); return; }
         confirmModal('Discard unsaved changes?').then(function (discard) {
           if (discard) closeEditor();
         });
-      }
-
-      document.addEventListener('click', function (e) {
-        var t = e.target.closest('[data-edit-open]');
-        if (!t) return;
-        var card = t.closest('.entity');
-        if (!card) return;
-        var src = card.querySelector('.rawmd-source');
-        openEditor(
-          t.getAttribute('data-path'),
-          t.getAttribute('data-editor-name') || '',
-          t.getAttribute('data-editor-kind') || '',
-          src ? src.value : '',
-        );
-      });
+      };
 
       ovCancel.addEventListener('click', requestDismiss);
       ovBackdrop.addEventListener('click', requestDismiss);
-      document.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape' && !overlay.hidden) requestDismiss();
-      });
       ovTextarea.addEventListener('input', function () {
         ovSave.disabled = true; // stays blocked until the debounced re-check comes back valid
         scheduleCheck();
@@ -556,7 +667,7 @@
           if (res.ok && res.body && res.body.ok) {
             ovSave.textContent = 'Committed \u2713';
             closeEditor();
-            setTimeout(function () { location.reload(); }, 400);
+            setTimeout(function () { refreshCurrent(); }, 400);
           } else {
             ovSave.disabled = false;
             ovSave.textContent = 'Save and commit';
@@ -570,5 +681,25 @@
         });
       });
     }
+
+    bindEditorOverlay();
+
+    document.addEventListener('click', function (e) {
+      var t = e.target.closest('[data-edit-open]');
+      if (!t) return;
+      var card = t.closest('.entity');
+      if (!card) return;
+      var src = card.querySelector('.rawmd-source');
+      openEditor(
+        t.getAttribute('data-path'),
+        t.getAttribute('data-editor-name') || '',
+        t.getAttribute('data-editor-kind') || '',
+        src ? src.value : '',
+      );
+    });
+    document.addEventListener('keydown', function (e) {
+      var overlay = document.getElementById('editor-overlay');
+      if (e.key === 'Escape' && overlay && !overlay.hidden) requestDismiss();
+    });
   });
 })();
