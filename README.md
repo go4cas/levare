@@ -196,5 +196,43 @@ levare serve /path/to/studio                      # board + daemon, same process
 levare serve /path/to/studio --no-daemon          # board only, no autonomous advancement
 ```
 
+## Distribution
+
+**Building from source** — `bun run build` compiles a single self-contained binary to `dist/levare`
+via `bun build --compile`, stamped with the git commit it was built from
+([scripts/build.sh](scripts/build.sh); NOTES DIST1). The dev entry point `./levare` (a thin Bun
+wrapper around `src/cli.ts`) is unchanged and remains the primary way this repo is run day to day —
+the compiled binary is a second, parallel path, not a replacement.
+
+**Installing a release binary** — tagged releases (`v0.1.0`, `v1.2.3`, ...) build and publish four
+platform binaries plus a checksum file via [.github/workflows/release.yml](.github/workflows/release.yml)
+(NOTES DIST2):
+
+1. From the release's assets, download the binary for your platform: `levare-darwin-arm64`,
+   `levare-darwin-x64`, `levare-linux-x64`, or `levare-linux-arm64`. (Windows is not built — levare
+   shells out to `git` and POSIX-oriented vendor CLIs it has not been run against on Windows.)
+2. Download `SHA256SUMS` from the same release and verify your download before running it:
+   ```sh
+   sha256sum -c SHA256SUMS --ignore-missing
+   ```
+3. Make it executable and put it on `PATH`:
+   ```sh
+   chmod +x levare-<platform>
+   mv levare-<platform> /usr/local/bin/levare
+   levare --version    # confirms the binary and the exact commit it was built from
+   ```
+
+**This is not zero-setup.** The binary bundles levare's own code and its one dependency, but at
+runtime it still needs:
+
+- **`git`** on `PATH` — every artifact levare manages lives in a git repo.
+- **a model provider** — `ANTHROPIC_API_KEY` (the Claude Agent SDK, for native members) and/or a
+  wrapped vendor CLI such as `claude` or `codex` on `PATH` (for cli members). Run `levare doctor`
+  after installing to see exactly what's present and what's missing.
+
+An install script and Homebrew formula are deferred to a later step (NOTES DIST2); for now, the
+manual download-verify-install above is the supported path.
+
 Uncertainties and assumptions are recorded in [NOTES.md](NOTES.md) (phase-1 A1–A8, phase-2 B1–B7,
-phase-3 D1–D9, phase-4 E1–E14, phase-5 F1–F7, phase-6 G1/H1–H7, phase-7 K1–K9, phase-8 O1–O9).
+phase-3 D1–D9, phase-4 E1–E14, phase-5 F1–F7, phase-6 G1/H1–H7, phase-7 K1–K9, phase-8 O1–O9,
+distribution DIST1–DIST2).
