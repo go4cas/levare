@@ -280,11 +280,15 @@ function registryKindCount(repo: Repo, extras: RegistryExtras, k: RegistryKind):
 }
 
 /** The registry entity-kind link list — shared by the rail's Registry section and the registry
- * page's own in-content tab strip, so the two never drift into two different lists of kinds. */
+ * page's own in-content tab strip, so the two never drift into two different lists of kinds.
+ * UI4 item 4: paths, not query params — `/registry/<kind>`, matching `/project/<name>` and
+ * `/idea/<name>` elsewhere in the product. A plain `<a href>`, no client-side interception: switching
+ * kinds is a real navigation (a fresh server render, PRD invariant 2), which is also what makes
+ * browser back/forward behave correctly across registry navigation for free. */
 function registryNavLinks(repo: Repo, extras: RegistryExtras, active?: RegistryKind): string {
   return REGISTRY_KINDS.map((k) => {
     const activeCls = active === k ? " is-active" : "";
-    return `<a href="/registry?entity=${k}" data-goto="${k}" class="${activeCls.trim()}">${k} <span class="ct">${registryKindCount(repo, extras, k)}</span></a>`;
+    return `<a href="/registry/${k}" data-goto="${k}" class="${activeCls.trim()}">${k} <span class="ct">${registryKindCount(repo, extras, k)}</span></a>`;
   }).join("\n");
 }
 
@@ -304,9 +308,12 @@ function railNav(repo: Repo, extras: RegistryExtras, opts: { activeRegistryEntit
   // Item 4b: no trailing status text ("ok"/"missing-env") — the dot alone carries the signal, same
   // vocabulary as the header's Orchestrator indicator. Each row is now a real link into the
   // connector's own entity card in the registry (`entityBlock` gives every connector card a stable
-  // `id`, so this is a genuine deep link, not just "the registry in general").
+  // `id`, so this is a genuine deep link, not just "the registry in general"). UI4 item 4: a path
+  // segment (`/registry/connectors/<name>`), matching the rest of the product — the registry route
+  // scrolls to and highlights that entity on load (see `renderRegistry`'s `highlightName` param),
+  // preserving what the old fragment anchor (`#connectors-<name>`) used to do.
   const connectorRows = health
-    .map((h) => `<a class="crow" href="/registry?entity=connectors#connectors-${esc(h.name)}"><span class="status-dot ${h.status === "ok" ? "is-ok" : "is-idle"}"></span><span class="nm">${esc(h.name)}</span></a>`)
+    .map((h) => `<a class="crow" href="/registry/connectors/${esc(h.name)}"><span class="status-dot ${h.status === "ok" ? "is-ok" : "is-idle"}"></span><span class="nm">${esc(h.name)}</span></a>`)
     .join("\n");
 
   const ideasHtml = extras.ideas.length
@@ -1101,9 +1108,16 @@ function editorOverlay(): string {
   </div>`;
 }
 
-export function renderRegistry(repo: Repo, root: string, activeEntity?: string, status: OrchestratorStatus = resolveOrchestratorStatus()): string {
+// UI4 item 4: `highlightName`, when set, names the specific entity a path-form deep link
+// (`/registry/<kind>/<name>`) pointed at — the SAME list view as `/registry/<kind>` alone, just
+// scrolled to and highlighting that one entity, preserving the old fragment-anchor deep link's
+// behavior without a new detail-page screen. Resolved here (not left to the client) into the exact
+// `id` `entityBlock` already gives that card, so app.js only has to look one element up, never
+// re-derive the id itself from the URL.
+export function renderRegistry(repo: Repo, root: string, activeEntity?: string, status: OrchestratorStatus = resolveOrchestratorStatus(), highlightName?: string): string {
   const extras = loadExtras(root);
   const active: RegistryKind = REGISTRY_KINDS.includes(activeEntity as RegistryKind) ? (activeEntity as RegistryKind) : "teams";
+  const highlightId = highlightName ? `${active}-${highlightName}` : undefined;
 
   const rail = railNav(repo, extras, { activeRegistryEntity: active });
 
@@ -1208,7 +1222,7 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
   // 220px default, since an entity card carries more content than a project card); team/agent cards
   // may still span visually wider rows when their flow-strip/recipe content needs it — flex-wrap
   // inside those already handles that without any extra CSS.
-  const main = `<main class="main">
+  const main = `<main class="main"${highlightId ? ` data-highlight="${esc(highlightId)}"` : ""}>
     <header class="phead">
       <div class="crumb"><a href="/studio">studio</a><span>/</span><span>registry</span></div>
       <h1>Registry</h1>

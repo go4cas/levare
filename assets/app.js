@@ -302,25 +302,28 @@
       } catch (e) { /* no SSE support; the board still works as plain server-rendered pages */ }
     }
 
-    /* ---------- registry: entity switch + edit source ---------- */
-    var entities = document.querySelectorAll('[data-entity]');
-    if (entities.length) {
-      document.addEventListener('click', function (e) {
-        var a = e.target.closest('[data-goto]');
-        if (!a) return;
-        e.preventDefault();
-        var key = a.getAttribute('data-goto');
-        if (!document.querySelector('[data-entity="' + key + '"]')) return;
-        document.querySelectorAll('.reg-nav a[data-goto]').forEach(function (x) {
-          x.classList.toggle('is-active', x.getAttribute('data-goto') === key);
-        });
-        entities.forEach(function (en) {
-          en.style.display = en.getAttribute('data-entity') === key ? '' : 'none';
-        });
-        var m = document.querySelector('.main');
-        if (m) m.scrollTop = 0;
-      });
+    /* ---------- registry: entity-kind links (UI4 item 4) ----------
+       Switching kinds (the rail's Registry section, the in-content tab strip) is a real navigation to
+       `/registry/<kind>` now — a path segment, matching `/project/<name>`/`/idea/<name>` elsewhere in
+       the product — not a client-side swap. No click interception here on purpose: a plain <a href>
+       re-derives the page from the server on every kind switch (PRD invariant 2), which is also what
+       makes the browser's back/forward buttons behave correctly across registry navigation for free. */
+
+    /* ---------- registry: deep-link highlight (UI4 item 4) ----------
+       `/registry/<kind>/<name>` renders the SAME list view as `/registry/<kind>` with
+       `data-highlight="<kind>-<name>"` on `.main` (render.ts#renderRegistry) — the exact `id`
+       `entityBlock` already gives that card. Scrolls to it and flashes `.is-highlighted` once per
+       load; preserves what the old `#connectors-<name>` fragment anchor used to do (scroll + point at
+       the entity), now driven by the path instead of a fragment. */
+    var highlightHost = document.querySelector('.main[data-highlight]');
+    if (highlightHost) {
+      var highlightEl = document.getElementById(highlightHost.getAttribute('data-highlight'));
+      if (highlightEl) {
+        highlightEl.scrollIntoView({ block: 'center' });
+        highlightEl.classList.add('is-highlighted');
+      }
     }
+
     /* ---------- registry: overlay editor (UI3) ----------
        "Edit source" opens the ONE shared overlay (render.ts#editorOverlay) instead of an inline,
        card-cramped textarea. As the Conductor types, the buffer is debounced (~250ms after the last

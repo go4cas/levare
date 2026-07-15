@@ -176,10 +176,32 @@ export const ROUTES: RouteDef[] = [
     pattern: "/registry",
     mutating: false,
     page: true,
+    // Legacy form (pre-UI4): `?entity=<kind>#<kind>-<name>` — still resolves, unchanged, so an
+    // existing bookmark or in-flight link never breaks. New links emit the path form below instead.
     handler: (req, _params, ctx) => {
       const entity = new URL(req.url).searchParams.get("entity") ?? undefined;
       return html(renderRegistry(withRepo(ctx.root), ctx.root, entity));
     },
+  },
+  // UI4 item 4: registry URLs as path segments, matching /project/<name> and /idea/<name> elsewhere
+  // in the product. `/registry/<kind>` is the list view for that kind; `/registry/<kind>/<name>` is
+  // the SAME list view, scrolled to and highlighting that one entity (renderRegistry's
+  // `highlightName` param) — not a second, detail-page screen. Both are ordinary GET pages (`page:
+  // true`, same onboarding gate every other screen gets) so a cold paste into the address bar
+  // renders correctly on the first request, never a 404 or a blank fallback.
+  {
+    method: "GET",
+    pattern: "/registry/:entity",
+    mutating: false,
+    page: true,
+    handler: (_req, params, ctx) => html(renderRegistry(withRepo(ctx.root), ctx.root, params.entity)),
+  },
+  {
+    method: "GET",
+    pattern: "/registry/:entity/:name",
+    mutating: false,
+    page: true,
+    handler: (_req, params, ctx) => html(renderRegistry(withRepo(ctx.root), ctx.root, params.entity, undefined, params.name)),
   },
   // Artifact render view (item 1, phase 7.5) — every artifact id in the product routes here now,
   // instead of falling back to the unit/run view. Read-only: the definition-browser pattern applied

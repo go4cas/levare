@@ -110,6 +110,72 @@ describe("levare serve — GET screens (in-process, no socket)", () => {
   });
 });
 
+// UI4 item 4: registry URLs as path segments (/registry/<kind>, /registry/<kind>/<name>), matching
+// /project/<name> and /idea/<name> elsewhere in the product. The named risk: a COLD GET of a deep
+// link (someone pastes /registry/agents/corvid straight into the address bar) must render the
+// registry with the right kind shown and that entity highlighted — never a 404, never a blank
+// fallback — and the legacy `?entity=` query-param form must keep resolving so no existing link or
+// bookmark breaks.
+describe("levare serve — GET /registry/<kind> and /registry/<kind>/<name> (path-segment routing)", () => {
+  let root: string;
+  let board: ReturnType<typeof createBoard>;
+
+  beforeAll(() => {
+    root = seedScratchRepo();
+    board = createBoard(root);
+  });
+  afterAll(() => {
+    board.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("a cold GET of /registry/teams renders the registry with the teams kind active", async () => {
+    const res = await board.fetch(req("/registry/teams"));
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain("<!doctype html>");
+    expect(text).toContain("<h1>Registry</h1>");
+    expect(text).toContain('data-goto="teams" class="is-active"');
+    expect(text).not.toContain("data-highlight"); // no specific entity named — no highlight target
+  });
+
+  test("a cold GET of /registry/connectors/linear renders the registry, connectors active, linear as the highlight target — not a 404, not blank", async () => {
+    const res = await board.fetch(req("/registry/connectors/linear"));
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain("<!doctype html>");
+    expect(text).toContain("<h1>Registry</h1>");
+    expect(text).toContain('data-goto="connectors" class="is-active"');
+    expect(text).toContain('data-highlight="connectors-linear"');
+    // still the list view, not a detail screen — every connector's card is present, not just linear's.
+    expect(text).toContain('id="connectors-github"');
+    expect(text).toContain('id="connectors-linear"');
+  });
+
+  test("every registry entity kind resolves as a cold path GET", async () => {
+    for (const kind of ["teams", "agents", "skills", "knowledge", "types", "connectors", "evals"]) {
+      const res = await board.fetch(req(`/registry/${kind}`));
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain(`data-goto="${kind}" class="is-active"`);
+    }
+  });
+
+  test("the legacy ?entity= query-param form still resolves, unchanged", async () => {
+    const res = await board.fetch(req("/registry?entity=connectors"));
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain('data-goto="connectors" class="is-active"');
+  });
+
+  test("the rail and the in-content tab strip both emit path-form links, never the old ?entity= form", async () => {
+    const res = await board.fetch(req("/registry/agents"));
+    const text = await res.text();
+    expect(text).toContain('href="/registry/teams"');
+    expect(text).toContain('href="/registry/connectors/github"');
+    expect(text).not.toContain("/registry?entity=");
+  });
+});
+
 describe("levare serve — POST /gates approve round trip", () => {
   let root: string;
   let board: ReturnType<typeof createBoard>;

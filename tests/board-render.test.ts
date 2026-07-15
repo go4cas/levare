@@ -862,7 +862,7 @@ describe("the rail is identical navigation on every screen", () => {
       const connectorsSection = /<h3 class="railsec__h">Connectors<\/h3>([\s\S]*?)<\/section>/.exec(rail);
       expect(connectorsSection).not.toBeNull();
       const section = connectorsSection![1];
-      expect(section).toContain('<a class="crow" href="/registry?entity=connectors#connectors-github">');
+      expect(section).toContain('<a class="crow" href="/registry/connectors/github">');
       expect(section).not.toContain(">ok<");
       expect(section).not.toContain("missing-env");
     });
@@ -1127,6 +1127,44 @@ describe("UI4 item 3: every registry entity tag is the bare type", () => {
     const kinds = [...html.matchAll(/<span class="entity__kind">([^<]*)<\/span>/g)].map((m) => m[1]);
     expect(kinds.length).toBeGreaterThan(0);
     for (const k of kinds) expect(["team", "agent", "skill", "knowledge", "type", "connector", "eval"]).toContain(k);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// UI4 item 4: registry URLs become path segments (/registry/<kind>, /registry/<kind>/<name>),
+// matching /project/<name> and /idea/<name> elsewhere in the product. A path-form deep link into one
+// entity renders the same list view, scrolled to and highlighting that entity — not a new screen.
+// ---------------------------------------------------------------------------
+
+describe("UI4 item 4: registry URLs are path segments, and the rail/tab links emit them", () => {
+  test("the registry nav links (rail + tab strip) point at /registry/<kind>, not ?entity=<kind>", () => {
+    const html = renderRegistry(repo, root, "agents");
+    for (const k of ["teams", "agents", "skills", "knowledge", "types", "connectors", "evals"]) {
+      expect(html).toContain(`href="/registry/${k}"`);
+    }
+    expect(html).not.toContain("/registry?entity=");
+  });
+
+  test("connector rail rows link to /registry/connectors/<name>, not the old ?entity=/#fragment form", () => {
+    const html = renderStudio(repo, root, now);
+    expect(html).toContain('href="/registry/connectors/github"');
+    expect(html).not.toContain("/registry?entity=connectors#");
+  });
+
+  test("renderRegistry(kind) alone renders no highlight target", () => {
+    const html = renderRegistry(repo, root, "connectors");
+    const main = /<main class="main"[^>]*>/.exec(html)![0];
+    expect(main).not.toContain("data-highlight");
+  });
+
+  test("renderRegistry(kind, name) highlights exactly that entity's card, still inside the same list view", () => {
+    const html = renderRegistry(repo, root, "connectors", undefined, "linear");
+    const main = /<main class="main"[^>]*>/.exec(html)![0];
+    expect(main).toContain('data-highlight="connectors-linear"');
+    // Still the list view, not a detail screen — the other connector's card is present too.
+    expect(html).toContain('id="connectors-github"');
+    expect(html).toContain('id="connectors-linear"');
+    expect(html).toContain('<h1>Registry</h1>');
   });
 });
 
