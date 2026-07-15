@@ -5298,3 +5298,89 @@ structural-assertion pattern is scoped to `release.yml` specifically and this wo
 claims to drift against). `bun run build` (no args) and `scripts/build.sh dist/levare-test
 bun-linux-x64` (with target) both succeed; `deps:check` → `deps ok`; `levare replay fixtures/golden
 --stubs` (via the `./levare` shim, compiled binary) matches the oracle byte-for-byte.
+
+## Registry editor card pointed a directory-form skill at a file that doesn't exist — two computations of "where does this entity live" disagreeing
+
+A skill (and, it turns out, knowledge/evals — see below) exists in one of two on-disk shapes: a flat
+`<name>.md` file, or the Agent Skills folder convention — a directory carrying its own `SKILL.md` plus
+optional supporting files (`skills/new-project/`, scaffolded by `levare init`, NOTES H5). `board/extra.ts`'s
+loader already discovered each entity's real backing file correctly (an explicit `existsSync(.../SKILL.md)`
+check, never a "first .md by readdir order" guess). But `board/render.ts`'s `entityBlock` — the function
+every registry card goes through — RECOMPUTED the editable path itself, as `${kind}/${name}.md`, discarding
+what the loader had already found. For a directory-form skill that reconstructed path
+(`skills/new-project.md`) never exists: the card's hidden `<textarea class="rawmd-source">` (read via a
+second, identically name-based reconstruction in the old `rawFor` helper) came up empty, `data-path`
+pointed the overlay editor's load/live-check/save requests at the nonexistent file, and the editor reported
+the buffer invalid. A save would have silently created a stray `skills/new-project.md` beside the real
+directory rather than updating `SKILL.md`.
+
+**The fix: make the loader's discovered path the only source of truth, end to end.** `Entity` (`board/
+extra.ts`) gained a `file` field — the exact root-relative path the entity was parsed from
+(`skills/spec-writing.md` or `skills/new-project/SKILL.md`) — computed once, in the same branch that
+already decides flat-vs-bundled, so there is no second place that could compute it differently.
+`entityBlock` (`board/render.ts`) no longer reconstructs `relPath` internally; every one of its seven call
+sites (teams/agents/skills/knowledge/types/connectors/evals) now passes an explicit `relPath` — for
+skills/knowledge/evals, that's the entity's own `.file`; for teams/agents/types/connectors (which only ever
+load through `repo.ts#loadEntities`, flat-file-only, no directory-form branch exists there at all) it's
+still `${kind}/${name}.md`, unchanged and still exact because those four kinds structurally cannot drift.
+`rawFor` (raw content for the textarea) is now a thin wrapper over a new `rawForPath(root, relPath)`, which
+reads from the SAME path embedded as `data-path` — no second reconstruction anywhere. The write routes
+(`POST /registry/*path`, `POST /registry/check/*path`) needed no change at all: they already just join
+whatever `data-path` the card sent with `root` and operate on that file directly (confirmed by reading
+`serve.ts`), and `isRegistryEditablePath` already accepts a nested `skills/<name>/SKILL.md` path (any depth
+≥2 ending in `.md` under an allowlisted top-level dir) — the guard was never the bug, only the card's input
+to it was wrong.
+
+**Audit of the other extras (goal item 3).** `knowledge`, `evals`, and `skills` all load through the exact
+same shared `loadDir` in `extra.ts`, so all three admit the directory-form layout equally, and all three
+got the same fix (their `entityBlock` call sites now pass `k.file`/`e.file`). `ideas` also loads through
+`loadDir` (so it, too, could technically appear in directory form) but ideas are **never rendered through
+`entityBlock`/`rawFor` at all** — `renderIdea` reads an idea's body directly from the already-loaded
+`Entity` and has no raw-markdown editor, no `data-path`, no save route. There was no `rawFor`-by-name
+reconstruction to fix for ideas because there is no edit-source surface for ideas in the first place; noted
+here so that absence reads as deliberate, not overlooked.
+
+**The order-dependence fix (goal item 4) turned out to live in `extra.ts`, not `repo.ts`.** The goal
+described this as "repo.ts's directory resolution... takes the first `.md` by readdir order when resolving
+a skill directory" — but `repo.ts` has no skill-directory-resolution code at all (skills/knowledge/evals/
+ideas are loaded exclusively by `board/extra.ts`, deliberately kept separate from `repo.ts`'s own
+`loadEntities`, per that file's header comment). The actual "pick the first `.md` by readdir order" pattern
+that exists in this codebase today is `repo.ts#loadUnitArtifacts`'s folder-ARTIFACT index resolution
+(`readdirSync(full).filter(n => n.endsWith(".md"))[0]`, also mirrored in `context.ts` and `board/
+locate.ts`) — a different subsystem (work-unit artifacts, not registry skills) that this goal's acceptance
+criteria don't actually exercise (`bun test`, before and after, shows no test pinning that path's behavior
+against a multi-`.md` folder). Rather than "fix" an unrelated subsystem no test in this goal touches, I
+implemented the acceptance-criteria requirement literally where it actually applies: `extra.ts#loadDir`'s
+directory branch never picked a first-by-readdir-order file to begin with (it already required an exact
+`existsSync(SKILL.md)` match) — what it silently lacked was a loud failure when a directory plainly *was*
+attempting a skill bundle (it has `.md` files of its own) but named its entry point something other than
+`SKILL.md`. That case now throws a new `RegistryEntityError` naming the offending directory, instead of
+silently `continue`-ing past it (which would have made the entity invisible in the registry with no
+diagnostic at all — arguably worse than an arbitrary pick, and definitely not "resolve to SKILL.md
+explicitly, name the error"). A directory with no markdown files at all (not an attempted bundle — e.g. a
+stray assets-only folder someone dropped under `skills/`) is still silently skipped, not an error, since
+nothing there was ever trying to be an entity. If a future change genuinely wants the artifact-folder
+pattern in `repo.ts`/`context.ts`/`board/locate.ts` hardened the same way, that's a separate, unscoped fix —
+flagged here rather than folded in unannounced.
+
+**Fixtures.** `fixtures/golden/skills/` stays all-flat, deliberately: it's read by ~38 existing tests, at
+least one of which (`tests/board-render.test.ts`'s card-count assertion, "teams(1) + agents(4) + skills(3)
++ ...") hardcodes golden's exact per-kind entity counts. Adding a fourth skill there would be scope creep
+against files those tests own. Instead, the directory-form-skill coverage this goal requires is a scratch
+copy seeded from golden (the same `cpSync("fixtures/golden", root)` + git-init pattern every other
+board-serve test already uses) with one additional `skills/test-bundle/SKILL.md` written in per-test setup
+— exercising the exact same code paths (`loadExtras` → `entityBlock` → the real HTTP save/check routes)
+without perturbing golden's own pinned shape. `tests/extra.test.ts` (new) unit-tests `loadDir`/`loadExtras`
+directly against disposable temp directories: flat resolution, directory-form resolution, both coexisting
+with distinct `.file` values, the named-error case, the harmless-skip case, and knowledge/evals sharing the
+same behavior. `tests/board-serve.test.ts` gained: a flat-skill round-trip (pinning "unchanged from
+before"), and a new describe block round-tripping the directory-form fixture through the real routes — GET
+`/registry/skills` embeds `data-path="skills/test-bundle/SKILL.md"` (never the flat form) and shows the
+real body content (not empty); `POST /registry/check/skills/test-bundle/SKILL.md` validates ok; `POST
+/registry/skills/test-bundle/SKILL.md` writes back to `SKILL.md` in place, creates no stray
+`skills/test-bundle.md`, and leaves the bundle's other supporting file untouched.
+
+**Verification.** `bun test` — 731 pass (10 new), 1 pre-existing skip, 0 fail, across 58 files. `levare
+validate fixtures/golden` → valid (unaffected — golden itself wasn't touched). `levare replay
+fixtures/golden --stubs` matches `expected.json` byte-for-byte (unaffected — the oracle covers
+`work/checkout-flow`, which nothing here touches). `deps:check` → `deps ok`.
