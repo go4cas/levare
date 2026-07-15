@@ -1,13 +1,23 @@
-// Standalone worker spawned SYNCHRONOUSLY by sdk-transport.ts's `bunSdkTransport`. Runs exactly one
-// real Claude Agent SDK query to completion and prints its outcome as a single line of JSON on
-// stdout — the actual async/await boundary lives in this separate process, so the caller can block
-// on it with a plain `Bun.spawnSync` the same way adapters.ts's `bunSpawn` already blocks on the
-// "cli" agent kind. Never logs or persists `ANTHROPIC_API_KEY`: this file never reads the key's
-// value — it only spreads its own already-scoped `process.env` (set by the parent's `Bun.spawnSync`
-// call, per sdk-transport.ts's env-trust-boundary note) into the SDK's own `options.env`, explicitly
-// rather than relying on the SDK's documented "omitted env inherits process.env" default — being
-// explicit here removes any doubt that the credential the launching process was granted actually
-// reaches the inner `claude` CLI subprocess the SDK itself spawns (invariant 11).
+// The SDK worker's own logic: runs exactly one real Claude Agent SDK query to completion and prints
+// its outcome as a single line of JSON on stdout. Reached two ways (NOTES DIST5):
+//
+//   - In-process, via `runSdkWorkerFromStdin()` below — this is what `cli.ts`'s hidden `__worker`
+//     subcommand calls when a fresh copy of levare ITSELF is spawned in worker mode (the standard
+//     `bun build --compile` self-invocation pattern; see sdk-transport.ts's `workerSpawnArgv`). This
+//     is the path every real caller (source or compiled) takes today.
+//   - Standalone, via this file's own `if (import.meta.main)` guard — kept so a test can still point
+//     `createBunSdkTransport`/`createAsyncSdkTransport` at an arbitrary worker SCRIPT (a real file
+//     path, spawned with a real `bun` interpreter) to simulate a slow/hung/broken worker without
+//     touching the real SDK — see tests/orchestrator-sdk.test.ts and tests/sdk-transport-hermetic.test.ts.
+//
+// Either way, the caller blocks on it via `Bun.spawnSync`/`Bun.spawn` (adapters.ts's `bunSpawn`
+// already blocks on the "cli" agent kind the same way). Never logs or persists `ANTHROPIC_API_KEY`:
+// this file never reads the key's value — it only spreads its own already-scoped `process.env` (set
+// by the parent's spawn call, per sdk-transport.ts's env-trust-boundary note) into the SDK's own
+// `options.env`, explicitly rather than relying on the SDK's documented "omitted env inherits
+// process.env" default — being explicit here removes any doubt that the credential the launching
+// process was granted actually reaches the inner `claude` CLI subprocess the SDK itself spawns
+// (invariant 11).
 //
 // `settingSources: []` + `persistSession: false` (NOTES phase-7 K15): a live host hung indefinitely
 // because the spawned CLI inherited the OPERATOR's personal Claude Code configuration — specifically
@@ -100,7 +110,10 @@ export function deriveReceipt(message: { modelUsage?: Record<string, { inputToke
   };
 }
 
-async function main(): Promise<void> {
+/** Read one `SdkWorkerRequest` from stdin, run it through the real SDK, print one `SdkWorkerResponse`
+ * line of JSON to stdout. Never throws — every failure path (malformed input, transport/SDK error) is
+ * reported via `respond({ ok: false, ... })` instead, so a caller awaiting this can always exit 0. */
+export async function runSdkWorkerFromStdin(): Promise<void> {
   const input = await Bun.stdin.text();
   let req: SdkWorkerRequest;
   try {
@@ -150,4 +163,10 @@ async function main(): Promise<void> {
   }
 }
 
-main();
+// Only auto-runs when THIS FILE is the process's own entry point — i.e. spawned standalone as a
+// script (the test-only path above), never when `cli.ts` merely imports `runSdkWorkerFromStdin` to
+// dispatch its hidden `__worker` subcommand (NOTES DIST5) — an unconditional call here would have
+// run a real SDK query every time any part of levare imported this module.
+if (import.meta.main) {
+  runSdkWorkerFromStdin();
+}

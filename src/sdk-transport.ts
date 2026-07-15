@@ -47,6 +47,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import type { Receipt } from "./types.ts";
+import { isCompiledBuild } from "./version.ts";
 
 export interface SdkWorkerRequest {
   /** The user-turn content sent to the model this call. */
@@ -89,6 +90,58 @@ export interface AsyncSdkTransport {
 // `.pathname` can carry percent-encoded characters (spaces, unicode) that a literal argv element
 // spawned with no shell will not decode, which `fileURLToPath` handles correctly.
 export const SDK_WORKER_PATH = Bun.fileURLToPath(new URL("./sdk-worker.ts", import.meta.url));
+
+// ---------------------------------------------------------------------------
+// Self-invocation worker spawn (NOTES DIST5 — the standard `bun build --compile` pattern)
+// ---------------------------------------------------------------------------
+//
+// The REAL worker spawn (`createBunSdkTransport`/`createAsyncSdkTransport` with no explicit
+// `workerPath` override) used to be `Bun.spawn([process.execPath, SDK_WORKER_PATH])` — spawn a
+// generic script interpreter against a resolved file path. That is correct in a source run
+// (`process.execPath` is the real `bun` interpreter), but under `bun build --compile`,
+// `process.execPath` IS the compiled binary itself, which only knows how to run its own embedded
+// entrypoint — confirmed live, `dist/levare <any script path>` printed `unknown command: <path>`
+// (NOTES DIST4). The fix: spawn a FRESH COPY OF THIS SAME PROCESS, told to run in worker mode via a
+// hidden CLI flag (`WORKER_COMMAND`, dispatched by `cli.ts#runCli`), rather than a separate script.
+//
+//   - Compiled: `process.execPath` is the standalone binary — re-invoking it with just the flag
+//     re-enters its own embedded entrypoint directly (confirmed empirically: a compiled binary
+//     spawning itself with `[execPath, "flag"]` reports `process.argv.slice(2) === ["flag"]` in the
+//     child, identical to how the top-level dispatch already reads its own argv).
+//   - Source: `process.execPath` is a generic `bun` interpreter with no script bound to it —
+//     `bun __worker` alone fails with `error: Script not found "__worker"`. It needs an explicit
+//     script argument, so this file's own entry point (`cli.ts`) is handed to it, exactly the same
+//     `import.meta.url`-resolution idiom `SDK_WORKER_PATH` above already uses (safe here specifically
+//     because it is ONLY ever read when `isCompiledBuild()` is false — a source run's
+//     `import.meta.url` resolves to a real on-disk path; only `--compile` rewrites it into the
+//     virtual `$bunfs` tree that broke the old approach).
+//
+// Either way the CHILD's `process.argv.slice(2)` ends up exactly `[WORKER_COMMAND]`, landing on the
+// identical dispatch every other CLI command already goes through — no special-casing between the
+// two run modes beyond this one argv-shape difference.
+export const WORKER_COMMAND = "__worker";
+
+const CLI_ENTRY_PATH = Bun.fileURLToPath(new URL("./cli.ts", import.meta.url));
+
+function workerSpawnArgv(): string[] {
+  return isCompiledBuild() ? [process.execPath, WORKER_COMMAND] : [process.execPath, CLI_ENTRY_PATH, WORKER_COMMAND];
+}
+
+// A live-binary spawn attempt caught a second, distinct compiled-only bug (NOTES DIST5): every
+// spawn below pins an explicit `cwd` (`LEVARE_ROOT`, derived from `SDK_WORKER_PATH`) so the worker
+// script resolves its own node_modules regardless of the caller's cwd. `LEVARE_ROOT` is a real,
+// walkable on-disk directory in a source run, but under `--compile` it resolves into Bun's virtual
+// `$bunfs` tree — an unwalkable path that made the OS-level `posix_spawn` itself fail with
+// `ENOENT: no such file or directory, posix_spawn '<execPath>'` (confirmed live: `Bun.spawn` cannot
+// `chdir` into a cwd that doesn't exist on the real filesystem, so the child never even starts,
+// regardless of the argv fix above). A compiled self-invocation needs no pinned cwd at all — the
+// worker's own module resolution is irrelevant (everything is embedded) and the native-binary path
+// is already resolved once and passed explicitly (`pathToClaudeCodeExecutable`) — so it simply omits
+// `cwd`, which makes `Bun.spawn` inherit the running process's own (real) cwd instead.
+function workerSpawnCwd(workerPath: string | undefined): string | undefined {
+  if (workerPath === undefined && isCompiledBuild()) return undefined;
+  return LEVARE_ROOT;
+}
 
 /**
  * Whether the environment carries credentials the SDK can authenticate with — presence only, the
@@ -304,18 +357,23 @@ function killProcessTree(pid: number): void {
   }
 }
 
-/** A transport that spawns `workerPath` synchronously and blocks on it — the default (`bunSdkTransport`)
- * points at the real `sdk-worker.ts`; tests can point another instance at a bogus path to exercise a
- * genuine, network-free, deterministic transport failure (see tests/orchestrator-sdk.test.ts). */
-export function createBunSdkTransport(workerPath: string = SDK_WORKER_PATH): SdkTransport {
+/** A transport that spawns the SDK worker synchronously and blocks on it. With no `workerPath`
+ * argument (the default, `bunSdkTransport`), it self-invokes this same process in worker mode
+ * (`workerSpawnArgv`, NOTES DIST5) — the real path, working under both source and compiled runs.
+ * Tests can pass an explicit `workerPath` to a standalone script (spawned directly with a real `bun`
+ * interpreter) to exercise a genuine, network-free, deterministic transport failure/slow/hung worker
+ * (see tests/orchestrator-sdk.test.ts, tests/sdk-transport-hermetic.test.ts) — that shape is
+ * unaffected by this change, it never goes through self-invocation. */
+export function createBunSdkTransport(workerPath?: string): SdkTransport {
   return {
     run(req, opts) {
-      if (!existsSync(workerPath)) {
+      if (workerPath !== undefined && !existsSync(workerPath)) {
         return { ok: false, error: `sdk worker script not found at ${workerPath}` };
       }
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-      const proc = Bun.spawnSync([process.execPath, workerPath], {
-        cwd: LEVARE_ROOT,
+      const argv = workerPath !== undefined ? [process.execPath, workerPath] : workerSpawnArgv();
+      const proc = Bun.spawnSync(argv, {
+        cwd: workerSpawnCwd(workerPath),
         env: definedEnv(hermeticSpawnEnv(opts.env)),
         stdin: Buffer.from(JSON.stringify(req)),
         stdout: "pipe",
@@ -348,22 +406,27 @@ export function createBunSdkTransport(workerPath: string = SDK_WORKER_PATH): Sdk
 export const bunSdkTransport: SdkTransport = createBunSdkTransport();
 
 /**
- * A transport that spawns `workerPath` via `Bun.spawn` (non-blocking) and awaits it — the async
+ * A transport that spawns the SDK worker via `Bun.spawn` (non-blocking) and awaits it — the async
  * counterpart to `createBunSdkTransport` above, used wherever the caller may be servicing concurrent
  * requests (today: only `OrchestratorBoundary`, wired into `board/serve.ts`). The timeout is enforced
  * explicitly (a `setTimeout` that kills the child) rather than relying on `Bun.spawn`'s own `timeout`
  * option, whose `exitedDueToTimeout` signal is documented for `spawnSync` but was NOT observed to be
  * populated for async `spawn` in this Bun version — an explicit flag is unambiguous either way.
+ *
+ * Same `workerPath`-argument split as `createBunSdkTransport` (NOTES DIST5): omitted (the default,
+ * `asyncSdkTransport`) self-invokes this same process in worker mode; an explicit path (test-only)
+ * spawns that standalone script directly, exactly as before.
  */
-export function createAsyncSdkTransport(workerPath: string = SDK_WORKER_PATH): AsyncSdkTransport {
+export function createAsyncSdkTransport(workerPath?: string): AsyncSdkTransport {
   return {
     async run(req, opts) {
-      if (!existsSync(workerPath)) {
+      if (workerPath !== undefined && !existsSync(workerPath)) {
         return { ok: false, error: `sdk worker script not found at ${workerPath}` };
       }
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-      const proc = Bun.spawn([process.execPath, workerPath], {
-        cwd: LEVARE_ROOT,
+      const argv = workerPath !== undefined ? [process.execPath, workerPath] : workerSpawnArgv();
+      const proc = Bun.spawn(argv, {
+        cwd: workerSpawnCwd(workerPath),
         env: definedEnv(hermeticSpawnEnv(opts.env)),
         stdin: Buffer.from(JSON.stringify(req)),
         stdout: "pipe",

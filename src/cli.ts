@@ -12,6 +12,8 @@ import { applyStudioEnv } from "./dotenv.ts";
 import { resolveOrchestratorStatus } from "./orchestrator-status.ts";
 import { loadOrchestratorPromptSource, ORCHESTRATOR_PROMPT_PATH } from "./orchestrator-boundary.ts";
 import { getVersionInfo, formatVersion } from "./version.ts";
+import { WORKER_COMMAND } from "./sdk-transport.ts";
+import { runSdkWorkerFromStdin } from "./sdk-worker.ts";
 
 // Until the studio repo root is populated, the fixture golden tree stands in as the studio (NOTES
 // A1); context/doctor default their root there. `--root <path>` overrides.
@@ -241,8 +243,24 @@ export function main(argv: string[]): number {
 // `serve` starts a long-lived Bun.serve listener; every other command runs once and exits. Exiting
 // unconditionally the instant `main()` returns would tear down the process before the listener ever
 // accepts a connection.
+//
+// `WORKER_COMMAND` (`__worker`) is intercepted here, BEFORE `main()`'s own switch/usage() — it is the
+// hidden internal subcommand sdk-transport.ts's `workerSpawnArgv` self-invokes into (NOTES DIST5:
+// the standard `bun build --compile` pattern — a fresh copy of this same process, told to run the
+// SDK worker in-process, instead of spawning a script path that only a real `bun` interpreter can
+// run). Deliberately never added to `main()`'s switch: that keeps it out of `usage()`/`--help`
+// without needing a separate "hidden commands" allowlist — a caller that reaches `main(["__worker"])`
+// directly (bypassing `runCli`) gets the ordinary "unknown command" response, exactly as before this
+// command existed.
 export function runCli(argv: string[]): void {
-  if (argv[0] === "serve") {
+  if (argv[0] === WORKER_COMMAND) {
+    runSdkWorkerFromStdin()
+      .then(() => process.exit(0))
+      .catch((e) => {
+        console.error(String(e instanceof Error ? e.message : e));
+        process.exit(1);
+      });
+  } else if (argv[0] === "serve") {
     main(argv);
   } else {
     process.exit(main(argv));
