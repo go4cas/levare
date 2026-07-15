@@ -4341,3 +4341,79 @@ already-true structurally — the project card, gate card, and work-unit row alr
 top-left and a status badge top-right via the same `.pcard__top`/`.gate__top`/`.unit__head` flex
 pattern before this pass; what was missing was never layout, it was the status colour disagreeing
 across them, which item 1's canonical map now closes.
+
+# NOTES UI2 — six board-consistency fixes on top of UI1's canonical map and card contract
+
+**(1) Needs You cards named the artifact, never the unit.** `gateCardHtml`'s two artifact-carrying
+variants — the ordinary approve/request/reject card and the artifact-blocked retry/skip/abandon card,
+both of which render un-summoned in the Studio inbox (`gates.map(...)` with no `cta`) — led their
+`gate__body` with the artifact's filename and producer only. A Conductor scanning Needs You had no way
+to tell which work unit a gate belonged to without opening it. The start and blocked-unit gate variants
+already named their unit (`tokenLink(gate.project, gate.unit, gate.unit)`), so the fix mirrors that
+shape: a new `gateUnitTitle()` helper renders a `.gate__unit-row` — a plain bold link into the unit's
+run view, top-left, above the existing artifact/producer line — reused by both `nameRow` (shared by the
+cta and non-cta render paths, so the project page's "Review gate" summon and the run view's Orchestrator
+card gain the same title for free) and the artifact-blocked card directly. Work units carry no separate
+`title` field (`types.ts`); the unit slug is the name everywhere else in the product (the project page's
+`.unit__name`), so it's what renders here.
+
+**(2)+(3)+(4) Project page header — links below the title, Tabler icons, badge on the title line.**
+`iconLink()` used to take one generic external-link glyph for both repo and deploy, rendered inside
+`.phead__title` beside the h1; the status badge lived in the same row. Now `.phead__title` holds only
+`<h1>` and the canonical status chip (`justify-content:space-between` pushes the chip right — the same
+`.pcard__top` pattern the Studio card already used, applied to the page header), and `.phead__links` is
+its own row directly underneath, inside `<header class="phead">` but outside `.phead__title`. `iconLink`
+now takes an icon key (`"ti-brand-github"` | `"ti-world"`) and looks up inline Tabler-outline SVG path
+data from a small `TABLER_ICON_PATHS` map — vendored, not fetched (no CDN, no icon font, per the design
+brief's "no front-end frameworks" / single-binary constraint) — both rendered with
+`stroke="currentColor"`, so they inherit ink like every other icon; no brand colour enters the board.
+**Uncertainty worth flagging for Cas:** the design brief itself never names Tabler as the icon set (a
+grep of `docs/levare-design-brief.md` for "tabler" is empty) — only this goal's own text does. Since the
+brief is silent rather than contradicting, I followed the goal literally rather than treating it as a
+conflict to resolve in the brief's favor. The two path strings were reproduced from memory of the
+open-source (MIT) Tabler Icons set, not fetched live (this environment has no network access for design
+assets and the standing constraint is "modify nothing outside this repository") — they're visually the
+standard github-mark-in-a-stroke-outline and globe-with-meridians glyphs, but if pixel-exact fidelity to
+the real `@tabler/icons` asset matters, worth a diff against the actual package before shipping.
+
+**(5) Stat strip moved above the pointer/constitution block.** Pure reorder in `renderProject`'s `main`
+template: `<div class="statstrip">...` now renders immediately after `<header class="phead">`, with
+`${pointerPanel}` following it — matching the Studio page's own stats-then-content order. No CSS or
+data changes; the two blocks were already independent siblings.
+
+**(6) Studio's Projects section is now an In-flight worklist.** Renamed heading ("Projects" → "In
+flight"); `projectCards` now maps over `inFlightProjects = [...repo.projects.values()].filter(p =>
+repo.units.some(u => u.project === p.name && u.status === "active"))` instead of every project — the
+same `status === "active"` check `projectStatusChip`/the project page's `anyUnitActive` already use, so
+"in flight" means exactly what the status badge already calls active. A project with zero units or with
+units that are all shipped/paused/blocked/abandoned drops out entirely (not just "zero units" — the
+synthetic test below deliberately covers a project with one *shipped* unit, to catch a naive
+`units.length > 0` filter that would have kept it). Idle projects stay reachable via `railNav`'s
+unchanged project list and their own project page, whose header badge still renders the honest `idle`
+chip (proven directly against the golden fixture's zero-unit `studio` project). The empty state — zero
+in-flight projects, the common case between units — renders "Nothing in flight. Open a project from the
+sidebar to start a unit." instead of an empty `.pcards` grid, so a quiet studio never reads as broken.
+
+**Verification.** `bun test` — 633 pass, 1 pre-existing skip, 0 fail, across 52 files, including new
+coverage: a Needs You card's `.gate__unit-row` title against the golden fixture; the project page's
+title/links/badge/stat-strip ordering (title row has no `iconlink`, `.phead__links` follows it, badge
+is the last child of the title row after the h1, stat strip precedes both the pointer card and
+"Constitution"); and a new synthetic-repo describe block for item 6 covering the heading rename, the
+active-vs-shipped-vs-empty filter distinction, and the empty-state copy. Two UI1-era tests that asserted
+behavior for the golden fixture's idle `studio` project appearing IN the Projects section were rewritten
+rather than deleted outright — one now asserts it's absent from In-flight, the other moved its "idle,
+not fabricated running" assertion to the project's own page header, which item 6 never touches.
+`levare replay fixtures/golden --stubs` — final artifact statuses still byte-for-byte against
+`expected.json`. `deps:check` — `deps ok`. Manually verified against a live `levare serve
+fixtures/golden --read-only` instance (not just render-function output) that the storefront project
+page and the Studio In-flight section produce exactly the markup the tests assert.
+
+**Deliberately out of scope.** The Orchestrator chat panel and the registry entity-card internals are
+untouched, per this round's own instruction. The start/blocked gate card variants already named their
+unit before this pass (via `tokenLink`) and were left in their existing `.gate__name-row` styling rather
+than restyled to the new `.gate__unit`/`.gate__unit-row` treatment — same underlying data, cosmetically
+inconsistent with the two variants this pass touched, but changing four render paths to fix two struck
+a larger blast radius than the reported defect needed. `assets/*.html` (the CD prototype reference
+files) are unreferenced by any server route or test — confirmed via grep before starting — and were left
+untouched, consistent with the render.ts header comment that they're a superseded skeleton, not live
+markup.
