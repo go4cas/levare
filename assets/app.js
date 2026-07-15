@@ -249,6 +249,49 @@
       });
     });
 
+    /* ---------- confirm modal (reusable primitive) ----------
+       Replaces the browser's native confirm()/alert() everywhere in the product (UI4 item 1): a small
+       centered panel over a dimmed backdrop, in levare's own palette, with a plain question and two
+       actions (a quiet "keep editing" dismiss and a destructive "discard"). ONE instance per page
+       (render.ts#confirmModalHtml, a sibling of `.app` in `shell()`, present on every screen), reused
+       by any future confirmation need — not a one-off for the registry editor. `confirmModal(question,
+       opts)` returns a Promise<boolean> (true = the destructive action was confirmed) so a caller
+       reads like `window.confirm` used to, without ever calling it; `opts.confirmLabel`/
+       `opts.cancelLabel` override the button text for a future non-"discard" confirmation without
+       touching this helper's body. */
+    var confirmModal = (function () {
+      var el = document.getElementById('confirm-modal');
+      if (!el) return function () { return Promise.resolve(true); };
+      var questionEl = el.querySelector('.confirm-modal__question');
+      var okBtn = el.querySelector('[data-confirm-discard]');
+      var keepBtn = el.querySelector('[data-confirm-keep]');
+      var backdrop = el.querySelector('[data-confirm-backdrop]');
+      var pending = null; // the in-flight Promise's resolve fn, or null while closed
+
+      function resolveWith(result) {
+        if (!pending) return;
+        var resolve = pending;
+        pending = null;
+        el.hidden = true;
+        resolve(result);
+      }
+
+      okBtn.addEventListener('click', function () { resolveWith(true); });
+      keepBtn.addEventListener('click', function () { resolveWith(false); });
+      backdrop.addEventListener('click', function () { resolveWith(false); });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && pending) resolveWith(false);
+      });
+
+      return function (question, opts) {
+        questionEl.textContent = question;
+        okBtn.textContent = (opts && opts.confirmLabel) || 'Discard';
+        keepBtn.textContent = (opts && opts.cancelLabel) || 'Keep editing';
+        el.hidden = false;
+        return new Promise(function (resolve) { pending = resolve; });
+      };
+    })();
+
     /* ---------- SSE: reload on a repo change (fs.watch-driven re-render trigger) ---------- */
     if (window.EventSource) {
       try {
@@ -307,17 +350,18 @@
         return !!current && ovTextarea.value !== current.original;
       }
 
+      /* The check route returns the SAME ValidationError[] the CLI formats with a code and a
+         file:line locator (levare validate's own output, unchanged — src/cli.ts#formatResult). The
+         editor is a different audience: the Conductor is looking at an unsaved buffer, not a
+         checked-out file tree, and the editor shows no line numbers — so a bare `:line` locator would
+         point at nothing visible. UI4 item 2: render the human message only. */
       function renderErrors(errors) {
         ovErrors.innerHTML = '';
         (errors || []).forEach(function (er) {
           var row = document.createElement('div');
           row.className = 'editor-overlay__err';
-          var loc = document.createElement('span');
-          loc.className = 'mono';
-          loc.textContent = er.code + '  ' + er.file + (er.line ? ':' + er.line : '');
           var msg = document.createElement('p');
           msg.textContent = er.message;
-          row.appendChild(loc);
           row.appendChild(msg);
           ovErrors.appendChild(row);
         });
@@ -384,10 +428,14 @@
         overlay.hidden = true;
       }
 
-      /** Cancel / Escape / backdrop all funnel through here \u2014 the one dirty-check gate. */
+      /** Cancel / Escape / backdrop all funnel through here \u2014 the one dirty-check gate. A clean
+          buffer closes immediately; a dirty one asks via the shared in-app confirm modal (UI4 item 1)
+          \u2014 never the browser's native confirm(). */
       function requestDismiss() {
-        if (isDirty() && !window.confirm('Discard unsaved changes?')) return;
-        closeEditor();
+        if (!isDirty()) { closeEditor(); return; }
+        confirmModal('Discard unsaved changes?').then(function (discard) {
+          if (discard) closeEditor();
+        });
       }
 
       document.addEventListener('click', function (e) {

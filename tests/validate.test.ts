@@ -33,6 +33,20 @@ describe("levare validate CLI", () => {
     expect(p.exitCode).toBe(1);
     expect(p.stderr.toString()).toContain("UNKNOWN_KEY");
   });
+
+  // UI4 item 2: the registry editor now shows the validator's human message ALONE (see
+  // tests/board-editor-overlay.test.ts) — this is a display choice in the editor only. The CLI's own
+  // output (src/cli.ts#formatResult), a grep target for scripts, is unchanged: code, then a
+  // `file:line` locator (when the error carries one), then the message — proving one validator, one
+  // rule set, two presentations rather than a second, quietly-diverging implementation.
+  test("`levare validate` output is unchanged: it still prints the error CODE and a file:line locator, not just the message", () => {
+    const p = Bun.spawnSync(["./levare", "validate", "fixtures/rejections/malformed-frontmatter"]);
+    expect(p.exitCode).toBe(1);
+    const stderr = p.stderr.toString();
+    expect(stderr).toContain("PARSE_ERROR");
+    expect(stderr).toContain("fixtures/rejections/malformed-frontmatter/work/storefront/checkout-flow/bad.md:7");
+    expect(stderr).toContain("frontmatter is not terminated by a closing '---' fence (line 7)");
+  });
 });
 
 // Each entry is a self-contained rejection fixture asserting one specific validator error.

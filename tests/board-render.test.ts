@@ -1107,6 +1107,24 @@ describe("registry cards are gridded, not one-per-row", () => {
 });
 
 // ---------------------------------------------------------------------------
+// UI4 item 1: the reusable confirm-modal primitive — a small centered panel over a dimmed backdrop,
+// present as a sibling of `.app` on every screen (not just the registry), hidden by default.
+// ---------------------------------------------------------------------------
+
+describe("UI4 item 1: the confirm-modal primitive renders on every screen", () => {
+  test("present, hidden, before </html>, on studio/project/run/registry", () => {
+    const screens = [renderStudio(repo, root, now), renderProject(repo, "storefront", root, now), renderRun(repo, "storefront", "checkout-flow", root, now), renderRegistry(repo, root)];
+    for (const html of screens) {
+      const m = /<div class="confirm-modal" id="confirm-modal" hidden>[\s\S]*?<\/div>\s*<script/.exec(html);
+      expect(m).not.toBeNull();
+      expect(m![0]).toContain("data-confirm-backdrop");
+      expect(m![0]).toContain("data-confirm-keep");
+      expect(m![0]).toContain("data-confirm-discard");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // NOTES C11 part 3: a global status indicator in the app header, on every screen — "orchestrator: on"
 // with a credential and the SDK boundary live, "orchestrator: off" without. Quiet vocabulary reused
 // from the existing canonical state palette (status-dot is-ok/is-idle), not a new color.

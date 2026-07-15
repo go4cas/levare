@@ -223,7 +223,7 @@ class FakeDocument extends FakeEventTarget {
 // ---------------------------------------------------------------------------
 const RAW_SOURCE = "---\nname: kestrel\nmembers: [wren, lyra, finch]\n---\n\n# Kestrel\n";
 
-function buildFixture(doc: FakeDocument): { editOpen: FakeElement; rawSource: FakeElement; overlay: FakeElement } {
+function buildFixture(doc: FakeDocument): { editOpen: FakeElement; rawSource: FakeElement; overlay: FakeElement; confirmModal: FakeElement } {
   const app = doc.createElement("div");
   app.setAttribute("class", "app");
   doc.body.appendChild(app);
@@ -296,7 +296,35 @@ function buildFixture(doc: FakeDocument): { editOpen: FakeElement; rawSource: Fa
   save.disabled = true;
   panel.appendChild(save);
 
-  return { editOpen, rawSource, overlay };
+  // UI4 item 1: render.ts#confirmModalHtml — the reusable confirm-modal primitive, a sibling of
+  // `.app` (and of the editor overlay) present once per page, hidden by default.
+  const confirmModal = doc.createElement("div");
+  confirmModal.setAttribute("class", "confirm-modal");
+  confirmModal.setAttribute("id", "confirm-modal");
+  confirmModal.hidden = true;
+  doc.body.appendChild(confirmModal);
+
+  const confirmBackdrop = doc.createElement("div");
+  confirmBackdrop.setAttribute("data-confirm-backdrop", "");
+  confirmModal.appendChild(confirmBackdrop);
+
+  const confirmPanel = doc.createElement("div");
+  confirmPanel.setAttribute("class", "confirm-modal__panel");
+  confirmModal.appendChild(confirmPanel);
+
+  const confirmQuestion = doc.createElement("p");
+  confirmQuestion.setAttribute("class", "confirm-modal__question");
+  confirmPanel.appendChild(confirmQuestion);
+
+  const confirmKeep = doc.createElement("button");
+  confirmKeep.setAttribute("data-confirm-keep", "");
+  confirmPanel.appendChild(confirmKeep);
+
+  const confirmDiscard = doc.createElement("button");
+  confirmDiscard.setAttribute("data-confirm-discard", "");
+  confirmPanel.appendChild(confirmDiscard);
+
+  return { editOpen, rawSource, overlay, confirmModal };
 }
 
 // ---------------------------------------------------------------------------
@@ -339,13 +367,15 @@ function setupOverlay() {
       fetchCalls.push({ url, init, resolve: (body: any) => resolve({ ok: true, json: () => Promise.resolve(body) }) });
     });
 
-  let confirmResult = true;
-  let confirmCalls: string[] = [];
   const reloadCalls: number[] = [];
 
+  // UI4 item 1: no `confirm`/`alert` on the fake `window` at all — if app.js's dismiss path ever
+  // regressed to calling the native dialog, `window.confirm is not a function` would throw straight
+  // out of the click handler and fail whichever test exercises it, loudly. The in-app confirm modal
+  // (the fixture's `#confirm-modal`) is the only dismiss-confirmation surface available.
   const context = {
     document: doc,
-    window: { matchMedia: undefined, EventSource: undefined, confirm: (msg: string) => (confirmCalls.push(msg), confirmResult) },
+    window: { matchMedia: undefined, EventSource: undefined },
     location: {
       reload: () => reloadCalls.push(1),
     },
@@ -363,10 +393,6 @@ function setupOverlay() {
     ...fixture,
     fetchCalls,
     flushTimers,
-    setConfirmResult: (v: boolean) => {
-      confirmResult = v;
-    },
-    confirmCalls: () => confirmCalls,
     reloadCalls,
   };
 }
@@ -381,6 +407,16 @@ function overlayParts(h: ReturnType<typeof setupOverlay>) {
     saveBtn: h.overlay.querySelector("[data-editor-save]")!,
     cancelBtn: h.overlay.querySelector("[data-editor-cancel]")!,
     backdrop: h.overlay.querySelector("[data-editor-backdrop]")!,
+  };
+}
+
+function confirmModalParts(h: ReturnType<typeof setupOverlay>) {
+  return {
+    modal: h.confirmModal,
+    question: h.confirmModal.querySelector(".confirm-modal__question")!,
+    keepBtn: h.confirmModal.querySelector("[data-confirm-keep]")!,
+    discardBtn: h.confirmModal.querySelector("[data-confirm-discard]")!,
+    backdrop: h.confirmModal.querySelector("[data-confirm-backdrop]")!,
   };
 }
 
@@ -441,7 +477,12 @@ describe("registry overlay editor — real app.js exercised against a fake DOM",
     expect(JSON.parse(h.fetchCalls[1].init.body).content).toBe(RAW_SOURCE + "\nmore: 12\n");
   });
 
-  test("an invalid buffer shows the real validator's errors and keeps Save blocked", async () => {
+  // UI4 item 2: the same ValidationError[] the CLI formats with a code and a file:line locator
+  // (src/cli.ts#formatResult — see tests/validate.test.ts's own CLI-output assertion) renders as the
+  // human message ALONE in the editor: no error code, no filename, no bare `:line` (the editor shows
+  // no line numbers, so a locator would point at nothing visible). One validator, one rule set —
+  // this is a presentation choice in app.js's renderErrors, not a second implementation of any rule.
+  test("an invalid buffer shows the validator's human MESSAGE ONLY — no code, filename, or line locator — and keeps Save blocked", async () => {
     clickOn(h.doc, h.editOpen);
     h.fetchCalls[0].resolve({
       ok: false,
@@ -451,9 +492,10 @@ describe("registry overlay editor — real app.js exercised against a fake DOM",
     expect(p.saveBtn.disabled).toBe(true);
     expect(p.validity.classList.contains("is-invalid")).toBe(true);
     expect(p.errors.children.length).toBe(1);
-    expect(p.errors.children[0].textContent).toContain("UNKNOWN_KEY");
-    expect(p.errors.children[0].textContent).toContain("teams/kestrel.md:3");
-    expect(p.errors.children[0].textContent).toContain("unknown key 'bogus_key' in team");
+    expect(p.errors.children[0].textContent).toBe("unknown key 'bogus_key' in team");
+    expect(p.errors.children[0].textContent).not.toContain("UNKNOWN_KEY");
+    expect(p.errors.children[0].textContent).not.toContain("teams/kestrel.md");
+    expect(p.errors.children[0].textContent).not.toContain(":3");
   });
 
   test("Save POSTs to the write route (not the check route) and closes the overlay on success", async () => {
@@ -484,8 +526,13 @@ describe("registry overlay editor — real app.js exercised against a fake DOM",
     expect(h.fetchCalls.length).toBe(1); // no save POST was ever made
   });
 
-  describe("dismiss paths — Cancel, Escape, and the backdrop each honor the dirty-check", () => {
-    test("a CLEAN buffer closes immediately, with no confirm prompt — via Cancel, Escape, and the backdrop", () => {
+  // UI4 item 1: the dirty-dismiss gate now goes through the shared in-app confirm-modal primitive
+  // (render.ts#confirmModalHtml / app.js's confirmModal()) — never the browser's native confirm().
+  // setupOverlay's fake `window` carries no `confirm`/`alert` at all (see setupOverlay's own comment),
+  // so any regression back to the native dialog would throw straight out of these tests, not merely
+  // go unnoticed.
+  describe("dismiss paths — Cancel, Escape, and the backdrop each honor the dirty-check via the confirm modal", () => {
+    test("a CLEAN buffer closes immediately, with no confirm modal, via Cancel, Escape, and the backdrop", () => {
       for (const dismiss of [
         () => click(p.cancelBtn),
         () => h.doc.dispatchEvent({ type: "keydown", key: "Escape" }),
@@ -493,15 +540,16 @@ describe("registry overlay editor — real app.js exercised against a fake DOM",
       ]) {
         h = setupOverlay();
         p = overlayParts(h);
+        const cm = confirmModalParts(h);
         clickOn(h.doc, h.editOpen);
         expect(h.overlay.hidden).toBe(false);
         dismiss();
         expect(h.overlay.hidden).toBe(true);
-        expect(h.confirmCalls().length).toBe(0);
+        expect(cm.modal.hidden).toBe(true); // never opened — an unchanged buffer needs no confirmation
       }
     });
 
-    test("a DIRTY buffer prompts 'Discard unsaved changes?' — via Cancel, Escape, and the backdrop", () => {
+    test("a DIRTY buffer opens the in-app confirm modal with 'Discard unsaved changes?' — via Cancel, Escape, and the backdrop", async () => {
       for (const dismiss of [
         () => click(p.cancelBtn),
         () => h.doc.dispatchEvent({ type: "keydown", key: "Escape" }),
@@ -509,19 +557,48 @@ describe("registry overlay editor — real app.js exercised against a fake DOM",
       ]) {
         h = setupOverlay();
         p = overlayParts(h);
+        const cm = confirmModalParts(h);
         clickOn(h.doc, h.editOpen);
         p.textarea.value = RAW_SOURCE + "\nchanged: true\n";
         p.textarea.dispatchEvent({ type: "input", target: p.textarea });
 
-        h.setConfirmResult(false); // Conductor chooses to stay
         dismiss();
-        expect(h.confirmCalls()).toEqual(["Discard unsaved changes?"]);
-        expect(h.overlay.hidden).toBe(false); // still open — the prompt was declined
+        expect(cm.modal.hidden).toBe(false);
+        expect(cm.question.textContent).toBe("Discard unsaved changes?");
 
-        h.setConfirmResult(true); // Conductor confirms discarding
+        click(cm.keepBtn); // Conductor chooses to keep editing
+        await flush();
+        expect(cm.modal.hidden).toBe(true);
+        expect(h.overlay.hidden).toBe(false); // still open — declined
+
         dismiss();
+        expect(cm.modal.hidden).toBe(false);
+        click(cm.discardBtn); // Conductor confirms discarding
+        await flush();
+        expect(cm.modal.hidden).toBe(true);
         expect(h.overlay.hidden).toBe(true);
       }
     });
+
+    test("the confirm modal's own backdrop click also declines (keeps editing), same as its Keep-editing button", async () => {
+      const cm = confirmModalParts(h);
+      clickOn(h.doc, h.editOpen);
+      p.textarea.value = RAW_SOURCE + "\nchanged: true\n";
+      p.textarea.dispatchEvent({ type: "input", target: p.textarea });
+
+      click(p.cancelBtn);
+      expect(cm.modal.hidden).toBe(false);
+      click(cm.backdrop);
+      await flush();
+      expect(cm.modal.hidden).toBe(true);
+      expect(h.overlay.hidden).toBe(false); // declined — still open
+    });
+  });
+
+  test("no native confirm()/alert() call remains anywhere in assets/app.js — the confirm modal is the only dismiss-confirmation surface", () => {
+    // Strip comments first — this file's own prose legitimately mentions "confirm()"/"alert()" by
+    // name (documenting what was replaced); the assertion is about executable code, not commentary.
+    const code = APP_JS_SOURCE.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    expect(code).not.toMatch(/\bwindow\.confirm\(|\bconfirm\(|\balert\(/);
   });
 });

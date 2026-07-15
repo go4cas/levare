@@ -55,7 +55,7 @@ const LEVARE_VERSION: string = (() => {
 const ASSETS = `<link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
-<link rel="stylesheet" href="/styles.css?v=8"/>`;
+<link rel="stylesheet" href="/styles.css?v=9"/>`;
 
 // ---------------------------------------------------------------------------
 // The app header (item 3, gate-review round UI1) — new, top-level, spans the full width above the
@@ -79,6 +79,26 @@ function appHeader(status: OrchestratorStatus, railToggleLabel: string): string 
 </header>`;
 }
 
+// UI4 item 1: the reusable confirm-modal primitive — a small centered panel over a dimmed backdrop,
+// in levare's own palette, replacing the browser's native confirm()/alert() everywhere in the
+// product. ONE instance per page, a sibling of `.app` (same "hidden by default, painted on demand"
+// shape as `editorOverlay()`), so any future confirmation need (the goal's own "the
+// visual-standardisation work will adopt it") reuses this DOM node and app.js's `confirmModal()`
+// helper rather than building a second one. `role="alertdialog"` (not `role="dialog"`, per the
+// editor overlay) — this surface only ever asks a yes/no question, never hosts arbitrary content.
+function confirmModalHtml(): string {
+  return `<div class="confirm-modal" id="confirm-modal" hidden>
+    <div class="confirm-modal__backdrop" data-confirm-backdrop></div>
+    <div class="confirm-modal__panel" role="alertdialog" aria-modal="true" aria-labelledby="confirm-modal-question">
+      <p class="confirm-modal__question" id="confirm-modal-question"></p>
+      <div class="confirm-modal__actions">
+        <button class="togglebtn" data-confirm-keep>Keep editing</button>
+        <button class="togglebtn is-danger" data-confirm-discard>Discard</button>
+      </div>
+    </div>
+  </div>`;
+}
+
 function shell(title: string, railToggleLabel: string, body: string, status: OrchestratorStatus): string {
   return `<!doctype html>
 <html lang="en">
@@ -91,7 +111,8 @@ ${ASSETS}
 <body>
 ${appHeader(status, railToggleLabel)}
 ${body}
-<script src="/app.js?v=6"></script>
+${confirmModalHtml()}
+<script src="/app.js?v=7"></script>
 </body>
 </html>
 `;
