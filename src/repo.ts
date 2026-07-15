@@ -241,8 +241,13 @@ function loadUnitArtifacts(unitDir: string): Map<string, Artifact> {
     const s = statSync(full);
     if (s.isFile() && name.endsWith(".md") && name !== "unit.md") add(full);
     else if (s.isDirectory()) {
-      // Folder artifact: exactly one markdown index carries the frontmatter (validator enforces).
-      const index = readdirSync(full).filter((n) => n.endsWith(".md"))[0];
+      // Folder artifact: exactly one markdown index carries the frontmatter (validate.ts's
+      // INDEX_COUNT check enforces this). That check runs separately from this load path though, so
+      // a repo caught mid-edit (or loaded without validating first) can still have a folder holding
+      // more than one .md — never let readdir's unspecified order pick which one is authoritative
+      // (the same class of bug as the F11 insertion-order finding). Sort first, lexicographic
+      // tiebreak, same as every other directory listing in this file.
+      const index = readdirSync(full).sort().filter((n) => n.endsWith(".md"))[0];
       if (index) add(join(full, index));
     }
   }

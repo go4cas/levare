@@ -6175,3 +6175,48 @@ fixtures/golden --port 4173 --no-daemon --read-only` bound and confirmed listeni
 before the suite ran — identical result, 804 pass/0 fail, exit 0; the decoy was still answering
 requests when the suite finished, proving nothing raced or crashed it. `levare replay fixtures/golden
 --stubs` matches `fixtures/golden/expected.json` byte-for-byte. `bun run deps:check` → `deps ok`.
+
+# NOTES: readdir[0] order-dependence in a work-unit folder-artifact's index resolution
+
+## The defect
+
+`repo.ts#loadUnitArtifacts`, resolving which file inside a folder artifact (e.g.
+`work/<project>/<unit>/design-x/`) carries the frontmatter, took `readdirSync(full).filter((n) =>
+n.endsWith(".md"))[0]` — the first `.md` by whatever order the filesystem's `readdir()` happens to
+return, which POSIX leaves unspecified. `validate.ts`'s `INDEX_COUNT` check rejects a folder holding
+more than one `.md` file, but that check runs on a separate path (`discoverFolderArtifacts`, only
+reached when `loadRepo`'s `validate: true` default is in effect) — a repo loaded with `{ validate:
+false }` (an established, already-used pattern: `tests/f19-blocked-artifact-verbs.test.ts`,
+`tests/binding.test.ts`, `tests/f20-loop-exhaustion.test.ts` all inspect intermediate/off-contract
+state this way) can still reach `loadUnitArtifacts` with two `.md` files present in a folder, and
+whichever one the OS handed back first silently became "the" artifact — the same class as the F11
+insertion-order bug: never let read order pick the authoritative file.
+
+## The fix
+
+Sort the directory listing before filtering/taking the first entry:
+`readdirSync(full).sort().filter((n) => n.endsWith(".md"))[0]` — matching the tiebreak already used
+by every other `readdirSync()` call in this file (`dirs()`, the outer project/unit loops, the
+top-level `loadEntities` sweep). There is no named-file convention for a folder artifact's index (no
+`index.md`-only rule is enforced anywhere — the golden fixture's own folder artifact happens to be
+named `index.md` but nothing requires that name), so lexicographic-sort-then-first is the rule that
+matches the existing contract (deterministic, documented, no new naming requirement imposed on
+folder-artifact authors).
+
+## Test coverage
+
+New `tests/repo-folder-artifact-order.test.ts`: builds a scratch folder artifact with two `.md`
+files (`a-first.md` / `z-second.md`, distinct `id`s) written in each disk-write order in turn, loads
+the repo with `{ validate: false }`, and asserts the resolved artifact is always the
+lexicographically-first file's `id` — never the other one, and stable across repeated loads.
+Confirmed the test actually exercises the fix by reverting `repo.ts`'s `sort()` and re-running: both
+new tests fail (the pre-fix `[0]`-of-unsorted-readdir happened to return `z-second.md` first in this
+environment) — re-applying the fix restores 0 fail.
+
+## Verification
+
+`bun test` — 806 pass (+2 from the new file), 1 pre-existing skip, 0 fail, across 65 files. `levare
+replay fixtures/golden --stubs` matches `fixtures/golden/expected.json` byte-for-byte (this fix only
+changes which pre-existing single-index folder artifact wins a tie that never occurs in the golden
+fixture — its own folder artifacts each already have exactly one `.md`). `bun run deps:check` → `deps
+ok`.
