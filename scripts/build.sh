@@ -32,6 +32,6 @@ target_args=()
 # fine. Building from a scratch dir elsewhere sidesteps it everywhere.
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
-(cd "$scratch" && bun build "$repo_root/src/cli.ts" --compile "${target_args[@]}" --outfile "$outfile" --define __LEVARE_BUILD_COMMIT__="\"$commit\"")
+(cd "$scratch" && bun build "$repo_root/src/cli.ts" --compile ${target_args[@]+"${target_args[@]}"} --outfile "$outfile" --define __LEVARE_BUILD_COMMIT__="\"$commit\"")
 
 echo "built $outfile @ $commit${target:+ (target $target)}"
