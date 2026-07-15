@@ -2,6 +2,7 @@ import { test, expect, describe, afterAll } from "bun:test";
 import { readFileSync, rmSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnLevareServe } from "./serve-subprocess.ts";
 
 // NOTES DIST4/DIST5: proof against the ACTUAL compiled binary, not just the source shim, of two
 // things `bun test` (which always runs under a source `bun` process, never a compiled one) genuinely
@@ -113,15 +114,13 @@ describe("the compiled binary's hidden `__worker` subcommand reaches the real wo
 describe("a compiled `serve` dispatches a real Orchestrator turn through the real self-invoked worker (NOTES DIST5)", () => {
   test("with no credential at all, still reports the honest disabled state (a genuinely missing prerequisite, not a compiled-binary limitation)", async () => {
     const root = seedScratchStudio();
-    const port = 41000 + Math.floor(process.pid % 500);
-    const proc = Bun.spawn([scratchOut, "serve", root, "--port", String(port), "--no-daemon"], {
+    const { proc, base } = await spawnLevareServe([root, "--no-daemon"], {
+      cwd: process.cwd(),
       env: { ...process.env, ANTHROPIC_API_KEY: "" },
-      stdout: "pipe",
-      stderr: "pipe",
+      bin: scratchOut,
     });
     try {
-      await new Promise((r) => setTimeout(r, 500));
-      const res = await fetch(`http://localhost:${port}/orchestrator/message`, {
+      const res = await fetch(`${base}/orchestrator/message`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: "hello" }),
@@ -147,15 +146,13 @@ describe("a compiled `serve` dispatches a real Orchestrator turn through the rea
   // spawn and dispatch were genuine, not mocked.
   test("with a credential present, the real spawn is attempted end-to-end — never disabled, never ENOENT/$bunfs/unknown-command", async () => {
     const root = seedScratchStudio();
-    const port = 41500 + Math.floor(process.pid % 500);
-    const proc = Bun.spawn([scratchOut, "serve", root, "--port", String(port), "--no-daemon"], {
+    const { proc, base } = await spawnLevareServe([root, "--no-daemon"], {
+      cwd: process.cwd(),
       env: { ...process.env, ANTHROPIC_API_KEY: "sk-ant-test-not-real" },
-      stdout: "pipe",
-      stderr: "pipe",
+      bin: scratchOut,
     });
     try {
-      await new Promise((r) => setTimeout(r, 500));
-      const res = await fetch(`http://localhost:${port}/orchestrator/message`, {
+      const res = await fetch(`${base}/orchestrator/message`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: "hello" }),

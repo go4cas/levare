@@ -6129,3 +6129,49 @@ mechanism that removes the hang's precondition: an in-app navigation, exercised 
 the real server above, issues exactly one request (the fragment fetch) — no document GET, no asset
 re-fetch, no SSE reconnect — which is the structural fix regardless of whether this sandbox can put
 a real Chrome tab through the original failure to confirm it no longer occurs.
+
+# NOTES: the fixed-port straggler — a fifth site the prior sweep's own grep couldn't see
+
+## Why the earlier "no fifth site" claim (above, "Test suite: fixed ports collided...") was wrong
+
+That fix searched for other subprocess spawns of `./levare` and found none, so it declared the class
+finished. It missed `tests/orchestrator-compiled-smoke.test.ts`, which spawns a *compiled* binary
+(`scratchOut`, a `bun build --compile` scratch output built by `scripts/build.sh`) rather than
+`./levare` — a grep keyed on the literal string `./levare` structurally cannot see a spawn of a
+different path, even though the underlying defect (a formula-derived port instead of an OS-assigned
+one) is identical. Two tests there each computed a "spread but still fixed" port — `41000 +
+(process.pid % 500)` and `41500 + (process.pid % 500)` — the exact pattern the original fix's own
+`serve-subprocess.ts` header already named as the thing to avoid, just re-invented in a file the
+grep didn't reach. This is the second time this class has shipped incomplete (four sites fixed, a
+fifth surfaced two sessions later); the lesson applied this time is to grep for the *symptom*
+(`port` near a multi-digit literal, anywhere in `tests/` and `src/`) rather than for one known
+caller shape, and to treat "no more matches for MY search" as weaker evidence than a suite-wide
+pattern grep.
+
+## The fix
+
+`tests/serve-subprocess.ts#spawnLevareServe` gained an optional `bin` (default `"./levare"`) so the
+same OS-assigned-ephemeral-port + read-the-bound-port-back-from-stdout helper works for any binary
+that accepts `levare`'s CLI shape — the source shim and a compiled `bun build --compile` output
+alike, since both print the identical `runServeCmd` startup line. Both
+`orchestrator-compiled-smoke.test.ts` tests now call `spawnLevareServe([root, "--no-daemon"], {
+bin: scratchOut, ... })` instead of hand-rolling a `Bun.spawn` with a formula port; the
+`await new Promise((r) => setTimeout(r, 500))` "hope it's up by now" waits in both tests are gone
+too, since `spawnLevareServe` only resolves once the subprocess's own stdout proves the server is
+actually listening — strictly stronger than a fixed sleep.
+
+**Suite-wide confirmation, not just this one file.** `grep -rnE "port[^a-zA-Z]{0,3}[1-9][0-9]{3,4}"
+tests/ src/ scripts/` — the only remaining hits are `cli.ts`'s and `board/serve.ts`'s own `4173`
+*default* (never itself a test booting a server) and `security-audit.test.ts`'s `4173` used purely
+as a same-origin URL literal in a CSRF assertion (no server bound). `grep -rnE "Bun\.serve\(|\.listen\("
+tests/` — no hits outside `src/board/serve.ts` itself. No fixed-port server boot remains anywhere in
+`tests/`.
+
+## Verification
+
+`bun test` — 804 pass, 1 pre-existing skip, 0 fail, across 64 files (unchanged pass count; this is a
+pure conversion, no new/removed test cases). `bun test` re-run with a decoy `levare serve
+fixtures/golden --port 4173 --no-daemon --read-only` bound and confirmed listening (`curl` 200)
+before the suite ran — identical result, 804 pass/0 fail, exit 0; the decoy was still answering
+requests when the suite finished, proving nothing raced or crashed it. `levare replay fixtures/golden
+--stubs` matches `fixtures/golden/expected.json` byte-for-byte. `bun run deps:check` → `deps ok`.

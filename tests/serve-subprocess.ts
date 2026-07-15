@@ -1,31 +1,34 @@
-// Shared helper for tests that boot the REAL `./levare serve` binary as a subprocess. Every such test
-// used to pass a "spread but still fixed" `--port` (a base + process.pid % 400, e.g. 4100-4499) — a
-// range that can still collide with the CLI's own hardcoded default port (4173, cli.ts's
-// `runServeCmd`) or with another such test's range, so a `levare serve` already running on the
-// machine (normal during a UI review) makes whichever subprocess-booting test races to that port fail
-// spuriously. The fix: always bind an OS-assigned ephemeral port (`--port 0`) and read back the actual
-// bound port from the process's own startup log line (`runServeCmd`'s `console.log`), rather than
-// betting on any port number chosen ahead of time.
+// Shared helper for tests that boot a REAL `levare serve` binary as a subprocess — the source shim
+// (`./levare`) or a compiled `bun build --compile` output (e.g. orchestrator-compiled-smoke's
+// scratch binary), both accept the identical CLI flags. Every such test used to pass a "spread but
+// still fixed" `--port` (a base + process.pid % 400, e.g. 4100-4499, or 41000-41999) — a range that
+// can still collide with the CLI's own hardcoded default port (4173, cli.ts's `runServeCmd`) or with
+// another such test's range, so a `levare serve` already running on the machine (normal during a UI
+// review) makes whichever subprocess-booting test races to that port fail spuriously. The fix: always
+// bind an OS-assigned ephemeral port (`--port 0`) and read back the actual bound port from the
+// process's own startup log line (`runServeCmd`'s `console.log`), rather than betting on any port
+// number chosen ahead of time.
 
-/** Spawn `./levare serve <...args> --port 0` and resolve once its actual bound port is known. */
+/** Spawn `<bin> serve <...args> --port 0` and resolve once its actual bound port is known. */
 export async function spawnLevareServe(
   args: string[],
-  opts: { cwd: string; env?: NodeJS.ProcessEnv; timeoutMs?: number },
+  opts: { cwd: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; bin?: string },
 ): Promise<{ proc: ReturnType<typeof Bun.spawn>; port: number; base: string }> {
-  const proc = Bun.spawn(["./levare", "serve", ...args, "--port", "0"], {
+  const bin = opts.bin ?? "./levare";
+  const proc = Bun.spawn([bin, "serve", ...args, "--port", "0"], {
     cwd: opts.cwd,
     env: opts.env,
     stdout: "pipe",
     stderr: "pipe",
   });
-  const port = await readBoundPort(proc, opts.timeoutMs ?? 10_000);
+  const port = await readBoundPort(proc, opts.timeoutMs ?? 10_000, bin);
   return { proc, port, base: `http://localhost:${port}` };
 }
 
 // `runServeCmd` logs `levare serve · <root> → http://localhost:<port> ...` exactly once, after
 // `Bun.serve` has already bound (Bun.serve resolves the actual port synchronously) — so the port in
 // that line is real and already listening by the time it appears.
-async function readBoundPort(proc: ReturnType<typeof Bun.spawn>, timeoutMs: number): Promise<number> {
+async function readBoundPort(proc: ReturnType<typeof Bun.spawn>, timeoutMs: number, bin: string): Promise<number> {
   const reader = proc.stdout.getReader();
   const decoder = new TextDecoder();
   let buf = "";
@@ -46,5 +49,5 @@ async function readBoundPort(proc: ReturnType<typeof Bun.spawn>, timeoutMs: numb
   } finally {
     reader.releaseLock();
   }
-  throw new Error(`./levare serve did not print its bound port within ${timeoutMs}ms; stdout so far: ${buf}`);
+  throw new Error(`${bin} serve did not print its bound port within ${timeoutMs}ms; stdout so far: ${buf}`);
 }
