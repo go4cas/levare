@@ -6271,3 +6271,49 @@ NOT appear, since no file exists under that name at all (an ordinary typo, not a
 `bun test` — 808 pass (+2), 1 pre-existing skip, 0 fail, across 65 files. `levare replay
 fixtures/golden --stubs` matches `fixtures/golden/expected.json` byte-for-byte (golden's own teams
 are never renamed, so this path is never exercised there). `bun run deps:check` → `deps ok`.
+
+# NOTES: release workflow action versions — clearing the Node 20 deprecation warnings
+
+## The defect
+
+The v0.1.0 Actions run emitted six Node 20 deprecation warnings from `actions/checkout@v4` and
+`actions/upload-artifact@v4` — both pinned to majors whose runtime has since moved past what GitHub
+now considers current.
+
+## What was bumped, and how the target versions were confirmed
+
+Queried the GitHub API directly for each action's actual latest release (not from training-data
+memory, since this repo's own knowledge cutoff predates today) — `curl
+https://api.github.com/repos/<org>/<repo>/releases/latest`:
+
+- `actions/checkout` **v4 → v7** (latest: v7.0.0, 2026-06-18)
+- `actions/upload-artifact` **v4 → v7** (latest: v7.0.1, 2026-04-10)
+- `actions/download-artifact` **v4 → v8** (latest: v8.0.1, 2026-03-11) — not named in the goal's own
+  six-warning list, but it is the same class (a GitHub-owned action several majors behind), so bumped
+  as "any other deprecated action version" per the goal's own instruction
+- `softprops/action-gh-release` **v2 → v3** (latest: v3.0.2, 2026-07-13) — same reasoning; v3's own
+  release notes confirm it is purely a Node 20 → Node 24 runtime move, no input/output changes
+- `oven-sh/setup-bun` **left at v2** — its latest release (v2.2.0, 2026-03-14) is still major v2; no
+  bump due
+
+Checked each new major's release notes for the two workflow files' actual usage before bumping:
+`checkout@v7` and `upload-artifact@v7`/`download-artifact@v8` are additive (new opt-in parameters —
+direct unzipped uploads, digest-mismatch handling — all defaulting to the prior zipped-artifact
+behavior this workflow already relies on); `action-gh-release@v3` is a pure runtime bump. None require
+a new required input this workflow doesn't already pass.
+
+## Verification
+
+`bun -e "Bun.YAML.parse(...)"` — both `.github/workflows/ci.yml` and `.github/workflows/release.yml`
+still parse. `bun test tests/release-workflow.test.ts` — all 17 structural assertions pass unchanged
+(none of them pin an exact action version string; they match on the action name prefix, e.g.
+`startsWith("softprops/action-gh-release")`, so no assertion needed updating). Full `bun test` — 808
+pass, 1 pre-existing skip, 0 fail, across 65 files (no test count change — this finding touches only
+the workflow YAML). `levare replay fixtures/golden --stubs` matches `fixtures/golden/expected.json`
+byte-for-byte. `bun run deps:check` → `deps ok`.
+
+**What could not be verified.** These workflows only truly run under GitHub Actions itself (pushing
+to `main` / tagging a release) — not something this sandbox can execute — so the *absence* of the
+Node 20 deprecation warnings on a real run is asserted from each new major's own release notes
+(runtime bumped to Node 24, as GitHub's deprecation notice requires) rather than independently
+re-observed in a live Actions run.
