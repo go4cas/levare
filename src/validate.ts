@@ -353,6 +353,7 @@ export function validatePath(target: string): ValidationResult {
   // Cross-entity structural checks: can this studio actually RUN? (only meaningful for a whole tree)
   if (st.isDirectory()) {
     validateStudioBindings(target, errors);
+    validateAgentTeamMembership(target, errors);
     validateResponsibleTeam(target, errors);
     validateAgentContextScope(target, errors);
     validateEnvNotTracked(target, errors);
@@ -1016,6 +1017,52 @@ function validateStudioBindings(root: string, errors: ValidationError[]): void {
         });
       }
     }
+  }
+}
+
+/**
+ * levare's model is one team per agent: teams are reused across projects, but an agent is never
+ * reused across teams. `env.ts#teamOf` resolves a member's team by returning the FIRST team whose
+ * `members` lists it — so an agent named in more than one team's `members` silently gets only that
+ * first team's connector grants and charter (guardrails, knowledge, style) everywhere else in the
+ * studio; the second team's membership is not an error anywhere else, it is just silently ignored.
+ * That is a silent-wrong-answer bug, not a runtime crash, so it is caught here instead: naming the
+ * agent and every team that lists it. The fix is never to share one agent definition across teams —
+ * duplicate and rename the agent per team instead (e.g. `scribe-press`, `scribe-docs`).
+ */
+function validateAgentTeamMembership(root: string, errors: ValidationError[]): void {
+  const teamsDir = join(root, "teams");
+  if (!existsSync(teamsDir)) return;
+
+  const teamsByMember = new Map<string, string[]>();
+  for (const file of readdirSync(teamsDir).sort()) {
+    if (!file.endsWith(".md") || file.endsWith(".learnings.md")) continue;
+    let data: Record<string, YamlValue>;
+    try {
+      ({ data } = parseFrontmatter(readFileSync(join(teamsDir, file), "utf8")));
+    } catch {
+      continue; // its own PARSE_ERROR was already recorded by the per-file pass.
+    }
+    const team = typeof data.name === "string" ? data.name : basename(file, ".md");
+    for (const member of strList(data.members)) {
+      const arr = teamsByMember.get(member) ?? [];
+      arr.push(team);
+      teamsByMember.set(member, arr);
+    }
+  }
+
+  for (const [member, teams] of [...teamsByMember].sort(([a], [b]) => a.localeCompare(b))) {
+    if (teams.length <= 1) continue;
+    const agentFile = join(root, "agents", `${member}.md`);
+    errors.push({
+      code: "AGENT_IN_MULTIPLE_TEAMS",
+      message:
+        `agent '${member}' is listed in more than one team's members: ${teams.sort().join(", ")} — levare's model is ` +
+        "one team per agent (teams are reused across projects; agents are not reused across teams), so this agent " +
+        "silently takes on only the first team's connector grants and charter; duplicate and rename the agent per " +
+        "team instead (e.g. 'scribe-press', 'scribe-docs')",
+      file: existsSync(agentFile) ? agentFile : teamsDir,
+    });
   }
 }
 

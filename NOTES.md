@@ -4454,6 +4454,34 @@ immediately, instead of shipping as a fourth silent instance of the same bug.
 test gained `evals` to its expected list; a new test derives the expected directory set from
 `validate.ts`'s own `REGISTRY_SCHEMAS` and asserts every one exists after `scaffoldStudio`.
 
+**Tests.** `tests/init.test.ts`: the existing "produces exactly the expected skeleton directory set"
+test gained `evals` to its expected list; a new test derives the expected directory set from
+`validate.ts`'s own `REGISTRY_SCHEMAS` and asserts every one exists after `scaffoldStudio`.
+
+## F25. An agent listed in more than one team's `members` silently took only the first team's grants
+
+**The defect.** `env.ts#teamOf(repo, member)` resolves a member's team by returning the first team
+whose `members` array lists it, iterating `repo.teams` in whatever order `Map` insertion (file-listing
+order) produced. levare's model is one team per agent — teams are reused across projects, but an agent
+is never reused across teams — so this was never meant to be a real ambiguity to break a tie on; it was
+an unvalidated invariant. An agent accidentally (or deliberately, thinking it'd "just work") listed in
+two teams' `members` silently got the FIRST team's connector grants (`env.ts#grantedConnectors`) and,
+everywhere charter/guardrails are resolved through `teamOf`, the first team's rules — never an error,
+never a warning, just quietly the wrong team's answer for every OTHER team that also claims the agent.
+
+**The fix.** `validate.ts#validateAgentTeamMembership` (new): walks every `teams/*.md`, builds
+member → [team names that list it], and for any member with more than one, raises
+`AGENT_IN_MULTIPLE_TEAMS` naming the agent and every team that lists it, pointing at the resolution —
+duplicate and rename the agent per team (e.g. `scribe-press`, `scribe-docs`) — rather than sharing one
+definition. Wired into `validatePath`'s cross-entity checks alongside `validateStudioBindings`,
+`validateResponsibleTeam`, etc. — runs whenever `teams/` exists, independent of `agents/` (unlike
+`validateStudioBindings`, which needs both halves of the binding).
+
+**Tests.** New `describe` block in `tests/validate.test.ts`: an agent named in two teams' `members`
+fails with `AGENT_IN_MULTIPLE_TEAMS`, naming the agent and both teams, and the message contains the
+duplicate-and-rename example; an agent in exactly one team is unaffected; the golden fixture (no shared
+agents) has no such error.
+
 **Verification.** `bun test` — 638 pass, 1 pre-existing skip, 0 fail, across 52 files. `levare replay
 fixtures/golden --stubs` — final artifact statuses still byte-for-byte against `expected.json`.
 `deps:check` — `deps ok`.

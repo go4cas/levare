@@ -134,6 +134,59 @@ describe("F1: a structurally unrunnable studio fails validation, naming what can
   });
 });
 
+// levare's model is one team per agent: teams are reused across projects, but an agent is never
+// reused across teams. `teamOf` (env.ts) resolves a member's team by returning the FIRST team that
+// lists it in `members` — so a two-team agent silently got only that first team's connector grants
+// and charter everywhere else, a silent-wrong-answer bug rather than a crash. `levare validate` must
+// name it instead, never let it pass quietly.
+describe("one team per agent: an agent listed in more than one team's members is rejected", () => {
+  test("AGENT_IN_MULTIPLE_TEAMS names the agent and every team that lists it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-agent-multiple-teams-"));
+    try {
+      mkdirSync(join(dir, "teams"), { recursive: true });
+      writeFileSync(
+        join(dir, "teams", "press.md"),
+        ["---", "name: press", "consumes: []", "produces: [report]", "members: [scribe]", "flow:", "  - step: report", "style:", "  color: '#111111'", "---", "", "# Press", ""].join("\n"),
+      );
+      writeFileSync(
+        join(dir, "teams", "docs.md"),
+        ["---", "name: docs", "consumes: []", "produces: [manual]", "members: [scribe]", "flow:", "  - step: manual", "style:", "  color: '#222222'", "---", "", "# Docs", ""].join("\n"),
+      );
+      const r = validatePath(dir);
+      expect(r.ok).toBe(false);
+      const err = r.errors.find((e) => e.code === "AGENT_IN_MULTIPLE_TEAMS");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("scribe"); // the agent
+      expect(err!.message).toContain("docs"); // every team that lists it
+      expect(err!.message).toContain("press");
+      expect(err!.message).toContain("scribe-press"); // the duplicate-and-rename pattern
+      expect(err!.message).toContain("scribe-docs");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an agent listed in exactly one team's members is unaffected", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-agent-single-team-"));
+    try {
+      mkdirSync(join(dir, "teams"), { recursive: true });
+      writeFileSync(
+        join(dir, "teams", "press.md"),
+        ["---", "name: press", "consumes: []", "produces: [report]", "members: [scribe]", "flow:", "  - step: report", "style:", "  color: '#111111'", "---", "", "# Press", ""].join("\n"),
+      );
+      const r = validatePath(dir);
+      expect(r.errors.map((e) => e.code)).not.toContain("AGENT_IN_MULTIPLE_TEAMS");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the golden fixture — no agent shared across teams — has no AGENT_IN_MULTIPLE_TEAMS error", () => {
+    const r = validatePath("fixtures/golden");
+    expect(r.errors.map((e) => e.code)).not.toContain("AGENT_IN_MULTIPLE_TEAMS");
+  });
+});
+
 // Ruling F16: a loop must never be permitted to declare an `until` it could never satisfy — no round
 // either of its own two members ever runs could make it true, so the walk would sit at that loop
 // forever, or (the live-found worse case) silently fall through past it once both members happen to
