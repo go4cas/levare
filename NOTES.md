@@ -5384,3 +5384,116 @@ real body content (not empty); `POST /registry/check/skills/test-bundle/SKILL.md
 validate fixtures/golden` → valid (unaffected — golden itself wasn't touched). `levare replay
 fixtures/golden --stubs` matches `expected.json` byte-for-byte (unaffected — the oracle covers
 `work/checkout-flow`, which nothing here touches). `deps:check` → `deps ok`.
+
+# NOTES UI7 — the registry card sweep: teams/agents/skills/knowledge push from describing toward showing
+
+Refinement pass over the four registry card kinds that carried the most description-not-shown and
+redundant-kind/parent text, per `docs/levare-design-brief.md`'s identity system (colour means team-or-
+status, never anything else) and two rules stated in the goal: RULE A (a card on its own entity's page
+doesn't repeat its kind or parent — the kind is the URL it lives on) and RULE B (colour means status only;
+a team's own declared hue is the one identity exception, expressed via shape/border/avatar tint, never a
+second invented colour channel).
+
+## Mechanism: `entityBlock` gained two opt-in knobs, not a fork
+
+Every registry card still goes through the one `entityBlock` function (`board/render.ts`). It gained an
+`opts` param with two independent knobs rather than a parallel code path: `showKindTag` (default `true`)
+lets a call site drop the top-right `.entity__kind` tag entirely — team/agent/skill now pass
+`showKindTag: false`; knowledge/type/connector/eval are untouched by this goal and keep it. `accentColor`
+(teams only) adds an inline `border-left:2px solid <hex>` to the card's own `<article>` — reusing the exact
+2px accent-border treatment `.release--latest` already established elsewhere on the board, not a new
+dimension. `data-editor-kind` (the shared overlay's heading) still always gets the real kind label
+regardless of `showKindTag` — the overlay is one shared modal across every entity kind and still needs to
+say what it's editing even when the card itself no longer prints that word.
+
+`avatar()` (the existing per-member/per-team-slot primitive) gained one more optional field, `title`,
+emitting a plain HTML `title="..."` attribute — the native browser tooltip the goal asked for ("member's
+name on hover"), no new JS, no new component.
+
+`tag()` (components.ts's existing tag/chip primitive) is reused verbatim for every new chip on these cards
+(team produces, agent produces, knowledge tags) — called with its own `.tag` CSS class (already styled,
+already used by `.pcard__tags`) instead of its default `.entity__kind` class, since a produces/tags chip is
+a different visual role than a kind label. No new primitive, no fork of `tag()`.
+
+One genuinely new piece: `agentKindBadge()`, a small local helper in `render.ts` (same pattern as the
+existing local `avatar()`/`memberAvatar()` helpers — not promoted to components.ts since it's specific to
+one card). It renders an agent's `native`/`cli`/`remote` kind as `.kindbadge.kindbadge--<kind>`, three CSS
+variants that differ only in border/fill TREATMENT (filled ink, outlined, dashed-outlined) — every declared
+colour in all three rules comes from the neutral ink scale (`--fg`/`--fg-dim`/`--fg-mute`/`--border-strong`)
+only; none of the four status-palette hues (`--active`/`--ok`/`--gate`/`--danger`) appears anywhere in
+`.kindbadge*`, which is what RULE B actually requires (a new test pins this by parsing every `.kindbadge*`
+rule out of `assets/styles.css` and asserting none of the four forbidden `var(--...)` tokens appears in any
+of them, rather than eyeballing the two colours chosen today).
+
+## Per-card changes
+
+**Teams.** The old "Definition" section's `color` row (`<span class="v mono" style="color:...">#2E6FB0</span>`)
+printed the hex as text — the literal "value printed on it" RULE B forbids for the identity exception. It's
+gone, replaced by the card's own `border-left` (see above); the small colour-square glyph that used to sit
+in the title ahead of the team name is gone too, for the same reason — one colour-as-identity signal (the
+border), not two. `members` no longer renders `${count} · name, name, name` — it's a `.chiprow` of avatars,
+each with `title="<name>"` for the hover name. `produces` is a `.chiprow` of `tag()` chips instead of a
+comma-joined mono string. The "Declared flow" strip already showed an avatar per step; it dropped the
+`<span class="mn">name</span>` beside each one (the avatar's own `title` now carries the name on hover) —
+shape+colour+hover carry the identity, no name text printed per step. `showKindTag: false` drops the "team"
+tag (RULE A).
+
+**Agents.** `showKindTag: false` drops the "agent" tag (RULE A). The "wears &lt;team&gt;" row is gone
+outright (RULE A) — the header avatar was already tinted with the team's colour (unchanged), so the team
+was already shown, never needed to also be told. `kind` and `model` collapsed from two separate `.prow`
+rows into one: `agentKindBadge(a.kind)` followed inline by `· <model>` in the same `<span class="v">`
+(when a model is declared; `cli`/`remote` members like `finch`/`rook` have none, so the badge stands alone,
+exactly as before). `produces` — previously not rendered on the agent card at all — is now a `.chiprow` of
+`tag()` chips, per the goal's explicit ask.
+
+**Skills.** `showKindTag: false` drops the "skill" tag (RULE A). The `<div class="card__h">SKILL.md</div>`
+heading is gone — it named the on-disk implementation file, not information about the skill; the
+description paragraph is now the entire card body.
+
+**Knowledge.** Kept its kind tag (the goal's KNOWLEDGE section and the "Achieved when" checklist both stop
+short of asking for its removal here, unlike teams/agents/skills — RULE A's rationale still nominally
+applies, but this goal scopes the four kinds independently and knowledge's own list of asks doesn't include
+it, so it's left as UI6 did). The "Injected into" backlink section (a reverse-reference scan over every
+agent/team) is gone. In its place: the knowledge entity's own declared `tags` frontmatter field (already
+present on both golden fixtures, `house-style`/`model-pricing`, as `tags: [voice, reference]` /
+`tags: [cost, reference]`) renders as a `.chiprow` of `tag()` chips. An item with no `tags` frontmatter
+falls back to the same "none declared"-style neutral hint text the agent card already uses for an empty
+context recipe, rather than a blank body.
+
+## Test updates
+
+Two pre-existing UI4-era tests asserted "every registry entity carries a bare-type kind tag, no exceptions"
+— true when written, now superseded by this goal's RULE A asks for three of the seven kinds. Both were
+rewritten rather than deleted: the blanket "every `.entity__kind` tag is a bare type word" assertion now
+scopes to the four kinds that still carry one (`knowledge`/`type`/`connector`/`eval`); the ordering check
+("title before kind badge, for every entity") now skips cards with no kind badge at all instead of failing
+on the (now expected) absence. A new `describe` block per card kind pins the goal's own "Achieved when"
+list directly: team card → coloured border (regex on the literal `border-left:2px solid <hex>` inline
+style) + avatar-chiprow members (not a hex value, not a plain name list) + chip-row produces + no "team"
+tag + avatar-only flow steps; agent card → no "agent" tag, no "wears" row, a `.kindbadge` present with none
+of its CSS rules touching a status-palette colour var, kind+model in one `.prow` row (asserted by counting
+total `.prow` rows on the card, not just checking the pair render adjacently), produces as chips; skill
+card → no "skill" tag, no literal `SKILL.md` text anywhere in the rendered body; knowledge card → no
+"Injected into" text in the rendered body, tag chips present and matching the fixture's actual declared
+tags. Two of those new tests initially false-failed against the *raw markdown source* embedded verbatim in
+each card's hidden `<textarea class="rawmd-source">` (the fixture's own prose legitimately still says
+"wren, lyra, finch produced this" / "Injected into member context when referenced" — that's the file's
+body text, not the rendered card) — fixed by stripping the textarea out of the fragment before asserting,
+the same "raw source is not the same surface as the rendered view" distinction UI3's tests already draw
+elsewhere in this file.
+
+## Verification
+
+`bun test` — 744 pass (13 new), 1 pre-existing skip, 0 fail, across 58 files (was 731/0/58 before this
+goal). `bun run deps:check` → `deps ok`. `levare replay fixtures/golden --stubs` matches
+`fixtures/golden/expected.json` byte-for-byte (unaffected — this goal touches only board rendering, never
+the runner or its fixtures). `bun build src/cli.ts` compiles clean (no tsconfig.json in this repo, so this
+is the project's own type/syntax smoke test in the absence of a separate `tsc --noEmit` script). Manually
+verified against a live `levare serve fixtures/golden` — fetched `/registry/{teams,agents,skills,knowledge}`
+and inspected the `kestrel`/`lyra`/`finch`/`flow-design`/`house-style` cards' actual rendered markup
+directly (no browser available in this environment for a pixel screenshot): team card shows
+`border-left:2px solid #2E6FB0` and avatar chips with `title` attributes, no hex text; `lyra` shows
+`kindbadge--native` next to `· claude-sonnet-5` in one row and `design`/`spec` as chips; `finch` (a `cli`
+member, no model) shows `kindbadge--cli` alone, confirming the adjacent-model rendering is conditional and
+doesn't leave a stray separator when no model is declared; `flow-design` shows only its description
+paragraph; `house-style` shows `voice`/`reference` as chips and no backlink section.
