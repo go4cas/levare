@@ -48,6 +48,39 @@
       });
     });
 
+    /* ---------- long lists (NOTES UI11) ----------
+       Left nav: a Projects/Ideas section over 7 rows renders its overflow already in the DOM, just
+       `hidden` (render.ts#railLongList) — "+ N more" reveals it in place, client-side, no navigation.
+       Delegated on `document` (not queried at DOMContentLoaded) because it must keep working even
+       though the rail is never one of the two regions a client-side navigation swap replaces (see the
+       fragment-swap notes further down) — delegation costs nothing here and needs no special-casing
+       either way. */
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-rail-expand]');
+      if (!btn) return;
+      var overflow = btn.previousElementSibling;
+      if (overflow && overflow.classList.contains('railsec__overflow')) overflow.hidden = false;
+      btn.remove();
+    });
+
+    /* Registry list filter: client-side, filter-as-you-type over the entity name and the visible
+       card body — never the hidden raw-markdown source (that's "Edit source" material, not what's on
+       screen). Delegated on `document` (an `input` event bubbles) so it keeps working after a UI10
+       fragment swap replaces `.main` with a freshly server-rendered filter input + card set, with no
+       rebind step of its own. */
+    document.addEventListener('input', function (e) {
+      var input = e.target.closest('[data-registry-filter]');
+      if (!input) return;
+      var host = input.closest('.main') || document;
+      var q = (input.value || '').trim().toLowerCase();
+      host.querySelectorAll('.entity.card').forEach(function (card) {
+        var title = card.querySelector('.entity__title');
+        var rendered = card.querySelector('.rendered');
+        var text = ((title ? title.textContent : '') + ' ' + (rendered ? rendered.textContent : '')).toLowerCase();
+        card.classList.toggle('is-filtered-out', q.length > 0 && text.indexOf(q) === -1);
+      });
+    });
+
     /* ---------- gate cards ---------- */
     /* The board is a stateless projection (PRD invariant 2): a gate verb POSTs to the real route,
        flips frontmatter server-side and commits as the Conductor; the SSE listener below reloads on
@@ -203,6 +236,34 @@
       var last = body.lastElementChild;
       return (last && last.classList.contains('turn')) ? last : null;
     }
+
+    /* NOTES UI11: every client-appended turn (either speaker) carries a quiet caption stamped at the
+       moment the turn was created — mirrors render.ts#turnCaption's markup exactly (a `.turn__caption
+       mono` line, its relative-time text wrapped in `.turn__time` carrying the full ISO stamp as its
+       hover `title`), so a server-rendered and a client-appended caption read identically. A brand-new
+       turn is always "now" (there is no elapsed time between creating it and stamping it) — the same
+       bucketing as derive.ts#captionTime exists here only so a caption that outlives a page session
+       (the panel is never torn down by a client-side navigation swap) still reads as coarse minutes/
+       hours/days if ever recomputed, not because this call site needs anything but "now" today. */
+    function relativeCaptionText(mins) {
+      if (mins < 1) return 'now';
+      if (mins < 60) return mins + 'm';
+      var hours = Math.floor(mins / 60);
+      if (hours < 24) return hours + 'h';
+      return Math.floor(hours / 24) + 'd';
+    }
+    function buildCaption() {
+      var date = new Date();
+      var cap = document.createElement('div');
+      cap.className = 'turn__caption mono';
+      var time = document.createElement('span');
+      time.className = 'turn__time';
+      time.title = date.toISOString();
+      time.textContent = relativeCaptionText(0);
+      cap.appendChild(time);
+      return cap;
+    }
+
     function appendTurnMessage(body, speaker, buildBodyEl) {
       var last = lastTurn(body);
       var turn = (last && last.classList.contains('turn--' + speaker)) ? last : null;
@@ -221,6 +282,7 @@
         content.className = 'turn__content';
         turn.appendChild(content);
         body.appendChild(turn);
+        turn.appendChild(buildCaption());
       }
       turn.querySelector('.turn__content').appendChild(buildBodyEl());
       body.scrollTop = body.scrollHeight;

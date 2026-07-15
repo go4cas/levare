@@ -40,9 +40,10 @@ describe("server-rendered Orchestrator panel — no per-message header, mark onc
       expect(html).not.toContain("BRIEFING");
     });
 
-    test(`${name}: the first (and only server-rendered) message carries a quiet "briefing · now" caption`, () => {
-      expect(html).toContain('class="turn__caption mono">briefing');
-      expect(html).toContain("now</div>");
+    // NOTES UI11: the caption now wraps its relative-time text in its own `.turn__time` span, carrying
+    // the full ISO timestamp as a hover `title` — the "short relative form, full stamp on hover" rule.
+    test(`${name}: the first (and only server-rendered) message carries a quiet "briefing · now" caption with a full-timestamp title`, () => {
+      expect(html).toContain('class="turn__caption mono">briefing &middot; <span class="turn__time" title="2026-07-11T20:00:00.000Z">now</span></div>');
       // Exactly one caption — this screen only ever server-renders a single opening turn.
       expect(html.match(/turn__caption/g)?.length).toBe(1);
     });
@@ -352,6 +353,79 @@ describe("a Conductor message renders right-aligned in an accent bubble (item 3)
     expect(bubble.textContent).toBe("what needs me?");
     // The Conductor's turn carries no mark — the mark is the Orchestrator's speaker signal only.
     expect(userTurns[0].querySelector(".turn__mark")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NOTES UI11 — every client-appended turn (either speaker), not just the server-rendered opening
+// briefing, carries a quiet caption: a relative-time span with the full ISO timestamp as its hover
+// `title`. Mirrors render.ts#turnCaption's markup exactly.
+// ---------------------------------------------------------------------------
+
+describe("NOTES UI11: every client-appended turn (both speakers) carries a caption-styled timestamp", () => {
+  test("a summoned Orchestrator narration's turn carries a turn__caption with a relative-time span and a full ISO title", () => {
+    let refs!: ReturnType<typeof buildComposer>;
+    const { doc } = setup((doc) => {
+      refs = buildComposer(doc);
+    });
+    const { body } = refs;
+
+    const btn = doc.createElement("button");
+    btn.setAttribute("data-summon", "tpl-none");
+    btn.setAttribute("data-narrate", "Here is the gate.");
+    doc.body.appendChild(btn);
+    click(doc, btn);
+
+    const turn = body.querySelectorAll(".turn--orch")[0];
+    const caption = turn.querySelector(".turn__caption");
+    expect(caption).not.toBeNull();
+    const time = caption!.querySelector(".turn__time")!;
+    expect(time).not.toBeNull();
+    expect(time.textContent).toBe("now");
+    expect((time as any).title).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  });
+
+  test("a Conductor (user) turn carries the identical caption treatment — same classes, same relative text, same title format", () => {
+    let refs!: ReturnType<typeof buildComposer>;
+    setup((doc) => {
+      refs = buildComposer(doc);
+    });
+    const { body, form, input } = refs;
+
+    input.value = "what needs me?";
+    form.dispatchEvent({ type: "submit", preventDefault() {} });
+
+    const userTurn = body.querySelectorAll(".turn--user")[0];
+    const caption = userTurn.querySelector(".turn__caption");
+    expect(caption).not.toBeNull();
+    expect(caption!.className).toContain("mono");
+    const time = caption!.querySelector(".turn__time")!;
+    expect(time.textContent).toBe("now");
+    expect((time as any).title).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  });
+
+  test("a caption is stamped once per turn, at creation — a second merged message into the same turn does not add a second caption", () => {
+    let refs!: ReturnType<typeof buildComposer>;
+    const { doc } = setup((doc) => {
+      refs = buildComposer(doc);
+    });
+    const { body } = refs;
+
+    const btn1 = doc.createElement("button");
+    btn1.setAttribute("data-summon", "tpl-none");
+    btn1.setAttribute("data-narrate", "First.");
+    doc.body.appendChild(btn1);
+    const btn2 = doc.createElement("button");
+    btn2.setAttribute("data-summon", "tpl-none");
+    btn2.setAttribute("data-narrate", "Second.");
+    doc.body.appendChild(btn2);
+
+    click(doc, btn1);
+    click(doc, btn2);
+
+    const turns = body.querySelectorAll(".turn");
+    expect(turns.length).toBe(1);
+    expect(turns[0].querySelectorAll(".turn__caption").length).toBe(1);
   });
 });
 

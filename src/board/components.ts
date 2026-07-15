@@ -54,11 +54,28 @@ export const chip = tag;
 const TABLER_ICON_PATHS = {
   "ti-brand-github": `<path d="M9 19c-4.3 1.4 -4.3 -2.5 -6 -3m12 5v-3.5c0 -1 .1 -1.4 -.5 -2c2.8 -.3 5.5 -1.4 5.5 -6a4.6 4.6 0 0 0 -1.3 -3.2a4.2 4.2 0 0 0 -.1 -3.2s-1.1 -.3 -3.5 1.3a12.3 12.3 0 0 0 -6.2 0c-2.4 -1.6 -3.5 -1.3 -3.5 -1.3a4.2 4.2 0 0 0 -.1 3.2a4.6 4.6 0 0 0 -1.3 3.2c0 4.6 2.7 5.7 5.5 6c-.6 .6 -.6 1.2 -.5 2v3.5" />`,
   "ti-world": `<path d="M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0" /><path d="M3.6 9h16.8" /><path d="M3.6 15h16.8" /><path d="M11.5 3a17 17 0 0 0 0 18" /><path d="M12.5 3a17 17 0 0 1 0 18" />`,
+  "ti-alert-triangle": `<path d="M12 9v4" /><path d="M10.36 3.6l-8.1 13.53a1.9 1.9 0 0 0 1.64 2.87h16.2a1.9 1.9 0 0 0 1.64 -2.87l-8.1 -13.53a1.9 1.9 0 0 0 -3.28 0z" /><path d="M12 16h.01" />`,
 } as const;
 export type IconLinkIcon = keyof typeof TABLER_ICON_PATHS;
 
 export function iconLink(opts: { icon: IconLinkIcon; href: string; label: string }): string {
   return `<a class="iconlink ${opts.icon}" href="${esc(opts.href)}" target="_blank" rel="noopener" aria-label="${esc(opts.label)}" title="${esc(opts.label)}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${TABLER_ICON_PATHS[opts.icon]}</svg></a>`;
+}
+
+// ---------------------------------------------------------------------------
+// noticeWarning — NOTES UI11/C13: the one place a "this is a warning" treatment renders anywhere on
+// the board. The design brief bans a general-purpose amber "warn" hue outright (gate brass is
+// gates-only, red is failed-only) — so this stays in the neutral ink scale, exactly like
+// `agentKindBadge`'s own shape-not-colour reasoning (render.ts): a tinted panel, a stronger-than-dim
+// text weight, and a small vendored alert-triangle icon carry the "pay attention" signal through
+// TREATMENT, never through a colour the palette doesn't already own.
+// ---------------------------------------------------------------------------
+export function alertIcon(): string {
+  return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${TABLER_ICON_PATHS["ti-alert-triangle"]}</svg>`;
+}
+
+export function noticeWarning(bodyHtml: string): string {
+  return `<div class="notice notice--warning">${alertIcon()}<span class="notice__text">${bodyHtml}</span></div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -142,8 +159,22 @@ export function orchMark(): string {
   return `<span class="turn__mark" aria-hidden="true"><i></i><b></b></span>`;
 }
 
-export function orchTurn(bodyHtml: string, opts: { caption?: string } = {}): string {
-  const captionHtml = opts.caption ? `<div class="turn__caption mono">${esc(opts.caption)}</div>` : "";
+// ---------------------------------------------------------------------------
+// turnCaption — NOTES UI11: every turn (either speaker) now carries a quiet timestamp line, not just
+// the opening briefing. `label` (e.g. "briefing") stays reserved for the one genuinely distinct
+// opening message; a plain reply/user turn passes no label, just the time. The relative text
+// ("now"/"2m"/"1h") is the only thing shown; the full ISO stamp lives in the `title` attribute (a
+// hover, never a second line — the caption stays one unobtrusive row per the design brief's caption
+// treatment). assets/app.js#buildCaption renders the identical markup client-side for turns appended
+// after the page loaded, so a server-rendered and a client-appended caption are indistinguishable.
+// ---------------------------------------------------------------------------
+export function turnCaption(time: { text: string; title: string }, label?: string): string {
+  const prefix = label ? `${esc(label)} &middot; ` : "";
+  return `<div class="turn__caption mono">${prefix}<span class="turn__time" title="${esc(time.title)}">${esc(time.text)}</span></div>`;
+}
+
+export function orchTurn(bodyHtml: string, opts: { captionTime?: { text: string; title: string }; captionLabel?: string } = {}): string {
+  const captionHtml = opts.captionTime ? turnCaption(opts.captionTime, opts.captionLabel) : "";
   return `<div class="turn turn--orch">${orchMark()}<div class="turn__content">${bodyHtml}</div>${captionHtml}</div>`;
 }
 

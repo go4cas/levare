@@ -46,6 +46,21 @@ export function ageLabel(fromIso: string, now: Date): string {
   return `${Math.floor(hours / 24)}d`;
 }
 
+/**
+ * NOTES UI11: a message caption's short relative time ("now"/"2m"/"1h"/"3d") plus the full ISO
+ * timestamp for the hover title — same coarse buckets as `ageLabel`, but "now" (not "just now") for
+ * the first minute, since a conversation caption reads more naturally that way than an artifact's age
+ * does. Every server-rendered Orchestrator caption is stamped at the render's own `now`, so the delta
+ * is always zero — the bucketing exists for the identical client-side computation in assets/app.js,
+ * which mirrors this exact arithmetic for turns appended after the page loaded.
+ */
+export function captionTime(fromIso: string, now: Date): { text: string; title: string } {
+  const from = new Date(fromIso);
+  const mins = Math.max(0, Math.floor((now.getTime() - from.getTime()) / 60000));
+  const text = mins < 1 ? "now" : mins < 60 ? `${mins}m` : Math.floor(mins / 60) < 24 ? `${Math.floor(mins / 60)}h` : `${Math.floor(mins / 1440)}d`;
+  return { text, title: from.toISOString() };
+}
+
 // ---------------------------------------------------------------------------
 // Gates (ruling C2: an artifact at in-review always means an open gate)
 // ---------------------------------------------------------------------------
@@ -347,6 +362,23 @@ export function recentReleases(repo: Repo, project: string, limit = 3): WorkUnit
 /** Most recently shipped unit in a project — `recentReleases`'s own head. */
 export function latestRelease(repo: Repo, project: string): WorkUnit | undefined {
   return recentReleases(repo, project, 1)[0];
+}
+
+/**
+ * NOTES UI11: the left nav's Projects section orders by real recency, not declared/insertion order —
+ * the newest `created` date among any artifact anywhere in the project (never filesystem mtime, same
+ * reasoning as `mostRelevantUnit` above). A project with no artifacts yet sorts last (empty recency
+ * key), never first.
+ */
+export function projectLastActivity(repo: Repo, project: string): string {
+  let latest = "";
+  for (const unit of repo.units) {
+    if (unit.project !== project) continue;
+    const artifacts = repo.artifacts.get(`${unit.project}/${unit.unit}`);
+    if (!artifacts) continue;
+    for (const a of artifacts.values()) if (a.created > latest) latest = a.created;
+  }
+  return latest;
 }
 
 // ---------------------------------------------------------------------------

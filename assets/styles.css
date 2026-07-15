@@ -117,6 +117,13 @@ button{ font-family:inherit; }
 .rel .nm{ font-family:var(--mono); font-size:11.5px; color:var(--fg-dim); }
 .rel .ag{ margin-left:auto; font-family:var(--mono); font-size:10.5px; color:var(--fg-mute); }
 
+/* NOTES UI11: the long-list "+ N more" reveal — quiet, matching `.idea`/`.rel`'s own hover treatment
+   so the whole nav-row family stays one visual language. The overflow rows it reveals need no rule of
+   their own beyond the native `[hidden]` the server already sets. */
+.railsec__more{ display:block; width:100%; text-align:left; background:none; border:none; padding:5px 8px;
+  margin:0 -8px; border-radius:7px; font-family:var(--sans); font-size:11.5px; color:var(--fg-mute); cursor:pointer; }
+.railsec__more:hover{ background:var(--panel-2); color:var(--fg-dim); }
+
 .tchip{ display:inline-flex; align-items:center; gap:8px; background:var(--panel-2); border:1px solid var(--border);
   padding:5px 11px 5px 9px; border-radius:7px; }
 .tchip .sq{ width:10px; height:10px; border-radius:3px; }
@@ -290,19 +297,28 @@ button{ font-family:inherit; }
    accent bubble (Conductor) is the ONLY speaker signal — no per-message "RESPONSE"/"BRIEFING" header.
    A same-speaker message immediately following an existing turn merges into it (client-side, see
    app.js#appendTurnMessage) instead of repeating the mark/spacing (design brief item 4). ---------- */
-.turn{ display:flex; gap:9px; }
+.turn{ display:flex; gap:9px; flex-wrap:wrap; }
 .turn__mark{ position:relative; width:12px; height:15px; flex:none; margin-top:3px; }
 .turn__mark i{ position:absolute; left:5.5px; top:0; width:2px; height:12px; background:var(--accent);
   border-radius:2px; transform:rotate(-11deg); transform-origin:bottom center; }
 .turn__mark b{ position:absolute; left:2.5px; bottom:0; width:5px; height:5px; background:var(--accent); border-radius:50%; }
 .turn__content{ display:flex; flex-direction:column; gap:6px; min-width:0; flex:1; }
 .msg__body{ margin:0; font-size:13.5px; line-height:1.6; color:var(--fg-dim); }
-/* The first message's quiet caption (item 2) — beneath the whole turn, never repeated. */
-.turn__caption{ font-size:10px; color:var(--fg-mute); margin-top:2px; }
+/* NOTES UI11: the caption (every turn now, not just the first message — item 4) reads as its own
+   quiet row beneath the whole turn, distinctly separated from the message text — `flex:0 0 100%` on a
+   `flex-wrap:wrap` row forces it onto a fresh line under the fixed-width mark + flexible content,
+   rather than crowding beside them as a third row item. `margin-left` aligns it under the message text
+   (mark width + the row's own gap), never under the mark glyph itself. Both speakers share this one
+   rule; only alignment (`.turn--user` below) differs. */
+.turn__caption{ flex:0 0 100%; margin-top:6px; margin-left:21px; font-size:10px; letter-spacing:.03em; color:var(--fg-mute); }
+.turn__time{ font-style:normal; }
 
 .turn--user{ justify-content:flex-end; }
 .turn--user .turn__content{ max-width:84%; margin-left:auto; align-items:flex-end; }
 .turn--user .msg__body{ background:var(--bg-user); color:var(--text-user); border:1px solid var(--border); padding:9px 12px; border-radius:10px; }
+/* The Conductor's own turn has no mark, and its bubble is right-aligned — its caption sits flush
+   right too, reading as "beneath the bubble" rather than under a mark that isn't there. */
+.turn--user .turn__caption{ margin-left:0; text-align:right; }
 .summon{ display:inline-flex; align-items:center; gap:8px; align-self:flex-start; cursor:pointer;
   background:color-mix(in oklab, var(--accent) 9%, transparent); border:1px solid color-mix(in oklab, var(--accent) 24%, transparent);
   padding:7px 11px; border-radius:8px; transition:.12s; }
@@ -377,6 +393,25 @@ button{ font-family:inherit; }
 .prow{ display:flex; gap:12px; align-items:baseline; }
 .prow .k{ font-size:12px; color:var(--fg-mute); width:78px; flex:none; }
 .prow .v{ font-size:12.5px; color:var(--fg-dim); }
+
+/* NOTES UI11/C13: the one warning treatment on the board (components.ts#noticeWarning) — the design
+   brief bans a general-purpose amber "warn" hue outright (gate brass is gates-only, red is
+   failed-only), so this stays entirely in the neutral ink scale: a tinted panel plus full-strength
+   (not dimmed) text and a small alert icon carry "pay attention" through weight/treatment, not colour. */
+.notice{ display:flex; align-items:flex-start; gap:8px; padding:9px 11px; border-radius:8px; font-size:12.5px; line-height:1.55; margin-top:2px; }
+.notice svg{ flex:none; margin-top:1px; color:var(--fg-dim); }
+.notice--warning{ background:color-mix(in oklab, var(--fg) 6%, var(--panel)); border:1px solid var(--border-strong); }
+.notice__text{ color:var(--fg); }
+
+/* NOTES UI11: the registry long-list filter — a plain bordered input above the card grid, styled like
+   the editor overlay's own textarea family rather than the composer's borderless one (this sits over
+   opaque card content, not a hairline-bordered aside). */
+.registry-filter{ display:block; width:100%; max-width:340px; box-sizing:border-box; font-family:var(--sans);
+  font-size:13px; color:var(--fg); background:var(--panel); border:1px solid var(--border-strong);
+  border-radius:8px; padding:7px 12px; margin-bottom:4px; outline:none; }
+.registry-filter::placeholder{ color:var(--fg-mute); }
+.registry-filter:focus{ border-color:var(--fg-dim); }
+.entity.card.is-filtered-out{ display:none; }
 .founding{ display:flex; align-items:center; gap:11px; padding:9px 0; border-bottom:1px solid var(--border); }
 .founding:last-child{ border-bottom:none; }
 .founding .cite{ margin-left:auto; font-family:var(--mono); font-size:10.5px; color:var(--fg-mute);
@@ -450,6 +485,10 @@ button{ font-family:inherit; }
 .kindbadge--native{ background:var(--fg); color:var(--bg); border:1px solid var(--fg); }
 .kindbadge--cli{ background:transparent; color:var(--fg-dim); border:1px solid var(--border-strong); }
 .kindbadge--remote{ background:transparent; color:var(--fg-mute); border:1px dashed var(--border-strong); }
+/* NOTES UI11: a connector's kind (cli/mcp) reuses this same shape-treatment system — `cli` shares the
+   agent kind's own outlined `--cli` variant (same concept, same treatment); `mcp` is filled, like
+   `--native`, so the two connector kinds read as a clear filled/outlined pair. */
+.kindbadge--mcp{ background:var(--fg); color:var(--bg); border:1px solid var(--fg); }
 /* margin-top:auto pins this row to the bottom of .rendered's (now flex:1) box, so every entity
    kind's actions row lands on a consistent baseline regardless of its own content's natural height —
    the fix for the chip/actions-row misalignment across teams/agents/skills/etc. sharing a grid row. */

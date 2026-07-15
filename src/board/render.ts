@@ -29,6 +29,8 @@ import {
   findArtifactInProject,
   supersededByOf,
   citedByOf,
+  projectLastActivity,
+  captionTime,
   type OpenGate,
   type ScoreNode,
 } from "./derive.ts";
@@ -39,7 +41,7 @@ import type { DaemonInvocation } from "../daemon.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../orchestrator-status.ts";
 import { getVersionInfo } from "../version.ts";
 import { dotClass, snodeClass, statusLabel, fromWorkUnitStatus, fromArtifactStatus, fromNodeState } from "./status.ts";
-import { statusBadge, paceBadge, tag, iconLink, statStrip, counter, emptyState, pendingState, card, confirmModal, editorOverlay, orchTurn } from "./components.ts";
+import { statusBadge, paceBadge, tag, iconLink, statStrip, counter, emptyState, pendingState, card, confirmModal, editorOverlay, orchTurn, noticeWarning } from "./components.ts";
 
 // levare's own release version (item 3: "the release version as a quiet muted mono chip" beside the
 // wordmark) — never from a project's data (that's the `pace`/`deploy`/release vocabulary, a
@@ -195,6 +197,12 @@ function agentKindBadge(kind: "native" | "cli" | "remote"): string {
   return `<span class="kindbadge kindbadge--${kind}">${esc(kind)}</span>`;
 }
 
+// NOTES UI11: a connector's kind (cli/mcp) gets the identical shape-treatment badge system as an
+// agent's kind — filled vs. outlined, never colour (RULE B, same reasoning as agentKindBadge above).
+function connectorKindBadge(kind: "cli" | "mcp"): string {
+  return `<span class="kindbadge kindbadge--${kind}">${esc(kind)}</span>`;
+}
+
 function artifactFileName(art: Artifact): string {
   return `${art.id}.md`;
 }
@@ -269,13 +277,29 @@ function registryNavLinks(repo: Repo, extras: RegistryExtras, active?: RegistryK
   }).join("\n");
 }
 
+// NOTES UI11 (long lists, item 1): a nav section over this many rows collapses to the most recent
+// entries plus a muted "+ N more" reveal — client-side, in place, no new route (assets/app.js). At
+// this count or fewer, a section renders exactly as before: no wrapper, no button, byte-identical to
+// the pre-UI11 markup (see the rail-byte-identical-across-screens test).
+const RAIL_LONGLIST_CAP = 7;
+
+function railLongList(rows: string[]): string {
+  if (rows.length <= RAIL_LONGLIST_CAP) return rows.join("\n");
+  const visible = rows.slice(0, RAIL_LONGLIST_CAP).join("\n");
+  const overflow = rows.slice(RAIL_LONGLIST_CAP).join("\n");
+  const more = rows.length - RAIL_LONGLIST_CAP;
+  return `${visible}<div class="railsec__overflow" hidden>${overflow}</div><button type="button" class="railsec__more" data-rail-expand>+ ${more} more</button>`;
+}
+
 function railNav(repo: Repo, extras: RegistryExtras, opts: { activeRegistryEntity?: RegistryKind } = {}): string {
-  const projectRail = [...repo.projects.values()]
+  // NOTES UI11: ordered by real recency (the newest artifact `created` anywhere in the project),
+  // most recently active first — never filesystem mtime (see `projectLastActivity`'s own doc comment).
+  const projectRows = [...repo.projects.values()]
+    .sort((a, b) => projectLastActivity(repo, b.name).localeCompare(projectLastActivity(repo, a.name)))
     .map((p) => {
       const units = repo.units.filter((u) => u.project === p.name).length;
       return `<a class="rel" href="/project/${esc(p.name)}"><span class="nm">${esc(p.name)}</span><span class="ag">${units}</span></a>`;
-    })
-    .join("\n");
+    });
 
   const health = diagnose(
     [...repo.connectors.values()],
@@ -293,15 +317,15 @@ function railNav(repo: Repo, extras: RegistryExtras, opts: { activeRegistryEntit
     .map((h) => `<a class="crow" href="/registry/connectors/${esc(h.name)}"><span class="status-dot ${h.status === "ok" ? "is-ok" : "is-idle"}"></span><span class="nm">${esc(h.name)}</span></a>`)
     .join("\n");
 
-  const ideasHtml = extras.ideas.length
-    ? extras.ideas.map((i) => `<a class="idea" href="${ideaHref(i.name)}">${esc(i.name)}</a>`).join("\n")
-    : `<div class="idea" style="color:var(--fg-mute)">no ideas captured yet</div>`;
+  const ideaRows = extras.ideas.length
+    ? extras.ideas.map((i) => `<a class="idea" href="${ideaHref(i.name)}">${esc(i.name)}</a>`)
+    : [`<div class="idea" style="color:var(--fg-mute)">no ideas captured yet</div>`];
 
   return `<aside class="rail">
-    <section class="railsec"><h3 class="railsec__h">Projects</h3>${projectRail}</section>
+    <section class="railsec"><h3 class="railsec__h">Projects</h3>${railLongList(projectRows)}</section>
     <section class="railsec"><h3 class="railsec__h">Registry</h3><nav class="reg-nav">${registryNavLinks(repo, extras, opts.activeRegistryEntity)}</nav></section>
     <section class="railsec"><h3 class="railsec__h">Connectors</h3>${connectorRows}</section>
-    <section class="railsec"><h3 class="railsec__h">Ideas</h3>${ideasHtml}</section>
+    <section class="railsec"><h3 class="railsec__h">Ideas</h3>${railLongList(ideaRows)}</section>
   </aside>`;
 }
 
@@ -620,7 +644,7 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date(), r
 
   const briefingBody = orchTurn(
     `<p class="msg__body">${gates.length ? `${gates.length} gate${gates.length === 1 ? " is" : "s are"} on you.` : "Nothing needs a decision right now."} Ask me about any project or open a gate to review it.</p>`,
-    { caption: "briefing · now" },
+    { captionTime: captionTime(now.toISOString(), now), captionLabel: "briefing" },
   );
   const orch = orchestratorPanel("studio", status, briefingBody);
 
@@ -771,7 +795,7 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
 
   const briefingBody = orchTurn(
     `<p class="msg__body">${esc(projectName)} has ${gates.length} unit${gates.length === 1 ? "" : "s"} at a gate. Expand a unit to open its run or summon its gate here.</p>`,
-    { caption: "briefing · now" },
+    { captionTime: captionTime(now.toISOString(), now), captionLabel: "briefing" },
   );
   const orch = orchestratorPanel("project", status, briefingBody);
 
@@ -853,7 +877,7 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
   const gateHtml = gates.map((g) => gateCardHtml(repo, g, now, { cta: true, dispatching: dispatchingFor(running, g) })).join("\n");
   const briefingBody = orchTurn(
     `<p class="msg__body">${gates.length ? `${esc(gates[0].label)} is ready for review below.` : "No open gate on this unit right now."}</p>`,
-    { caption: "briefing · now" },
+    { captionTime: captionTime(now.toISOString(), now), captionLabel: "briefing" },
   );
   const orch = orchestratorPanel("run", status, briefingBody, gateHtml);
 
@@ -975,14 +999,18 @@ export function renderArtifact(repo: Repo, project: string, unit: string, id: st
     ${lineageCard}
   </main>`;
 
-  const briefingBody = `<div class="msg"><div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
-      <p class="msg__body">${esc(art.kind)} ${esc(art.id)}, produced by ${esc(art.produced_by)}. ${citedBy.length ? `Cited by ${citedBy.length} artifact${citedBy.length === 1 ? "" : "s"}.` : "Not cited by anything yet."}</p></div>`;
+  // NOTES UI11: migrated off the pre-UI8 `.msg__label` markup onto the shared `orchTurn` primitive —
+  // this screen had never been brought forward when UI8 introduced the turn/caption anatomy.
+  const briefingBody = orchTurn(
+    `<p class="msg__body">${esc(art.kind)} ${esc(art.id)}, produced by ${esc(art.produced_by)}. ${citedBy.length ? `Cited by ${citedBy.length} artifact${citedBy.length === 1 ? "" : "s"}.` : "Not cited by anything yet."}</p>`,
+    { captionTime: captionTime(now.toISOString(), now), captionLabel: "briefing" },
+  );
   const orch = orchestratorPanel("artifact", status, briefingBody);
 
   return shell(`levare · ${art.kind} · ${art.id}`, "Open context", pageBody(rail, main, orch), status);
 }
 
-export function renderIdea(repo: Repo, root: string, name: string, status: OrchestratorStatus = resolveOrchestratorStatus()): string {
+export function renderIdea(repo: Repo, root: string, name: string, status: OrchestratorStatus = resolveOrchestratorStatus(), now: Date = new Date()): string {
   const extras = loadExtras(root);
   const idea = extras.ideas.find((i) => i.name === name);
   if (!idea) throw new Error(`unknown idea '${name}'`);
@@ -1021,8 +1049,10 @@ export function renderIdea(repo: Repo, root: string, name: string, status: Orche
     ${lineageCard}
   </main>`;
 
-  const briefingBody = `<div class="msg"><div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
-      <p class="msg__body">${esc(idea.name)} is a captured pitch with no project yet. Promoting it opens an inception unit.</p></div>`;
+  const briefingBody = orchTurn(
+    `<p class="msg__body">${esc(idea.name)} is a captured pitch with no project yet. Promoting it opens an inception unit.</p>`,
+    { captionTime: captionTime(now.toISOString(), now), captionLabel: "briefing" },
+  );
   const orch = orchestratorPanel("idea", status, briefingBody);
 
   return shell(`levare · idea · ${idea.name}`, "Open context", pageBody(rail, main, orch), status);
@@ -1095,7 +1125,7 @@ function entityBlock(kind: RegistryKind, title: string, kindLabel: string, inner
 // behavior without a new detail-page screen. Resolved here (not left to the client) into the exact
 // `id` `entityBlock` already gives that card, so app.js only has to look one element up, never
 // re-derive the id itself from the URL.
-export function renderRegistry(repo: Repo, root: string, activeEntity?: string, status: OrchestratorStatus = resolveOrchestratorStatus(), highlightName?: string): string {
+export function renderRegistry(repo: Repo, root: string, activeEntity?: string, status: OrchestratorStatus = resolveOrchestratorStatus(), highlightName?: string, now: Date = new Date()): string {
   const extras = loadExtras(root);
   const active: RegistryKind = REGISTRY_KINDS.includes(activeEntity as RegistryKind) ? (activeEntity as RegistryKind) : "teams";
   const highlightId = highlightName ? `${active}-${highlightName}` : undefined;
@@ -1159,10 +1189,14 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
 
   const typeBlocks = [...repo.types.values()]
     .map((t) => {
+      // NOTES UI11 (RULE A, same ruling as UI7): the title already shows the glyph — no separate
+      // glyph row repeating it. `expects`/`gates` render as chip rows through the same tag/chip
+      // primitive agents' `produces` already uses, not a plain arrow-joined or comma-joined string.
+      const expectsChips = t.expects.map((e) => tag(e, "tag")).join("");
+      const gatesChips = t.gates.map((g) => tag(g, "tag")).join("");
       const inner = `<div class="card__h">Expected kinds</div>
-      <div class="prow"><span class="k">glyph</span><span class="v mono">${t.glyph}</span></div>
-      <div class="prow"><span class="k">expects</span><span class="v mono">${t.expects.map(esc).join(" &rarr; ")}</span></div>
-      <div class="prow"><span class="k">gates</span><span class="v">${t.gates.map(esc).join(", ")}</span></div>`;
+      <div class="prow"><span class="k">expects</span><span class="v chiprow">${expectsChips}</span></div>
+      <div class="prow"><span class="k">gates</span><span class="v chiprow">${gatesChips || '<span style="color:var(--fg-mute)">none declared</span>'}</span></div>`;
       return entityBlock("types", `<span style="font-family:var(--mono)">${t.glyph} ${esc(t.name)}</span>`, "type", inner, `types/${t.name}.md`, rawFor(root, "types", t.name), t.name, active === "types");
     })
     .join("\n");
@@ -1170,17 +1204,20 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
   const connectorBlocks = [...repo.connectors.values()]
     .map((c) => {
       // NOTES C13: the board must never imply a scoping guarantee levare isn't providing — an
-      // `auth: subscription` connector's card says so plainly, not just its `auth` value. NOTES UI1:
-      // this used to hardcode `var(--warn,#b45309)`, a colour outside the design brief's palette
-      // (the brief bans a general-purpose "warn" hue outright: "anything tempted toward amber is
-      // either needs-you (brass, gate-shaped) or failed (red), or it renders neutral with text") — a
-      // fact, not a gate or a failure, so it now renders neutral, like every other informational row.
+      // `auth: subscription` connector's card says so plainly, not just its `auth` value. NOTES UI11:
+      // this genuinely IS a warning (the goal's own ruling) and now gets the shared `noticeWarning`
+      // treatment — a tinted/bordered panel plus a small alert icon — rather than plain body text.
+      // Still no amber/red: the design brief bans a general-purpose "warn" hue outright (gate brass is
+      // gates-only, red is failed-only), so the treatment stays in the neutral ink scale — see
+      // `noticeWarning`'s own doc comment (components.ts) for the reasoning.
       const authWarning =
         c.auth === "subscription"
-          ? `<div class="prow"><span class="k"></span><span class="v" style="color:var(--fg-dim)">levare cannot scope this credential — any member that can spawn \`${esc(c.command ?? c.name)}\` can use this login. The grant is documentation, not enforcement.</span></div>`
+          ? noticeWarning(`levare cannot scope this credential — any member that can spawn \`${esc(c.command ?? c.name)}\` can use this login. The grant is documentation, not enforcement.`)
           : "";
+      // NOTES UI11: the connector kind (cli/mcp) gets the same shape-treatment badge as an agent's
+      // kind — no status-palette colour, consistent with UI7's agent-kind badges.
       const inner = `<div class="card__h">Definition</div>
-      <div class="prow"><span class="k">kind</span><span class="v mono">${esc(c.kind)}</span></div>
+      <div class="prow"><span class="k">kind</span><span class="v">${connectorKindBadge(c.kind)}</span></div>
       <div class="prow"><span class="k">auth</span><span class="v mono">${esc(c.auth)}${c.plan ? ` · ${esc(c.plan)}` : ""}</span></div>
       <div class="prow"><span class="k">env</span><span class="v mono">${c.env.map(esc).join(", ")}</span></div>${authWarning}`;
       return entityBlock("connectors", esc(c.name), "connector", inner, `connectors/${c.name}.md`, rawFor(root, "connectors", c.name), c.name, active === "connectors");
@@ -1203,18 +1240,31 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
   // 220px default, since an entity card carries more content than a project card); team/agent cards
   // may still span visually wider rows when their flow-strip/recipe content needs it — flex-wrap
   // inside those already handles that without any extra CSS.
+  // NOTES UI11 (long lists, item 2): a section with more than 10 entries gets a client-side
+  // filter-as-you-type input above the card grid (assets/app.js, delegated so it survives the UI10
+  // fragment swap); at 10 or fewer, no input at all. Scoped to the ACTIVE kind's own count — only
+  // that kind's cards are ever visible (`entityBlock`'s own `display:none` on the rest), so the input
+  // only needs to exist when the kind you're actually looking at is long.
+  const filterHtml =
+    registryKindCount(repo, extras, active) > 10
+      ? `<input type="text" class="registry-filter" placeholder="Filter ${esc(title.toLowerCase())}&hellip;" aria-label="Filter ${esc(title.toLowerCase())}" data-registry-filter/>`
+      : "";
+
   const main = `<main class="main"${highlightId ? ` data-highlight="${esc(highlightId)}"` : ""}>
     <header class="phead">
       <div class="crumb"><a href="/studio">studio</a><span>/</span><span>registry</span></div>
       <h1>${title}</h1>
     </header>
+    ${filterHtml}
     <div class="pcards" style="grid-template-columns:repeat(auto-fill,minmax(320px,1fr))">
       ${teamBlocks}${agentBlocks}${skillBlocks}${knowledgeBlocks}${typeBlocks}${connectorBlocks}${evalBlocks}
     </div>
   </main>`;
 
-  const briefingBody = `<div class="msg"><div class="msg__label"><span class="k">briefing</span><span class="t">now</span></div>
-      <p class="msg__body">This is the registry. The only write here is <span class="mono">Edit source</span>: raw markdown, live validation, then <span class="mono">Save and commit</span>.</p></div>`;
+  const briefingBody = orchTurn(
+    `<p class="msg__body">This is the registry. The only write here is <span class="mono">Edit source</span>: raw markdown, live validation, then <span class="mono">Save and commit</span>.</p>`,
+    { captionTime: captionTime(now.toISOString(), now), captionLabel: "briefing" },
+  );
   const orch = orchestratorPanel("registry", status, briefingBody);
 
   // The overlay is a sibling of `.app`, not nested inside it and not a second page — the board (rail,
