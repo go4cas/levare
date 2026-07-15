@@ -552,7 +552,13 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date(), r
     ? gates.map((g) => gateCardHtml(repo, g, now, { dispatching: dispatchingFor(running, g) })).join("\n")
     : `<p style="color:var(--fg-mute);font-size:13.5px">Nothing needs you right now.</p>`;
 
-  const projectCards = [...repo.projects.values()]
+  // UI2 item 6: the Studio "Projects" section becomes an IN-FLIGHT worklist, not the project index —
+  // it shows only projects with at least one active work unit. An idle project (no active unit) drops
+  // out entirely; it's still reachable via the left nav (`railNav`) and its own project page. This is
+  // the same `status === "active"` check `projectStatusChip`/the project page already use for
+  // "anyUnitActive", so "in flight" means exactly what the status badge already calls active.
+  const inFlightProjects = [...repo.projects.values()].filter((p) => repo.units.some((u) => u.project === p.name && u.status === "active"));
+  const projectCards = inFlightProjects
     .map((p) => {
       const units = repo.units.filter((u) => u.project === p.name);
       const projGates = gates.filter((g) => g.project === p.name).length;
@@ -604,8 +610,10 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date(), r
       ${runningNowHtml(running, now)}
     </section>
     <section class="sec">
-      <div class="sec__h"><h2>Projects</h2>${sectionCount(repo.projects.size)}</div>
-      <div class="pcards">${projectCards}</div>
+      <div class="sec__h"><h2>In flight</h2>${sectionCount(inFlightProjects.length)}</div>
+      ${inFlightProjects.length
+        ? `<div class="pcards">${projectCards}</div>`
+        : `<p style="color:var(--fg-mute);font-size:13.5px">Nothing in flight. Open a project from the sidebar to start a unit.</p>`}
     </section>
   </main>`;
 

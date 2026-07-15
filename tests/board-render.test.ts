@@ -78,26 +78,23 @@ describe("studio screen", () => {
     expect(card).not.toContain("no deploy target");
   });
 
-  // Item 5b: absence is shown by absence — a project with units but no shipped release ever shows
-  // neither a fabricated "no releases yet" line nor any release line at all.
-  test("a project with no releases shows no release line and no deploy-target line", () => {
+  // UI2 item 6: the Studio "Projects" section becomes an IN-FLIGHT worklist — only projects with at
+  // least one active work unit appear. `studio` (fixtures/golden/projects/studio.md) has zero units,
+  // so it drops out of this section entirely now; it's still reachable via the left nav and its own
+  // project page (see the next test).
+  test("an idle project (no active work unit) does not appear in the In flight section", () => {
     const studioCardMatch = html.match(/<a class="pcard" href="\/project\/studio">[\s\S]*?<\/a>/);
-    expect(studioCardMatch).not.toBeNull();
-    const card = studioCardMatch![0];
-    expect(card).not.toContain("released");
-    expect(card).not.toContain("no releases yet");
-    expect(card).not.toContain("no deploy target");
+    expect(studioCardMatch).toBeNull();
   });
 
-  // Phase-6 gate fix-up: a project's status chip is a real derivation (gate count → active → idle),
-  // not a hardcoded "running". `studio` (fixtures/golden/projects/studio.md) has zero units and zero
-  // open gates — the empty-project case that previously mislabeled it "running". NOTES UI1: "idle"
-  // now renders through the canonical map as `is-waiting`, not the semantically-unrelated `is-blocked`.
-  test("an empty project (no units, no open gates) shows an idle chip, not a fabricated 'running'", () => {
-    const studioCardMatch = html.match(/<a class="pcard" href="\/project\/studio">[\s\S]*?<\/a>/);
-    expect(studioCardMatch).not.toBeNull();
-    expect(studioCardMatch![0]).toContain('<span class="chip is-waiting">idle</span>');
-    expect(studioCardMatch![0]).not.toContain("running");
+  // Phase-6 gate fix-up, still honest post-UI2: a project's status chip is a real derivation (gate
+  // count → active → idle), not a hardcoded "running" — but since item 6 removes idle projects from
+  // the Studio worklist, this now has to be observed on the project's OWN page header instead.
+  test("an idle project's own page header still shows an honest idle badge, not a fabricated 'running'", () => {
+    const studioPageHtml = renderProject(repo, "studio", root, now);
+    const titleRow = /<div class="phead__title">[\s\S]*?<\/div>/.exec(studioPageHtml)![0];
+    expect(titleRow).toContain('<span class="chip is-waiting">idle</span>');
+    expect(titleRow).not.toContain("running");
   });
 
   test("a project with an open gate shows the gate-count chip", () => {
@@ -614,6 +611,80 @@ describe("the canonical status→colour map is the single source of truth", () =
     // Never the pre-UI1 ad hoc grey class anywhere.
     expect(studioHtml).not.toContain("is-progress");
     expect(projectHtml).not.toContain("is-progress");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// UI2 item 6: the Studio "Projects" section becomes an IN-FLIGHT worklist, renamed "In flight" — it
+// shows only projects with at least one active work unit. An idle project (no active unit, including
+// a project with zero units at all) never appears here; it's still reachable via the left nav and its
+// own project page. The empty state must signpost the next action, never a blank gap.
+// ---------------------------------------------------------------------------
+
+describe("Studio's Projects section is an In-flight worklist (UI2 item 6)", () => {
+  function team(over: Partial<Team> & { name: string; flow: Team["flow"]; produces: string[]; members: string[] }): Team {
+    return { consumes: [], style: { color: "#2E6FB0" }, charter: "", learnings: "", ...over };
+  }
+  function project(over: Partial<Project> & { name: string }): Project {
+    return { repo: ".", remote: null, default_branch: "main", deploy: null, pace: "auto", houseRules: "", ...over };
+  }
+  function unit(over: Partial<WorkUnit> & { unit: string; project: string; type: string }): WorkUnit {
+    return { status: "active", dir: "/tmp/x", ...over };
+  }
+
+  test("the section heading reads 'In flight', not 'Projects'", () => {
+    const html = renderStudio(repo, root, now);
+    expect(html).toContain("<h2>In flight</h2>");
+    expect(html).not.toContain("<h2>Projects</h2>");
+  });
+
+  // A repo with two projects: `busy` has one active unit, `idle` has one SHIPPED (never active) unit —
+  // idle isn't "zero units", it's "zero units currently in flight", the case a naive "units.length > 0"
+  // filter would get wrong.
+  function mixedRepo(): Repo {
+    const t = team({ name: "kestrel", flow: [], produces: ["design"], members: ["wren"] });
+    const ty: TypeTemplate = { name: "feature", glyph: "▸", expects: ["design"], gates: [] };
+    const busy = project({ name: "busy" });
+    const idleProj = project({ name: "idle" });
+    const activeUnit = unit({ unit: "widget", project: "busy", type: "feature", status: "active" });
+    const shippedUnit = unit({ unit: "done-thing", project: "idle", type: "feature", status: "shipped" });
+    return {
+      root: "/tmp/synthetic-mixed",
+      teams: new Map([[t.name, t]]),
+      types: new Map([[ty.name, ty]]),
+      projects: new Map([[busy.name, busy], [idleProj.name, idleProj]]),
+      agents: new Map(),
+      connectors: new Map(),
+      units: [activeUnit, shippedUnit],
+      artifacts: new Map(),
+      studio: {},
+    };
+  }
+
+  test("only the project with an active work unit appears; the idle-but-not-empty project is excluded", () => {
+    const html = renderStudio(mixedRepo(), "/tmp/nonexistent-levare-synthetic-mixed", now);
+    expect(html).toContain('<a class="pcard" href="/project/busy">');
+    expect(html).not.toContain('<a class="pcard" href="/project/idle">');
+  });
+
+  function emptyStudioRepo(): Repo {
+    return {
+      root: "/tmp/synthetic-empty",
+      teams: new Map(),
+      types: new Map(),
+      projects: new Map([["quiet", project({ name: "quiet" })]]),
+      agents: new Map(),
+      connectors: new Map(),
+      units: [],
+      artifacts: new Map(),
+      studio: {},
+    };
+  }
+
+  test("zero in-flight projects renders the signposting empty state, never a blank gap", () => {
+    const html = renderStudio(emptyStudioRepo(), "/tmp/nonexistent-levare-synthetic-empty", now);
+    expect(html).not.toContain('class="pcards"');
+    expect(html).toMatch(/Nothing in flight\..*Open a project from the sidebar to start a unit\./);
   });
 });
 
