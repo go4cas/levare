@@ -85,7 +85,7 @@ Where `validate` answers *"is this studio correct?"*, `doctor` answers *"will it
 
 ---
 
-## `levare context <agent> --unit <unit> [--dry-run]`
+## `levare context <agent> --unit <unit> [--step <step>] [--root <path>] [--dry-run]`
 
 Show exactly what a member will receive.
 
@@ -96,6 +96,11 @@ levare context lyra --unit checkout-flow --dry-run
 Prints the full assembled context — the seven-part recipe — for a given member and unit. Not an
 approximation: **byte-for-byte what the member's process will be handed.** Use it to see what a member
 knows before you spend money finding out.
+
+- `--unit` names the work unit (required).
+- `--step` scopes to a specific flow step, when a unit has several.
+- `--root` points at a studio other than the current directory.
+- `--dry-run` assembles and prints without dispatching anything.
 
 ---
 
@@ -114,7 +119,7 @@ development and CI tool.
 
 ---
 
-## `levare serve <path>`
+## `levare serve <path> [--read-only] [--no-daemon]`
 
 Start the board and the daemon.
 
@@ -130,9 +135,13 @@ The one long-running command. It serves the board on localhost, opens an SSE cha
 re-derives when files change, and runs the [daemon](../04-workflow/07-the-daemon.md) — which advances
 the graph between gates and halts at every one.
 
-It loads a `.env` from the studio root at startup (a shell variable wins over `.env`), and it refuses
-nothing you'd expect it to allow: it's single-user, localhost, and every write route is a Conductor
-action.
+- `--no-daemon` serves the board without the daemon: you can read and resolve gates, but nothing
+  advances on its own. Useful for inspecting a studio without letting it run.
+- `--read-only` serves the board with the write routes disabled entirely — a safe way to look at a
+  studio you don't intend to touch.
+
+It loads a `.env` from the studio root at startup (a shell variable wins over `.env`). It's
+single-user and localhost, and every write route is a Conductor action.
 
 Stop it with `Ctrl-C`; it shuts the listener down cleanly.
 

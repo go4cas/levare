@@ -7,7 +7,7 @@ in your browser.
 
 ## Prerequisites
 
-- **[Bun](https://bun.sh)** — levare is a Bun binary.
+- **[Bun](https://bun.sh)** — levare runs on Bun.
 - **git** — not optional. Without it, levare cannot verify that an approved artifact hasn't been
   tampered with, and it has no audit log. It will tell you so.
 
@@ -19,11 +19,17 @@ That's all, for now. Running actual agents needs more, and [Operations](06-opera
 git clone https://github.com/go4cas/levare.git
 cd levare
 bun install
-bun run build          # produces ./levare
 ```
 
-Put the binary somewhere on your `PATH`, or call it by path. The rest of these docs write it as
-`levare`.
+The `levare` executable is in the repo root — a small Bun entry script, not a compiled binary yet.
+Put it on your `PATH` so you can call it from anywhere:
+
+```sh
+ln -s "$(pwd)/levare" /usr/local/bin/levare
+```
+
+Or skip the symlink and call it by its full path (`~/levare/levare …`). The rest of these docs write
+it as `levare`.
 
 ## Scaffold a studio
 
@@ -37,27 +43,35 @@ levare init .
 
 ```
 levare init · .
-  23 file(s)/dir(s) created
+  25 file(s)/dir(s) created
+  git: founding commit 0b0a567d8369 as you <you@example.com>
 Next: levare validate .    ·    levare serve .
 ```
 
 `init` scaffolds the skeleton, an example team you can edit or delete, and it runs `git init` and
-makes the founding commit itself — because a studio without git is a studio with its guarantees
-switched off.
+makes the founding commit **as you** — because a studio without git is a studio with its guarantees
+switched off, and the first commit should carry your name like every one after it.
 
 What you get:
 
 ```
-teams/       who does the work — what they consume, what they produce, their flow
-agents/      the members — native (Claude SDK), cli (a wrapped foreign CLI), or remote (MCP)
-skills/      reusable instructions a member's context can include
-knowledge/   reference documents injected into member context by name
-types/       the five work-unit templates: inception, feature, fix, spike, research
-connectors/  external services members can be granted (env var NAMES only — never secrets)
-projects/    pointers to the products you're building
-work/        work units and the artifacts they produce — empty until you open one
-ideas/       captured pitches with no project yet
+teams/         who does the work — what they consume, what they produce, their flow
+agents/        the members — native (Claude SDK), cli (a wrapped foreign CLI), or remote (MCP)
+skills/        reusable instructions a member's context can include
+knowledge/     reference documents (and a baseline model-pricing table) injected by name
+types/         the five work-unit templates: inception, feature, fix, spike, research
+connectors/    external services members can be granted (env var NAMES only — never secrets)
+projects/      pointers to the products you're building
+work/          work units and the artifacts they produce — empty until you open one
+ideas/         captured pitches with no project yet
+studio.md      studio-level settings (e.g. the Orchestrator's model)
+.env.example   copy to .env and fill in — for when you're ready to run agents
 ```
+
+`.env.example` is a template, not a live file. You won't need it for this quickstart — nothing here
+spends money or touches a key — but it's where credentials go when you reach
+[the workflow](04-workflow/README.md). `.env` is gitignored, and `levare validate` refuses to run if
+you ever commit one.
 
 ## Check it
 
