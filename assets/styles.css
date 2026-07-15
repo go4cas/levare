@@ -161,6 +161,12 @@ button{ font-family:inherit; }
 .gate__top{ display:flex; align-items:flex-start; gap:12px; }
 .gate__marker{ font-family:var(--mono); color:var(--gate); font-size:15px; line-height:1; margin-top:3px; flex:none; }
 .gate__body{ flex:1; min-width:0; display:flex; flex-direction:column; gap:6px; }
+/* UI2 item 1: the unit title — top-left of the card, per the card contract (title top-left, status
+   top-right, established UI1). Distinct from the secondary name-row below it, which names the
+   artifact/producer the gate is actually about. */
+.gate__unit-row{ display:flex; }
+.gate__unit{ font-size:13.5px; font-weight:600; color:var(--fg); text-decoration:none; }
+.gate__unit:hover{ text-decoration:underline; }
 .gate__name-row{ display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
 .gate__producer{ font-family:var(--mono); font-size:11.5px; color:var(--fg-mute); }
 .gate__producer b{ color:var(--fg-dim); font-weight:400; }

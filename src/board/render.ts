@@ -183,6 +183,16 @@ function tokenLink(project: string, unit: string, text: string): string {
   return `<a class="tok link mono" href="/run/${esc(project)}/${esc(unit)}">${esc(text)}</a>`;
 }
 
+// UI2 item 1: every gate card names the work unit it concerns, top-left, per the card contract (title
+// top-left, status top-right — UI1). The artifact-based gate cards (the common case in the Needs You
+// inbox) used to lead with the ARTIFACT's name only, never the unit's — so a Conductor scanning the
+// inbox couldn't tell which unit a gate belonged to without opening it. Work units have no separate
+// `title` field (§types.ts); the unit slug IS the unit's name everywhere else in the product (the
+// project page's `.unit__name`), so it's what renders here too.
+function gateUnitTitle(project: string, unit: string): string {
+  return `<div class="gate__unit-row"><a class="gate__unit" href="/run/${esc(project)}/${esc(unit)}">${esc(unit)}</a></div>`;
+}
+
 // Every artifact id is a mono token and every mono token is a link (design brief §"mono typeface
 // means filesystem truth") — routed to the artifact render view (item 1), never the unit/run view
 // it used to fall back to.
@@ -375,6 +385,7 @@ function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: boole
       <div class="gate__top">
         <span class="gate__marker" aria-hidden="true">${glyph}</span>
         <div class="gate__body">
+          ${gateUnitTitle(gate.project, gate.unit)}
           <div class="gate__name-row">${artifactTokenLink(gate.project, gate.unit, art.id, artifactFileName(art))}<span class="gate__producer">member/<b>${esc(gate.member ?? "")}</b></span></div>
           <p class="gate__ctx">Blocked: ${ctx}</p>
           <div class="gate__meta"><span>${esc(age)}</span></div>
@@ -391,7 +402,7 @@ function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: boole
     : "";
   const age = ageLabel(art.created, now);
   const cost = costLabel(art.usage);
-  const nameRow = `<div class="gate__name-row">${artifactTokenLink(gate.project, gate.unit, art.id, artifactFileName(art))}<span class="gate__producer">member/<b>${esc(gate.member ?? "")}</b></span></div>`;
+  const nameRow = `${gateUnitTitle(gate.project, gate.unit)}<div class="gate__name-row">${artifactTokenLink(gate.project, gate.unit, art.id, artifactFileName(art))}<span class="gate__producer">member/<b>${esc(gate.member ?? "")}</b></span></div>`;
 
   // NOTES F20: an exhausted loop (max_rounds reached without `until`) is enforced server-side
   // (`board/gateops.ts#doRequest` already refuses a `request` past max_rounds, 409, no spend) but was

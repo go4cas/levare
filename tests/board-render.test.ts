@@ -46,6 +46,14 @@ describe("studio screen", () => {
     expect(html).toMatch(/<a class="tok link mono" href="\/artifact\/storefront\/checkout-flow\/spec-checkout-flow-v1">spec-checkout-flow-v1\.md<\/a>/);
   });
 
+  // UI2 item 1: a Needs You card must name the unit it concerns, top-left — the card contract (title
+  // top-left, status top-right) established in UI1. The artifact-based gate card used to lead with
+  // only the artifact's name, never the unit's, so a Conductor scanning the inbox couldn't tell which
+  // unit a gate belonged to without opening it.
+  test("a Needs You card shows its unit's title", () => {
+    expect(html).toContain('<div class="gate__unit-row"><a class="gate__unit" href="/run/storefront/checkout-flow">checkout-flow</a></div>');
+  });
+
   test("renders ideas as real links into the idea render view (item 6)", () => {
     expect(html).toContain('<a class="idea" href="/idea/loyalty-program">loyalty-program</a>');
   });
