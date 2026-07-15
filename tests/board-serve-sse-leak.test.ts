@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBoard, debugSubscriberCount } from "../src/board/serve.ts";
+import { spawnLevareServe } from "./serve-subprocess.ts";
 
 // BLOCKING stability bug: every `/events` connection called `subscribe()`, captured the returned
 // `unsubscribe`, and then discarded it (`void unsubscribe`) — a navigated-away or closed client's
@@ -194,17 +195,12 @@ async function settledHandleCount(pid: number, mechanism: HandleMechanism, settl
 describe("SSE handle leak — real subprocess sanity check", () => {
   let root: string;
   let proc: ReturnType<typeof Bun.spawn>;
-  const PORT = 4500 + (process.pid % 400);
-  const base = `http://localhost:${PORT}`;
+  let base: string;
 
   beforeAll(async () => {
     if (!HANDLE_MECHANISM) return; // nothing to spawn for — see the skipped test's own name for why.
     root = seedScratchRepo("levare-sse-leak-proc-");
-    proc = Bun.spawn(["./levare", "serve", root, "--port", String(PORT)], {
-      cwd: REPO_ROOT,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    ({ proc, base } = await spawnLevareServe([root], { cwd: REPO_ROOT }));
     const deadline = Date.now() + 10_000;
     let lastErr: unknown;
     while (Date.now() < deadline) {

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, cpSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnLevareServe } from "./serve-subprocess.ts";
 
 // NOTES F5 — the live-dogfood defect this file exists to pin down for good: a real 10-minute Gemini
 // member run left `levare serve`'s console completely unresponsive, because CLI member invocation used
@@ -16,7 +17,6 @@ import { join } from "node:path";
 // CliSpawn double.
 
 const REPO_ROOT = join(import.meta.dir, "..");
-const PORT = 5300 + (process.pid % 400);
 
 const HERMETIC_ENV = {
   ...process.env,
@@ -55,7 +55,7 @@ const SLEEP_SECONDS = 3;
 describe("`levare serve` never blocks on a real CLI member's run (NOTES F5)", () => {
   let root: string;
   let proc: ReturnType<typeof Bun.spawn>;
-  const base = `http://localhost:${PORT}`;
+  let base: string;
 
   beforeAll(async () => {
     root = mkdtempSync(join(tmpdir(), "levare-cli-nonblocking-e2e-"));
@@ -88,11 +88,7 @@ describe("`levare serve` never blocks on a real CLI member's run (NOTES F5)", ()
     git(root, ["add", "-A"]);
     git(root, ["commit", "-q", "-m", "seed golden fixture with a slow real CLI wren"]);
 
-    proc = Bun.spawn(["./levare", "serve", root, "--port", String(PORT)], {
-      cwd: REPO_ROOT,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    ({ proc, base } = await spawnLevareServe([root], { cwd: REPO_ROOT }));
     await waitUntilUp(`${base}/`, 10_000);
   });
 

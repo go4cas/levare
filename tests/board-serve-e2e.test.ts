@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, cpSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnLevareServe } from "./serve-subprocess.ts";
 
 // PRD §9 acceptance gap (see NOTES.md E12): every prior board test called the router's fetch(req)
 // handler in-process, or drove `bun run src/cli.ts serve` manually — neither exercises the actual
@@ -13,7 +14,6 @@ import { join } from "node:path";
 // again.
 
 const REPO_ROOT = join(import.meta.dir, "..");
-const PORT = 4100 + (process.pid % 400); // spread across runs to avoid colliding with a stale listener
 
 const HERMETIC_ENV = {
   ...process.env,
@@ -72,15 +72,11 @@ async function waitUntilDown(url: string, timeoutMs: number): Promise<void> {
 describe("`./levare serve` — real subprocess over a real socket", () => {
   let root: string;
   let proc: ReturnType<typeof Bun.spawn>;
-  const base = `http://localhost:${PORT}`;
+  let base: string;
 
   beforeAll(async () => {
     root = seedScratchRepo();
-    proc = Bun.spawn(["./levare", "serve", root, "--port", String(PORT)], {
-      cwd: REPO_ROOT,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    ({ proc, base } = await spawnLevareServe([root], { cwd: REPO_ROOT }));
     await waitUntilUp(`${base}/`, 10_000);
   });
 

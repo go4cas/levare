@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRepo, repoCapabilities } from "../src/repo.ts";
 import { assembleContext } from "../src/context.ts";
+import { spawnLevareServe } from "./serve-subprocess.ts";
 
 // NOTES F4 — the live-dogfood defect this file exists to pin down for good: `daemon.ts` and
 // `board/gateops.ts` both defaulted their production `memberRunner` to `stubAdapterRunner`
@@ -23,7 +24,6 @@ import { assembleContext } from "../src/context.ts";
 // the artifact the daemon wrote to disk is byte-for-byte the doc the real script emitted.
 
 const REPO_ROOT = join(import.meta.dir, "..");
-const PORT = 4900 + (process.pid % 400);
 
 const HERMETIC_ENV = {
   ...process.env,
@@ -61,7 +61,7 @@ describe("`./levare serve` spawns a CLI member's REAL command, never the fixture
   let root: string;
   let scriptDir: string;
   let proc: ReturnType<typeof Bun.spawn>;
-  const base = `http://localhost:${PORT}`;
+  let base: string;
 
   let scriptPath: string;
   let capturePath: string;
@@ -137,11 +137,7 @@ describe("`./levare serve` spawns a CLI member's REAL command, never the fixture
     git(root, ["add", "-A"]);
     git(root, ["commit", "-q", "-m", "seed golden fixture with a real CLI wren"]);
 
-    proc = Bun.spawn(["./levare", "serve", root, "--port", String(PORT)], {
-      cwd: REPO_ROOT,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    ({ proc, base } = await spawnLevareServe([root], { cwd: REPO_ROOT }));
     await waitUntilUp(`${base}/`, 10_000);
   });
 
