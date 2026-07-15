@@ -4811,3 +4811,51 @@ change. The visual-standardisation pass that will adopt the confirm-modal primit
 future destructive actions outside the registry editor) is not part of this round — only the
 primitive and its one current caller (the editor's dirty-dismiss) are built here. `assets/registry.html`
 (the superseded CD prototype file, never served by `serve.ts`) was left untouched.
+
+# NOTES UI5 — registry page title reflects the entity kind; the redundant in-page tab strip is gone
+
+**The complaint.** Two corrections to the registry surface UI4 left behind. (1) Every registry page
+rendered a hardcoded `<h1>Registry</h1>` regardless of which entity kind was on screen — the only
+screen in the product that titles itself by section rather than content; `renderProject`/`renderIdea`
+both title by what they're showing (`projectName`, `idea.name`). (2) The registry page still rendered
+an in-content horizontal tab strip (`teams · agents · skills · …`) duplicating the rail's own
+Registry section, now that every kind has a real route reachable from the left nav.
+
+**Item 1: the H1.** `renderRegistry` (`src/board/render.ts`) already resolves and validates
+`activeEntity` into `active: RegistryKind` (defaulting to `"teams"` when absent or invalid — the
+same fallback the rest of the function already relied on for the tab strip and rail highlighting).
+The literal `<h1>Registry</h1>` is now `<h1>${title}</h1>` where `title` capitalizes `active`'s first
+letter — every `RegistryKind` is a plain, regular-plural lowercase word (`teams`, `agents`, `skills`,
+`knowledge`, `types`, `connectors`, `evals`), so a bare `charAt(0).toUpperCase() + slice(1)` needs no
+irregular-plural table. The breadcrumb directly above it (`studio / registry`) is untouched, per the
+goal — it names the section, the H1 now names the content, same split `renderProject`/`renderIdea`
+already draw between the rail/breadcrumb and their own H1.
+
+**Item 2: the tab strip.** Before removing it, confirmed the rail's own Registry section
+(`railNav`, same file) renders independently of the tab strip and already carries every kind's
+count: both call the same shared `registryNavLinks()` helper, which builds each link from
+`registryKindCount()` — so no count lived only in the tab strip. Deleted the tab strip's own
+`<nav class="reg-nav" style="flex-direction:row...">` construction and its injection into `<main>`
+between the header and the card grid; `registryNavLinks()` itself is untouched and still has its one
+remaining caller in `railNav`. No CSS change needed — `.pcards`/`.phead` have no margin rule coupled
+to `.reg-nav`'s presence.
+
+**Tests.** `tests/board-render.test.ts`: a new `describe` asserts, for all seven kinds, that
+`renderRegistry(repo, root, kind)` contains `<h1>${Title}</h1>` and never `<h1>Registry</h1>`, plus
+that the breadcrumb still reads `studio / registry`. The old tab-strip-specific tests (which matched
+`<nav class="reg-nav" style="flex-direction:row...">` and asserted rail/tab-strip parity) are replaced
+with one that asserts no such element exists anywhere in `<main>`, and that the rail alone lists every
+kind with a `data-goto`/count pair, active-kind highlighting included. `tests/board-serve.test.ts`'s
+cold-GET assertions of `<h1>Registry</h1>` for `/registry/teams` and `/registry/connectors/linear`
+are updated to the entity-specific titles (`Teams`, `Connectors`); its "rail and tab strip" test is
+renamed to just "rail" now that there's only one link surface.
+
+**Verification.** `bun test` — 673 pass, 1 pre-existing skip, 0 fail, across 53 files, 2468
+`expect()` calls. `levare replay fixtures/golden --stubs` — final artifact statuses still
+byte-for-byte against `expected.json`. `deps:check` — `deps ok`.
+
+**Deliberately out of scope.** No change to `registryKindCount`/`registryNavLinks` themselves — both
+were already correct and shared; this round only removed the tab strip's separate rendering of that
+same shared list. No change to how `activeEntity` is resolved or defaulted (`"teams"` when absent),
+so `GET /registry` with no kind still titles itself "Teams", matching its pre-existing tab-strip and
+rail-highlight behavior.
