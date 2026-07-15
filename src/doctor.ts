@@ -11,6 +11,7 @@
 import type { Connector } from "./types.ts";
 import type { EnvProvenance } from "./dotenv.ts";
 import type { OrchestratorStatus } from "./orchestrator-status.ts";
+import type { VersionInfo } from "./version.ts";
 
 /** Presence-only view of the environment — never exposes values (invariant 11). */
 export interface EnvProbe {
@@ -68,9 +69,18 @@ export function diagnose(connectors: Connector[], env: EnvProbe, probe: CliProbe
  * prints the Orchestrator boundary's own on/off state ahead of the connector report (NOTES C11 part
  * 3: "report the Orchestrator's boundary in `levare doctor`") — the same status the board's header
  * indicator shows, computed by the same function (orchestrator-status.ts), so the two can never
- * disagree about whether the Orchestrator is reachable. */
-export function formatDoctor(health: ConnectorHealth[], orchestrator?: OrchestratorStatus): string {
+ * disagree about whether the Orchestrator is reachable.
+ *
+ * `versionInfo`, when given, prints the run mode first (NOTES DIST1) — compiled binary vs. source
+ * run — since a compiled binary and the source tree it was built from can drift, and "is this the
+ * code I think it is?" needs a visible answer. A full staleness check (comparing the build commit
+ * against the studio/source HEAD) is deferred; this only makes the run mode legible. */
+export function formatDoctor(health: ConnectorHealth[], orchestrator?: OrchestratorStatus, versionInfo?: VersionInfo): string {
   const out: string[] = [];
+  if (versionInfo) {
+    out.push(`run mode: ${versionInfo.build ? `compiled (build ${versionInfo.build.commit})` : "source/dev"}`);
+    out.push("");
+  }
   if (orchestrator) {
     out.push(`orchestrator: ${orchestrator.available ? "on" : "off"} · ${orchestrator.reason}`);
     out.push("");
@@ -89,6 +99,13 @@ export function formatDoctor(health: ConnectorHealth[], orchestrator?: Orchestra
   return out.join("\n") + "\n";
 }
 
-export function runDoctor(connectors: Connector[], env: EnvProbe, probe: CliProbe, provenance?: Map<string, EnvProvenance>, orchestrator?: OrchestratorStatus): string {
-  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator);
+export function runDoctor(
+  connectors: Connector[],
+  env: EnvProbe,
+  probe: CliProbe,
+  provenance?: Map<string, EnvProvenance>,
+  orchestrator?: OrchestratorStatus,
+  versionInfo?: VersionInfo,
+): string {
+  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo);
 }

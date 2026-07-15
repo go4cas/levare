@@ -4,6 +4,7 @@ import { loadRepo } from "../src/repo.ts";
 import { runDoctor, formatDoctor, diagnose, type CliProbe, type EnvProbe } from "../src/doctor.ts";
 import type { OrchestratorStatus } from "../src/orchestrator-status.ts";
 import type { Connector } from "../src/types.ts";
+import type { VersionInfo } from "../src/version.ts";
 
 // `levare doctor` walks connectors and reports env presence + CLI/MCP reachability (§6). The fixture
 // has two connectors — github (cli, needs GITHUB_TOKEN) and linear (mcp, needs LINEAR_API_KEY). With
@@ -111,6 +112,37 @@ describe("doctor: reports the Orchestrator boundary (NOTES C11)", () => {
     const out = p.stdout.toString();
     expect(out).toContain("orchestrator: off");
     expect(out).toContain("ANTHROPIC_API_KEY");
+  });
+});
+
+// NOTES DIST1: a compiled binary and the source tree it was built from can drift, so `levare
+// doctor` states its own run mode up front — compiled (with the build commit) or source/dev — so
+// "is this the code I think it is?" has a visible answer. A full staleness check (comparing the
+// build commit against the studio/source HEAD) is deferred, per NOTES.
+describe("doctor: reports its own run mode — compiled vs source (NOTES DIST1)", () => {
+  const compiled: VersionInfo = { version: "1.2.3", build: { commit: "2b0610f" } };
+  const source: VersionInfo = { version: "1.2.3", build: null };
+
+  test("formatDoctor prints the run mode first, ahead of the orchestrator line, when given a compiled VersionInfo", () => {
+    const out = formatDoctor(diagnose(connectors, env, noGh), undefined, compiled);
+    expect(out.split("\n")[0]).toBe("run mode: compiled (build 2b0610f)");
+  });
+
+  test("formatDoctor reports source/dev for an unstamped VersionInfo", () => {
+    const out = formatDoctor(diagnose(connectors, env, noGh), undefined, source);
+    expect(out.split("\n")[0]).toBe("run mode: source/dev");
+  });
+
+  test("with no VersionInfo given, the report is unchanged (pre-DIST1 callers keep working)", () => {
+    const out = formatDoctor(diagnose(connectors, env, noGh));
+    expect(out.startsWith("run mode:")).toBe(false);
+    expect(out.startsWith("levare doctor")).toBe(true);
+  });
+
+  test("`levare doctor` reports source/dev on the real (unbuilt) CLI", () => {
+    const p = Bun.spawnSync(["./levare", "doctor", "fixtures/golden"]);
+    expect(p.exitCode).toBe(0);
+    expect(p.stdout.toString()).toContain("run mode: source/dev");
   });
 });
 

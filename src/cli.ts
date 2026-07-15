@@ -10,6 +10,7 @@ import { serve } from "./board/serve.ts";
 import { initStudio, GIT_IDENTITY_NOTE } from "./init.ts";
 import { applyStudioEnv } from "./dotenv.ts";
 import { resolveOrchestratorStatus } from "./orchestrator-status.ts";
+import { getVersionInfo, formatVersion } from "./version.ts";
 
 // Until the studio repo root is populated, the fixture golden tree stands in as the studio (NOTES
 // A1); context/doctor default their root there. `--root <path>` overrides.
@@ -87,7 +88,7 @@ export function runDoctorCmd(rest: string[]): number {
     const env = { has: (name: string) => typeof process.env[name] === "string" && process.env[name] !== "" };
     const probe = (command: string): "found" | "not-found" => (Bun.which(command) ? "found" : "not-found");
     const orchestrator = resolveOrchestratorStatus(process.env);
-    process.stdout.write(runDoctor([...repo.connectors.values()], env, probe, provenance, orchestrator));
+    process.stdout.write(runDoctor([...repo.connectors.values()], env, probe, provenance, orchestrator, getVersionInfo()));
     return 0;
   } catch (e) {
     console.error(String(e instanceof Error ? e.message : e));
@@ -161,6 +162,14 @@ export function runServeCmd(rest: string[]): number {
   return 0;
 }
 
+// `levare --version` / `-v` — print the stamped version+commit for a compiled binary, or an honest
+// "source/dev" for an unstamped run (the `./levare` shim, `bun run src/cli.ts`). NOTES DIST1: a
+// binary that can't say what it is can't be trusted in the field.
+export function runVersionCmd(): number {
+  console.log(formatVersion(getVersionInfo()));
+  return 0;
+}
+
 function usage(): number {
   console.error(
     "usage: levare init [path]\n" +
@@ -168,7 +177,8 @@ function usage(): number {
       "       levare replay <path> --stubs\n" +
       "       levare context <agent> --unit <unit> [--step <step>] [--root <path>] [--dry-run]\n" +
       "       levare doctor [root]\n" +
-      "       levare serve [root] [--port N] [--read-only] [--no-daemon]",
+      "       levare serve [root] [--port N] [--read-only] [--no-daemon]\n" +
+      "       levare --version | -v",
   );
   return 2;
 }
@@ -194,6 +204,9 @@ export function main(argv: string[]): number {
       return runDoctorCmd(rest);
     case "serve":
       return runServeCmd(rest);
+    case "--version":
+    case "-v":
+      return runVersionCmd();
     case undefined:
     case "--help":
     case "-h":
