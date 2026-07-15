@@ -1,0 +1,144 @@
+name: Release
+
+# Step 2 of distribution (NOTES DIST2): builds levare for four platforms via the same
+# `bun build --compile` path DIST1 introduced (scripts/build.sh, unmodified in its no-arg dev-build
+# form) and publishes them to a GitHub Release.
+#
+# Triggers ONLY on a semver-shaped release tag (v0.1.0, v1.2.3-rc1, ...) — deliberately distinct from
+# the descriptive waypoint tags (dist1, f11, ...) used during development, which must never publish a
+# release.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  # Gate the release on the same checks a local contributor would run before shipping — a build that
+  # fails `bun test` or ships a forbidden dependency should never reach a published binary.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun test
+      - run: bun run deps:check
+
+  # Four targets, one per supported platform (NOTES DIST2). Windows is deliberately out of scope:
+  # levare shells out to git and POSIX-oriented vendor CLIs (claude/codex) it has never been run
+  # against on Windows, and claiming a Windows binary without testing it would be dishonest.
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: bun-darwin-arm64
+            asset: levare-darwin-arm64
+          - target: bun-darwin-x64
+            asset: levare-darwin-x64
+          - target: bun-linux-x64
+            asset: levare-linux-x64
+          - target: bun-linux-arm64
+            asset: levare-linux-arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+
+      # version.ts reads the package version via a static `package.json` import (NOTES DIST1) — a
+      # release binary must report the TAG's version, not whatever happens to be committed in
+      # package.json, so stamp it here (in this ephemeral checkout only; nothing is committed back).
+      - name: Stamp package.json version from the release tag
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          bun -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            pkg.version = process.argv[1];
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          " "$version"
+
+      # Reuses DIST1's build script unmodified in spirit — same entrypoint, same --define commit
+      # stamp, just parameterized with this matrix leg's outfile and cross-compile target.
+      - name: Build ${{ matrix.asset }}
+        run: ./scripts/build.sh "dist/${{ matrix.asset }}" "${{ matrix.target }}"
+
+      - name: Smoke-test the version stamp
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "expected version: $version"
+          # Cross-compiled binaries for a foreign OS/arch can't be executed on this runner; only
+          # verify the stamp directly (strings) rather than by running it, except for the one target
+          # that matches this runner (bun-linux-x64 on ubuntu-latest), which we can actually execute.
+          if [ "${{ matrix.target }}" = "bun-linux-x64" ]; then
+            out="$(./dist/${{ matrix.asset }} --version)"
+            echo "$out"
+            case "$out" in
+              "levare $version (build "*) ;;
+              *) echo "unexpected --version output: $out" >&2; exit 1 ;;
+            esac
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all platform binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect binaries and generate checksums
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          chmod +x release/levare-*
+          cd release
+          sha256sum levare-* > SHA256SUMS
+          ls -la
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/levare-*
+            release/SHA256SUMS
+          generate_release_notes: true
+          body: |
+            ## Runtime prerequisites — this is NOT zero-setup
+
+            These binaries bundle levare's own code and its one dependency (the Claude Agent SDK).
+            Downloading and running one still requires, at runtime:
+
+            - **`git`** on `PATH` — every artifact levare manages lives in a git repo.
+            - **a model provider** — `ANTHROPIC_API_KEY` (the Claude Agent SDK, for native members)
+              and/or a wrapped vendor CLI such as `claude` or `codex` on `PATH` (for cli members).
+              Run `levare doctor` after installing to see exactly what's present and what's missing.
+
+            Windows is not built for this release (levare shells out to git and POSIX-oriented vendor
+            CLIs it has not been run against on Windows).
+
+            ### Verify before running
+            ```sh
+            sha256sum -c SHA256SUMS --ignore-missing
+            ```
+
+            See the README's install section for the full download/verify/install steps.
