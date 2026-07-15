@@ -5042,3 +5042,114 @@ own words, extended here from status colour to card structure). (4) Two small, a
 (`.empty`/`.empty__action`/`.pending`/`.pending__label`) were the only styles.css changes; both reuse
 existing custom properties (`--fg-mute`, `--fg-dim`) exclusively — no new colour, dimension, or font
 was introduced anywhere in this round.
+
+## DIST1. A real single-binary build via `bun build --compile`, and an honest `levare --version`
+
+Step 1 of distribution (phase-1's aspirational "single binary" made real): a `build` script
+(`scripts/build.sh`, invoked as `bun run build`) compiles `src/cli.ts` into a standalone executable at
+`dist/levare`, stamped with the git commit it was built from; `levare --version`/`-v` prints that
+stamp, or an honest "source/dev" when unstamped; `levare doctor` now states its own run mode
+(compiled vs. source) first, for the same reason. `./levare`, the documented dev shim (NOTES A3), is
+unchanged and still the primary way this repo is run day to day — this only adds a second, parallel
+path.
+
+**Version stamping (`src/version.ts`).** The package version comes from a static `import pkg from
+"../package.json" with { type: "json" }`, not a `readFileSync` against a resolved repo path — the
+latter is exactly the kind of read that breaks under `--compile` (see below). The build commit is
+injected via `bun build --define __LEVARE_BUILD_COMMIT__="\"<short-sha>\""`; `typeof
+__LEVARE_BUILD_COMMIT__ !== "undefined"` is the standard esbuild/bun `--define` fallback idiom —
+`typeof` never throws on an identifier that was never declared (unlike referencing it directly), so
+the same code path is correct whether or not `--define` ran. `getVersionInfo()` returns `{ version,
+build: {commit} | null }`; `formatVersion()` renders `levare 0.0.1 (build 2b0610f)` or `levare 0.0.1
+(source/dev)` — never a fabricated hash. `levare doctor` prints the same distinction as its first
+line (`run mode: compiled (build …)` / `run mode: source/dev`) via an optional `VersionInfo` parameter
+on `formatDoctor`/`runDoctor`, following the same "optional, appended, absent ⇒ unchanged" shape
+`orchestrator` already established there — pre-DIST1 callers are unaffected.
+
+**A pre-existing latent bug this work exposed and fixed: `import.meta.url`-resolved paths break under
+`--compile`.** Before this round, `board/render.ts` read levare's own version via `readFileSync(
+\`${LEVARE_ROOT}/package.json\`)`, where `LEVARE_ROOT` derives from `sdk-transport.ts`'s
+`SDK_WORKER_PATH`, itself `Bun.fileURLToPath(new URL(..., import.meta.url))`. Inside a compiled
+binary, `import.meta.url` for bundled code resolves into Bun's virtual `$bunfs` tree
+(`file:///$bunfs/root/...`), not the real filesystem — so that read silently threw and the board's
+version chip fell back to a hardcoded `"0.0.0"`. Confirmed live: a compiled `dist/levare serve`
+printed `v0.0.0` in the header. Fixed by switching `render.ts` to `version.ts`'s
+`getVersionInfo().version` (the static-import path, which the bundler inlines correctly either way).
+The same `import.meta.url`-resolved-directory pattern was also how `board/serve.ts` located
+`assets/styles.css`/`assets/app.js` (`ASSET_DIR = new URL("../../assets/", import.meta.url).pathname`)
+— confirmed live: a compiled `dist/levare serve` 404'd both assets. Fixed by importing each asset
+directly with `{ type: "file" }` (`stylesCssPath`/`appJsPath`), which Bun embeds in the compiled
+binary and transparently resolves through its own `fs` shim (`existsSync`/`readFileSync` both work
+unmodified) — verified the fix by compiling a minimal reproduction, then *deleting the source asset
+file after compiling* and confirming the binary still served the original content from the embedded
+copy. Both `dist/levare serve`'s board HTML and its `/styles.css`/`/app.js` routes now return 200 and
+match the source-run shim byte-for-byte.
+
+**Deliberately NOT fixed the same way, and why — two more `import.meta.url` sites remain compiled-binary-
+unsafe, out of scope for this step:**
+- `replay.ts`'s `STUB_CLI` (`Bun.fileURLToPath(new URL("../fixtures/stubs/member-stub.ts",
+  import.meta.url))`) is spawned as a **new subprocess** (`[process.execPath, STUB_CLI, ...]`), not
+  read in-process. Confirmed live: `dist/levare replay fixtures/golden --stubs` fails with `unknown
+  command: /$bunfs/fixtures/stubs/member-stub.ts` — `$bunfs` paths are only resolvable *within the
+  compiled process that embedded them*; a freshly spawned process (even another copy of the same
+  binary) cannot see them (verified: `cat`/`ls` against an embedded-file path from outside the
+  process that embedded it both fail with ENOENT). `{ type: "file" }` does not help here — it would
+  need extracting the embedded script to a real temp file at runtime *and* a real `bun` executable
+  on `PATH` to interpret it, a new runtime dependency for a path (`--stubs`) that is explicitly a
+  developer/test-only reproduction tool, not something a studio runs in the field. The goal's own
+  framing — "git and any vendor CLI (claude/codex) remain RUNTIME prerequisites the binary shells
+  out to, exactly as today" — reads as license to leave CLI-member-spawning exactly as it is; this is
+  that same shape of spawn, just of a stub instead of a real vendor CLI. **Verified instead via the
+  shim**: `./levare replay fixtures/golden --stubs` still matches `fixtures/golden/expected.json`
+  byte-for-byte (unchanged; this is the achieved-when's actual ask).
+- `sdk-transport.ts`'s `SDK_WORKER_PATH` (spawns the real SDK worker subprocess for the live
+  Orchestrator boundary) is the identical spawn-by-resolved-path shape as `STUB_CLI` above, and would
+  very likely fail the same way under `--compile` once `ANTHROPIC_API_KEY` is set — not verified live
+  in this round (exercising it needs a real credential-bearing SDK call). `orchestrator-
+  boundary.ts`'s `ORCHESTRATOR_PROMPT_PATH` is the in-process read shape (like the version chip),
+  but deliberately **not** converted to a `{ type: "file" }` embed: `tests/orchestrator-sdk.test.ts`
+  has a describe block titled *"docs/orchestrator-prompt.md is loaded from disk, not embedded"* —
+  loading it from a real, editable file (not baked into the binary) is an existing, tested,
+  deliberate invariant, presumably so the Orchestrator's voice can be tuned without a rebuild;
+  embedding it would directly contradict that. Whatever the compiled binary's `docs/` deployment
+  story is meant to be (ship `docs/` alongside `dist/levare`? resolve relative to `process.execPath`
+  instead of `import.meta.url`?) is a materially bigger question than build-and-version-stamp, and is
+  left for a follow-up — the live-Orchestrator boundary under a compiled binary is simply unproven,
+  not claimed to work.
+
+**Stale-source honesty (`levare doctor`), and what's deliberately still deferred.** Doctor's run-mode
+line answers "is this a build, and if so which commit" — it does NOT compare that commit against the
+studio/source tree's own current `HEAD` (a real staleness check: "is this build stale relative to
+the code I'm looking at right now"). That fuller check is the goal's own explicitly deferred item;
+doing it honestly needs a studio root that IS this repo's own working tree (not just any studio a
+compiled binary happens to be pointed at) and a defined notion of "the source commit this run should
+be compared against" — left for later, alongside the per-platform release-binary matrix and the CI
+that produces it (also explicitly step 2, deferred).
+
+**A container/sandbox-specific `bun build --compile` failure encountered (and routed around) while
+verifying this, unrelated to anything in this repo.** In this devcontainer (Docker Desktop's virtiofs
+bind mount for `/workspaces/levare` on a macOS host), running `bun build --compile` with the process's
+cwd anywhere under that mount fails deterministically: `failed to rename
+/run/host_virtiofs/Users/.../levare/.<hash>-00000000.bun-build to <outfile>: ENOENT` — Bun resolves
+cwd to a host-side virtiofs path that doesn't exist from inside the container, and its atomic
+rename-into-place of the build tempfile fails there, regardless of where `--outfile` itself points
+(confirmed: moving only the outfile off the mount does not help; only moving *cwd* off the mount
+does). This reproduces with plain `bun build --compile` on an empty one-line entry file — nothing to
+do with levare's own code. `scripts/build.sh` works around it unconditionally (compiles from a
+`mktemp -d` scratch directory, with absolute entry/outfile paths pointing back into the repo) — inert
+and harmless on a normal filesystem (module resolution follows each file's own path, not cwd; verified
+identical bundle output either way), so this isn't a compromise specific to this sandbox, just a
+safety net that happens to be load-bearing here. Recorded because it cost real time to diagnose and
+would otherwise look like "the build script doesn't work."
+
+**Verification.** `bun test` — 704 pass (up from 690: +14 new tests — `tests/version.test.ts` plus
+four run-mode cases added to `tests/doctor.test.ts`), 1 pre-existing skip, 0 fail, across 56 files,
+2576 `expect()` calls. `bun run build` produces `dist/levare`; smoke-tested: `validate fixtures/golden`
+→ `valid` (exit 0), `--version`/`-v` → `levare 0.0.1 (build <commit>)`, `doctor` → `run mode: compiled
+(build <commit>)` plus the pre-existing connector report unchanged, `serve` → board HTML and both
+static assets all 200 and byte-identical to the source-run shim. `./levare` (unbuilt, source run):
+every existing command unchanged; `--version`/`-v` → `levare 0.0.1 (source/dev)`; `doctor` → `run
+mode: source/dev` ahead of the unchanged connector report. `levare replay fixtures/golden --stubs`
+(via the shim) still matches `fixtures/golden/expected.json` byte-for-byte. `deps:check` → `deps ok`
+(`bun build` is invoked only by the dev-time `build` script; no new runtime dependency). `dist/` is
+gitignored.
