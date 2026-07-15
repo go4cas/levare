@@ -1,0 +1,39 @@
+name: CI
+
+# Runs the test suite plus a real macOS execution of the dev build command on every push/PR to
+# main. This is distinct from release.yml's four-platform matrix: that matrix CROSS-COMPILES the
+# macOS binaries from a Linux runner, so scripts/build.sh never actually executes on macOS there —
+# exactly how a bash-3.2-specific crash (macOS's system bash; see the fix on this same branch)
+# shipped past every existing check. The macos-latest leg below runs `bun run build` for real on
+# the OS most contributors use, not to produce a release artifact, just to prove the dev build
+# command works on that platform.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun test
+      - run: bun run deps:check
+
+  macos-build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run build
