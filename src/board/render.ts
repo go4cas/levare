@@ -37,21 +37,17 @@ import { buildTimeline } from "./timeline.ts";
 import { diagnose } from "../doctor.ts";
 import type { DaemonInvocation } from "../daemon.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../orchestrator-status.ts";
-import { LEVARE_ROOT } from "../sdk-transport.ts";
+import { getVersionInfo } from "../version.ts";
 import { dotClass, snodeClass, statusLabel, fromWorkUnitStatus, fromArtifactStatus, fromNodeState } from "./status.ts";
 import { statusBadge, paceBadge, tag, iconLink, statStrip, counter, emptyState, pendingState, card, confirmModal, editorOverlay } from "./components.ts";
 
 // levare's own release version (item 3: "the release version as a quiet muted mono chip" beside the
-// wordmark) — read once from this repo's own package.json, never from a project's data (that's the
-// `pace`/`deploy`/release vocabulary, a different concept entirely).
-const LEVARE_VERSION: string = (() => {
-  try {
-    const pkg = JSON.parse(readFileSync(`${LEVARE_ROOT}/package.json`, "utf8")) as { version?: unknown };
-    return typeof pkg.version === "string" ? pkg.version : "0.0.0";
-  } catch {
-    return "0.0.0";
-  }
-})();
+// wordmark) — never from a project's data (that's the `pace`/`deploy`/release vocabulary, a
+// different concept entirely). `getVersionInfo` reads the version via a static JSON import rather
+// than a resolved-path `readFileSync`, so it stays correct under `bun build --compile` too
+// (NOTES DIST1) — a resolved-path read breaks there, because `import.meta.url` inside a compiled
+// binary points into Bun's virtual `$bunfs`, not the real filesystem.
+const LEVARE_VERSION: string = getVersionInfo().version;
 
 const ASSETS = `<link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>

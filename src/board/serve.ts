@@ -20,6 +20,14 @@ import { resolveOrchestratorStatus } from "../orchestrator-status.ts";
 import { isStudioInitialized, renderOnboarding } from "./onboarding.ts";
 import { Daemon } from "../daemon.ts";
 
+// `{ type: "file" }` imports, rather than a `new URL(..., import.meta.url)`-resolved directory
+// (NOTES DIST1): under `bun build --compile` these two assets are embedded in the binary and Bun
+// transparently rewrites `stylesCssPath`/`appJsPath` to a path its own `fs` shim resolves correctly
+// at runtime; a directory resolved via `import.meta.url` instead points into Bun's virtual `$bunfs`
+// tree, which is not a real directory from the outside, so `join(dir, name)` there 404s every asset.
+import stylesCssPath from "../../assets/styles.css" with { type: "file" };
+import appJsPath from "../../assets/app.js" with { type: "file" };
+
 export interface RouteDef {
   method: "GET" | "POST";
   pattern: string;
@@ -117,7 +125,7 @@ export function isRegistryEditablePath(root: string, relPath: string): boolean {
   return segs[segs.length - 1].endsWith(".md");
 }
 
-const ASSET_DIR = new URL("../../assets/", import.meta.url).pathname;
+const ASSET_PATHS: Record<string, string> = { "styles.css": stylesCssPath, "app.js": appJsPath };
 
 function html(body: string, status = 200): Response {
   return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
@@ -126,8 +134,8 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 function serveAsset(name: string): Response {
-  const file = join(ASSET_DIR, name);
-  if (!existsSync(file)) return new Response("not found", { status: 404 });
+  const file = ASSET_PATHS[name];
+  if (!file || !existsSync(file)) return new Response("not found", { status: 404 });
   const type = extname(name) === ".css" ? "text/css" : extname(name) === ".js" ? "text/javascript" : "application/octet-stream";
   return new Response(readFileSync(file), { headers: { "content-type": `${type}; charset=utf-8` } });
 }
