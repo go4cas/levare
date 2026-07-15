@@ -63,19 +63,32 @@ export function iconLink(opts: { icon: IconLinkIcon; href: string; label: string
 }
 
 // ---------------------------------------------------------------------------
-// noticeWarning — NOTES UI11/C13: the one place a "this is a warning" treatment renders anywhere on
-// the board. The design brief bans a general-purpose amber "warn" hue outright (gate brass is
-// gates-only, red is failed-only) — so this stays in the neutral ink scale, exactly like
-// `agentKindBadge`'s own shape-not-colour reasoning (render.ts): a tinted panel, a stronger-than-dim
-// text weight, and a small vendored alert-triangle icon carry the "pay attention" signal through
-// TREATMENT, never through a colour the palette doesn't already own.
+// callout — NOTES UI12: the ONE way a note/warning/danger message block is produced anywhere on the
+// board (see tests/board-ui12.test.ts's "no board renderer emits a callout-shaped block except
+// through the primitive"). Closes the gap NOTES UI11/C13 found: the design brief previously banned
+// general-purpose amber outright, so the C13 connector note (`noticeWarning`, this function's
+// predecessor) had a tinted panel but no colour — "structure without colour". The brief's amended
+// message-severity scale (levare-design-brief.md) now gives each of the three levels its own token:
+// NOTE stays neutral ink, WARNING gets its own muted amber (`--warning`, distinct from gate brass —
+// the two ambers must never be interchangeable), DANGER reuses the status palette's own `--danger`
+// red (an intentional, brief-documented exception — "bad" is one meaning whether it's an entity's
+// state or a message's severity). Body text stays ink in all three: the panel tint/border/icon alone
+// carries severity, never the prose.
 // ---------------------------------------------------------------------------
-export function alertIcon(): string {
-  return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${TABLER_ICON_PATHS["ti-alert-triangle"]}</svg>`;
+export type CalloutSeverity = "note" | "warning" | "danger";
+
+const CALLOUT_ICON_PATHS: Record<CalloutSeverity, string> = {
+  note: `<path d="M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0" /><path d="M12 9h.01" /><path d="M11 12h1v4h1" />`,
+  warning: TABLER_ICON_PATHS["ti-alert-triangle"],
+  danger: `<path d="M12 9v4" /><path d="M12 16h.01" /><path d="M8.7 3h6.6c.3 0 .5 .1 .7 .3l4.7 4.7c.2 .2 .3 .4 .3 .7v6.6c0 .3 -.1 .5 -.3 .7l-4.7 4.7c-.2 .2 -.4 .3 -.7 .3h-6.6c-.3 0 -.5 -.1 -.7 -.3l-4.7 -4.7c-.2 -.2 -.3 -.4 -.3 -.7v-6.6c0 -.3 .1 -.5 .3 -.7l4.7 -4.7c.2 -.2 .4 -.3 .7 -.3z" />`,
+};
+
+function calloutIcon(severity: CalloutSeverity): string {
+  return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${CALLOUT_ICON_PATHS[severity]}</svg>`;
 }
 
-export function noticeWarning(bodyHtml: string): string {
-  return `<div class="notice notice--warning">${alertIcon()}<span class="notice__text">${bodyHtml}</span></div>`;
+export function callout(severity: CalloutSeverity, bodyHtml: string): string {
+  return `<div class="notice notice--${severity}">${calloutIcon(severity)}<span class="notice__text">${bodyHtml}</span></div>`;
 }
 
 // ---------------------------------------------------------------------------

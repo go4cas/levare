@@ -41,7 +41,7 @@ import type { DaemonInvocation } from "../daemon.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../orchestrator-status.ts";
 import { getVersionInfo } from "../version.ts";
 import { dotClass, snodeClass, statusLabel, fromWorkUnitStatus, fromArtifactStatus, fromNodeState } from "./status.ts";
-import { statusBadge, paceBadge, tag, iconLink, statStrip, counter, emptyState, pendingState, card, confirmModal, editorOverlay, orchTurn, noticeWarning } from "./components.ts";
+import { statusBadge, paceBadge, tag, iconLink, statStrip, counter, emptyState, pendingState, card, confirmModal, editorOverlay, orchTurn, callout } from "./components.ts";
 
 // levare's own release version (item 3: "the release version as a quiet muted mono chip" beside the
 // wordmark) — never from a project's data (that's the `pace`/`deploy`/release vocabulary, a
@@ -1204,15 +1204,15 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
   const connectorBlocks = [...repo.connectors.values()]
     .map((c) => {
       // NOTES C13: the board must never imply a scoping guarantee levare isn't providing — an
-      // `auth: subscription` connector's card says so plainly, not just its `auth` value. NOTES UI11:
-      // this genuinely IS a warning (the goal's own ruling) and now gets the shared `noticeWarning`
-      // treatment — a tinted/bordered panel plus a small alert icon — rather than plain body text.
-      // Still no amber/red: the design brief bans a general-purpose "warn" hue outright (gate brass is
-      // gates-only, red is failed-only), so the treatment stays in the neutral ink scale — see
-      // `noticeWarning`'s own doc comment (components.ts) for the reasoning.
+      // `auth: subscription` connector's card says so plainly, not just its `auth` value. NOTES UI11
+      // gave this real warning styling but, under the brief's then-blanket amber ban, only in the
+      // neutral ink scale ("structure without colour"). NOTES UI12 closes that gap: the brief now
+      // defines a message-severity scale with its own warning amber, so this becomes a genuine
+      // `callout("warning", …)` — see `callout`'s own doc comment (components.ts) and the design
+      // brief's "message severity" section for the amber-split reasoning.
       const authWarning =
         c.auth === "subscription"
-          ? noticeWarning(`levare cannot scope this credential — any member that can spawn \`${esc(c.command ?? c.name)}\` can use this login. The grant is documentation, not enforcement.`)
+          ? callout("warning", `levare cannot scope this credential — any member that can spawn \`${esc(c.command ?? c.name)}\` can use this login. The grant is documentation, not enforcement.`)
           : "";
       // NOTES UI11: the connector kind (cli/mcp) gets the same shape-treatment badge as an agent's
       // kind — no status-palette colour, consistent with UI7's agent-kind badges.

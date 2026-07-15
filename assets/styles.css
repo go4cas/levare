@@ -7,6 +7,7 @@
   --accent:#C2402A; --accent-ink:#FFFFFF;
   --bg-user:color-mix(in oklab, var(--fg) 12%, var(--panel)); --text-user:var(--fg);
   --gate:#8A6414;
+  --warning:#96591C;
   --active:#2B6CB0; --ok:#2F7D53; --danger:#A81F1A;
   --shadow:0 1px 2px rgba(25,27,33,.05), 0 10px 28px rgba(25,27,33,.05);
   --sans:'Hanken Grotesk', system-ui, -apple-system, sans-serif;
@@ -20,6 +21,7 @@
   --border:#262A33; --border-strong:#343A44;
   --accent:#E56A50; --accent-ink:#191B21;
   --gate:#C99A3C;
+  --warning:#E2A25A;
   --active:#5E9BE6; --ok:#4FB07E; --danger:#EC6A62;
   --shadow:0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.35);
   color-scheme:dark;
@@ -394,14 +396,25 @@ button{ font-family:inherit; }
 .prow .k{ font-size:12px; color:var(--fg-mute); width:78px; flex:none; }
 .prow .v{ font-size:12.5px; color:var(--fg-dim); }
 
-/* NOTES UI11/C13: the one warning treatment on the board (components.ts#noticeWarning) — the design
-   brief bans a general-purpose amber "warn" hue outright (gate brass is gates-only, red is
-   failed-only), so this stays entirely in the neutral ink scale: a tinted panel plus full-strength
-   (not dimmed) text and a small alert icon carry "pay attention" through weight/treatment, not colour. */
+/* NOTES UI12: the message-severity scale (components.ts#callout) — the ONLY way a note/warning/danger
+   callout renders anywhere on the board (see NOTES UI11/C13 for how the gap this closes was found).
+   Three tinted-panel variants, one shared shape: body text always stays ink (`--fg`) so the panel
+   tint/border/icon alone carries severity, never the prose. NOTE stays fully neutral; WARNING is the
+   one and only place general-purpose amber (`--warning`, distinct from gate brass) is permitted;
+   DANGER intentionally reuses the status palette's own `--danger` red — see the design brief's
+   "message severity" section for why that reuse is correct and the amber split isn't. */
 .notice{ display:flex; align-items:flex-start; gap:8px; padding:9px 11px; border-radius:8px; font-size:12.5px; line-height:1.55; margin-top:2px; }
-.notice svg{ flex:none; margin-top:1px; color:var(--fg-dim); }
-.notice--warning{ background:color-mix(in oklab, var(--fg) 6%, var(--panel)); border:1px solid var(--border-strong); }
+.notice svg{ flex:none; margin-top:1px; }
 .notice__text{ color:var(--fg); }
+
+.notice--note{ background:color-mix(in oklab, var(--fg) 4%, var(--panel)); border:1px solid var(--border); }
+.notice--note svg{ color:var(--fg-mute); }
+
+.notice--warning{ background:color-mix(in oklab, var(--warning) 10%, var(--panel)); border:1px solid color-mix(in oklab, var(--warning) 42%, var(--border-strong)); }
+.notice--warning svg{ color:var(--warning); }
+
+.notice--danger{ background:color-mix(in oklab, var(--danger) 8%, var(--panel)); border:1px solid color-mix(in oklab, var(--danger) 38%, var(--border-strong)); }
+.notice--danger svg{ color:var(--danger); }
 
 /* NOTES UI11: the registry long-list filter — a plain bordered input above the card grid, styled like
    the editor overlay's own textarea family rather than the composer's borderless one (this sits over
