@@ -6459,3 +6459,101 @@ limitation NOTES UI9/UI10 already logged), so the actual pixel-level result — 
 genuinely reads as "unobtrusive," whether the filter input's placeholder wraps sensibly at narrow
 widths — is asserted from markup/class structure and the hand-rolled DOM harness's behavioural
 checks, not from an observed render.
+
+# NOTES UI12 — a canonical message-severity scale, closing the tension NOTES UI11 documented
+
+## The gap
+
+The design brief had a canonical **status** palette (entity lifecycle state: done/active/waiting/
+blocked/needs-you/failed) but no vocabulary at all for **message severity** — how seriously the
+Conductor should take a callout, as opposed to what state an entity is in. NOTES UI11 hit this
+directly: the C13 `auth: subscription` connector note is genuinely a warning, but the brief's
+blanket "no general-purpose amber" rule left `noticeWarning` (components.ts) with a tinted panel and
+an alert icon but no colour — "structure without colour" was that note's own honest description of
+the compromise. This goal's ruling is that the missing vocabulary, not the amber ban, was the actual
+defect — so it adds the vocabulary rather than reopening the status palette.
+
+## The brief amendment (docs/levare-design-brief.md)
+
+A new **"Message severity is a second, independent scale"** section sits alongside "Status is the
+canonical state palette," explicit that the two are different channels answering different
+questions ("what lifecycle state is this *entity* in" vs. "how seriously should the Conductor take
+this *message*"). Three levels: **NOTE** (neutral ink, quiet info affordance), **WARNING** (a muted
+amber — tinted panel, amber-toned border and icon, ink body text), **DANGER** (the existing danger
+red, formally folded into the scale, unchanged).
+
+The amber rule is refined, not repealed: gate brass (§"Gate color means 'needs you'") stays the only
+amber-family value on the *status* channel; warning amber is a second, distinct swatch reserved
+exclusively for the *severity* channel — the brief is explicit the two must never be visually
+interchangeable (a warning callout must not read as a gate at a glance), which is why they're
+different hex values in both modes, not the same brass reused. Danger red, by contrast, is
+*intentionally* shared between the two channels ("bad" is one meaning whether it's an entity's state
+or a message's severity) — the brief spells out why that reuse is fine while the amber split isn't:
+gate brass and message-warning are two genuinely different meanings, so per the one-hue-one-meaning
+rule they can't share a hue; failed-red and danger-red are the *same* meaning in both places, so
+sharing is correct.
+
+**Tokens** (assets/styles.css): a new `--warning` custom property, light `#96591C` / dark `#E2A25A`
+— chosen deliberately distinct from `--gate` (`#8A6414` / `#C99A3C`) in both themes so the two ambers
+can never be confused for one another even by inspecting the token values directly. Panel wash and
+border derive the same way the gate treatment already does — `color-mix(in oklab, var(--warning) N%,
+var(--panel)/var(--border-strong))`, never a hand-picked literal — so both themes stay correct by
+construction, matching every other derived-not-hardcoded rule already in the stylesheet (`.gate__badge`,
+`.chip.is-gate`, etc.). NOTE and DANGER need no new tokens: NOTE reads the existing `--fg`/`--border`/
+`--fg-mute` neutrals, DANGER reads the existing `--danger` token the status palette already owns.
+
+## `callout()` — the one primitive (src/board/components.ts)
+
+`noticeWarning`/`alertIcon` are gone, replaced by `callout(severity, bodyHtml)` where `severity` is
+`"note" | "warning" | "danger"`. It emits the same `<div class="notice notice--{severity}">` shape
+`noticeWarning` already established (so the one already-approved call site's markup contract barely
+moves — `notice--warning`'s class name is unchanged, which is why the pre-existing UI11 test for it
+still passes verbatim), with a severity-specific vendored Tabler-style icon: `ti-alert-triangle`
+(warning, reused verbatim from the old `alertIcon`), a new `ti-info-circle`-shaped icon (note), and a
+new `ti-alert-octagon`-shaped icon (danger) — the octagon reuses the same exclamation-mark strokes
+(`M12 9v4` / `M12 16h.01`) the triangle already used, matching how Tabler's own alert-icon family
+shares that glyph across shapes, so danger reads as "the same kind of urgency, a harder shape" rather
+than a visually unrelated icon. Body text is always the plain `notice__text` span — severity lives
+in the wrapper class and the icon, never as inline color on the prose, in every one of the three
+variants (this was already `noticeWarning`'s own discipline; `callout` just generalizes it across all
+three severities instead of hardcoding it for one).
+
+## Migration
+
+Audited render.ts for every inline note/warning/danger-shaped block (grep for "note"/"caveat"/"heads
+up"/"advisory" outside comments, plus every `<p`/`<div` literal near gate/status code) — the C13
+connector note is the *only* one. This matches NOTES UI11's own conclusion when it went looking for a
+second site: `doctor.ts`'s `health.warning` field is CLI-text-only (`doctor.ts:109`, untouched by
+this goal — "CLI output unchanged" per the goal's own scope) and no board renderer (`railNav`'s
+connector rows included) ever surfaces it. The orchestrator-unavailable popover
+(`orchestratorIndicator`) and the disabled-panel message are informational asides with their own
+established component shapes (`.orchind__pop`, `orchTurn`) predating this goal and not callout-shaped
+in the first place — migrating them was out of scope and would have been unrelated churn. So the one
+migration is: the C13 note's `noticeWarning(...)` call becomes `callout("warning", ...)` — gaining the
+muted amber NOTES UI11 was forced to deny it.
+
+## Test coverage
+
+New `tests/board-ui12.test.ts`: `callout()` unit tests (three distinct classes, three distinct icon
+paths, body text never carries severity styling inline); a CSS-source sweep asserting three separate
+`.notice--*` rules exist, that only `.notice--warning` (and its icon) ever reads `var(--warning)`,
+that `--warning` and `--gate` are different literal values in both `:root` and `[data-theme="dark"]`,
+and that no `.chip`/`.dot`/`.snode`/`.gate*` status-palette rule ever reads `var(--warning)`; the C13
+connector card renders `notice notice--warning` with its icon and an `auth: env` connector renders no
+callout at all; and a "no board renderer emits a callout-shaped block except through the primitive"
+sweep (render.ts never hand-builds a `notice notice--` literal, imports `callout` from
+components.ts, and `components.ts` itself only ever emits the `notice notice--` string from inside
+`callout()` — one occurrence of the literal in the whole file).
+
+## Verification
+
+`bun test` — 839 pass (+12 from the new file), 1 pre-existing skip, 0 fail, across 67 files (up from
+827/66 pre-UI12). `bun run src/cli.ts replay fixtures/golden --stubs` matches
+`fixtures/golden/expected.json` byte-for-byte (this goal touches board presentation only — the CLI
+replay path and its oracle are untouched, so the byte-for-byte match is expected, not incidental).
+`bun run deps:check` → `deps ok`.
+
+**What could not be verified.** Same standing limitation as NOTES UI9/UI10/UI11: no browser/devtools
+tooling in this sandbox, so the actual rendered contrast/legibility of the new `--warning` amber
+against `--panel` in both themes is asserted from the token values and the `color-mix` derivation
+formula (the same formula already trusted for gate brass), not from an observed render.
