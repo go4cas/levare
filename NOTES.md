@@ -4859,3 +4859,186 @@ were already correct and shared; this round only removed the tab strip's separat
 same shared list. No change to how `activeEntity` is resolved or defaulted (`"teams"` when absent),
 so `GET /registry` with no kind still titles itself "Teams", matching its pre-existing tab-strip and
 rail-highlight behavior.
+
+# NOTES UI6 — the shared component vocabulary: `src/board/components.ts`, and every existing renderer
+# collapsed onto it
+
+**The goal.** Extract the board's recurring UI patterns — the card contract, status/pace badges, kind
+tags, icon links, the stat strip, section counters, empty states, local pending feedback, and the
+confirm-modal/overlay surfaces — into one new module (`src/board/components.ts`) and replace the
+hand-written markup for each pattern everywhere it appears, so a status colour or a card layout becomes
+impossible to set locally. The proof is deletion: `render.ts` should get smaller, not just gain an
+import. The one intended behaviour change is `pendingState` — a work-unit (gate-card) action must give
+local, in-place feedback instead of replacing the whole card with a loading bar.
+
+**Read first.** `docs/levare-design-brief.md` in full (the authority for every token/colour/dimension
+these primitives may use) and `src/board/status.ts` (the canonical status→colour map every badge must
+route through — unchanged in this round, only re-exposed through one more layer).
+
+## The module: `src/board/components.ts`
+
+Ten primitives, each a pure function (repo/derived data in, an HTML string out — same discipline as
+`render.ts` itself):
+
+- `statusBadge(status, label?, extraClass?)` — a thin, verbatim wrapper over `status.ts`'s own
+  `chipClass`/`statusLabel` decision. It is now the ONLY function anywhere that may emit a `.chip`
+  element; `render.ts` no longer imports `statusChip` from `status.ts` at all, and every one of its
+  eleven former `statusChip(...)` call sites is now `statusBadge(...)`.
+- `paceBadge(pace)` — moved from `render.ts` verbatim (it already called `statusChip`; it now calls
+  `statusBadge`).
+- `tag(text, cls = "entity__kind")` / `chip` (an alias) — the small bare-word label treatment. Its one
+  concrete caller today is the registry's entity-kind tag; the `cls` parameter exists so a future
+  second use isn't forced to either duplicate the function or hardcode `entity__kind`'s CSS class onto
+  an unrelated surface.
+- `iconLink({ icon, href, label })` — moved from `render.ts` verbatim, signature changed from three
+  positional args to the goal's object form. `TABLER_ICON_PATHS` moved with it.
+- `statStrip(stats: Stat[])` — the Studio and Project stat grids. Both screens now build an array of
+  `{ value, label, cls?, attr? }` and hand it to the same function; `grid-template-columns` is derived
+  from `stats.length` rather than hardcoded per screen (both currently pass 5, but the coupling that
+  used to exist — two separate `repeat(5,1fr)` literals that could silently drift if one screen gained
+  a stat — is gone).
+- `counter(n, { variant, gatecount })` — replaces the old `sectionCount` (Needs You / Running Now / In
+  flight headings) AND is now also the registry rail's per-kind count (`<span class="ct">`), which
+  used to be a bare inline template at the `registryNavLinks` call site. `variant: "nav"` picks the
+  `.ct` vocabulary instead of `.sec__count` — the CSS class differs by context (as it always did), the
+  function and the "plain neutral, never gate brass" decision (item 5a) are made once.
+- `emptyState({ message, action? })` — see scope note below.
+- `pendingState({ label })` — see the behavioural-change section below.
+- `card(opts)` — the canonical card contract (title top-left, status top-right, tags/body/meta along
+  the bottom). See "the card primitive" below for exactly what it does and does not unify.
+- `confirmModal()` / `editorOverlay()` — moved from `render.ts` verbatim (built in UI4/UI3). No
+  behavior change; `render.ts`'s `shell()` and `renderRegistry()` now import and call them instead of
+  defining them locally.
+
+## The card primitive — what it unifies, and what it deliberately doesn't
+
+`card()` takes a wrapper tag/class/attrs, an optional `pre` slot (content before the title — a type
+glyph, a gate marker), an optional `bodyWrapCls` (when given, the title plus a `titleExtra` block are
+wrapped together ahead of `status`, matching the gate card's `.gate__body` anatomy; when absent, title
+and status sit directly in the top row, matching the project-card/entity-card/unit-row anatomy), and
+`tags`/`body`/`meta` slots that follow in order. Every surface keeps its own historical CSS class
+family (`.pcard`, `.entity__*`, `.unit__*`, `.gate__*`) — same reasoning `status.ts` already documents
+for `.chip`/`.dot`/`.snode`: the SPELLING varies by surface, the STRUCTURAL DECISION (where the title
+sits, where the status sits, where supporting content sits) is made exactly once, in this function.
+
+Routed through `card()`: the studio project card (`pcard`), the registry entity card (`entityBlock`,
+now ~15 lines shorter and with no bespoke `<article>` template), the project page's work-unit row
+(`.unit`/`.unit__head`, the goal's "row variant"), and the gate card's DEFAULT variant (the Needs You
+inbox / project-summon card — by far the most common gate rendering).
+
+**Deliberately NOT routed through `card()`: the gate card's `start`, `blocked`, `artifact-blocked`, and
+`cta` variants.** These four have real anatomical differences from the default variant and from each
+other (the `cta` variant replaces the marker+badge top row with a banner and folds the verbs INSIDE
+`.gate__inner` rather than after it; `blocked` has no verbs at all; `start`'s context paragraph and
+badge text both branch on `dispatching` in ways the default variant's don't). Forcing all five gate
+variants through one call shape would have meant either a `card()` so parameterized it stops being a
+real abstraction (more branching in the primitive than it saves at the call site), or quietly
+normalizing the four variants' markup toward each other — a visual/structural change the goal's "pure
+refactor... must render identically" constraint rules out. `tests/board-components.test.ts` asserts
+this scope exactly: zero literal `<div class="pcard__top">`/`<div class="entity__head">`/
+`<div class="unit__head">` remain in `render.ts`'s source, and exactly 3 (not 4) literal
+`<div class="gate__top">` occurrences remain — start, blocked, artifact-blocked, in that order in the
+file. The three untouched variants still call `statusLabel`/`pendingState`/`dispatchingHtml` as before;
+only their own outer template stays hand-written.
+
+## `emptyState` — scope
+
+Routed through `emptyState()`: the Needs You inbox, Running Now, In Flight (the goal's named example —
+`{ message: "Nothing in flight.", action: "Open a project from the sidebar to start a unit." }`), and
+the run view's Timeline — the board's four true section-level "this section has no content" states.
+
+**Deliberately NOT routed through `emptyState()`:** the studio rail's ideas list
+(`no ideas captured yet`) — the design brief is explicit that the ideas list must stay "the most
+understated element on the page: a backlog, not a to-do; no counts, no urgency styling" — giving it the
+same structured treatment as an actionable empty section would be a small but real regression against
+that instruction, not a neutral refactor. Also not routed: the small inline lineage/founding/recipe
+placeholder rows (`no founding artifacts yet`, `supersedes nothing`, `none declared`, `not referenced
+yet`, `No body content.`) — each of these is a single placeholder ROW inside a card/section that DOES
+have content (the Constitution card, the Lineage card), not a whole section with none; the design
+brief's emptyState language ("the section has no content") doesn't describe them, and their existing
+`.founding`/inline-style treatment is a different, smaller-scoped component this goal didn't ask to
+touch. No test asserts their exact byte-for-byte markup (checked before making this call), so this is a
+scope decision, not a constraint the tests forced.
+
+## `pendingState` — the one intended behaviour change
+
+**Before.** `assets/app.js#markDispatching` — called the instant a Start/Request-changes/Retry verb is
+clicked, before the server round-trip completes — replaced the ENTIRE gate card's `innerHTML` with a
+bare "dispatching…" line. Title, producer, context, and badge all vanished until the next SSE-driven
+reload replaced the whole card with the server's real re-render. This was the anti-pattern the goal
+named by name ("clicking an action on a work unit replaces the entire unit with a loading bar").
+
+Notably, the SERVER-rendered dispatching state (`render.ts#gateCardHtml`'s `dispatching` branch, shown
+when the daemon's `running()` projection already has an invocation for that unit — e.g. on a page
+load that lands mid-dispatch) was already local: it only ever swapped the verbs row and, for the
+start-gate variant only, the badge text, leaving the rest of the card exactly where it was. The bug was
+specifically in the CLIENT's immediate, pre-round-trip feedback, not the server's eventual one.
+
+**After.** `pendingState({ label })` (components.ts) produces the same small `<span class="pending">`
+markup — the composer's existing quiet dots (`.msg--pending .msg__dots`, reused verbatim, not a new
+animation) plus a `.pending__label` — that `render.ts#dispatchingHtml` now renders into the
+`.gate__verbs` row. `assets/app.js#markDispatching` was rewritten to build the IDENTICAL DOM shape via
+`document.createElement`/`classList`/`appendChild` (not a raw `innerHTML` string) and apply it
+narrowly: add `is-dispatching` to the card, set `.gate__badge.is-start`'s text to "dispatching" (ONLY
+when that class is present — the default/artifact-blocked badges never change server-side either;
+overwriting "on you" or "blocked" would have been a new, wrong divergence from the server's own
+rendering), and swap the CONTENTS of `.gate__verbs` alone. One edge case found while writing this:
+`openNote()` (the Request-changes/Re-scope note composer) appends a SECOND `.gate__verbs` element
+(its own Send/Cancel row) as a sibling of the original, now-hidden one — `card.querySelector`'s
+first-match semantics would have targeted the wrong (invisible) row. Fixed by threading `card._note`
+(already tracked for the note-composer lifecycle) through so `markDispatching` targets whichever
+`.gate__verbs` is actually on screen; the submitted note's `<textarea>` is also disabled, not removed,
+during the pending window, so the just-typed request text stays visible rather than vanishing.
+
+**Tests.** `tests/board-pending-state.test.ts` — new. Exercises the REAL `assets/app.js` (loaded
+verbatim into a `node:vm` sandbox, same no-DOM-library approach `tests/board-editor-overlay.test.ts`
+established) against two fixtures matching `render.ts`'s actual gate-card anatomy: (1) clicking Start
+on a start-gate card — asserts the title/context/producer are still present and unchanged afterward,
+only `.gate__badge`'s text and `.gate__verbs`' contents changed; (2) clicking Request changes then Send
+— asserts the pending indicator lands on the visible Send/Cancel row (not the original, hidden one),
+the original row is confirmed `display:none`, and the card's title/producer/context are untouched
+throughout. Building this harness required two small additions to the (locally-scoped, non-shared)
+fake-DOM harness beyond what `board-editor-overlay.test.ts` needed: `closest()` had to support
+descendant-combinator selectors (`.gate [data-verb]` — `board-editor-overlay.test.ts` never exercises a
+selector shaped like this, only single-compound ones) via the same multi-step ancestor walk
+`querySelectorAll` already used, and a minimal `innerHTML` setter/parser for the one fixed
+`<button ...>text</button>` shape `openNote()` builds.
+
+## Everything else — byte-for-byte
+
+Because most of this repo's board tests assert literal HTML substrings (not just presence of text),
+the refactor's correctness bar was almost entirely "produces the exact same bytes, through a shared
+function instead of a duplicated template." `bun test` before and after this round shows the same 146
+`board-render.test.ts` assertions passing unchanged — the primitives were built by extracting the
+EXISTING template literals into `components.ts` functions and calling them with the exact same
+arguments, not by redesigning the markup and hoping tests still matched.
+
+**Tests (new, beyond `board-pending-state.test.ts` above).** `tests/board-components.test.ts` — unit
+tests for all ten primitives in isolation (exact-string assertions on `card()`'s two slot shapes, the
+gate-badge-audit source check, the statStrip-shared-by-both-screens check, the emptyState scope check,
+the confirmModal/editorOverlay relocation check).
+
+**Verification.** `bun test` — 690 pass, 1 pre-existing skip, 0 fail, across 55 files, 2551 `expect()`
+calls (up from 673/53/2468 before this round — 17 new tests, two new files). `levare replay
+fixtures/golden --stubs` — final artifact statuses still byte-for-byte against `expected.json`.
+`deps:check` — `deps ok`. `bun build` on both `render.ts` and the new `components.ts` succeeds with no
+unused-import or unresolved-reference errors.
+
+**Net effect on `render.ts`.** 275 lines changed: 110 insertions, 165 deletions — net smaller (-55
+lines) despite gaining an 11-name import line and several explanatory comments on the new `card()` call
+sites. The functions it lost entirely: `confirmModalHtml`, `editorOverlay`, `sectionCount`, `paceBadge`,
+`iconLink`, `TABLER_ICON_PATHS`. `dispatchingHtml` shrank from a 5-line template to a 1-line call.
+
+**Deliberately out of scope / uncertainty recorded, not asked about.** (1) The four gate-card variants
+left outside `card()` — see above; a future round could still attempt a more general shape if a fifth
+gate anatomy variant ever appears and the pattern becomes clearer. (2) `tag`/`chip` has exactly one
+real caller today (registry kind tags) — the `cls` parameter is speculative generality for the goal's
+"etc." but nothing else in the current renderers needed a second bare-word-tag treatment; grepped for
+one and found none. (3) No CSS class was renamed or removed — `.pcard__top`/`.entity__head`/
+`.unit__head`/`.gate__top`/`.gate__body` all still exist in `assets/styles.css` exactly as before;
+`card()` only stopped duplicating the JS/TS string templates that produce them, per the goal's own
+framing ("the SPELLING still varies by marker shape... the DECISION is made exactly once" — status.ts's
+own words, extended here from status colour to card structure). (4) Two small, additive CSS rules
+(`.empty`/`.empty__action`/`.pending`/`.pending__label`) were the only styles.css changes; both reuse
+existing custom properties (`--fg-mute`, `--fg-dim`) exclusively — no new colour, dimension, or font
+was introduced anywhere in this round.
