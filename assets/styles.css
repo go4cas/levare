@@ -495,6 +495,20 @@ button{ font-family:inherit; }
 @media (prefers-reduced-motion: reduce){ .entity.is-highlighted{ animation:none; box-shadow:0 0 0 2px var(--border-strong); } }
 .editor-overlay__actions{ display:flex; align-items:center; gap:10px; flex:none; }
 
+/* ---------- shared components (NOTES UI6) ---------- */
+/* emptyState — the signposting treatment for a section with no content (Needs You, Running Now, In
+   flight, Timeline). `.empty__action` reuses the muted-but-legible tone already established for
+   secondary/hint text elsewhere (`.msg__label .t`, `.pcard__meta`) — never a new colour. */
+.empty{ margin:0; font-size:13.5px; color:var(--fg-mute); }
+.empty__action{ color:var(--fg-dim); }
+
+/* pendingState — LOCAL, in-place action feedback: the same quiet dots already built for the
+   Orchestrator composer (`.msg--pending .msg__dots`, reused verbatim), scoped small enough to sit
+   beside/in place of the control that triggered it rather than replacing a whole card. */
+.pending{ display:inline-flex; align-items:center; gap:8px; }
+.pending .msg--pending{ display:inline-flex; align-items:center; }
+.pending__label{ font-size:12.5px; color:var(--fg-mute); }
+
 /* ---------- theme toggle ---------- */
 .themebtn{ display:flex; align-items:center; gap:8px; background:transparent; border:1px solid var(--border);
   color:var(--fg-dim); padding:6px 10px; border-radius:8px; font-size:11.5px; cursor:pointer; width:fit-content; }

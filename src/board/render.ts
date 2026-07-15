@@ -38,7 +38,8 @@ import { diagnose } from "../doctor.ts";
 import type { DaemonInvocation } from "../daemon.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../orchestrator-status.ts";
 import { LEVARE_ROOT } from "../sdk-transport.ts";
-import { dotClass, snodeClass, statusChip, statusLabel, fromWorkUnitStatus, fromArtifactStatus, fromNodeState } from "./status.ts";
+import { dotClass, snodeClass, statusLabel, fromWorkUnitStatus, fromArtifactStatus, fromNodeState } from "./status.ts";
+import { statusBadge, paceBadge, tag, iconLink, statStrip, counter, emptyState, pendingState, card, confirmModal, editorOverlay } from "./components.ts";
 
 // levare's own release version (item 3: "the release version as a quiet muted mono chip" beside the
 // wordmark) — read once from this repo's own package.json, never from a project's data (that's the
@@ -79,26 +80,6 @@ function appHeader(status: OrchestratorStatus, railToggleLabel: string): string 
 </header>`;
 }
 
-// UI4 item 1: the reusable confirm-modal primitive — a small centered panel over a dimmed backdrop,
-// in levare's own palette, replacing the browser's native confirm()/alert() everywhere in the
-// product. ONE instance per page, a sibling of `.app` (same "hidden by default, painted on demand"
-// shape as `editorOverlay()`), so any future confirmation need (the goal's own "the
-// visual-standardisation work will adopt it") reuses this DOM node and app.js's `confirmModal()`
-// helper rather than building a second one. `role="alertdialog"` (not `role="dialog"`, per the
-// editor overlay) — this surface only ever asks a yes/no question, never hosts arbitrary content.
-function confirmModalHtml(): string {
-  return `<div class="confirm-modal" id="confirm-modal" hidden>
-    <div class="confirm-modal__backdrop" data-confirm-backdrop></div>
-    <div class="confirm-modal__panel" role="alertdialog" aria-modal="true" aria-labelledby="confirm-modal-question">
-      <p class="confirm-modal__question" id="confirm-modal-question"></p>
-      <div class="confirm-modal__actions">
-        <button class="togglebtn" data-confirm-keep>Keep editing</button>
-        <button class="togglebtn is-danger" data-confirm-discard>Discard</button>
-      </div>
-    </div>
-  </div>`;
-}
-
 function shell(title: string, railToggleLabel: string, body: string, status: OrchestratorStatus): string {
   return `<!doctype html>
 <html lang="en">
@@ -111,7 +92,7 @@ ${ASSETS}
 <body>
 ${appHeader(status, railToggleLabel)}
 ${body}
-${confirmModalHtml()}
+${confirmModal()}
 <script src="/app.js?v=7"></script>
 </body>
 </html>
@@ -227,29 +208,6 @@ function ideaHref(name: string): string {
   return `/idea/${esc(name)}`;
 }
 
-// UI2 item 3: the project page's external-link icons become recognisable per destination, using the
-// design brief's Tabler-outline icon set — `ti-brand-github` for the repo link, `ti-world` for the
-// deploy link — rather than one generic external-link glyph for both (the UI1 shape) or coloured
-// brand logos (the board stays monochrome; both inherit ink colour via `stroke="currentColor"`, same
-// as every other icon in the product). No icon font or CDN — the outline paths are vendored inline,
-// same "no new asset" approach UI1 used for the single external-link glyph this replaces.
-const TABLER_ICON_PATHS: Record<"ti-brand-github" | "ti-world", string> = {
-  "ti-brand-github": `<path d="M9 19c-4.3 1.4 -4.3 -2.5 -6 -3m12 5v-3.5c0 -1 .1 -1.4 -.5 -2c2.8 -.3 5.5 -1.4 5.5 -6a4.6 4.6 0 0 0 -1.3 -3.2a4.2 4.2 0 0 0 -.1 -3.2s-1.1 -.3 -3.5 1.3a12.3 12.3 0 0 0 -6.2 0c-2.4 -1.6 -3.5 -1.3 -3.5 -1.3a4.2 4.2 0 0 0 -.1 3.2a4.6 4.6 0 0 0 -1.3 3.2c0 4.6 2.7 5.7 5.5 6c-.6 .6 -.6 1.2 -.5 2v3.5" />`,
-  "ti-world": `<path d="M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0" /><path d="M3.6 9h16.8" /><path d="M3.6 15h16.8" /><path d="M11.5 3a17 17 0 0 0 0 18" /><path d="M12.5 3a17 17 0 0 1 0 18" />`,
-};
-function iconLink(href: string, label: string, icon: "ti-brand-github" | "ti-world"): string {
-  return `<a class="iconlink ${icon}" href="${esc(href)}" target="_blank" rel="noopener" aria-label="${esc(label)}" title="${esc(label)}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${TABLER_ICON_PATHS[icon]}</svg></a>`;
-}
-
-// Item 6c: `pace` renders as a colour-coded badge. Pace isn't a lifecycle status, so it borrows two
-// of the palette's existing neutral-to-live hues rather than inventing a new one: `auto` (the runner
-// proceeds without a per-step gate) reads as the same in-flight blue as an active unit; `step` (the
-// Conductor nods before every step) reads as the same hollow-neutral "waiting-on-a-beat" tone as an
-// idle project — never brass (that hue is gate-exclusive) and never a fabricated third colour.
-function paceBadge(pace: "auto" | "step"): string {
-  return pace === "auto" ? statusChip("active", "auto") : statusChip("waiting", "step");
-}
-
 // ---------------------------------------------------------------------------
 // The rail (item 4, gate-review round UI1) — ONE thing, persistent navigation, byte-for-byte
 // identical in structure on every screen: Projects, Registry, Connectors, Ideas (the Conductor-
@@ -289,7 +247,7 @@ function registryKindCount(repo: Repo, extras: RegistryExtras, k: RegistryKind):
 function registryNavLinks(repo: Repo, extras: RegistryExtras, active?: RegistryKind): string {
   return REGISTRY_KINDS.map((k) => {
     const activeCls = active === k ? " is-active" : "";
-    return `<a href="/registry/${k}" data-goto="${k}" class="${activeCls.trim()}">${k} <span class="ct">${registryKindCount(repo, extras, k)}</span></a>`;
+    return `<a href="/registry/${k}" data-goto="${k}" class="${activeCls.trim()}">${k} ${counter(registryKindCount(repo, extras, k), { variant: "nav" })}</a>`;
   }).join("\n");
 }
 
@@ -342,10 +300,7 @@ function railNav(repo: Repo, extras: RegistryExtras, opts: { activeRegistryEntit
 // invocation in flight for that unit (board/render.ts callers below), so the board acknowledges a
 // Start/Request-changes click immediately instead of sitting static for however long the member takes.
 function dispatchingHtml(member: string, kind: string): string {
-  return `<div class="gate__verbs gate__verbs--pending">
-        <span class="msg msg--pending" style="display:inline-flex;align-items:center;gap:8px"><span class="msg__dots"><span></span><span></span><span></span></span></span>
-        <span class="gate__dispatching">dispatching ${esc(member)} &middot; ${esc(kind)}&hellip;</span>
-      </div>`;
+  return `<div class="gate__verbs gate__verbs--pending">${pendingState({ label: `dispatching ${member} · ${kind}…` })}</div>`;
 }
 
 // The daemon's live in-flight projection (running()), narrowed to a single gate's own unit — a gate
@@ -478,19 +433,23 @@ function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: boole
       </div>
     </article>`;
   }
-  return `<article class="gate${exhaustedCls}${dispatching ? " is-dispatching" : ""}" data-gate-project="${esc(gate.project)}" data-gate-target="${esc(art.id)}">
-    <div class="gate__top">
-      <span class="gate__marker" aria-hidden="true">${glyph}</span>
-      <div class="gate__body">
-        ${nameRow}
-        <p class="gate__ctx">${ctx}</p>
-        ${consumesHtml}
-        ${meta}
-      </div>
-      <span class="gate__badge${gate.loop?.exhausted ? " is-exhausted" : ""}">${gate.loop?.exhausted ? statusLabel("exhausted") : "on you"}</span>
-    </div>
-    ${verbs}
-  </article>`;
+  // The card contract, applied to the gate card's default (Needs You / project-summon) anatomy: a
+  // marker `pre`-slot, the name-row wrapped with its context/consumes/meta as `titleExtra` inside
+  // `.gate__body`, the badge as `status`, and the verbs row as `meta` (below the top row) — same
+  // title-top-left/status-top-right/supporting-content-bottom shape `card()` gives every other
+  // surface, just with the `.gate__*` class family this card has always carried.
+  return card({
+    as: "article",
+    cls: `gate${exhaustedCls}${dispatching ? " is-dispatching" : ""}`,
+    attrs: { "data-gate-project": gate.project, "data-gate-target": art.id },
+    topCls: "gate__top",
+    pre: `<span class="gate__marker" aria-hidden="true">${glyph}</span>`,
+    bodyWrapCls: "gate__body",
+    title: nameRow,
+    titleExtra: `<p class="gate__ctx">${ctx}</p>${consumesHtml}${meta}`,
+    status: `<span class="gate__badge${gate.loop?.exhausted ? " is-exhausted" : ""}">${gate.loop?.exhausted ? statusLabel("exhausted") : "on you"}</span>`,
+    meta: verbs,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -532,20 +491,9 @@ export function scoreNodeClass(n: Pick<ScoreNode, "state">, isGate: boolean): st
 // no activity was previously mislabeled "running", which read as fabricated activity for a project
 // that had none.
 export function projectStatusChip(projGates: number, anyUnitActive: boolean, membersRunning: number): string {
-  if (projGates > 0) return statusChip("needs-you", `${projGates} gate${projGates === 1 ? "" : "s"}`);
-  if (anyUnitActive || membersRunning > 0) return statusChip("active");
-  return statusChip("waiting", "idle");
-}
-
-// Item 5a: Needs You, Running Now, and Projects all use ONE counter treatment beside their heading —
-// previously only Needs You carried a count at all, styled in gate brass. A brass badge can't
-// generalize to the other two without violating the design brief's gate-colour scarcity rule ("gate
-// brass ... appears exclusively on gates"), so the shared treatment is a plain neutral mono count,
-// applied uniformly to all three; the gate-brass wash on the gate CARDS themselves (`#needs .gate`)
-// already carries Needs You's urgency.
-function sectionCount(n: number, opts: { gatecount?: boolean } = {}): string {
-  const attr = opts.gatecount ? ` data-gatecount="${n}"` : "";
-  return `<span class="sec__count"${attr}>${n}</span>`;
+  if (projGates > 0) return statusBadge("needs-you", `${projGates} gate${projGates === 1 ? "" : "s"}`);
+  if (anyUnitActive || membersRunning > 0) return statusBadge("active");
+  return statusBadge("waiting", "idle");
 }
 
 // Phase 8, deliverable c: retires NOTES E2. Reuses `.tlrow` (the timeline's own row anatomy) and
@@ -554,7 +502,7 @@ function sectionCount(n: number, opts: { gatecount?: boolean } = {}): string {
 // `.snode.is-danger` before it was wired up) — so this needed zero new CSS.
 function runningNowHtml(running: DaemonInvocation[], now: Date): string {
   if (running.length === 0) {
-    return `<p style="color:var(--fg-mute);font-size:13.5px">Nothing running right now.</p>`;
+    return emptyState({ message: "Nothing running right now." });
   }
   return running
     .map((r) => {
@@ -579,7 +527,7 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date(), r
 
   const gateCards = gates.length
     ? gates.map((g) => gateCardHtml(repo, g, now, { dispatching: dispatchingFor(running, g) })).join("\n")
-    : `<p style="color:var(--fg-mute);font-size:13.5px">Nothing needs you right now.</p>`;
+    : emptyState({ message: "Nothing needs you right now." });
 
   // UI2 item 6: the Studio "Projects" section becomes an IN-FLIGHT worklist, not the project index —
   // it shows only projects with at least one active work unit. An idle project (no active unit) drops
@@ -610,11 +558,17 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date(), r
       // Item 2, gate-review round 2: title and status chip share one line, chip right-aligned —
       // `.pcard__top{justify-content:space-between}` already does this once both live inside it,
       // matching the gate-card/unit-row anatomy elsewhere.
-      return `<a class="pcard" href="/project/${esc(p.name)}">
-        <div class="pcard__top"><span class="pcard__name">${esc(p.name)}</span>${chip}</div>
-        <span class="pcard__desc">${desc}</span>
-        <div class="pcard__meta mono">${metaParts.map((m) => `<span>${m}</span>`).join("")}</div>
-      </a>`;
+      return card({
+        as: "a",
+        cls: "pcard",
+        href: `/project/${p.name}`,
+        topCls: "pcard__top",
+        title: esc(p.name),
+        titleCls: "pcard__name",
+        status: chip,
+        body: `<span class="pcard__desc">${desc}</span>`,
+        meta: `<div class="pcard__meta mono">${metaParts.map((m) => `<span>${m}</span>`).join("")}</div>`,
+      });
     })
     .join("\n");
 
@@ -623,26 +577,26 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date(), r
       <div class="crumb"><span>studio</span></div>
       <h1>Studio</h1>
     </header>
-    <div class="statstrip" style="grid-template-columns:repeat(5,1fr)">
-      <div class="stat"><div class="n is-gate" data-gatestat="${gates.length}">${gates.length}</div><div class="l">Gates on you</div></div>
-      <div class="stat"><div class="n" data-runningstat="${running.length}">${running.length}</div><div class="l">Members running</div></div>
-      <div class="stat"><div class="n">${shippedUnits}</div><div class="l">Units shipped &middot; 30d</div></div>
-      <div class="stat"><div class="n">${median === null ? "&mdash;" : `${median.toFixed(median % 1 === 0 ? 0 : 1)}d`}</div><div class="l">Median gate response</div></div>
-      <div class="stat"><div class="n">$${spend.toFixed(2)}</div><div class="l">Spend &middot; 30d</div></div>
-    </div>
+    ${statStrip([
+      { value: `${gates.length}`, label: "Gates on you", cls: "is-gate", attr: { name: "data-gatestat", value: gates.length } },
+      { value: `${running.length}`, label: "Members running", attr: { name: "data-runningstat", value: running.length } },
+      { value: `${shippedUnits}`, label: "Units shipped &middot; 30d" },
+      { value: median === null ? "&mdash;" : `${median.toFixed(median % 1 === 0 ? 0 : 1)}d`, label: "Median gate response" },
+      { value: `$${spend.toFixed(2)}`, label: "Spend &middot; 30d" },
+    ])}
     <section class="sec" id="needs">
-      <div class="sec__h"><h2>Needs you</h2>${sectionCount(gates.length, { gatecount: true })}</div>
+      <div class="sec__h"><h2>Needs you</h2>${counter(gates.length, { gatecount: true })}</div>
       ${gateCards}
     </section>
     <section class="sec">
-      <div class="sec__h"><h2>Running now</h2>${sectionCount(running.length)}</div>
+      <div class="sec__h"><h2>Running now</h2>${counter(running.length)}</div>
       ${runningNowHtml(running, now)}
     </section>
     <section class="sec">
-      <div class="sec__h"><h2>In flight</h2>${sectionCount(inFlightProjects.length)}</div>
+      <div class="sec__h"><h2>In flight</h2>${counter(inFlightProjects.length)}</div>
       ${inFlightProjects.length
         ? `<div class="pcards">${projectCards}</div>`
-        : `<p style="color:var(--fg-mute);font-size:13.5px">Nothing in flight. Open a project from the sidebar to start a unit.</p>`}
+        : emptyState({ message: "Nothing in flight.", action: "Open a project from the sidebar to start a unit." })}
     </section>
   </main>`;
 
@@ -709,7 +663,10 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
   // renders when there's a genuine external target: `remote` (the browsable https form) first, else
   // `repo` itself when it isn't the local "." sentinel.
   const repoTarget = project.remote || (project.repo !== "." ? project.repo : null);
-  const pheadLinks = [repoTarget ? iconLink(repoTarget, "repo", "ti-brand-github") : "", project.deploy ? iconLink(project.deploy, "deploy", "ti-world") : ""].join("");
+  const pheadLinks = [
+    repoTarget ? iconLink({ icon: "ti-brand-github", href: repoTarget, label: "repo" }) : "",
+    project.deploy ? iconLink({ icon: "ti-world", href: project.deploy, label: "deploy" }) : "",
+  ].join("");
 
   // Item 6b: a status badge on the page header, matching the Studio project card's canonical status
   // exactly — same `projectStatusChip` call, same inputs (open-gate count, any active unit, live
@@ -725,7 +682,7 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
       const gate = gates.find((g) => g.unit === u.unit);
       // Item 6e: the canonical status→colour map, not a hand-picked class — the same active-must-be-
       // blue fix as the Studio card (projectStatusChip).
-      const chip = gate ? statusChip("needs-you", "at gate") : statusChip(fromWorkUnitStatus(u.status), u.status);
+      const chip = gate ? statusBadge("needs-you", "at gate") : statusBadge(fromWorkUnitStatus(u.status), u.status);
       const spend = unitSpend(repo, u);
       const artifacts = [...(repo.artifacts.get(`${u.project}/${u.unit}`)?.values() ?? [])].sort((a, b) => a.created.localeCompare(b.created));
       const artifactRows = artifacts
@@ -741,23 +698,28 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
         ? `<button class="verb is-secondary" data-summon="tpl-gate-${esc(gate.target)}">Review gate</button>`
         : "";
       const openCls = gate ? " is-open" : "";
-      return `<div class="unit${openCls}">
-        <div class="unit__head">
-          <span class="unit__glyph">${type?.glyph ?? ""}</span>
-          <div class="unit__titlewrap"><span class="unit__name">${esc(u.unit)}</span><a class="unit__path link mono" href="/run/${esc(u.project)}/${esc(u.unit)}">work/${esc(u.project)}/${esc(u.unit)}/</a></div>
-          ${chip}
-        </div>
-        <div class="unit__desc">${esc(unitSummary(repo, u))}</div>
-        ${miniScoreHtml(nodes)}
-        <div class="unit__detail">
+      // The work-unit row: `card()`'s row variant — a type glyph as `pre`, the title/path wrapper as a
+      // pre-built `title` block (already self-contained, so no extra `titleCls` wrap), the status chip
+      // top-right, and the collapsed summary (desc + mini-score) plus the expand-in-place detail as
+      // `body`/`meta` — the same top-left title / top-right status / bottom supporting-content anatomy
+      // every other card type uses, just with its own `.unit`/`.unit__*` class family (design brief:
+      // the STRUCTURE is shared, the CSS vocabulary stays per-surface — see components.ts#card).
+      return card({
+        cls: `unit${openCls}`,
+        topCls: "unit__head",
+        pre: `<span class="unit__glyph">${type?.glyph ?? ""}</span>`,
+        title: `<div class="unit__titlewrap"><span class="unit__name">${esc(u.unit)}</span><a class="unit__path link mono" href="/run/${esc(u.project)}/${esc(u.unit)}">work/${esc(u.project)}/${esc(u.unit)}/</a></div>`,
+        status: chip,
+        body: `<div class="unit__desc">${esc(unitSummary(repo, u))}</div>\n        ${miniScoreHtml(nodes)}`,
+        meta: `<div class="unit__detail">
           ${artifactRows}
           <div class="unit__foot">${reviewRounds} review round${reviewRounds === 1 ? "" : "s"} &middot; ${gates.filter((g) => g.unit === u.unit).length} gate${gates.filter((g) => g.unit === u.unit).length === 1 ? "" : "s"} <span class="cost">&middot; ${spend.tokens} tok &middot; ~$${spend.usd.toFixed(2)}</span></div>
           <div class="unit__actions">
             <a class="verb is-primary" href="/run/${esc(u.project)}/${esc(u.unit)}">Open run view</a>
             ${summon}
           </div>
-        </div>
-      </div>`;
+        </div>`,
+      });
     })
     .join("\n");
 
@@ -776,13 +738,13 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
       <div class="phead__title"><h1>${esc(projectName)}</h1>${projectHeaderStatus}</div>
       ${pheadLinks ? `<div class="phead__links">${pheadLinks}</div>` : ""}
     </header>
-    <div class="statstrip" style="grid-template-columns:repeat(5,1fr)">
-      <div class="stat"><div class="n">${units.filter((u) => u.status === "shipped").length}</div><div class="l">Shipped units</div></div>
-      <div class="stat"><div class="n">${units.filter((u) => u.status === "active").length}</div><div class="l">Active</div></div>
-      <div class="stat"><div class="n">${gates.length}</div><div class="l">Gates open</div></div>
-      <div class="stat"><div class="n">${reviewMedian === null ? "&mdash;" : reviewMedian}</div><div class="l">Median review rounds</div></div>
-      <div class="stat"><div class="n">$${projectSpend(repo, projectName).toFixed(2)}</div><div class="l">Spend</div></div>
-    </div>
+    ${statStrip([
+      { value: `${units.filter((u) => u.status === "shipped").length}`, label: "Shipped units" },
+      { value: `${units.filter((u) => u.status === "active").length}`, label: "Active" },
+      { value: `${gates.length}`, label: "Gates open" },
+      { value: reviewMedian === null ? "&mdash;" : `${reviewMedian}`, label: "Median review rounds" },
+      { value: `$${projectSpend(repo, projectName).toFixed(2)}`, label: "Spend" },
+    ])}
     ${pointerPanel}
     <section class="sec"><div class="sec__h"><h2>Work units</h2></div><div class="units">${unitRows}</div></section>
   </main>`;
@@ -816,13 +778,13 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
       // orange [or red]; failed = red" are two different states). Routed through the canonical map:
       // rejected is genuinely `failed` (red stays); blocked is genuinely `blocked` (hollow neutral).
       const chip =
-        n.state === "done" ? statusChip("done", "approved", "sstep__chip")
-        : n.state === "gate" ? statusChip("needs-you", "needs you", "sstep__chip")
-        : n.state === "rejected" ? statusChip("failed", "rejected", "sstep__chip")
+        n.state === "done" ? statusBadge("done", "approved", "sstep__chip")
+        : n.state === "gate" ? statusBadge("needs-you", "needs you", "sstep__chip")
+        : n.state === "rejected" ? statusBadge("failed", "rejected", "sstep__chip")
         // NOTES F3: a blocked-status artifact (a member ran and failed) previously showed only a small
         // colored dot with no label — the reason itself (now including the member's stderr) is a click
         // away via the artifact link already rendered in `sub`, but nothing told the Conductor to click.
-        : n.state === "blocked" ? statusChip("blocked", "blocked", "sstep__chip")
+        : n.state === "blocked" ? statusBadge("blocked", "blocked", "sstep__chip")
         : "";
       const sub = n.artifact
         ? `${esc(n.artifact.produced_by)} &middot; ${artifactTokenLink(n.artifact.project, n.artifact.unit, n.artifact.id, artifactFileName(n.artifact))}`
@@ -842,7 +804,7 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
     ? timeline
         .map((t) => `<div class="tlrow"><span class="tlrow__time mono">${esc(t.ts.slice(0, 16).replace("T", " "))}</span><span class="tlrow__text">${t.text}</span></div>`)
         .join("\n")
-    : `<p style="color:var(--fg-mute);font-size:13.5px">No recorded events yet.</p>`;
+    : emptyState({ message: "No recorded events yet." });
 
   // Gate-review round 2, item 1: the score is this page's primary content, not navigation — it now
   // renders as its own content column beside the timeline (a plain inline flex row; no new CSS class,
@@ -923,9 +885,9 @@ export function renderArtifact(repo: Repo, project: string, unit: string, id: st
   // inline style, "superseded"/"draft"/"skipped" a mix of ad hoc classes; the label text for each is
   // preserved verbatim, only the colour decision moved to status.ts.
   const artStatusChip =
-    art.status === "in-review" ? statusChip("needs-you", "at gate")
-    : art.status === "superseded" ? statusChip("waiting", "superseded")
-    : statusChip(fromArtifactStatus(art.status), art.status);
+    art.status === "in-review" ? statusBadge("needs-you", "at gate")
+    : art.status === "superseded" ? statusBadge("waiting", "superseded")
+    : statusBadge(fromArtifactStatus(art.status), art.status);
 
   const consumesHtml = art.consumes.length
     ? art.consumes
@@ -1046,14 +1008,14 @@ export function renderIdea(repo: Repo, root: string, name: string, status: Orche
 // REGISTRY
 // ---------------------------------------------------------------------------
 
-// One bordered container per entity — the same `.card` recipe (background, border, radius, padding)
-// every other screen's bordered containers use (gate cards, unit rows, project cards each have their
-// own such class; the registry reuses `.card`, the one already used for a labeled panel, rather than
-// inventing a new one). `.entity` stays alongside it purely for the kind-switch JS hook in app.js —
-// it contributes no visual styling of its own beyond the flex layout `.card` already sets.
+// One bordered container per entity, built through the shared `card()` primitive (components.ts) —
+// the same title-top-left/status-top-right/supporting-content-bottom contract the studio project card
+// and the work-unit row use, with the registry's own `.entity`/`.entity__*` class family (the `.card`
+// class rides along for the shared background/border/radius/padding recipe every bordered container on
+// the board uses). `.entity` stays alongside it purely for the kind-switch JS hook in app.js.
 //
 // UI3: "Edit source" no longer reveals an inline, wrapping-cramped textarea inside the card — it opens
-// the SHARED overlay editor (one instance per page, see `editorOverlay()` below) as a proper overlay
+// the SHARED overlay editor (one instance per page, components.ts#editorOverlay) as a proper overlay
 // above the board, per the design brief's "Registry" section ("Edit source toggles raw markdown") read
 // together with the goal's overlay requirement. The card itself carries only: the trigger button
 // (`data-edit-open`, plus the entity's plain name/kind as data attributes so the overlay can title
@@ -1067,47 +1029,30 @@ function entityBlock(kind: RegistryKind, title: string, kindLabel: string, inner
   // `id` (item 4b): a stable per-entity anchor so a rail row can deep-link to exactly this card
   // (e.g. a connector row → `/registry?entity=connectors#connectors-github`) with plain browser
   // anchor scrolling — no new client-side JS.
-  return `<article class="entity card" id="${kind}-${esc(name)}" data-entity="${kind}" data-path="${esc(relPath)}"${active ? "" : ' style="display:none"'}>
-    <div class="entity__head"><span class="entity__title">${title}</span><span class="entity__kind">${esc(kindLabel)}</span></div>
-    <div class="rendered">${inner}</div>
-    <textarea class="rawmd-source" data-path="${esc(relPath)}" hidden>${esc(raw)}</textarea>
+  return card({
+    as: "article",
+    cls: "entity card",
+    attrs: {
+      id: `${kind}-${name}`,
+      "data-entity": kind,
+      "data-path": relPath,
+      ...(active ? {} : { style: "display:none" }),
+    },
+    topCls: "entity__head",
+    title,
+    titleCls: "entity__title",
+    status: tag(kindLabel),
+    body: `<div class="rendered">${inner}</div>`,
+    meta: `<textarea class="rawmd-source" data-path="${esc(relPath)}" hidden>${esc(raw)}</textarea>
     <div class="editbar">
       <button class="togglebtn" data-edit-open data-path="${esc(relPath)}" data-editor-name="${esc(name)}" data-editor-kind="${esc(kindLabel)}">Edit source</button>
-    </div>
-  </article>`;
+    </div>`,
+  });
 }
 
 // UI3: the overlay editor itself — ONE instance per registry page (not one per entity), populated by
-// app.js from whichever card's `data-edit-open` was clicked. A centered panel over a dimmed backdrop
-// (design brief: "a centered panel over a dimmed backdrop"), not a route — `hidden` by default so it
-// never changes what's in the DOM's flow, only whether it paints; the board underneath is untouched.
-// `role="dialog" aria-modal="true"` for assistive tech; the heading is populated from the trigger's
-// `data-editor-name`/`data-editor-kind` (the entity's name and kind, per the goal). The validity
-// indicator and error list are live — app.js debounces keystrokes into `POST /registry/check/*path`,
-// which runs the SAME validator `levare validate` and the save route both use, against the unsaved
-// buffer (see validate.ts's `overlay` param) — never a second, client-side implementation of any rule.
-function editorOverlay(): string {
-  return `<div class="editor-overlay" id="editor-overlay" hidden>
-    <div class="editor-overlay__backdrop" data-editor-backdrop></div>
-    <div class="editor-overlay__panel" role="dialog" aria-modal="true" aria-labelledby="editor-overlay-title">
-      <header class="editor-overlay__head">
-        <h2 class="editor-overlay__title" id="editor-overlay-title"></h2>
-        <span class="editor-overlay__kind mono"></span>
-      </header>
-      <textarea class="editor-overlay__textarea" spellcheck="false"></textarea>
-      <div class="editor-overlay__foot">
-        <div class="editor-overlay__status">
-          <span class="validity"><span class="status-dot is-ok"></span>valid</span>
-          <div class="editor-overlay__errors"></div>
-        </div>
-        <div class="editor-overlay__actions">
-          <button class="togglebtn" data-editor-cancel>Cancel</button>
-          <button class="togglebtn is-primary" data-editor-save disabled>Save and commit</button>
-        </div>
-      </div>
-    </div>
-  </div>`;
-}
+// app.js from whichever card's `data-edit-open` was clicked. NOTES UI6: moved into components.ts
+// (`editorOverlay`) alongside `confirmModal` as the board's shared overlay-surface primitives.
 
 // UI4 item 4: `highlightName`, when set, names the specific entity a path-form deep link
 // (`/registry/<kind>/<name>`) pointed at — the SAME list view as `/registry/<kind>` alone, just
