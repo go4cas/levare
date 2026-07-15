@@ -101,11 +101,11 @@ describe("`./levare serve` — real subprocess over a real socket", () => {
     expect(proc.killed).toBe(false);
   });
 
-  test("GET / returns 200 with the studio HTML (derivation line + a gate card)", async () => {
+  test("GET / returns 200 with the studio HTML (app header + a gate card)", async () => {
     const res = await fetch(`${base}/`);
     expect(res.status).toBe(200);
     const text = await res.text();
-    expect(text).toContain('class="deriv"');
+    expect(text).toContain('class="apphead"');
     // A gate card is an `<article class="gate ...">` — asserted structurally (the "gate" class
     // TOKEN, and the data attribute every gate card carries regardless of variant), not by an exact
     // class-attribute string: render.ts legitimately appends modifier classes (e.g. `gate--start`,

@@ -8,6 +8,9 @@ import { renderStudio, renderProject, renderRun, renderRegistry, renderArtifact,
 import { scoreNodes, type NodeState } from "../src/board/derive.ts";
 import { resolveGate } from "../src/board/gateops.ts";
 import type { OrchestratorStatus } from "../src/orchestrator-status.ts";
+import { chipClass, dotClass, fromWorkUnitStatus, type CanonicalStatus } from "../src/board/status.ts";
+import type { Team, TypeTemplate, Project, WorkUnit, Artifact } from "../src/types.ts";
+import type { Repo } from "../src/repo.ts";
 
 // PRD §9 / phase-4 acceptance: snapshot tests assert each screen's rendered HTML contains the
 // required structures — score with state nodes + team-avatar column, gate cards with
@@ -20,11 +23,6 @@ const now = new Date("2026-07-11T20:00:00Z");
 
 describe("studio screen", () => {
   const html = renderStudio(repo, root, now);
-
-  test("carries a derivation line", () => {
-    expect(html).toContain('class="deriv"');
-    expect(html).toContain("derived from work/ on every request");
-  });
 
   test("gate card shows origin, consumes, age, and cost", () => {
     expect(html).toContain('class="gate__producer"');
@@ -54,7 +52,7 @@ describe("studio screen", () => {
 
   // Item 2, phase 7.5: a project card carries the full anatomy — status chip, name, an A8 one-
   // paragraph summary from its most relevant unit (newest gated, else newest active), and a mono
-  // meta line (unit count, deploy target, latest release).
+  // meta line (unit count, latest release — item 5b: no deploy-target line, ever).
   test("project card carries the full approved anatomy", () => {
     const storefrontCardMatch = html.match(/<a class="pcard" href="\/project\/storefront">[\s\S]*?<\/a>/);
     expect(storefrontCardMatch).not.toBeNull();
@@ -67,17 +65,30 @@ describe("studio screen", () => {
     expect(card).toContain("how a payment should be kept idempotent when there is no account to anchor the order.");
     expect(card).toContain('class="pcard__meta mono"');
     expect(card).toContain("3 units");
-    expect(card).toContain("https://storefront.acme.dev"); // deploy target from the project pointer
     expect(card).toContain("released cart-icon-fix"); // latest release proxy: most recently shipped unit
+    expect(card).not.toContain("https://storefront.acme.dev"); // deploy target line is gone (item 5b)
+    expect(card).not.toContain("no deploy target");
+  });
+
+  // Item 5b: absence is shown by absence — a project with units but no shipped release ever shows
+  // neither a fabricated "no releases yet" line nor any release line at all.
+  test("a project with no releases shows no release line and no deploy-target line", () => {
+    const studioCardMatch = html.match(/<a class="pcard" href="\/project\/studio">[\s\S]*?<\/a>/);
+    expect(studioCardMatch).not.toBeNull();
+    const card = studioCardMatch![0];
+    expect(card).not.toContain("released");
+    expect(card).not.toContain("no releases yet");
+    expect(card).not.toContain("no deploy target");
   });
 
   // Phase-6 gate fix-up: a project's status chip is a real derivation (gate count → active → idle),
   // not a hardcoded "running". `studio` (fixtures/golden/projects/studio.md) has zero units and zero
-  // open gates — the empty-project case that previously mislabeled it "running".
+  // open gates — the empty-project case that previously mislabeled it "running". NOTES UI1: "idle"
+  // now renders through the canonical map as `is-waiting`, not the semantically-unrelated `is-blocked`.
   test("an empty project (no units, no open gates) shows an idle chip, not a fabricated 'running'", () => {
     const studioCardMatch = html.match(/<a class="pcard" href="\/project\/studio">[\s\S]*?<\/a>/);
     expect(studioCardMatch).not.toBeNull();
-    expect(studioCardMatch![0]).toContain('<span class="chip is-blocked">idle</span>');
+    expect(studioCardMatch![0]).toContain('<span class="chip is-waiting">idle</span>');
     expect(studioCardMatch![0]).not.toContain("running");
   });
 
@@ -143,28 +154,23 @@ describe("a gate card renders an immediate dispatching state while its unit is i
   });
 });
 
-describe("projectStatusChip — gate count wins, then active, else idle", () => {
+describe("projectStatusChip — gate count wins, then active, else idle (NOTES UI1: canonical palette)", () => {
   test("an open gate always wins, regardless of activity", () => {
     expect(projectStatusChip(2, true, 3)).toBe('<span class="chip is-gate">2 gates</span>');
   });
-  test("no gates but an active unit → active", () => {
-    expect(projectStatusChip(0, true, 0)).toBe('<span class="chip is-progress">active</span>');
+  test("no gates but an active unit → active, canonical blue", () => {
+    expect(projectStatusChip(0, true, 0)).toBe('<span class="chip is-active">active</span>');
   });
-  test("no gates but a live member → active", () => {
-    expect(projectStatusChip(0, false, 1)).toBe('<span class="chip is-progress">active</span>');
+  test("no gates but a live member → active, canonical blue", () => {
+    expect(projectStatusChip(0, false, 1)).toBe('<span class="chip is-active">active</span>');
   });
-  test("no gates, no active unit, no live members → idle", () => {
-    expect(projectStatusChip(0, false, 0)).toBe('<span class="chip is-blocked">idle</span>');
+  test("no gates, no active unit, no live members → idle, canonical waiting (not blocked)", () => {
+    expect(projectStatusChip(0, false, 0)).toBe('<span class="chip is-waiting">idle</span>');
   });
 });
 
 describe("project screen", () => {
   const html = renderProject(repo, "storefront", root, now);
-
-  test("carries a derivation line", () => {
-    expect(html).toContain('class="deriv"');
-    expect(html).toContain("derived from work/storefront/");
-  });
 
   test("unit row has a type glyph, a mini-score, and a gate chip", () => {
     expect(html).toContain('class="unit__glyph">▸<');
@@ -196,14 +202,53 @@ describe("project screen", () => {
     expect(html).toContain('class="gate__consumes"');
     expect(html).toContain('class="cost"');
   });
+
+  // Item 6a: repo/deploy render as right-aligned icon links beside the title, not label rows in the
+  // pointer card.
+  test("repo and deploy render as icon links beside the title, not label rows in the pointer card", () => {
+    const titleRow = /<div class="phead__title">[\s\S]*?<\/div>/.exec(html);
+    expect(titleRow).not.toBeNull();
+    expect(titleRow![0]).toContain('<a class="iconlink" href="https://github.com/acme/storefront"');
+    expect(titleRow![0]).toContain('<a class="iconlink" href="https://storefront.acme.dev"');
+    const pointerCard = /<div class="card">[\s\S]*?<\/div>\s*<div class="statstrip"/.exec(html)![0];
+    expect(pointerCard).not.toContain('<span class="k">repo</span>');
+    expect(pointerCard).not.toContain('<span class="k">deploy</span>');
+  });
+
+  // Item 6b: the page header carries a status badge matching the Studio project card's canonical
+  // status exactly (both call the SAME projectStatusChip with the same inputs).
+  test("the page header carries a status badge matching the Studio project card's canonical status", () => {
+    const studioHtml = renderStudio(repo, root, now);
+    const studioCard = /<a class="pcard" href="\/project\/storefront">[\s\S]*?<\/a>/.exec(studioHtml)![0];
+    const studioChip = /<span class="chip is-[a-z]+">[^<]*<\/span>/.exec(studioCard)![0];
+    const titleRow = /<div class="phead__title">[\s\S]*?<\/div>/.exec(html)![0];
+    expect(titleRow).toContain(studioChip);
+  });
+
+  // Item 6c: `pace` renders as a colour-coded badge — storefront's pace is `auto`.
+  test("pace renders as a colour-coded badge", () => {
+    expect(html).toContain('<span class="v"><span class="chip is-active">auto</span></span>');
+  });
+
+  // Item 6d: releases — the most recent few, latest highlighted distinctly.
+  test("releases show the most recent shipped units, latest highlighted", () => {
+    expect(html).toContain('<div class="founding release--latest">');
+    expect(html).toContain('<span class="cite">latest</span>');
+    expect(html).toContain("cart-icon-fix");
+  });
+
+  // Item 6e: work-unit rows use the canonical palette — the same active-must-be-blue fix as the
+  // Studio card. checkout-flow/loyalty-flow are both "active" but sit at an open gate ("at gate", gate
+  // brass); cart-icon-fix is "shipped" (canonical done, green), never the old grey `is-approved`.
+  test("work-unit rows use the canonical status palette, never the pre-UI1 ad hoc classes", () => {
+    expect(html).toContain('<span class="chip is-done">shipped</span>');
+    expect(html).not.toContain("is-approved");
+    expect(html).not.toContain("is-progress");
+  });
 });
 
 describe("run screen", () => {
   const html = renderRun(repo, "storefront", "checkout-flow", root, now);
-
-  test("carries a derivation line", () => {
-    expect(html).toContain('class="deriv"');
-  });
 
   test("score rail has state nodes and a team-avatar column", () => {
     expect(html).toContain('class="score2"');
@@ -231,10 +276,6 @@ describe("run screen", () => {
 
 describe("registry screen", () => {
   const html = renderRegistry(repo, root);
-
-  test("carries a derivation line", () => {
-    expect(html).toContain('class="deriv"');
-  });
 
   test("renders all five type glyphs", () => {
     for (const glyph of ["▸", "◦", "◈", "▤", "∻"]) {
@@ -268,7 +309,7 @@ describe("registry screen", () => {
 
     // Sanity: for a specific entity (kestrel), the header, the flow-strip body, and the edit actions
     // all sit between the same opening <article> and its closing </article> — genuinely one container.
-    const kestrelCard = /<article class="entity card" data-entity="teams"[^>]*>[\s\S]*?<\/article>/.exec(html)![0];
+    const kestrelCard = /<article class="entity card"[^>]*data-entity="teams"[^>]*>[\s\S]*?<\/article>/.exec(html)![0];
     expect(kestrelCard).toContain('class="entity__head"');
     expect(kestrelCard).toContain('class="flowstrip"');
     expect(kestrelCard).toContain('class="editbar"');
@@ -288,7 +329,7 @@ describe("registry screen", () => {
     // A Save button per card, and every card names the file the editor will POST to.
     expect((html.match(/data-save/g) || []).length).toBe(cardOpens);
     // The kestrel card's editor targets teams/kestrel.md — the exact path the write route confines to.
-    const kestrelCard = /<article class="entity card" data-entity="teams"[^>]*>[\s\S]*?<\/article>/.exec(html)![0];
+    const kestrelCard = /<article class="entity card"[^>]*data-entity="teams"[^>]*>[\s\S]*?<\/article>/.exec(html)![0];
     expect(kestrelCard).toContain('data-path="teams/kestrel.md"');
     expect(kestrelCard).toMatch(/<textarea class="rawmd rawmd-edit" data-path="teams\/kestrel\.md"/);
     // The raw markdown source is inside the textarea (the entity's own frontmatter is editable).
@@ -452,9 +493,10 @@ describe("scoreNodeClass — every canonical-palette state maps to a class asset
 // mini-score marker class is cross-checked against a non-empty assets/styles.css rule, generalizing
 // the scoreNodeClass guard beyond the run-view rail (test-quality rule 4).
 describe("mini-score marker classes all map to a non-empty assets/styles.css rule", () => {
-  // Exactly the classes miniScoreHtml can emit (render.ts): a gate node's diamond, and a dot in each
-  // of its reachable states (done / rejected / everything-else→wait).
-  const markerClasses = ["diamond is-gate", "dot is-done", "dot is-danger", "dot is-wait"];
+  // NOTES UI1: `miniScoreHtml` used to collapse "active" AND "blocked" into the same hollow `is-wait`
+  // dot — `.dot.is-active`/`.dot.is-blocked` existed in assets/styles.css but were never emitted.
+  // Now every canonical state a dot can reach (done/active/blocked/failed/waiting) has its own class.
+  const markerClasses = ["diamond is-gate", "dot is-done", "dot is-active", "dot is-blocked", "dot is-danger", "dot is-wait"];
   for (const cls of markerClasses) {
     test(`"${cls}" has a defined, non-empty rule`, () => {
       expect(hasCssRuleFor(cls)).toBe(true);
@@ -463,12 +505,98 @@ describe("mini-score marker classes all map to a non-empty assets/styles.css rul
 });
 
 // ---------------------------------------------------------------------------
-// Item 4, phase 7.5: the derivation line used to render twice (once under the page title, once in
-// the sidebar footer) on several screens. Exactly one must survive now, and it must live in the
-// footer — never bare in `.phead`/`.main`.
+// NOTES UI1: the canonical status→colour map is the single source, and it is impossible to set a
+// status colour locally — src/board/status.ts owns the CSS class for every `CanonicalStatus`, and
+// every renderer converts its own domain status (WorkUnitStatus/ArtifactStatus/NodeState) through the
+// SAME `fromXxx` functions before asking for a class. Proven two ways: (1) the pure mapping functions
+// agree with each other for equivalent states, and (2) three independently-rendered surfaces built
+// from a synthetic repo with an "active", gate-free project render the identical `is-active` class.
 // ---------------------------------------------------------------------------
 
-describe("derivation line renders exactly once per screen, in the sidebar footer", () => {
+describe("the canonical status→colour map is the single source of truth", () => {
+  test("chipClass/dotClass agree across every canonical status (one colour decision, many marker shapes)", () => {
+    const statuses: CanonicalStatus[] = ["done", "active", "waiting", "blocked", "needs-you", "failed", "exhausted"];
+    for (const s of statuses) {
+      // Every canonical status maps to exactly one chip class and one dot class — re-deriving the
+      // same status twice (as a WorkUnitStatus route and a raw CanonicalStatus route) can never land
+      // on two different classes.
+      expect(chipClass(s)).toBe(chipClass(s));
+      expect(dotClass(s)).toBe(dotClass(s));
+    }
+  });
+
+  test('fromWorkUnitStatus("active") and the raw "active" canonical status resolve to the identical chip class', () => {
+    expect(chipClass(fromWorkUnitStatus("active"))).toBe(chipClass("active"));
+    expect(chipClass(fromWorkUnitStatus("active"))).toBe("is-active");
+  });
+
+  function team(over: Partial<Team> & { name: string; flow: Team["flow"]; produces: string[]; members: string[] }): Team {
+    return { consumes: [], style: { color: "#2E6FB0" }, charter: "", learnings: "", ...over };
+  }
+  function project(over: Partial<Project> & { name: string }): Project {
+    return { repo: ".", remote: null, default_branch: "main", deploy: null, pace: "auto", houseRules: "", ...over };
+  }
+  function unit(over: Partial<WorkUnit> & { unit: string; project: string; type: string }): WorkUnit {
+    return { status: "active", dir: "/tmp/x", ...over };
+  }
+  function artifact(over: Partial<Artifact> & { id: string; unit: string; project: string; kind: string; produced_by: string }): Artifact {
+    return { status: "approved", consumes: [], supersedes: null, approved_by: "cas 2026-07-11", created: "2026-07-11", files: [], ...over };
+  }
+
+  // A synthetic single-project repo: one unit, status "active", carrying exactly one APPROVED
+  // artifact (so `openGates` raises no start gate — an active unit with no artifacts at all always
+  // gets one — and no review gate either) — the one shape where the project card, the header badge,
+  // and the unit row all legitimately read "active" rather than "N gates".
+  function activeNoGateRepo(): Repo {
+    const t = team({ name: "kestrel", flow: [], produces: ["design"], members: ["wren"] });
+    const ty: TypeTemplate = { name: "feature", glyph: "▸", expects: ["design"], gates: [] };
+    const p = project({ name: "atelier" });
+    const u = unit({ unit: "widget", project: "atelier", type: "feature" });
+    const art = artifact({ id: "design-v1", unit: "widget", project: "atelier", kind: "design", produced_by: "kestrel/wren" });
+    return {
+      root: "/tmp/synthetic-active",
+      teams: new Map([[t.name, t]]),
+      types: new Map([[ty.name, ty]]),
+      projects: new Map([[p.name, p]]),
+      agents: new Map(),
+      connectors: new Map(),
+      units: [u],
+      artifacts: new Map([["atelier/widget", new Map([[art.id, art]])]]),
+      studio: {},
+    };
+  }
+
+  test("Studio project card, the project header badge, and the project page's work-unit row all render the SAME class for the SAME active status", () => {
+    const synthRepo = activeNoGateRepo();
+    const synthRoot = "/tmp/nonexistent-levare-synthetic-active";
+    const studioHtml = renderStudio(synthRepo, synthRoot, now);
+    const projectHtml = renderProject(synthRepo, "atelier", synthRoot, now);
+
+    const studioCard = /<a class="pcard" href="\/project\/atelier">[\s\S]*?<\/a>/.exec(studioHtml);
+    expect(studioCard).not.toBeNull();
+    expect(studioCard![0]).toContain('<span class="chip is-active">active</span>');
+
+    const projectHeader = /<div class="phead__title">[\s\S]*?<\/div>/.exec(projectHtml);
+    expect(projectHeader).not.toBeNull();
+    expect(projectHeader![0]).toContain('<span class="chip is-active">active</span>');
+
+    const unitRow = /<div class="unit__head">[\s\S]*?<\/div>\s*<\/div>/.exec(projectHtml);
+    expect(unitRow).not.toBeNull();
+    expect(unitRow![0]).toContain('<span class="chip is-active">active</span>');
+
+    // Never the pre-UI1 ad hoc grey class anywhere.
+    expect(studioHtml).not.toContain("is-progress");
+    expect(projectHtml).not.toContain("is-progress");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Item 4c (gate-review round UI1): the left nav's "derived from ... on every request" footer line is
+// gone entirely — nowhere in the rail, nowhere else. Superseded the earlier phase-7.5 rule that it
+// live in exactly one place; now it lives nowhere.
+// ---------------------------------------------------------------------------
+
+describe("the left nav no longer carries a derivation footer line", () => {
   const screens: Array<[string, string]> = [
     ["studio", renderStudio(repo, root, now)],
     ["project", renderProject(repo, "storefront", root, now)],
@@ -477,17 +605,10 @@ describe("derivation line renders exactly once per screen, in the sidebar footer
   ];
 
   for (const [name, html] of screens) {
-    test(`${name} screen carries exactly one derivation line`, () => {
-      const count = (html.match(/class="deriv"/g) || []).length;
-      expect(count).toBe(1);
-    });
-
-    test(`${name} screen's derivation line lives inside the railfoot, not under the title`, () => {
-      const footMatch = /<div class="railfoot">[\s\S]*?<\/div>\s*<\/aside>/.exec(html);
-      expect(footMatch).not.toBeNull();
-      expect(footMatch![0]).toContain('class="deriv"');
-      const pheadMatch = /<header class="phead">[\s\S]*?<\/header>/.exec(html);
-      if (pheadMatch) expect(pheadMatch[0]).not.toContain('class="deriv"');
+    test(`${name} screen: no "derived from" footer text, no .deriv/.railfoot markup`, () => {
+      expect(html).not.toContain('class="deriv"');
+      expect(html).not.toContain('class="railfoot"');
+      expect(html).not.toMatch(/derived from .* on every request/);
     });
   }
 });
@@ -568,6 +689,9 @@ describe("idea render view", () => {
 // a run's score, the registry's own entity switcher) must never appear in it again.
 // ---------------------------------------------------------------------------
 
+// Item 4: the Orchestrator section, the logo/wordmark, and the theme toggle all moved out of the
+// rail — the Orchestrator's status is now a header-level fact (4a), the mark/wordmark/theme-toggle
+// live in the new top-level app header (item 3), not duplicated in the nav.
 describe("the rail is identical navigation on every screen", () => {
   const screens: Array<[string, string]> = [
     ["studio", renderStudio(repo, root, now)],
@@ -588,7 +712,7 @@ describe("the rail is identical navigation on every screen", () => {
     test(`${name}: rail carries exactly the approved nav-index sections, in order, and nothing else`, () => {
       const rail = railOf(html);
       const headings = [...rail.matchAll(/<h3 class="railsec__h">([^<]*)<\/h3>/g)].map((m) => m[1]);
-      expect(headings).toEqual(["Projects", "Registry", "Connectors", "Orchestrator", "Ideas"]);
+      expect(headings).toEqual(["Projects", "Registry", "Connectors", "Ideas"]);
       // Page-specific material must never leak back into the rail.
       expect(rail).not.toContain("Pointer");
       expect(rail).not.toContain("Constitution");
@@ -596,21 +720,88 @@ describe("the rail is identical navigation on every screen", () => {
       expect(rail).not.toContain("Recent releases");
       expect(rail).not.toContain('class="score2"');
       expect(rail).not.toContain('class="founding"');
+      // Item 4a: no Orchestrator section in the rail at all.
+      expect(rail).not.toContain(">Orchestrator<");
+      expect(rail).not.toContain("orchestrator:");
     });
 
-    test(`${name}: rail carries the logo, theme toggle, and exactly one derivation line`, () => {
+    test(`${name}: rail no longer carries the logo, theme toggle, or a derivation line (all moved to the header)`, () => {
       const rail = railOf(html);
-      expect(rail).toContain('class="logo"');
-      expect(rail).toContain("data-theme-toggle");
-      expect((rail.match(/class="deriv"/g) || []).length).toBe(1);
+      expect(rail).not.toContain('class="logo"');
+      expect(rail).not.toContain("data-theme-toggle");
+      expect(rail).not.toContain('class="deriv"');
+    });
+
+    // Item 4b: a connector row carries no trailing status text ("ok"/"missing-env") — the dot alone
+    // — and is itself a real link into that connector's own registry card.
+    test(`${name}: connector rows carry no status text and are navigable`, () => {
+      const rail = railOf(html);
+      const connectorsSection = /<h3 class="railsec__h">Connectors<\/h3>([\s\S]*?)<\/section>/.exec(rail);
+      expect(connectorsSection).not.toBeNull();
+      const section = connectorsSection![1];
+      expect(section).toContain('<a class="crow" href="/registry?entity=connectors#connectors-github">');
+      expect(section).not.toContain(">ok<");
+      expect(section).not.toContain("missing-env");
     });
   }
 
-  test("the rail's structure (sections, classes, order) is byte-identical across all six screens — only the derivation-footer text and the registry sub-nav's is-active highlight legitimately vary", () => {
-    const normalize = (rail: string) =>
-      rail.replace(/<span class="deriv">[^<]*<\/span>/, '<span class="deriv"></span>').replace(/ class="is-active"/g, ' class=""');
+  test("the rail's structure (sections, classes, order) is byte-identical across all six screens — only the registry sub-nav's is-active highlight legitimately varies", () => {
+    const normalize = (rail: string) => rail.replace(/ class="is-active"/g, ' class=""');
     const rails = screens.map(([, html]) => normalize(railOf(html)));
     for (const r of rails.slice(1)) expect(r).toBe(rails[0]);
+  });
+});
+
+// Item 3: the top-level app header — mark, wordmark, release-version chip, Orchestrator status (on
+// and off), a hairline divider, the theme toggle — present, identically structured, on every screen.
+describe("the app header carries the wordmark, version chip, orchestrator status, and theme toggle", () => {
+  const screens: Array<[string, string]> = [
+    ["studio", renderStudio(repo, root, now)],
+    ["project", renderProject(repo, "storefront", root, now)],
+    ["run", renderRun(repo, "storefront", "checkout-flow", root, now)],
+    ["registry", renderRegistry(repo, root)],
+    ["artifact", renderArtifact(repo, "storefront", "checkout-flow", "spec-checkout-flow-v1", root, now)],
+    ["idea", renderIdea(repo, root, "loyalty-program")],
+  ];
+
+  function headerOf(html: string): string {
+    const m = /<header class="apphead">[\s\S]*?<\/header>/.exec(html);
+    expect(m).not.toBeNull();
+    return m![0];
+  }
+
+  for (const [name, html] of screens) {
+    test(`${name}: header carries the mark, wordmark "levare", a mono version chip, and the theme toggle — exactly once`, () => {
+      const header = headerOf(html);
+      expect((html.match(/<header class="apphead">/g) || []).length).toBe(1);
+      expect(header).toContain('class="logo"');
+      expect(header).toContain(">levare<");
+      expect(header).toMatch(/<span class="apphead__ver mono">v[\d.]+<\/span>/);
+      expect((header.match(/data-theme-toggle/g) || []).length).toBe(1);
+      expect(header).toContain('class="apphead__divider"');
+    });
+  }
+
+  test("orchestrator: on — a filled dot, never the danger colour", () => {
+    const html = renderStudio(repo, root, now, [], { available: true, reason: "The Orchestrator is live.", envVar: "ANTHROPIC_API_KEY" });
+    const header = headerOf(html);
+    expect(header).toContain("orchestrator: on");
+    expect(header).toContain('class="status-dot is-ok"');
+    expect(header).not.toContain('class="status-dot is-danger"');
+  });
+
+  test("orchestrator: off — a hollow/outline dot (a legitimate mode, never the danger colour)", () => {
+    const html = renderStudio(repo, root, now, [], { available: false, reason: "ANTHROPIC_API_KEY is not set", envVar: "ANTHROPIC_API_KEY" });
+    const header = headerOf(html);
+    expect(header).toContain("orchestrator: off");
+    expect(header).toContain('class="status-dot is-idle"');
+    expect(header).not.toContain('class="status-dot is-danger"');
+  });
+
+  test("the header's structure is byte-identical across all six screens (only the rail-toggle aria-label legitimately varies)", () => {
+    const normalize = (h: string) => h.replace(/aria-label="[^"]*"/, 'aria-label=""');
+    const headers = screens.map(([, html]) => normalize(headerOf(html)));
+    for (const h of headers.slice(1)) expect(h).toBe(headers[0]);
   });
 });
 
@@ -692,8 +883,10 @@ describe("breadcrumbs are consistent across all screens", () => {
       renderArtifact(repo, "storefront", "checkout-flow", "spec-checkout-flow-v1", root, now),
       renderIdea(repo, root, "loyalty-program"),
     ];
+    // Item 6a/6b: the project page's h1 now sits inside a `.phead__title` row alongside its status
+    // badge and icon links — an optional wrapper every other screen's bare `<h1>` doesn't have.
     for (const html of screens) {
-      expect(html).toMatch(/<header class="phead">\s*<div class="crumb">[\s\S]*?<\/div>\s*<h1/);
+      expect(html).toMatch(/<header class="phead">\s*<div class="crumb">[\s\S]*?<\/div>\s*(?:<div class="phead__title">)?\s*<h1/);
     }
   });
 });
@@ -848,10 +1041,30 @@ describe("the header status indicator shows the Orchestrator's real state, on ev
     expect(html).not.toContain("Orchestrator unavailable");
   });
 
-  test("the rail carries an Orchestrator line alongside Connectors, using the same dot-and-status vocabulary", () => {
+  // Item 4a: the Orchestrator's status is a header-level fact now — the rail's old Orchestrator
+  // section (a duplicate rendering of the same fact) is gone entirely.
+  test("the rail no longer carries an Orchestrator section — that fact lives in the header only", () => {
     const on = renderStudio(repo, root, now, [], ON);
     const off = renderStudio(repo, root, now, [], OFF);
-    expect(on).toMatch(/<h3 class="railsec__h">Orchestrator<\/h3><div class="crow"><span class="status-dot is-ok">/);
-    expect(off).toMatch(/<h3 class="railsec__h">Orchestrator<\/h3><div class="crow"><span class="status-dot is-idle">/);
+    for (const html of [on, off]) {
+      const rail = /<aside class="rail">[\s\S]*?<\/aside>/.exec(html)![0];
+      expect(rail).not.toContain(">Orchestrator<");
+      expect(rail).not.toContain("orchestrator:");
+    }
+  });
+
+  // The header answers "is it configured?" — a stable fact, not a per-message state. It must render
+  // identically regardless of anything that would only matter to a live conversation (there's no
+  // "thinking"/pending flag threaded into any render* call, so this just pins that the header's
+  // on/off text is driven purely by `OrchestratorStatus.available`).
+  test("the header's orchestrator text never varies by anything other than availability, across every screen", () => {
+    for (const scope of [
+      renderStudio(repo, root, now, [], ON),
+      renderProject(repo, "storefront", root, now, [], ON),
+      renderRun(repo, "storefront", "checkout-flow", root, now, [], ON),
+    ]) {
+      const header = /<header class="apphead">[\s\S]*?<\/header>/.exec(scope)![0];
+      expect(header).toContain("orchestrator: on");
+    }
   });
 });

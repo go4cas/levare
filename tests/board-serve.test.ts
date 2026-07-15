@@ -61,7 +61,7 @@ describe("levare serve — GET screens (in-process, no socket)", () => {
     const res = await board.fetch(req("/"));
     expect(res.status).toBe(200);
     const text = await res.text();
-    expect(text).toContain('class="deriv"');
+    expect(text).toContain('class="apphead"');
     expect(text).toContain('class="gate"');
   });
 

@@ -131,7 +131,7 @@ describe("scaffoldStudio", () => {
     const body = await res.text();
     board.close();
     expect(res.status).toBe(200);
-    expect(body).toContain('class="deriv"');
+    expect(body).toContain('class="apphead"');
     expect(body).toContain('teams <span class="ct">1</span>');
     expect(body).toContain('agents <span class="ct">3</span>');
     expect(body).not.toContain("This isn't a levare studio yet");
