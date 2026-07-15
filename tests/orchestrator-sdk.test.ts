@@ -467,6 +467,26 @@ describe("selectOrchestratorBoundary — key-present vs. key-absent", () => {
   });
 });
 
+// NOTES DIST4: `createAsyncSdkTransport`'s worker spawn (`Bun.spawn([process.execPath,
+// SDK_WORKER_PATH])`) cannot work under `bun build --compile` — `process.execPath` there is the
+// compiled `dist/levare` binary itself, not a `bun` interpreter, so the spawn re-enters levare's own
+// CLI parser instead of running the worker script (confirmed live: `dist/levare <any script path>`
+// prints `unknown command: <path>`). `selectOrchestratorBoundary` refuses up front under a compiled
+// binary — regardless of credentials/binary resolution — so the route reports the honest disabled
+// state instead of selecting a boundary that is certain to fail on its first call.
+describe("selectOrchestratorBoundary — refuses under a compiled binary, regardless of credentials (NOTES DIST4)", () => {
+  test("a compiled build → null, even with a present key and a resolvable native binary", () => {
+    const boundary = selectOrchestratorBoundary({ ANTHROPIC_API_KEY: "sk-ant-test-not-real" }, {}, true);
+    expect(boundary).toBeNull();
+  });
+
+  test("a source run (the default `compiled` param) is unaffected — same as the key-present case above", () => {
+    const { transport } = fakeTransport(() => ({ ok: true, result: "{}", structuredOutput: { kind: "stats" } }));
+    const boundary = selectOrchestratorBoundary({ ANTHROPIC_API_KEY: "sk-ant-test-not-real" }, { transport }, false);
+    expect(boundary).not.toBeNull();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // The live-gate regression itself: a blocking transport must never block the event loop
 // (NOTES phase-7 K9). These stay fast, deterministic, and fully offline.

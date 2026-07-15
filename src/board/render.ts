@@ -144,7 +144,7 @@ function orchestratorPanel(scope: string, status: OrchestratorStatus, briefingHt
     return `<aside class="orch is-disabled">
     ${orchHead(scope)}
     <div class="orch__body">
-      ${orchTurn(`<p class="msg__body">Orchestrator unavailable — no ${esc(status.envVar)}. The board, the registry, and every gate still work: you can approve, reject, and the runner will advance. Set a key to talk.</p>`)}
+      ${orchTurn(`<p class="msg__body">Orchestrator unavailable — ${esc(status.reason)} The board, the registry, and every gate still work: you can approve, reject, and the runner will advance.</p>`)}
       ${actionableHtml}
     </div>
     ${composer({ disabled: true })}

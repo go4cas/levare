@@ -5117,6 +5117,23 @@ unsafe, out of scope for this step:**
   left for a follow-up — the live-Orchestrator boundary under a compiled binary is simply unproven,
   not claimed to work.
 
+  **CORRECTION (NOTES DIST4): this bullet's framing of both sites as "cases that don't run in normal
+  compiled use" was wrong for `ORCHESTRATOR_PROMPT_PATH`, and the record needs to say so plainly.**
+  `docs/orchestrator-prompt.md` is not a dev-only or test-only path the way `STUB_CLI`'s `--stubs`
+  reproduction is — it loads on the very first message a Conductor sends the Orchestrator under any
+  `levare serve`, compiled or not. A live host confirmed this directly: a compiled `dist/levare serve`
+  ENOENT'd on `/$bunfs/docs/orchestrator-prompt.md` the first time `/orchestrator/message` was called.
+  "Deliberately left alone" implied a considered decision that this path was unreachable in ordinary
+  compiled use; it was not — it was simply not checked against the compiled-use case at all. The
+  "loaded from disk, not embedded" test this bullet cited as a reason not to fix it also turns out not
+  to be in tension with the actual fix: `{ type: "file" }` still resolves to the real, editable
+  on-disk path in a source run (Bun only rewrites it under `--compile`), so the byte-for-byte-identical
+  invariant that test asserts holds unchanged either way — the bullet's own reasoning for leaving this
+  alone doesn't survive contact with what `{ type: "file" }` actually does. See NOTES DIST4 below for
+  the fix and for what turned out to be genuinely, structurally true of the SDK worker path (not
+  merely a deferred verification, as this bullet also wrongly implied by treating both sites as the
+  same shape of gap).
+
 **Stale-source honesty (`levare doctor`), and what's deliberately still deferred.** Doctor's run-mode
 line answers "is this a build, and if so which commit" — it does NOT compare that commit against the
 studio/source tree's own current `HEAD` (a real staleness check: "is this build stale relative to
@@ -5596,3 +5613,112 @@ that specific case today, only the shared primitive. Left as-is rather than spec
 composer's disable-while-pending behaviour is explicitly out of scope to change (item 6/composer
 unchanged), and a generic primitive that's symmetric by construction is preferable to one hand-tuned to
 today's only reachable case.
+
+## DIST4. Two compiled-binary defects found running the real thing, not assumed from reading the code
+
+Both defects here were found by actually running `dist/levare` and the rendered board, not by static
+review — the goal's own instruction ("verify against the real thing") is the throughline for both.
+
+### 1. `docs/orchestrator-prompt.md` ENOENT'd under `--compile` — DIST1's own "deliberately left alone" call was wrong
+
+**Reproduced live first.** Built `dist/levare` at this branch's starting commit, ran `dist/levare serve
+<studio> --port N` with a real-shaped (fake) `ANTHROPIC_API_KEY`, and POSTed to `/orchestrator/message`:
+`{"ok":false,"error":"ENOENT: no such file or directory, open '/$bunfs/docs/orchestrator-prompt.md'"}`.
+Exactly the failure the goal described, and exactly DIST1's own predicted mechanism
+(`import.meta.url` inside a `--compile`d binary resolves into Bun's virtual `$bunfs` tree, not the real
+filesystem) — DIST1 just never ran this path to see it happen, and its own text said so ("not verified
+live in this round").
+
+**The fix — the same one DIST1 already used for the version chip and the board's assets.**
+`orchestrator-boundary.ts#ORCHESTRATOR_PROMPT_PATH` now comes from `import orchestratorPromptPath from
+"../docs/orchestrator-prompt.md" with { type: "file" }`, replacing `new URL(...,
+import.meta.url).pathname`. This is not a new technique in this repo — `board/serve.ts` already does
+the identical thing for `assets/styles.css`/`assets/app.js` (NOTES DIST1) — it just hadn't been applied
+here. DIST1's own stated reason for NOT doing this was that `tests/orchestrator-sdk.test.ts`'s
+*"docs/orchestrator-prompt.md is loaded from disk, not embedded"* describe block requires the prompt
+stay a real, editable file, not something baked into the binary. That reasoning doesn't actually block
+this fix: `{ type: "file" }` resolves to the REAL on-disk path unchanged in a source run (Bun only
+rewrites the import under `--compile`), so `loadOrchestratorPromptSource()` still reads the live,
+editable `docs/orchestrator-prompt.md` byte-for-byte in every source/dev run — that existing test
+passes unmodified. Only a compiled binary now gets the embedded copy, which is exactly the behavior
+DIST1 already established as correct and desired for the CSS/JS assets.
+
+**Proven against the actual compiled binary, three ways, not just the source shim:**
+1. `levare doctor` gained a new, independent line — `orchestrator prompt: readable (N bytes) at <path>`
+   (or `ERROR — <message>`) — computed by calling the exact same `loadOrchestratorPromptSource(
+   ORCHESTRATOR_PROMPT_PATH)` the real boundary uses, wired in ahead of the connector report
+   (`doctor.ts`'s new `PromptCheck`, threaded from `cli.ts#runDoctorCmd`). Rebuilding `dist/levare` and
+   running `dist/levare doctor <studio>` prints `orchestrator prompt: readable (4251 bytes) at
+   /$bunfs/root/orchestrator-prompt-*.md` — the same byte count (4251) `wc -c docs/orchestrator-prompt.md`
+   reports, and no `ENOENT`. This line is deliberately independent of the `orchestrator: on/off` line
+   above it (see point 2 below) — it proves the prompt READ specifically, regardless of whether the SDK
+   worker can otherwise run.
+2. `tests/orchestrator-compiled-smoke.test.ts` (new, always runs, not skipped) actually builds a scratch
+   binary via `scripts/build.sh` inside `bun test` itself and asserts on its real `doctor` output and a
+   real `serve` HTTP response — the automated equivalent of the manual check above, so this stays proven
+   on every `bun test` run, not just this one session.
+3. Re-ran the original repro from the top of this section against the rebuilt binary: the prompt-read
+   error is gone; the failure moved one step further down the call chain, to the SDK worker spawn (§2).
+
+### 2. The SDK worker path — genuinely cannot be fixed the same way, and now says so instead of assuming it away
+
+**Re-examined instead of left as a guess.** DIST1's bullet predicted the SDK worker spawn would
+"very likely fail the same way" under `--compile` but never checked. It fails, but not "the same way":
+
+`sdk-transport.ts#createAsyncSdkTransport` spawns the worker as `Bun.spawn([process.execPath,
+SDK_WORKER_PATH])`. In a source run, `process.execPath` is the `bun` binary — a generic script
+interpreter — so this runs `sdk-worker.ts` as a fresh subprocess correctly. Under `--compile`,
+`process.execPath` IS the compiled `dist/levare` executable itself, which is not a generic
+interpreter — it only knows how to run its own embedded entrypoint. Confirmed directly: running
+`dist/levare /workspaces/levare/src/sdk-worker.ts` (a real, valid path, no `$bunfs` involved at all)
+prints `unknown command: /workspaces/levare/src/sdk-worker.ts` and levare's own usage text — the
+compiled binary re-enters its OWN CLI argument parser, which has no idea what to do with a script
+path. This is a structurally different, and strictly worse, problem than `ORCHESTRATOR_PROMPT_PATH`'s
+bug: fixing `SDK_WORKER_PATH`'s own path resolution (e.g. with `{ type: "file" }`, so `existsSync`
+and the path itself are both correct) would not help, because there is no interpreter left to hand
+that path to. The only way to make this spawn work under `--compile` would be locating and spawning a
+REAL, separate `bun` binary from `PATH` — the exact new runtime dependency DIST1 already declined to
+introduce for `replay --stubs`'s `STUB_CLI`, for the same reason: this repo's compiled-binary story is
+explicitly "git and any vendor CLI remain runtime prerequisites, nothing else," and `bun` itself is
+not currently one of them. Restructuring the SDK call to avoid a subprocess entirely (e.g. a Worker
+thread in-process) would sidestep this, but is a materially bigger architectural change than a
+bug-fix pass should attempt — NOTES phase-7 K9 chose the subprocess shape deliberately, for the
+non-blocking/isolation properties a Worker thread would need to independently re-prove — and is left
+for a follow-up, not silently assumed to be equivalent effort to the prompt fix above.
+
+**Made the compiled-binary case explicit instead of leaving it to fail per-request.** Both
+`resolveOrchestratorStatus` (`orchestrator-status.ts`) and `selectOrchestratorBoundary`
+(`orchestrator-boundary.ts`) now take an optional `compiled` parameter, defaulting to the real
+`isCompiledBuild()` (`version.ts`, DIST1) — under a compiled binary, both report "unavailable"/return
+`null` outright, regardless of what the credential/native-binary precondition says, since that
+precondition genuinely cannot predict this failure. This matters beyond just avoiding an ugly error:
+`orchestrator-status.ts`'s own header comment states its whole job is that "the badge says on" and
+"the route actually answers" can never disagree across the board's indicator, `levare doctor`, and the
+real `/orchestrator/message` route — that invariant would otherwise now be silently false for every
+compiled binary with a real key. `board/render.ts`'s disabled-panel copy was also switched from a
+hardcoded "no ANTHROPIC_API_KEY" string to `status.reason`, so the panel states the REAL reason
+(missing key vs. compiled-binary limitation) instead of a generic guess that's wrong in the new case.
+
+### Test coverage
+
+`tests/orchestrator-sdk.test.ts` — new describe block: `selectOrchestratorBoundary` returns `null`
+under `compiled=true` even with a present key and a resolvable native binary; unaffected under
+`compiled=false`. `tests/orchestrator-status.test.ts` (new file) — `resolveOrchestratorStatus` reports
+the compiled-binary reason under `compiled=true` regardless of key presence; falls through to the
+ordinary precondition under `compiled=false`. `tests/doctor.test.ts` — new describe block for
+`PromptCheck`: readable/error line formatting, absent-param backward compatibility, and a real
+`./levare doctor` run asserting the reported byte count matches `docs/orchestrator-prompt.md`'s actual
+on-disk size. `tests/orchestrator-compiled-smoke.test.ts` (new file, not skipped) — builds one real
+scratch binary and exercises it directly: `doctor` reports the prompt readable with the correct byte
+count and no `ENOENT`/`$bunfs` text; a real `serve` process answers `/orchestrator/message` with
+`disabled:true` and no `ENOENT`/`$bunfs` text in the body.
+
+### Verification
+
+`bun test` — 769 pass (11 new: 2 in orchestrator-sdk.test.ts, 3 in orchestrator-status.test.ts, 4 in
+doctor.test.ts, 2 in orchestrator-compiled-smoke.test.ts), 1 pre-existing skip, 0 fail, across 61 files
+(was 758 pass/1 skip/59 files before this goal — NOTES UI8). `bun run deps:check` → `deps ok`.
+`bun run build` then `dist/levare doctor <studio>` shows the prompt reading correctly and states the
+SDK-worker limitation plainly instead of guessing. `./levare replay fixtures/golden --stubs` (via the
+shim) still matches `fixtures/golden/expected.json` byte-for-byte, unaffected — this fix touches only
+the Orchestrator boundary's path resolution and status reporting, never the runner.

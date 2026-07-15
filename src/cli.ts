@@ -5,11 +5,12 @@ import { validatePath, type ValidationResult } from "./validate.ts";
 import { formatReport, runReplay } from "./replay.ts";
 import { loadRepo, repoCapabilities } from "./repo.ts";
 import { assembleContext } from "./context.ts";
-import { runDoctor } from "./doctor.ts";
+import { runDoctor, type PromptCheck } from "./doctor.ts";
 import { serve } from "./board/serve.ts";
 import { initStudio, GIT_IDENTITY_NOTE } from "./init.ts";
 import { applyStudioEnv } from "./dotenv.ts";
 import { resolveOrchestratorStatus } from "./orchestrator-status.ts";
+import { loadOrchestratorPromptSource, ORCHESTRATOR_PROMPT_PATH } from "./orchestrator-boundary.ts";
 import { getVersionInfo, formatVersion } from "./version.ts";
 
 // Until the studio repo root is populated, the fixture golden tree stands in as the studio (NOTES
@@ -75,6 +76,20 @@ export function runContextCmd(rest: string[]): number {
   }
 }
 
+// NOTES DIST4: reads `docs/orchestrator-prompt.md` via the exact same path the real boundary uses
+// (`ORCHESTRATOR_PROMPT_PATH`, a `{ type: "file" }` import) and reports success/failure — independent
+// of `orchestrator`'s on/off state, which now reports "off" under a compiled binary regardless of the
+// prompt (see orchestrator-status.ts). This is the one doctor line a compiled binary can use to prove
+// the prompt-loading fix itself actually works under `--compile`, not just in a source run.
+function checkOrchestratorPrompt(): PromptCheck {
+  try {
+    const text = loadOrchestratorPromptSource(ORCHESTRATOR_PROMPT_PATH);
+    return { path: ORCHESTRATOR_PROMPT_PATH, ok: true, bytes: Buffer.byteLength(text, "utf8") };
+  } catch (e) {
+    return { path: ORCHESTRATOR_PROMPT_PATH, ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 // `levare doctor [root]` — walk connectors, report env presence + CLI/MCP reachability (§6), the
 // Orchestrator's own boundary state, and where each present variable came from (.env or shell).
 export function runDoctorCmd(rest: string[]): number {
@@ -88,7 +103,7 @@ export function runDoctorCmd(rest: string[]): number {
     const env = { has: (name: string) => typeof process.env[name] === "string" && process.env[name] !== "" };
     const probe = (command: string): "found" | "not-found" => (Bun.which(command) ? "found" : "not-found");
     const orchestrator = resolveOrchestratorStatus(process.env);
-    process.stdout.write(runDoctor([...repo.connectors.values()], env, probe, provenance, orchestrator, getVersionInfo()));
+    process.stdout.write(runDoctor([...repo.connectors.values()], env, probe, provenance, orchestrator, getVersionInfo(), checkOrchestratorPrompt()));
     return 0;
   } catch (e) {
     console.error(String(e instanceof Error ? e.message : e));

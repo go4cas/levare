@@ -29,8 +29,22 @@ import {
   type AsyncSdkTransport,
   type SdkPreconditionOptions,
 } from "./sdk-transport.ts";
+import { isCompiledBuild } from "./version.ts";
 
-export const ORCHESTRATOR_PROMPT_PATH = new URL("../docs/orchestrator-prompt.md", import.meta.url).pathname;
+// `{ type: "file" }` import, not `new URL("../docs/orchestrator-prompt.md", import.meta.url).pathname`
+// (NOTES DIST1/DIST4): the latter resolves into Bun's virtual `$bunfs` tree under `bun build
+// --compile`, which is not a real path from outside the compiled process — confirmed live, a compiled
+// `dist/levare serve` 500'd every `/orchestrator/message` call with `ENOENT: ... open
+// '/$bunfs/docs/orchestrator-prompt.md'`. `{ type: "file" }` is the same fix DIST1 already applied to
+// `assets/styles.css`/`assets/app.js`: in a normal (source/dev) run it resolves to the real on-disk
+// path unchanged (still editable without a rebuild — preserving the invariant
+// tests/orchestrator-sdk.test.ts's "loaded from disk, not embedded" describe block asserts), while
+// under `--compile` Bun embeds the file's bytes in the binary and rewrites this import to a path its
+// own `fs` shim resolves correctly at runtime — the exact same mechanism, just applied to a markdown
+// file instead of CSS/JS.
+import orchestratorPromptPath from "../docs/orchestrator-prompt.md" with { type: "file" };
+
+export const ORCHESTRATOR_PROMPT_PATH = orchestratorPromptPath;
 
 /** Read the Orchestrator's system prompt from disk verbatim — never embedded, never edited. */
 export function loadOrchestratorPromptSource(path: string = ORCHESTRATOR_PROMPT_PATH): string {
@@ -320,11 +334,22 @@ export type SelectOrchestratorBoundaryOptions = Omit<SdkOrchestratorBoundaryOpti
  * still surface per-request as a real error (board/serve.ts), never silently downgraded. This is the
  * one seam `levare serve`/the CLI call; it never inspects the key's value, only its presence
  * (invariant 11).
+ *
+ * NOTES DIST4: also refuses under a COMPILED binary, regardless of what the precondition check says —
+ * `createAsyncSdkTransport`'s worker spawn (`Bun.spawn([process.execPath, SDK_WORKER_PATH])`) cannot
+ * work there (confirmed live: `process.execPath` under `--compile` is `dist/levare` itself, which
+ * treats the worker script path as an unrecognized CLI subcommand, not a script to run — see
+ * `orchestrator-status.ts`). Returning `null` here — the same "unavailable" outcome board/serve.ts
+ * already handles — keeps this function's own promise ("the badge says on" and "the route actually
+ * answers" never disagree) true under `--compile` too, instead of letting the route select a boundary
+ * that is certain to fail on its very first call.
  */
 export function selectOrchestratorBoundary(
   env: Record<string, string | undefined> = process.env,
   opts: SelectOrchestratorBoundaryOptions = {},
+  compiled: boolean = isCompiledBuild(),
 ): OrchestratorBoundary | null {
+  if (compiled) return null;
   const { precondition, ...boundaryOpts } = opts;
   const check = checkSdkPreconditionsCached(env, precondition);
   if (!check.viable) return null;

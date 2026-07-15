@@ -1,7 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import { readFileSync } from "node:fs";
 import { loadRepo } from "../src/repo.ts";
-import { runDoctor, formatDoctor, diagnose, type CliProbe, type EnvProbe } from "../src/doctor.ts";
+import { runDoctor, formatDoctor, diagnose, type CliProbe, type EnvProbe, type PromptCheck } from "../src/doctor.ts";
 import type { OrchestratorStatus } from "../src/orchestrator-status.ts";
 import type { Connector } from "../src/types.ts";
 import type { VersionInfo } from "../src/version.ts";
@@ -143,6 +143,40 @@ describe("doctor: reports its own run mode — compiled vs source (NOTES DIST1)"
     const p = Bun.spawnSync(["./levare", "doctor", "fixtures/golden"]);
     expect(p.exitCode).toBe(0);
     expect(p.stdout.toString()).toContain("run mode: source/dev");
+  });
+});
+
+// NOTES DIST4: `docs/orchestrator-prompt.md` used to break under `bun build --compile` (it resolved
+// via `import.meta.url`, which points into Bun's virtual `$bunfs` tree once compiled — the same class
+// of bug DIST1 fixed for the version chip and the board's assets). This line is independent of the
+// `orchestrator: on/off` line above — it proves the PROMPT READ itself, regardless of whether the
+// Orchestrator's SDK worker can otherwise run (which, under a compiled binary, it currently can't —
+// also NOTES DIST4).
+describe("doctor: reports whether the orchestrator prompt actually loaded (NOTES DIST4)", () => {
+  test("formatDoctor prints a 'readable' line with the byte count, ahead of the connector report", () => {
+    const check: PromptCheck = { path: "/some/path/orchestrator-prompt.md", ok: true, bytes: 4251 };
+    const out = formatDoctor(diagnose(connectors, env, noGh), undefined, undefined, check);
+    expect(out.split("\n")[0]).toBe("orchestrator prompt: readable (4251 bytes) at /some/path/orchestrator-prompt.md");
+  });
+
+  test("formatDoctor prints an ERROR line naming the failure when the read failed", () => {
+    const check: PromptCheck = { path: "/$bunfs/docs/orchestrator-prompt.md", ok: false, error: "ENOENT: no such file or directory" };
+    const out = formatDoctor(diagnose(connectors, env, noGh), undefined, undefined, check);
+    expect(out.split("\n")[0]).toBe("orchestrator prompt: ERROR — ENOENT: no such file or directory (/$bunfs/docs/orchestrator-prompt.md)");
+  });
+
+  test("with no PromptCheck given, the report is unchanged (pre-DIST4 callers keep working)", () => {
+    const out = formatDoctor(diagnose(connectors, env, noGh));
+    expect(out.startsWith("orchestrator prompt:")).toBe(false);
+    expect(out.startsWith("levare doctor")).toBe(true);
+  });
+
+  test("`levare doctor` reports the real prompt file as readable, matching its actual on-disk size", () => {
+    const onDisk = readFileSync("docs/orchestrator-prompt.md", "utf8");
+    const bytes = Buffer.byteLength(onDisk, "utf8");
+    const p = Bun.spawnSync(["./levare", "doctor", "fixtures/golden"]);
+    expect(p.exitCode).toBe(0);
+    expect(p.stdout.toString()).toContain(`orchestrator prompt: readable (${bytes} bytes)`);
   });
 });
 

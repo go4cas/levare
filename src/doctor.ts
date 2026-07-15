@@ -13,6 +13,18 @@ import type { EnvProvenance } from "./dotenv.ts";
 import type { OrchestratorStatus } from "./orchestrator-status.ts";
 import type { VersionInfo } from "./version.ts";
 
+/** Whether `docs/orchestrator-prompt.md` was actually readable at doctor-run time, and from where —
+ * NOTES DIST4: independent of `orchestrator`'s on/off state above, which now reports "off" under a
+ * compiled binary regardless of the prompt (the SDK worker spawn is the thing that can't run there,
+ * not the prompt read). This line is the one place a compiled binary can prove the prompt-loading fix
+ * itself, separate from whether the Orchestrator is otherwise reachable. */
+export interface PromptCheck {
+  path: string;
+  ok: boolean;
+  bytes?: number;
+  error?: string;
+}
+
 /** Presence-only view of the environment — never exposes values (invariant 11). */
 export interface EnvProbe {
   has(name: string): boolean;
@@ -75,7 +87,7 @@ export function diagnose(connectors: Connector[], env: EnvProbe, probe: CliProbe
  * run — since a compiled binary and the source tree it was built from can drift, and "is this the
  * code I think it is?" needs a visible answer. A full staleness check (comparing the build commit
  * against the studio/source HEAD) is deferred; this only makes the run mode legible. */
-export function formatDoctor(health: ConnectorHealth[], orchestrator?: OrchestratorStatus, versionInfo?: VersionInfo): string {
+export function formatDoctor(health: ConnectorHealth[], orchestrator?: OrchestratorStatus, versionInfo?: VersionInfo, promptCheck?: PromptCheck): string {
   const out: string[] = [];
   if (versionInfo) {
     out.push(`run mode: ${versionInfo.build ? `compiled (build ${versionInfo.build.commit})` : "source/dev"}`);
@@ -83,6 +95,10 @@ export function formatDoctor(health: ConnectorHealth[], orchestrator?: Orchestra
   }
   if (orchestrator) {
     out.push(`orchestrator: ${orchestrator.available ? "on" : "off"} · ${orchestrator.reason}`);
+    out.push("");
+  }
+  if (promptCheck) {
+    out.push(promptCheck.ok ? `orchestrator prompt: readable (${promptCheck.bytes} bytes) at ${promptCheck.path}` : `orchestrator prompt: ERROR — ${promptCheck.error} (${promptCheck.path})`);
     out.push("");
   }
   out.push(`levare doctor · ${health.length} connector${health.length === 1 ? "" : "s"}`);
@@ -106,6 +122,7 @@ export function runDoctor(
   provenance?: Map<string, EnvProvenance>,
   orchestrator?: OrchestratorStatus,
   versionInfo?: VersionInfo,
+  promptCheck?: PromptCheck,
 ): string {
-  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo);
+  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo, promptCheck);
 }
