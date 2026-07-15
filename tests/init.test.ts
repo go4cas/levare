@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scaffoldStudio, initStudio } from "../src/init.ts";
-import { validatePath } from "../src/validate.ts";
+import { validatePath, REGISTRY_SCHEMAS } from "../src/validate.ts";
 import { createBoard } from "../src/board/serve.ts";
 import { loadRepo, repoCapabilities } from "../src/repo.ts";
 import { resolveStep } from "../src/gates.ts";
@@ -40,6 +40,7 @@ describe("scaffoldStudio", () => {
       "README.md",
       "agents",
       "connectors",
+      "evals",
       "ideas",
       "knowledge",
       "projects",
@@ -52,6 +53,22 @@ describe("scaffoldStudio", () => {
     // No demo work units: work/ and ideas/ are scaffolded empty.
     expect(readdirSync(join(root, "work"))).toEqual([]);
     expect(readdirSync(join(root, "ideas"))).toEqual([]);
+  });
+
+  // This is the third init-scaffold defect (F23's fictitious models fallback gap and stale finch
+  // `result:`, now `evals/` missing from this very scaffold) — the expected set here is DERIVED from
+  // validate.ts's own REGISTRY_SCHEMAS map, never a second hardcoded array, so a future registry entity
+  // can never again be silently forgotten from the scaffold.
+  test("contains every directory the registry itself enumerates, derived from validate.ts's own entity list", () => {
+    const root = tmpRoot();
+    scaffoldStudio(root);
+    // `work/` is the one top-level directory validate.ts special-cases outside REGISTRY_SCHEMAS (it
+    // holds units and artifacts, not a registry entity schema) — every other directory the scaffold
+    // must contain is exactly REGISTRY_SCHEMAS's own keys.
+    const expected = [...Object.keys(REGISTRY_SCHEMAS), "work"].sort();
+    for (const dir of expected) {
+      expect(existsSync(join(root, dir))).toBe(true);
+    }
   });
 
   test("scaffolds the five type templates", () => {

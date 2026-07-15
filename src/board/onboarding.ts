@@ -11,7 +11,7 @@ import { esc } from "./derive.ts";
 // The skeleton `levare init` scaffolds (src/init.ts). A root "looks like" a studio once at least one
 // of these exists — a partially-built studio (e.g. only `teams/` written so far) still renders
 // normally; only a directory with none of them gets the onboarding page.
-const SKELETON_DIRS = ["teams", "agents", "skills", "knowledge", "types", "connectors", "projects", "work", "ideas"];
+const SKELETON_DIRS = ["teams", "agents", "skills", "knowledge", "types", "connectors", "projects", "evals", "work", "ideas"];
 
 export function isStudioInitialized(root: string): boolean {
   if (!existsSync(root)) return false;

@@ -4417,3 +4417,91 @@ a larger blast radius than the reported defect needed. `assets/*.html` (the CD p
 files) are unreferenced by any server route or test — confirmed via grep before starting — and were left
 untouched, consistent with the render.ts header comment that they're a superseded skeleton, not live
 markup.
+
+---
+
+# NOTES — init/validate/test-suite honesty pass: three small correctness fixes, one theme
+
+## F24. `levare init` omitted `evals/` — the third init-scaffold defect, closed by construction this time
+
+**The defect.** `scaffoldStudio` (`src/init.ts`) created nine of the ten directories `validate.ts`
+recognizes as registry entity homes — `evals/` had to be created by hand. A freshly-`init`'d studio's
+own registry evals view therefore rendered against a directory that doesn't exist (reads as "not set
+up"), while the rail's own count reads "evals 0" ("set up and empty") — two different UI stories about
+the same absent directory, neither of them "you haven't made one yet, here's where it'd go." This is
+the third init-scaffold defect after F11/F23's fictitious model ids and F23's stale finch `result:` —
+each prior one was fixed by adding the specific missing thing, never by fixing the CLASS of bug (a
+registry entity the scaffold forgets).
+
+**The fix.** `src/init.ts`: `evals` added to `EMPTY_DIRS` (alongside `work`, `ideas` — no example eval
+is scaffolded, same posture as those two: a fresh studio has none yet, inventing one would misrepresent
+that). `board/onboarding.ts`'s `SKELETON_DIRS` (documents what `levare init` scaffolds, used only for
+the "is this even a studio" first-run check) and the README's own layout diagram gained the matching
+line, so neither drifts from what the scaffold now actually does.
+
+**Closing the CLASS of bug, not just the instance.** `validate.ts#classify`'s per-directory schema
+dispatch map was a function-local literal, invisible outside the module. Hoisted to a module-level,
+exported `REGISTRY_SCHEMAS` — the registry's own, single list of entity kinds (`classify` now reads from
+it instead of rebuilding an identical literal). `tests/init.test.ts` gained a test that asserts a fresh
+scaffold contains every directory in `Object.keys(REGISTRY_SCHEMAS)` (plus `work/`, the one top-level
+directory `validate.ts` special-cases outside that map since it holds units/artifacts, not a registry
+schema) — derived from the registry's own source, never a second hardcoded array that could
+independently drift the way `SKELETON_DIRS`/the scaffold's own directory list already had. A future
+registry entity added only to `REGISTRY_SCHEMAS` and forgotten in `init.ts` now fails this test
+immediately, instead of shipping as a fourth silent instance of the same bug.
+
+**Tests.** `tests/init.test.ts`: the existing "produces exactly the expected skeleton directory set"
+test gained `evals` to its expected list; a new test derives the expected directory set from
+`validate.ts`'s own `REGISTRY_SCHEMAS` and asserts every one exists after `scaffoldStudio`.
+
+**Verification.** `bun test` — 638 pass, 1 pre-existing skip, 0 fail, across 52 files. `levare replay
+fixtures/golden --stubs` — final artifact statuses still byte-for-byte against `expected.json`.
+`deps:check` — `deps ok`.
+
+**The fix.** `validate.ts#validateAgentTeamMembership` (new): walks every `teams/*.md`, builds
+member → [team names that list it], and for any member with more than one, raises
+`AGENT_IN_MULTIPLE_TEAMS` naming the agent and every team that lists it, pointing at the resolution —
+duplicate and rename the agent per team (e.g. `scribe-press`, `scribe-docs`) — rather than sharing one
+definition. Wired into `validatePath`'s cross-entity checks alongside `validateStudioBindings`,
+`validateResponsibleTeam`, etc. — runs whenever `teams/` exists, independent of `agents/` (unlike
+`validateStudioBindings`, which needs both halves of the binding).
+
+**Tests.** New `describe` block in `tests/validate.test.ts`: an agent named in two teams' `members`
+fails with `AGENT_IN_MULTIPLE_TEAMS`, naming the agent and both teams, and the message contains the
+duplicate-and-rename example; an agent in exactly one team is unaffected; the golden fixture (no shared
+agents) has no such error.
+
+## Test suite: fixed ports collided with a `levare serve` already running, failing a different test each time
+
+**The defect.** Four tests boot the real `./levare` binary as a subprocess and talk to it over a real
+socket (`board-serve-e2e`, `board-serve-sse-leak`, `serve-real-cli-e2e`, `serve-cli-nonblocking-e2e`).
+Each picked a port via `<base> + (process.pid % 400)` — a range, not a single fixed value, but still a
+FIXED SET of ~400 candidates per file, all of them within reach of the CLI's own hardcoded default port
+(`cli.ts#runServeCmd`, 4173) landing inside `board-serve-e2e`'s own 4100–4499 range. A developer running
+`levare serve` unattended (normal during a UI review) on that default port made whichever subprocess
+test's `pid % 400` landed on an occupied port fail with a bind error — a different test each run,
+depending on the PID, which is exactly why it kept reading as a new, unrelated regression instead of the
+same root cause four times.
+
+**The fix.** All four now spawn via a new shared helper, `tests/serve-subprocess.ts#spawnLevareServe`:
+always passes `--port 0` (OS-assigned ephemeral port — never contends with anything) and reads the
+ACTUAL bound port back from the subprocess's own stdout (`runServeCmd`'s startup log line,
+`levare serve · <root> → http://localhost:<port> ...`), which is already real and listening by the time
+that line prints (`Bun.serve` binds synchronously before the log call). Each test file's `const PORT =
+...` is gone; `base` becomes a `let` set inside `beforeAll` once the real port is known, everything
+downstream (`fetch(`${base}/...`)`) is unchanged. No test depends on a specific port number anywhere in
+the suite anymore (verified: `grep -rn -- "--port" tests/*.ts` outside `serve-subprocess.ts` is empty).
+
+**Verified the actual failure mode is gone**, not just theorized: started a real `./levare serve
+<scratch>` bound to the OLD default port 4173 in the background, then ran the full `bun test` suite
+against it — 637 pass, 1 pre-existing skip, 0 fail, identical to a clean run with nothing listening.
+
+**Verification (all three items).** `bun test` — 637 pass, 1 pre-existing skip, 0 fail, across 53 files
+(new: `tests/serve-subprocess.ts`, a helper module, not a test file). `bun test` re-run with a decoy
+`levare serve` bound to port 4173 — same result, 0 fail (the specific regression item 3 exists to kill).
+`levare replay fixtures/golden --stubs` — final artifact statuses still byte-for-byte against
+`expected.json`. `deps:check` — `deps ok`.
+
+**Deliberately out of scope.** No other test file spawns `./levare` as a subprocess (confirmed by grep
+before starting), so no fifth fixed-port site was left behind. The registry's other entity-card/render
+internals, the Orchestrator panel, and every other test file are untouched.

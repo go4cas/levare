@@ -1,7 +1,7 @@
 // `levare init` (phase 6, PRD §3/§11): scaffold an empty directory into a working studio — the
-// skeleton (teams/ agents/ skills/ knowledge/ types/ connectors/ projects/ work/ ideas/), the five
-// type templates, one example team with its agents, a sample skill, a .devcontainer/, and a starter
-// README. Templates are embedded as literal strings (not read from fixtures/golden/ at runtime) so
+// skeleton (teams/ agents/ skills/ knowledge/ types/ connectors/ projects/ evals/ work/ ideas/), the
+// five type templates, one example team with its agents, a sample skill, a .devcontainer/, and a
+// starter README. Templates are embedded as literal strings (not read from fixtures/golden/ at runtime) so
 // the scaffold works from a `bun build --compile` binary with no source tree alongside it — the
 // point of a single portable binary (invariant 2).
 //
@@ -38,7 +38,7 @@ interface Template {
 }
 
 // Directories that must exist even though the fresh studio has no files in them yet.
-const EMPTY_DIRS = ["work", "ideas"];
+const EMPTY_DIRS = ["work", "ideas", "evals"];
 
 // Shared verbatim between the scaffolded README and `runInitCmd`'s (cli.ts) fallback output when no
 // git identity resolves — one sentence of rationale, one place it's written (phase-6 gate fix-up).
@@ -67,6 +67,7 @@ knowledge/   reference documents injected into member context by name
 types/       the five work-unit templates: inception, feature, fix, spike, research
 connectors/  external services members can be granted (env var *names* only — never secrets)
 projects/    pointers to the products you're building (repo, deploy, pace, house rules)
+evals/       rubrics scoring a unit type's output — empty until you write one
 work/        work units and their artifacts — empty until you open one
 ideas/       captured pitches with no project yet — empty until you capture one
 \`\`\`

@@ -370,6 +370,24 @@ type Kind =
   | { schema: Schema; isArtifact: boolean; isUnit: boolean }
   | { schema: null; isArtifact: false; isUnit: false };
 
+// The registry's own list of entity kinds — every top-level directory (besides `work/`, which is
+// special-cased above: it holds units and artifacts, not a registry entity schema) that a studio can
+// carry entity definitions in. This is the single source of truth for "what registry directories
+// exist" — `scaffoldStudio` (init.ts) and its own test derive the expected scaffold directory set
+// from `Object.keys(REGISTRY_SCHEMAS)` rather than a second, independently-maintained list, so a
+// future registry entity can't be silently forgotten from the scaffold the way `evals/` was.
+export const REGISTRY_SCHEMAS: Record<string, Schema> = {
+  teams: TEAM_SCHEMA,
+  agents: AGENT_SCHEMA,
+  types: TYPE_SCHEMA,
+  projects: PROJECT_SCHEMA,
+  connectors: CONNECTOR_SCHEMA,
+  knowledge: KNOWLEDGE_SCHEMA,
+  evals: EVAL_SCHEMA,
+  skills: SKILL_SCHEMA,
+  ideas: IDEA_SCHEMA,
+};
+
 function classify(relPath: string): Kind {
   const parts = relPath.split(sep).filter(Boolean);
   const top = parts[0];
@@ -378,25 +396,15 @@ function classify(relPath: string): Kind {
   // schema entities — skip them wherever they sit so the validator doesn't demand team frontmatter.
   if (base.endsWith(".learnings.md")) return { schema: null, isArtifact: false, isUnit: false };
   // The root `studio.md` singleton (NOTES F11) — a bare top-level file, never nested in a registry
-  // folder, so it must be matched before the `map[top]` lookup below (which only recognizes folders).
+  // folder, so it must be matched before the REGISTRY_SCHEMAS[top] lookup below (which only
+  // recognizes folders).
   if (parts.length === 1 && base === "studio.md") return { schema: STUDIO_SCHEMA, isArtifact: false, isUnit: false };
   if (top === "work") {
     if (base === "unit.md") return { schema: WORK_UNIT_SCHEMA, isArtifact: false, isUnit: true };
     if (base === "ledger.ndjson") return { schema: null, isArtifact: false, isUnit: false };
     return { schema: ARTIFACT_SCHEMA, isArtifact: true, isUnit: false };
   }
-  const map: Record<string, Schema> = {
-    teams: TEAM_SCHEMA,
-    agents: AGENT_SCHEMA,
-    types: TYPE_SCHEMA,
-    projects: PROJECT_SCHEMA,
-    connectors: CONNECTOR_SCHEMA,
-    knowledge: KNOWLEDGE_SCHEMA,
-    evals: EVAL_SCHEMA,
-    skills: SKILL_SCHEMA,
-    ideas: IDEA_SCHEMA,
-  };
-  const schema = map[top];
+  const schema = REGISTRY_SCHEMAS[top];
   if (schema) return { schema, isArtifact: false, isUnit: false };
   return { schema: null, isArtifact: false, isUnit: false };
 }
