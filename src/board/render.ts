@@ -206,11 +206,18 @@ function ideaHref(name: string): string {
   return `/idea/${esc(name)}`;
 }
 
-// Item 6a: the project page's repo/deploy pointers become right-aligned icon links beside the title,
-// not left-aligned label rows in the pointer card. One external-link glyph (feather-style, inline
-// SVG — no icon font, no new asset) reused for both, distinguished by `aria-label`/`title`.
-function iconLink(href: string, label: string): string {
-  return `<a class="iconlink" href="${esc(href)}" target="_blank" rel="noopener" aria-label="${esc(label)}" title="${esc(label)}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></a>`;
+// UI2 item 3: the project page's external-link icons become recognisable per destination, using the
+// design brief's Tabler-outline icon set — `ti-brand-github` for the repo link, `ti-world` for the
+// deploy link — rather than one generic external-link glyph for both (the UI1 shape) or coloured
+// brand logos (the board stays monochrome; both inherit ink colour via `stroke="currentColor"`, same
+// as every other icon in the product). No icon font or CDN — the outline paths are vendored inline,
+// same "no new asset" approach UI1 used for the single external-link glyph this replaces.
+const TABLER_ICON_PATHS: Record<"ti-brand-github" | "ti-world", string> = {
+  "ti-brand-github": `<path d="M9 19c-4.3 1.4 -4.3 -2.5 -6 -3m12 5v-3.5c0 -1 .1 -1.4 -.5 -2c2.8 -.3 5.5 -1.4 5.5 -6a4.6 4.6 0 0 0 -1.3 -3.2a4.2 4.2 0 0 0 -.1 -3.2s-1.1 -.3 -3.5 1.3a12.3 12.3 0 0 0 -6.2 0c-2.4 -1.6 -3.5 -1.3 -3.5 -1.3a4.2 4.2 0 0 0 -.1 3.2a4.6 4.6 0 0 0 -1.3 3.2c0 4.6 2.7 5.7 5.5 6c-.6 .6 -.6 1.2 -.5 2v3.5" />`,
+  "ti-world": `<path d="M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0" /><path d="M3.6 9h16.8" /><path d="M3.6 15h16.8" /><path d="M11.5 3a17 17 0 0 0 0 18" /><path d="M12.5 3a17 17 0 0 1 0 18" />`,
+};
+function iconLink(href: string, label: string, icon: "ti-brand-github" | "ti-world"): string {
+  return `<a class="iconlink ${icon}" href="${esc(href)}" target="_blank" rel="noopener" aria-label="${esc(label)}" title="${esc(label)}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${TABLER_ICON_PATHS[icon]}</svg></a>`;
 }
 
 // Item 6c: `pace` renders as a colour-coded badge. Pace isn't a lifecycle status, so it borrows two
@@ -658,13 +665,14 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
     ${releasesHtml}
   </div>`;
 
-  // Item 6a: repo/deploy as right-aligned icon links beside the title. `project.repo` alone (the SSH
-  // remote levare's own tooling clones from) isn't browsable for every project — the studio project
-  // points `repo: .` at levare's own working tree with no `remote` — so the repo icon only renders
-  // when there's a genuine external target: `remote` (the browsable https form) first, else `repo`
-  // itself when it isn't the local "." sentinel.
+  // UI2 items 2/3: repo/deploy render as a row of destination-recognisable icon links BELOW the
+  // title (not beside it — that corner now belongs to the status badge, item 4). `project.repo` alone
+  // (the SSH remote levare's own tooling clones from) isn't browsable for every project — the studio
+  // project points `repo: .` at levare's own working tree with no `remote` — so the repo icon only
+  // renders when there's a genuine external target: `remote` (the browsable https form) first, else
+  // `repo` itself when it isn't the local "." sentinel.
   const repoTarget = project.remote || (project.repo !== "." ? project.repo : null);
-  const pheadLinks = [repoTarget ? iconLink(repoTarget, "repo") : "", project.deploy ? iconLink(project.deploy, "deploy") : ""].join("");
+  const pheadLinks = [repoTarget ? iconLink(repoTarget, "repo", "ti-brand-github") : "", project.deploy ? iconLink(project.deploy, "deploy", "ti-world") : ""].join("");
 
   // Item 6b: a status badge on the page header, matching the Studio project card's canonical status
   // exactly — same `projectStatusChip` call, same inputs (open-gate count, any active unit, live
@@ -721,12 +729,16 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
     .join("\n");
 
   const reviewMedian = medianReviewRounds(repo, projectName);
+  // UI2 items 4/5: the page header now reads title left, status badge right, on the SAME line — the
+  // card contract (established UI1) applied to the page header itself — with the repo/deploy links as
+  // their own row underneath (items 2/3). The stat strip moves ABOVE the pointer/constitution block
+  // (item 5), matching the Studio page's own order: stats first, then content.
   const main = `<main class="main">
     <header class="phead">
       <div class="crumb"><a href="/studio">studio</a><span>/</span><span>${esc(projectName)}</span></div>
-      <div class="phead__title"><h1>${esc(projectName)}</h1>${projectHeaderStatus}<span class="phead__links">${pheadLinks}</span></div>
+      <div class="phead__title"><h1>${esc(projectName)}</h1>${projectHeaderStatus}</div>
+      ${pheadLinks ? `<div class="phead__links">${pheadLinks}</div>` : ""}
     </header>
-    ${pointerPanel}
     <div class="statstrip" style="grid-template-columns:repeat(5,1fr)">
       <div class="stat"><div class="n">${units.filter((u) => u.status === "shipped").length}</div><div class="l">Shipped units</div></div>
       <div class="stat"><div class="n">${units.filter((u) => u.status === "active").length}</div><div class="l">Active</div></div>
@@ -734,6 +746,7 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
       <div class="stat"><div class="n">${reviewMedian === null ? "&mdash;" : reviewMedian}</div><div class="l">Median review rounds</div></div>
       <div class="stat"><div class="n">$${projectSpend(repo, projectName).toFixed(2)}</div><div class="l">Spend</div></div>
     </div>
+    ${pointerPanel}
     <section class="sec"><div class="sec__h"><h2>Work units</h2></div><div class="units">${unitRows}</div></section>
   </main>`;
 

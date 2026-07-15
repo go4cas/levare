@@ -127,10 +127,11 @@ button{ font-family:inherit; }
 .crumb{ display:flex; align-items:center; gap:8px; font-family:var(--mono); font-size:11.5px; color:var(--fg-mute); margin-bottom:2px; }
 .crumb a{ color:var(--fg-mute); }
 .crumb a:hover{ color:var(--fg-dim); }
-/* Item 6a/6b: the project page's title row — h1, canonical status badge, then the repo/deploy icon
-   links pinned to the far right. */
-.phead__title{ display:flex; align-items:center; gap:11px; flex-wrap:wrap; }
-.phead__links{ margin-left:auto; display:flex; gap:6px; }
+/* UI2 items 2/4: the project page's title row — h1 left, canonical status badge right (the card
+   contract, title top-left/status top-right, applied to the page header). The repo/deploy icon links
+   are their own row underneath (item 2), not sharing the title line (that corner is the badge's now). */
+.phead__title{ display:flex; align-items:center; justify-content:space-between; gap:11px; flex-wrap:wrap; }
+.phead__links{ display:flex; gap:6px; }
 .iconlink{ display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px;
   border:1px solid var(--border); border-radius:7px; color:var(--fg-mute); flex:none; }
 .iconlink:hover{ color:var(--fg); border-color:var(--border-strong); }

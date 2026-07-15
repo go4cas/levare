@@ -211,26 +211,45 @@ describe("project screen", () => {
     expect(html).toContain('class="cost"');
   });
 
-  // Item 6a: repo/deploy render as right-aligned icon links beside the title, not label rows in the
-  // pointer card.
-  test("repo and deploy render as icon links beside the title, not label rows in the pointer card", () => {
+  // UI2 items 2/3: repo/deploy render as a row of destination-recognisable Tabler-outline icon links
+  // BELOW the title (not beside it — that corner belongs to the status badge, item 4), not label rows
+  // in the pointer card.
+  test("repo and deploy render as icon links below the title, with the github/world icons, not label rows in the pointer card", () => {
     const titleRow = /<div class="phead__title">[\s\S]*?<\/div>/.exec(html);
     expect(titleRow).not.toBeNull();
-    expect(titleRow![0]).toContain('<a class="iconlink" href="https://github.com/acme/storefront"');
-    expect(titleRow![0]).toContain('<a class="iconlink" href="https://storefront.acme.dev"');
-    const pointerCard = /<div class="card">[\s\S]*?<\/div>\s*<div class="statstrip"/.exec(html)![0];
+    // The links no longer share the title line.
+    expect(titleRow![0]).not.toContain("iconlink");
+    const linksRow = /<div class="phead__links">[\s\S]*?<\/div>/.exec(html);
+    expect(linksRow).not.toBeNull();
+    expect(linksRow![0]).toContain('<a class="iconlink ti-brand-github" href="https://github.com/acme/storefront"');
+    expect(linksRow![0]).toContain('<a class="iconlink ti-world" href="https://storefront.acme.dev"');
+    // The links row sits immediately after the title row, both inside <header class="phead">.
+    const headerBlock = /<header class="phead">[\s\S]*?<\/header>/.exec(html)![0];
+    expect(headerBlock.indexOf('class="phead__title"')).toBeLessThan(headerBlock.indexOf('class="phead__links"'));
+    const pointerCard = /<div class="card">[\s\S]*?<\/div>\s*<section/.exec(html)![0];
     expect(pointerCard).not.toContain('<span class="k">repo</span>');
     expect(pointerCard).not.toContain('<span class="k">deploy</span>');
   });
 
-  // Item 6b: the page header carries a status badge matching the Studio project card's canonical
-  // status exactly (both call the SAME projectStatusChip with the same inputs).
-  test("the page header carries a status badge matching the Studio project card's canonical status", () => {
+  // UI2 item 4: the page header carries a status badge on the TITLE LINE, right-aligned, matching the
+  // Studio project card's canonical status exactly (both call the SAME projectStatusChip with the same
+  // inputs) — the card contract (title top-left, status top-right) applied to the page header.
+  test("the status badge sits on the title line, right-aligned, matching the Studio project card's canonical status", () => {
     const studioHtml = renderStudio(repo, root, now);
     const studioCard = /<a class="pcard" href="\/project\/storefront">[\s\S]*?<\/a>/.exec(studioHtml)![0];
     const studioChip = /<span class="chip is-[a-z]+">[^<]*<\/span>/.exec(studioCard)![0];
     const titleRow = /<div class="phead__title">[\s\S]*?<\/div>/.exec(html)![0];
     expect(titleRow).toContain(studioChip);
+    // Right-aligned on the title line: the badge is the last element before the row closes, after the h1.
+    expect(titleRow).toMatch(/<h1>[^<]*<\/h1>\s*<span class="chip/);
+  });
+
+  // UI2 item 5: the stat strip moves ABOVE the pointer/constitution block, matching the Studio page's
+  // own order (stats first, then content) — the page reads stat-strip → pointer → constitution →
+  // releases → work units.
+  test("the stat strip renders before the pointer/constitution card", () => {
+    expect(html.indexOf('class="statstrip"')).toBeLessThan(html.indexOf('class="card"'));
+    expect(html.indexOf('class="statstrip"')).toBeLessThan(html.indexOf("Constitution"));
   });
 
   // Item 6c: `pace` renders as a colour-coded badge — storefront's pace is `auto`.
