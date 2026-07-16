@@ -1,5 +1,5 @@
 import { test, expect, describe, afterAll } from "bun:test";
-import { readFileSync, rmSync, mkdtempSync } from "node:fs";
+import { readFileSync, rmSync, mkdtempSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnLevareServe } from "./serve-subprocess.ts";
@@ -128,6 +128,10 @@ describe("a compiled `serve` dispatches a real Orchestrator turn through the rea
       const body = await res.json();
       expect(body.disabled).toBe(true);
       expect(body.reason).not.toContain("compiled binary");
+      // NOTES V11-CONV: the disabled path returns before `handle()` is ever called — no exchange was
+      // completed, so nothing should have been persisted. Proven against the REAL compiled binary's
+      // own write path, not just the source-mode route tests in tests/conversation.test.ts.
+      expect(existsSync(join(root, "conversations"))).toBe(false);
     } finally {
       proc.kill();
       rmSync(root, { recursive: true, force: true });
@@ -166,6 +170,23 @@ describe("a compiled `serve` dispatches a real Orchestrator turn through the rea
       expect(body.disabled).toBeUndefined();
       // Exactly one of: a genuine successful reply, or a genuine (never dispatch-shaped) SDK failure.
       expect(typeof body.reply === "string" || typeof body.error === "string").toBe(true);
+
+      // NOTES V11-CONV: whether persistence happened is conditioned on which of the two branches
+      // above actually fired — this sandbox has no live, authenticated `claude` CLI session (same
+      // documented limitation as the rest of this describe block), so a genuine successful reply isn't
+      // something this test can force. Either outcome is proof the COMPILED binary's write path
+      // behaves correctly: a completed exchange lands on disk as levare-runner, an error persists
+      // nothing at all.
+      const monthKey = new Date().toISOString().slice(0, 7);
+      const convFile = join(root, "conversations", "studio", `${monthKey}.md`);
+      if (typeof body.reply === "string") {
+        expect(existsSync(convFile)).toBe(true);
+        expect(readFileSync(convFile, "utf8")).toContain("hello");
+        const log = Bun.spawnSync(["git", "-C", root, "log", "-1", "--format=%an|%ae"]).stdout.toString().trim();
+        expect(log).toBe("levare-runner|runner@levare.local");
+      } else {
+        expect(existsSync(join(root, "conversations"))).toBe(false);
+      }
     } finally {
       proc.kill();
       rmSync(root, { recursive: true, force: true });
