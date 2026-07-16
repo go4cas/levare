@@ -20,8 +20,8 @@
 // hands out that uses the amber/brass family, and nothing outside a gate ever asks for it.
 
 import type { ArtifactStatus, WorkUnitStatus } from "../types.ts";
-import type { NodeState } from "./derive.ts";
-import { esc } from "./derive.ts";
+import type { NodeState } from "../derive.ts";
+import { esc } from "../derive.ts";
 
 export type CanonicalStatus = "done" | "active" | "waiting" | "blocked" | "needs-you" | "failed" | "exhausted";
 

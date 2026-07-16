@@ -205,7 +205,7 @@ describe("[surface 4/6 · CRITICAL · FIXED] registry edit route escaping the re
 // loose reading; ruling C8 (NOTES.md) supersedes it: EVERY unit's first flow step raises a start
 // gate, regardless of `after:` — there is no auto-start path. `after:` remains only a precondition on
 // when the gate may be raised, never a licence to begin work. Fixed in src/dagwalk.ts (the daemon's
-// single-step advance), src/runner.ts (the in-memory walk), and src/board/derive.ts (the board's own
+// single-step advance), src/runner.ts (the in-memory walk), and src/derive.ts (the board's own
 // gate projection).
 // ---------------------------------------------------------------------------
 

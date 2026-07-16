@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRepo } from "../src/repo.ts";
 import { renderStudio, renderProject, renderRun, renderRegistry, renderArtifact, renderIdea, scoreNodeClass, projectStatusChip } from "../src/board/render.ts";
-import { scoreNodes, type NodeState } from "../src/board/derive.ts";
+import { scoreNodes, type NodeState } from "../src/derive.ts";
 import { resolveGate } from "../src/board/gateops.ts";
 import type { OrchestratorStatus } from "../src/orchestrator-status.ts";
 import { chipClass, dotClass, fromWorkUnitStatus, type CanonicalStatus } from "../src/board/status.ts";

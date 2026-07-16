@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { advanceUnit } from "../src/dagwalk.ts";
 import { loadRepo } from "../src/repo.ts";
-import { openGates } from "../src/board/derive.ts";
+import { openGates } from "../src/derive.ts";
 import { renderStudio } from "../src/board/render.ts";
 import { buildBriefing } from "../src/orchestrator.ts";
 import { stubAdapterRunner } from "../src/replay.ts";

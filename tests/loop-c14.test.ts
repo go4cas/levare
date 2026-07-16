@@ -8,7 +8,7 @@ import { resolveGate } from "../src/board/gateops.ts";
 import { stubAdapterRunner } from "../src/replay.ts";
 import { runReplay } from "../src/replay.ts";
 import { loadRepo } from "../src/repo.ts";
-import { openGates } from "../src/board/derive.ts";
+import { openGates } from "../src/derive.ts";
 import type { AsyncMemberRunner } from "../src/dagwalk.ts";
 import type { Verb } from "../src/runner.ts";
 

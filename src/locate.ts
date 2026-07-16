@@ -1,10 +1,11 @@
 // Locate the on-disk file for a given artifact id within a unit directory. repo.ts's loaders parse
-// artifacts into memory but discard the source path; the board's write routes need the path back to
-// edit-and-commit the same file the read side rendered from.
+// artifacts into memory but discard the source path; both the live walk (dagwalk.ts) and the board's
+// write routes (board/gateops.ts) need the path back to edit-and-commit the same file the read side
+// parsed from.
 
 import { readdirSync, existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { parseFrontmatter } from "../yaml.ts";
+import { parseFrontmatter } from "./yaml.ts";
 
 export interface Located {
   /** The markdown file carrying the frontmatter (the index file, for folder artifacts). */

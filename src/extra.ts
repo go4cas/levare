@@ -5,7 +5,7 @@
 
 import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { parseFrontmatter, type YamlValue } from "../yaml.ts";
+import { parseFrontmatter, type YamlValue } from "./yaml.ts";
 
 export interface Entity {
   name: string;

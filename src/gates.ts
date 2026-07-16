@@ -32,7 +32,7 @@ export function loopUntilKind(loop: FlowLoop): string {
  * happens to be the loop's "first" (author) or "second" (critic) role. Two open gates for one round —
  * the live defect this closes — came from treating "first" as the gate unconditionally, an assumption
  * an author/critic loop whose `until` names the CRITIC's kind (e.g. `review.approved`) violates. Used
- * by both `board/derive.ts#openGates` (visibility: never list the companion as an open gate) and
+ * by both `derive.ts#openGates` (visibility: never list the companion as an open gate) and
  * `board/gateops.ts` (resolution: the companion-approval cascade, and which member "request" re-runs,
  * both key off this same "is `kind` the loop's real gate" question, not off role).
  */

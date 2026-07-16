@@ -20,7 +20,7 @@ import { validateArtifactSource, formatValidationErrors } from "../validate.ts";
 import { bumpVersion, roundOf, type Verb } from "../runner.ts";
 import { productionAdapterRunner } from "../replay.ts";
 import { loopMembershipFor, isLoopCompanionKind, loopUntilKind, resolveStep, responsibleTeamFor, unmetAfter, patchFrontmatter, upsertFrontmatterField } from "../gates.ts";
-import { locateArtifactFile } from "./locate.ts";
+import { locateArtifactFile } from "../locate.ts";
 import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL, transactionalWrite, type TxFile } from "../git.ts";
 import { advanceUnit, latestLiveArtifact, type AsyncMemberRunner } from "../dagwalk.ts";
 import type { Daemon } from "../daemon.ts";
@@ -93,7 +93,7 @@ export async function resolveGate(root: string, project: string, target: string,
   if (!located) return { ok: false, status: 404, error: `artifact file for '${target}' not found on disk` };
 
   // Ruling F16: while a loop is in progress, only the artifact its `until` condition actually names
-  // may be resolved directly — the loop's OTHER member never independently gates (board/derive.ts's
+  // may be resolved directly — the loop's OTHER member never independently gates (derive.ts's
   // `openGates` already never lists it), and a direct API call naming it anyway is refused here too,
   // loudly, rather than silently producing an orphaned artifact stuck `in-review` forever once `until`
   // is satisfied by the other half (the live wedge this ruling closes).

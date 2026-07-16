@@ -27,7 +27,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { basename, dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { loadRepo, type Repo } from "./repo.ts";
-import { openGates, medianGateResponseDays, repoSpend, type OpenGate } from "./board/derive.ts";
+import { openGates, medianGateResponseDays, repoSpend, type OpenGate } from "./derive.ts";
 import { diagnose, type CliProbe, type ConnectorHealth, type EnvProbe } from "./doctor.ts";
 import { resolveGate, type GateOpResult } from "./board/gateops.ts";
 import type { Verb } from "./runner.ts";
@@ -88,7 +88,7 @@ export interface Briefing {
    * ENTIRE type) binds to no member in the studio. Kept apart from `gates` (which are artifact-shaped
    * approve/reject/request decisions) because a blocked unit is not waiting on a Conductor DECISION;
    * it is waiting on the STUDIO being fixed. `buildBriefing` previously filtered `openGates()`'s own
-   * output down to `type === "artifact"` only, so a blocked unit — even though `board/derive.ts`
+   * output down to `type === "artifact"` only, so a blocked unit — even though `derive.ts`
    * already listed it as an open gate, and the board itself already rendered it — silently never
    * reached the Orchestrator's briefing at all: the one thing in the whole product that told a
    * Conductor "nothing needs you right now" while a unit sat blocked, reason on disk, unread.

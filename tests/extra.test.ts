@@ -2,7 +2,7 @@ import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadExtras, RegistryEntityError } from "../src/board/extra.ts";
+import { loadExtras, RegistryEntityError } from "../src/extra.ts";
 
 // A skill (and every other "extra" — knowledge/evals/ideas, all loaded through the same `loadDir`)
 // exists in one of two on-disk shapes: a flat `<name>.md` file, or the Agent Skills folder convention

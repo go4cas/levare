@@ -45,7 +45,7 @@ import { timeboxSeconds, bumpVersion, roundOf } from "./runner.ts";
 import { RunnerError, responsibleTeamsFor, resolveStep, unmetAfter, untilSatisfied } from "./flow.ts";
 import { patchFrontmatter, upsertFrontmatterField } from "./gates.ts";
 import { runnerCommit, transactionalWrite, type TxFile } from "./git.ts";
-import { locateArtifactFile } from "./board/locate.ts";
+import { locateArtifactFile } from "./locate.ts";
 import type { Artifact, FlowLoop, Receipt, Team, WorkUnit } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -338,7 +338,7 @@ export async function advanceUnit(root: string, repo: Repo, unit: WorkUnit, memb
  * NOTES F1: block a unit whose flow step binds to no member, LOUDLY. The unit's own `unit.md` gets
  * `status: blocked` and a `blocked_reason` carrying the resolution error verbatim, committed like any
  * other walk-driven write (files are the truth, invariant 2) — so the block survives a restart, the
- * board renders it as a gate the Conductor can see (board/derive.ts#openGates), and the daemon's
+ * board renders it as a gate the Conductor can see (derive.ts#openGates), and the daemon's
  * disk-truth re-derivation stops walking the unit instead of re-failing silently on every tick.
  *
  * The pre-F1 behaviour was the whole defect: the RunnerError was caught, converted to a `halt`, and

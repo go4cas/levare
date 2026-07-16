@@ -15,7 +15,7 @@
 // see the "no board renderer emits a status class except through the primitive" test in
 // tests/board-components.test.ts.
 
-import { esc } from "./derive.ts";
+import { esc } from "../derive.ts";
 import { chipClass, statusLabel, type CanonicalStatus } from "./status.ts";
 
 // ---------------------------------------------------------------------------

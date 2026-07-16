@@ -2,9 +2,9 @@
 // `converse()` — orchestrator-boundary.ts). In their place, this module assembles a deterministic
 // PROJECTION of the studio — the same discipline as context.ts's §6 member-context recipe: built
 // entirely from `Repo` (already loaded, already validated) plus the same derivation helpers the
-// board itself renders from (board/derive.ts, board/timeline.ts, board/extra.ts, doctor.ts), never
-// by the model reaching for a tool. Every section is scoped to `repo.root` alone — nothing here can
-// read outside the studio the caller loaded, because nothing here takes a second path.
+// board itself renders from (derive.ts, timeline.ts, extra.ts, doctor.ts) — core modules both surfaces
+// depend on, never by the model reaching for a tool. Every section is scoped to `repo.root` alone —
+// nothing here can read outside the studio the caller loaded, because nothing here takes a second path.
 //
 // Scope (§7: "brief, narrate, dispatch"): the registry's key fields, work units with their
 // artifacts' statuses and lineage, open gates with age and cost, a bounded recent timeline, the
@@ -12,9 +12,9 @@
 // a studio-shaped summary the Orchestrator answers from, not a bulk export of every file's contents.
 
 import type { Repo } from "./repo.ts";
-import { loadExtras } from "./board/extra.ts";
-import { openGates, ageLabel, costLabel } from "./board/derive.ts";
-import { buildTimeline } from "./board/timeline.ts";
+import { loadExtras } from "./extra.ts";
+import { openGates, ageLabel, costLabel } from "./derive.ts";
+import { buildTimeline } from "./timeline.ts";
 import { diagnose, type CliProbe, type EnvProbe } from "./doctor.ts";
 
 export interface StudioProjectionOptions {

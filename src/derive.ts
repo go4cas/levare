@@ -1,12 +1,18 @@
-// Pure derivation helpers for the board (PRD §9). Every function here takes already-loaded repo
-// data and returns either a display string or a small derived shape — no I/O, no clock reads except
-// where a `now` is passed in explicitly, so callers (render + tests) can pin it.
+// Pure derivation helpers over a loaded `Repo` (PRD §9): open gates, score nodes, spend, lineage,
+// summaries. Core domain logic, not board-specific — the board's render path and
+// orchestrator-projection.ts (the Orchestrator's studio view, ruling C10) both derive from the exact
+// same functions here, so the two surfaces never quietly disagree on what an "open gate" or a unit's
+// spend is. Every function takes already-loaded repo data and returns either a display string or a
+// small derived shape — no I/O, no clock reads except where a `now` is passed in explicitly, so
+// callers (render + tests) can pin it. Lives at the top level of src/ (not src/board/) because it was
+// core all along — moved here after the layering inversion review found orchestrator-projection.ts,
+// core domain, reaching into src/board/ for logic it needed just as much as the board did.
 
-import type { Artifact, ArtifactStatus, Team, TypeTemplate, Usage, WorkUnit } from "../types.ts";
-import type { Repo } from "../repo.ts";
-import { firstParagraph, repoCapabilities } from "../repo.ts";
-import { isLoopCompanionKind, loopMembershipFor } from "../gates.ts";
-import { roundOf } from "../runner.ts";
+import type { Artifact, ArtifactStatus, Team, TypeTemplate, Usage, WorkUnit } from "./types.ts";
+import type { Repo } from "./repo.ts";
+import { firstParagraph, repoCapabilities } from "./repo.ts";
+import { isLoopCompanionKind, loopMembershipFor } from "./gates.ts";
+import { roundOf } from "./runner.ts";
 
 export function esc(s: string): string {
   return String(s)

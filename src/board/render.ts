@@ -33,9 +33,9 @@ import {
   captionTime,
   type OpenGate,
   type ScoreNode,
-} from "./derive.ts";
-import { loadExtras, type RegistryExtras } from "./extra.ts";
-import { buildTimeline } from "./timeline.ts";
+} from "../derive.ts";
+import { loadExtras, type RegistryExtras } from "../extra.ts";
+import { buildTimeline } from "../timeline.ts";
 import { diagnose } from "../doctor.ts";
 import { hasDeclaredGuardrails } from "../guardrails.ts";
 import type { DaemonInvocation } from "../daemon.ts";

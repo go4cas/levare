@@ -348,12 +348,12 @@ describe("levare serve — POST /registry validate → write → commit", () => 
   });
 });
 
-// The registry DISPLAY path (board/extra.ts) already resolved a directory-form skill (the Agent
+// The registry DISPLAY path (extra.ts) already resolved a directory-form skill (the Agent
 // Skills convention: a folder carrying its own SKILL.md plus optional supporting files, e.g. the
 // scaffolded `skills/new-project/`, NOTES H5) to its real backing file. The registry CARD used to
 // reconstruct `skills/<name>.md` from the entity's name instead — a path that never exists for a
 // directory-form skill — so opening one in the editor loaded an empty, invalid buffer, and a save
-// would have written a stray flat file beside the real directory. `Entity.file` (board/extra.ts) is
+// would have written a stray flat file beside the real directory. `Entity.file` (extra.ts) is
 // now the single source of truth the card, the live-check route, and the save route all agree on.
 describe("levare serve — registry editor round-trip for a directory-form skill (Agent Skills SKILL.md convention)", () => {
   let root: string;

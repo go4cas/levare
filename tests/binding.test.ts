@@ -8,7 +8,7 @@ import { loadPricing } from "../src/pricing.ts";
 import { AdapterRunner, type InvokeRequest, type NativeBoundary, type RemoteBoundary } from "../src/adapters.ts";
 import { advanceUnit, nextAction } from "../src/dagwalk.ts";
 import { responsibleTeamFor } from "../src/gates.ts";
-import { openGates } from "../src/board/derive.ts";
+import { openGates } from "../src/derive.ts";
 import { renderStudio } from "../src/board/render.ts";
 import { Daemon } from "../src/daemon.ts";
 import { render } from "../fixtures/stubs/member-stub.ts";

@@ -7,7 +7,7 @@ import { Daemon } from "../src/daemon.ts";
 import { resolveGate } from "../src/board/gateops.ts";
 import { stubAdapterRunner } from "../src/replay.ts";
 import { loadRepo } from "../src/repo.ts";
-import { openGates } from "../src/board/derive.ts";
+import { openGates } from "../src/derive.ts";
 import { renderStudio } from "../src/board/render.ts";
 import type { Verb } from "../src/runner.ts";
 

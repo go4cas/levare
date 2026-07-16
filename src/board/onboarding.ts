@@ -6,7 +6,7 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { esc } from "./derive.ts";
+import { esc } from "../derive.ts";
 
 // The skeleton `levare init` scaffolds (src/init.ts). A root "looks like" a studio once at least one
 // of these exists — a partially-built studio (e.g. only `teams/` written so far) still renders
