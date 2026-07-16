@@ -188,7 +188,7 @@ describe("doctor: reports whether the orchestrator prompt actually loaded (NOTES
 describe("doctor: reports auth mode, and warns plainly for auth: subscription (NOTES C13)", () => {
   const withSubscription: Connector[] = [
     ...connectors,
-    { name: "codex", kind: "cli", command: "codex", env: [], auth: "subscription", plan: "ChatGPT Plus — flat monthly rate" },
+    { name: "codex", kind: "cli", command: "codex", env: [], auth: "subscription", role: "model", plan: "ChatGPT Plus — flat monthly rate" },
   ];
   const allPresent: EnvProbe = { has: () => true };
   const foundGh: CliProbe = () => "found";
@@ -230,6 +230,49 @@ describe("doctor: reports auth mode, and warns plainly for auth: subscription (N
     const githubBlock = out.split("\n\n").find((b) => b.startsWith("github"))!;
     expect(githubBlock).toContain("auth: env");
     expect(githubBlock).not.toContain("⚠");
+  });
+});
+
+// NOTES C15: doctor reports each connector's role (model | tool) alongside kind/auth, and — when a
+// connector is actually broken (missing-env, the one live "broken" signal this file computes; cli/mcp
+// reachability stay advisory per this file's own header comment) — names the DIFFERENT real
+// consequence a role: model connector's breakage has (a granted member can't even start) vs a
+// role: tool connector's (that member starts, and fails mid-work when it reaches for the tool).
+describe("doctor: reports connector role, and the consequence differs by role for a broken connector (NOTES C15)", () => {
+  const modelConnector: Connector = { name: "hosted-model", kind: "cli", command: "hosted", env: ["HOSTED_MODEL_KEY"], auth: "env", role: "model" };
+  const withModelConnector: Connector[] = [...connectors, modelConnector];
+  const allPresent: EnvProbe = { has: () => true };
+  const noneMissing: EnvProbe = { has: () => false };
+  const foundGh: CliProbe = () => "found";
+
+  test("every connector's health record carries its role", () => {
+    const health = diagnose(withModelConnector, allPresent, foundGh);
+    const byRole = Object.fromEntries(health.map((h) => [h.name, h.role]));
+    expect(byRole).toEqual({ github: "tool", linear: "tool", "hosted-model": "model" });
+  });
+
+  test("formatDoctor prints the role alongside kind, on the connector's header line", () => {
+    const out = formatDoctor(diagnose(withModelConnector, allPresent, foundGh));
+    expect(out).toContain("hosted-model · cli · model");
+    expect(out).toContain("github · cli · tool");
+    expect(out).toContain("linear · mcp · tool");
+  });
+
+  test("a broken (missing-env) role: model connector: doctor says depending members cannot START", () => {
+    const out = formatDoctor(diagnose(withModelConnector, noneMissing, foundGh));
+    expect(out).toContain("⚠ members depending on 'hosted-model' for model access cannot start");
+  });
+
+  test("a broken (missing-env) role: tool connector: doctor says depending members fail MID-WORK, not 'cannot start'", () => {
+    const out = formatDoctor(diagnose(withModelConnector, noneMissing, foundGh));
+    expect(out).toContain("⚠ members depending on 'linear' will fail mid-work");
+    expect(out).not.toContain("'linear' for model access cannot start");
+  });
+
+  test("a healthy (env-present) connector, of either role, gets no consequence line", () => {
+    const out = formatDoctor(diagnose(withModelConnector, allPresent, foundGh));
+    expect(out).not.toContain("cannot start");
+    expect(out).not.toContain("fail mid-work");
   });
 });
 

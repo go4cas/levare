@@ -249,6 +249,10 @@ const CONNECTOR_SCHEMA: Schema = {
     // original, unchanged behaviour.
     auth: { type: "enum", required: false, enum: ["env", "subscription"] },
     plan: { type: "str", required: false },
+    // NOTES C15: this connector's FUNCTION — model access vs. tool/service access — distinct from
+    // `kind` (the transport) and never confused with `type` (reserved for domain templates). Defaults
+    // to "tool" when absent, the common case.
+    role: { type: "enum", required: false, enum: ["model", "tool"] },
   },
 };
 
@@ -482,6 +486,7 @@ function validateSingleFile(
   if (kind.schema === AGENT_SCHEMA) validateAgentVariant(data, file, errors);
   if (kind.schema === AGENT_SCHEMA) validateAgentRemoteNotice(data, file, warnings);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorAuth(data, file, errors);
+  if (kind.schema === CONNECTOR_SCHEMA) validateConnectorRoleWarning(data, file, warnings);
 }
 
 function discoverFolderArtifacts(root: string, errors: ValidationError[], artifacts: DiscoveredArtifact[]): void {
@@ -763,6 +768,22 @@ function validateConnectorAuth(data: Record<string, YamlValue>, file: string, er
   }
 }
 
+// NOTES C15: `role` is new and optional, defaulting to "tool" — but a pre-C15 studio's `auth:
+// subscription` connector (the canonical model-access shape, per C13) predates the field entirely,
+// and silently defaulting it to "tool" would mislabel exactly the connector this ruling exists to
+// name correctly. A warning, not an error (REV1 warnings channel — the declaration is legal, just
+// possibly incomplete): fires only when `role` is genuinely absent, so declaring EITHER role
+// explicitly (including `role: tool`, for a subscription-authenticated tool connector) silences it.
+function validateConnectorRoleWarning(data: Record<string, YamlValue>, file: string, warnings: ValidationWarning[]): void {
+  if (data.auth !== "subscription" || data.role !== undefined) return;
+  const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+  warnings.push({
+    code: "SUBSCRIPTION_NO_ROLE",
+    message: `connector '${name}' is subscription-authenticated but declares no role — if it provides model access, declare 'role: model'`,
+    file,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Known-model validation (NOTES F11) — a model that cannot be priced cannot be declared
 // ---------------------------------------------------------------------------
@@ -803,17 +824,21 @@ function declaredAgentModels(
   return out;
 }
 
-// NOTES C13: agent names granted (directly or via their team) at least one `auth: subscription`
-// connector — a subscription CLI's cost is flat-rate, not per-token, so its declared `model:` is
-// unpriceable BY DEFINITION, not by an accounting gap. These agents are exempt from UNKNOWN_MODEL
-// below. Hand-parsed straight off disk (not via repo.ts's loadRepo), matching every other
+// NOTES C15 (re-keyed from C13): agent names granted (directly or via their team) at least one
+// `role: model` connector — a member whose model arrives through a connector (subscription OR env
+// auth) declares a `model:` this table can't price the same way a native member's is priced, so it's
+// exempt from UNKNOWN_MODEL below. This is what the exemption always meant; C13 approximated it as
+// "granted ANY subscription connector" because `role` didn't exist yet, which over-exempted (a
+// subscription TOOL connector, possible in principle, exempted an agent's model from pricing
+// validation for no reason) and under-exempted (an env-authenticated model connector didn't exempt
+// at all). Hand-parsed straight off disk (not via repo.ts's loadRepo), matching every other
 // cross-entity check in this file, so validation stays independent of a fully-loadable repo.
-function subscriptionAuthAgents(root: string, overlay?: OverlayFile): Set<string> {
+function modelRoleAgents(root: string, overlay?: OverlayFile): Set<string> {
   const out = new Set<string>();
   const connectorsDir = join(root, "connectors");
   if (!existsSync(connectorsDir)) return out;
 
-  const subscriptionConnectors = new Set<string>();
+  const modelConnectors = new Set<string>();
   for (const file of readdirSync(connectorsDir).sort()) {
     if (!file.endsWith(".md")) continue;
     let data: Record<string, YamlValue>;
@@ -822,11 +847,11 @@ function subscriptionAuthAgents(root: string, overlay?: OverlayFile): Set<string
     } catch {
       continue;
     }
-    if (data.auth === "subscription") {
-      subscriptionConnectors.add(typeof data.name === "string" ? data.name : basename(file, ".md"));
+    if (data.role === "model") {
+      modelConnectors.add(typeof data.name === "string" ? data.name : basename(file, ".md"));
     }
   }
-  if (subscriptionConnectors.size === 0) return out;
+  if (modelConnectors.size === 0) return out;
 
   // team name → its own connector grants, and which agents are its members.
   const teamConnectorsByMember = new Map<string, Set<string>>();
@@ -862,7 +887,7 @@ function subscriptionAuthAgents(root: string, overlay?: OverlayFile): Set<string
       const agentName = typeof data.name === "string" ? data.name : basename(file, ".md");
       const granted = new Set<string>([...strList(data.connectors), ...(teamConnectorsByMember.get(agentName) ?? [])]);
       for (const g of granted) {
-        if (subscriptionConnectors.has(g)) {
+        if (modelConnectors.has(g)) {
           out.add(agentName);
           break;
         }
@@ -877,10 +902,10 @@ function validateKnownModels(root: string, errors: ValidationError[], overlay?: 
   // fails open on an unconfigured studio — a fresh studio with no knowledge/model-pricing.md at all
   // is still checked against every real, currently-callable model the binary ships.
   const pricing: Pricing = loadPricing(root, overlay);
-  const subscriptionAgents = subscriptionAuthAgents(root, overlay);
+  const exemptAgents = modelRoleAgents(root, overlay);
 
   for (const { agentName, model, file } of declaredAgentModels(join(root, "agents"), overlay)) {
-    if (subscriptionAgents.has(agentName)) continue; // C13: unpriceable by definition, not a defect.
+    if (exemptAgents.has(agentName)) continue; // C15: model arrives through a connector, not priced here.
     if (!pricing.has(model)) {
       errors.push({
         code: "UNKNOWN_MODEL",

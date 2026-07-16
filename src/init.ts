@@ -331,12 +331,14 @@ kind: cli
 command: gh
 env: [GITHUB_TOKEN]
 scope: "Granted to teams that open PRs and manage releases. Values come from the environment; never stored in the repo."
+role: tool
 ---
 
 # GitHub connector
 
 Wraps the \`gh\` CLI. The Runner injects \`GITHUB_TOKEN\` only into members whose team or
-agent grants this connector.
+agent grants this connector. \`role: tool\` — GitHub grants a service capability, not model
+access (NOTES C15).
 `;
 
 const CONNECTOR_LINEAR = `---
@@ -345,12 +347,37 @@ kind: mcp
 server: linear-mcp
 env: [LINEAR_API_KEY]
 scope: "Read-only issue context for planning members."
+role: tool
 ---
 
 # Linear connector
 
 An MCP server exposing Linear issues. Required env var name is declared; its value comes
-from the environment at run time.
+from the environment at run time. \`role: tool\` — Linear grants a service capability, not
+model access (NOTES C15).
+`;
+
+// NOTES C15: the canonical `role: model` example — the same Codex CLI finch wraps directly
+// (agents/finch.md) authenticates itself from its own stored session (\`codex login\`) rather than an
+// env var levare could inject (NOTES C13). Declared here, unwired to any agent, purely to model the
+// shape a studio should declare when it grants model access through a connector: \`auth: subscription\`
+// (the credential lives outside levare's scoping) plus \`role: model\` (what it's FOR).
+const CONNECTOR_CODEX = `---
+name: codex
+kind: cli
+command: codex
+env: []
+auth: subscription
+role: model
+plan: "ChatGPT Plus — flat monthly rate"
+scope: "Model access for Codex-backed members. levare cannot scope this credential — see auth: subscription (NOTES C13)."
+---
+
+# Codex connector
+
+Models the \`role: model\` + \`auth: subscription\` shape: \`codex login\` writes a session to
+\`~/.codex\` that any member able to spawn \`codex\` can use, granted or not — the grant here is
+documentation of intent, not enforcement. \`role: model\` names what it's for.
 `;
 
 const KNOWLEDGE_HOUSE_STYLE = `---
@@ -474,6 +501,7 @@ const FILES: Template[] = [
   { path: "types/research.md", content: TYPE_RESEARCH },
   { path: "connectors/github.md", content: CONNECTOR_GITHUB },
   { path: "connectors/linear.md", content: CONNECTOR_LINEAR },
+  { path: "connectors/codex.md", content: CONNECTOR_CODEX },
   { path: "knowledge/house-style.md", content: KNOWLEDGE_HOUSE_STYLE },
   { path: "knowledge/model-pricing.md", content: KNOWLEDGE_MODEL_PRICING },
   { path: "projects/studio.md", content: PROJECT_STUDIO },

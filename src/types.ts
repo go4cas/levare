@@ -123,6 +123,13 @@ export interface StudioSettings {
 // use the login, granted or not; the grant is documentation, not enforcement (see doctor.ts).
 export type ConnectorAuth = "env" | "subscription";
 
+// NOTES C15: `kind` names the TRANSPORT (mcp/cli — how levare connects); `role` names the FUNCTION
+// (model/tool — what the connector serves in the ecosystem). `codex` grants model access; `github`/
+// `linear` grant tool/service capabilities. Defaults to "tool", the common case — every connector
+// defined before this ruling is unchanged. Deliberately not named `type`, which is reserved for
+// domain templates (work-unit type).
+export type ConnectorRole = "model" | "tool";
+
 export interface Connector {
   name: string;
   kind: "mcp" | "cli";
@@ -134,6 +141,8 @@ export interface Connector {
   /** Human-readable note on the subscription plan in use — required in practice for `auth:
    * subscription` connectors so receipts and doctor can name what's covering the cost (§10). */
   plan?: string;
+  /** NOTES C15: this connector's function — a model connector or a tool/service connector. */
+  role: ConnectorRole;
 }
 
 export interface TypeTemplate {

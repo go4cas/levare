@@ -146,6 +146,9 @@ function toConnector(d: Record<string, YamlValue>): Connector {
     // field existed.
     auth: d.auth === "subscription" ? "subscription" : "env",
     plan: optStr(d.plan),
+    // NOTES C15: defaults to "tool" — unchanged behaviour for every connector defined before this
+    // field existed.
+    role: d.role === "model" ? "model" : "tool",
   };
 }
 

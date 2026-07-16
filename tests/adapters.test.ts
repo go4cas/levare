@@ -192,6 +192,7 @@ describe("C13: subscription-authenticated members price at usd: null, with the p
       command: "codex",
       env: [],
       auth: "subscription",
+      role: "model",
       plan: "ChatGPT Plus — flat monthly rate",
     });
     const lyra = repo.agents.get("lyra")!;
@@ -587,6 +588,7 @@ describe("F17: a CLI member's own reported tokens are parsed, never discarded, a
       command: "codex",
       env: [],
       auth: "subscription",
+      role: "model",
       plan: "ChatGPT Plus — flat monthly rate",
     });
     const finch = repo.agents.get("finch")!;

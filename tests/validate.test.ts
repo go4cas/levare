@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validatePath } from "../src/validate.ts";
 import { loadPricing } from "../src/pricing.ts";
+import { loadRepo } from "../src/repo.ts";
 
 describe("golden fixture", () => {
   test("fixtures/golden validates clean", () => {
@@ -493,7 +494,7 @@ describe("F11: known-model validation — a model that cannot be priced cannot b
     command?: string;
     studioModel?: string;
     withPricing?: boolean;
-    connectors?: Array<{ name: string; auth: "env" | "subscription"; env?: string[] }>;
+    connectors?: Array<{ name: string; auth: "env" | "subscription"; env?: string[]; role?: "model" | "tool" }>;
     agentConnectors?: string[];
   }): string {
     const dir = mkdtempSync(join(tmpdir(), "levare-known-model-"));
@@ -509,9 +510,10 @@ describe("F11: known-model validation — a model that cannot be priced cannot b
       mkdirSync(join(dir, "connectors"), { recursive: true });
       for (const c of opts.connectors) {
         const envLine = `env: [${(c.env ?? []).join(", ")}]`;
+        const roleLine = c.role ? [`role: ${c.role}`] : [];
         writeFileSync(
           join(dir, "connectors", `${c.name}.md`),
-          ["---", `name: ${c.name}`, "kind: cli", `command: ${c.name}`, `auth: ${c.auth}`, envLine, "---", "", `# ${c.name}`, ""].join("\n"),
+          ["---", `name: ${c.name}`, "kind: cli", `command: ${c.name}`, `auth: ${c.auth}`, envLine, ...roleLine, "---", "", `# ${c.name}`, ""].join("\n"),
         );
       }
     }
@@ -656,14 +658,15 @@ describe("F11: known-model validation — a model that cannot be priced cannot b
     }
   });
 
-  // NOTES C13: a subscription connector's cost is flat-rate — its granted agent's declared model is
-  // unpriceable by definition, not by an accounting gap, so UNKNOWN_MODEL must not fire for it.
-  test("an agent granted an auth: subscription connector is exempt from UNKNOWN_MODEL", () => {
+  // NOTES C15 (re-keyed from C13): a member whose model arrives through a connector is unpriceable
+  // by definition, not by an accounting gap, so UNKNOWN_MODEL must not fire for it — and that is a
+  // fact about the connector's ROLE (what it's granted for), not its auth mode (how it authenticates).
+  test("an agent granted a role: model connector (auth: subscription) is exempt from UNKNOWN_MODEL", () => {
     const dir = buildStudio({
       agentKind: "cli",
       agentModel: "codex-cli-5",
       command: "codex, review, --model, '{model}'",
-      connectors: [{ name: "codex", auth: "subscription" }],
+      connectors: [{ name: "codex", auth: "subscription", role: "model" }],
       agentConnectors: ["codex"],
     });
     try {
@@ -674,12 +677,49 @@ describe("F11: known-model validation — a model that cannot be priced cannot b
     }
   });
 
-  // An agent NOT granted the subscription connector still gets the ordinary UNKNOWN_MODEL check —
-  // the exemption follows the grant, not the mere existence of a subscription connector elsewhere.
-  test("an agent NOT granted the subscription connector is still subject to UNKNOWN_MODEL", () => {
+  // The other direction of the re-key: a role: model connector that authenticates via `auth: env`
+  // (e.g. a hosted-model API key) exempts its granted agent exactly the same way a subscription one
+  // does — the exemption follows `role: model`, never `auth: subscription` specifically.
+  test("an agent granted a role: model connector authenticated via auth: env is ALSO exempt from UNKNOWN_MODEL", () => {
+    const dir = buildStudio({
+      agentKind: "cli",
+      agentModel: "hosted-model-x",
+      command: "hosted, review, --model, '{model}'",
+      connectors: [{ name: "hosted", auth: "env", env: ["HOSTED_MODEL_KEY"], role: "model" }],
+      agentConnectors: ["hosted"],
+    });
+    try {
+      const r = validatePath(dir);
+      expect(r.errors.map((e) => e.code)).not.toContain("UNKNOWN_MODEL");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // The C13-era proxy over-exempted: a subscription TOOL connector (no model access at all) must no
+  // longer exempt its granted agent's model from pricing validation — only `role: model` does.
+  test("an agent granted an auth: subscription connector with NO explicit role (default tool) is NOT exempt — a subscription tool connector must not exempt a model", () => {
+    const dir = buildStudio({
+      agentKind: "cli",
+      agentModel: "codex-cli-5",
+      command: "codex, review, --model, '{model}'",
+      connectors: [{ name: "codex", auth: "subscription" }], // no role: defaults to "tool"
+      agentConnectors: ["codex"],
+    });
+    try {
+      const r = validatePath(dir);
+      expect(r.errors.map((e) => e.code)).toContain("UNKNOWN_MODEL");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // An agent NOT granted the model connector still gets the ordinary UNKNOWN_MODEL check —
+  // the exemption follows the grant, not the mere existence of a model connector elsewhere.
+  test("an agent NOT granted the role: model connector is still subject to UNKNOWN_MODEL", () => {
     const dir = buildStudio({
       agentModel: "codex-cli-5",
-      connectors: [{ name: "codex", auth: "subscription" }],
+      connectors: [{ name: "codex", auth: "subscription", role: "model" }],
       // no agentConnectors: scribe is granted nothing.
     });
     try {
@@ -785,6 +825,115 @@ describe("C13: connector auth mode", () => {
       const r = validatePath(dir);
       expect(r.ok).toBe(false);
       expect(r.errors.some((e) => e.code === "BAD_ENUM" && e.message.includes("auth"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// NOTES C15: a connector declares its ROLE (model | tool) — what function it serves — distinct from
+// `kind` (the transport: mcp/cli) and never confused with `type` (reserved for domain templates).
+// Optional, defaulting to "tool" (the common case). Existing pre-C15 connectors, none of which
+// declare `role:`, are unaffected by the default; only a subscription connector with no explicit
+// role gets a migration warning (below), since silently defaulting THAT case would mislabel exactly
+// the connector shape this ruling exists to name correctly.
+describe("C15: connector role", () => {
+  function roleStudio(frontmatterExtra: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "levare-connector-role-"));
+    mkdirSync(join(dir, "connectors"), { recursive: true });
+    writeFileSync(
+      join(dir, "connectors", "codex.md"),
+      ["---", "name: codex", "kind: cli", "command: codex", frontmatterExtra, "---", "", "# Codex connector", ""].join("\n"),
+    );
+    return dir;
+  }
+
+  test("a connector with no role: at all validates clean, defaulting to tool", () => {
+    const dir = roleStudio("env: [CODEX_TOKEN]");
+    try {
+      const r = validatePath(dir);
+      expect(r.ok).toBe(true);
+      expect(loadRepo(dir).connectors.get("codex")!.role).toBe("tool");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("role: model validates clean and resolves to 'model'", () => {
+    const dir = roleStudio("env: [CODEX_TOKEN]\nrole: model");
+    try {
+      const r = validatePath(dir);
+      expect(r.ok).toBe(true);
+      expect(loadRepo(dir).connectors.get("codex")!.role).toBe("model");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("role: tool validates clean and resolves to 'tool'", () => {
+    const dir = roleStudio("env: [CODEX_TOKEN]\nrole: tool");
+    try {
+      const r = validatePath(dir);
+      expect(r.ok).toBe(true);
+      expect(loadRepo(dir).connectors.get("codex")!.role).toBe("tool");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an unrecognised role value is rejected by the ordinary enum check, not silently accepted", () => {
+    const dir = roleStudio("env: [CODEX_TOKEN]\nrole: orchestrator");
+    try {
+      const r = validatePath(dir);
+      expect(r.ok).toBe(false);
+      expect(r.errors.some((e) => e.code === "BAD_ENUM" && e.message.includes("role"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // NOTES C15 item 3 (migration honesty): a pre-C15 subscription connector defaults to role: tool —
+  // which would silently mislabel it if it actually grants model access. A warning (never an error:
+  // the declaration is legal) names exactly this gap, and fires ONLY when role is genuinely absent.
+  test("a subscription connector with no role: declared gets a SUBSCRIPTION_NO_ROLE warning, naming it", () => {
+    const dir = roleStudio('auth: subscription\nenv: []\nplan: "ChatGPT Plus — flat monthly rate"');
+    try {
+      const r = validatePath(dir);
+      expect(r.ok).toBe(true); // legal declaration — a warning, never an error
+      const warning = r.warnings.find((w) => w.code === "SUBSCRIPTION_NO_ROLE");
+      expect(warning).toBeDefined();
+      expect(warning!.message).toContain("codex");
+      expect(warning!.message).toContain("role: model");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an explicit role: model on a subscription connector silences the warning", () => {
+    const dir = roleStudio('auth: subscription\nenv: []\nrole: model\nplan: "ChatGPT Plus — flat monthly rate"');
+    try {
+      const r = validatePath(dir);
+      expect(r.warnings.map((w) => w.code)).not.toContain("SUBSCRIPTION_NO_ROLE");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an explicit role: tool on a subscription connector ALSO silences the warning — any explicit declaration is enough", () => {
+    const dir = roleStudio('auth: subscription\nenv: []\nrole: tool\nplan: "ChatGPT Plus — flat monthly rate"');
+    try {
+      const r = validatePath(dir);
+      expect(r.warnings.map((w) => w.code)).not.toContain("SUBSCRIPTION_NO_ROLE");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an auth: env connector with no role: declared gets no SUBSCRIPTION_NO_ROLE warning — the gap is specific to subscription connectors", () => {
+    const dir = roleStudio("env: [CODEX_TOKEN]");
+    try {
+      const r = validatePath(dir);
+      expect(r.warnings.map((w) => w.code)).not.toContain("SUBSCRIPTION_NO_ROLE");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

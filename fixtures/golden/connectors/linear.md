@@ -4,6 +4,7 @@ kind: mcp
 server: linear-mcp
 env: [LINEAR_API_KEY]
 scope: "Read-only issue context for planning members."
+role: tool
 ---
 
 # Linear connector

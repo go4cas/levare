@@ -192,8 +192,12 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
           : "";
       // NOTES UI11: the connector kind (cli/mcp) gets the same shape-treatment badge as an agent's
       // kind — no status-palette colour, consistent with UI7's agent-kind badges.
+      // NOTES C15: `role` (model/tool) is the connector's FUNCTION, distinct from `kind` (its
+      // transport) above — rendered as a plain chip, the same bare-word treatment the registry
+      // already uses for knowledge tags, not a new badge shape.
       const inner = `<div class="card__h">Definition</div>
       <div class="prow"><span class="k">kind</span><span class="v">${connectorKindBadge(c.kind)}</span></div>
+      <div class="prow"><span class="k">role</span><span class="v">${tag(c.role, "tag")}</span></div>
       <div class="prow"><span class="k">auth</span><span class="v mono">${esc(c.auth)}${c.plan ? ` · ${esc(c.plan)}` : ""}</span></div>
       <div class="prow"><span class="k">env</span><span class="v mono">${c.env.map(esc).join(", ")}</span></div>${authWarning}`;
       return entityBlock("connectors", esc(c.name), "connector", inner, `connectors/${c.name}.md`, rawFor(root, "connectors", c.name), c.name, active === "connectors");

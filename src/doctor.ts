@@ -39,6 +39,10 @@ export interface ConnectorHealth {
   // NOTES C13: which mode this connector declares. "subscription" carries `warning` below — doctor
   // must never let this connector's report read as "levare has this scoped" when it doesn't.
   auth: "env" | "subscription";
+  // NOTES C15: this connector's function — model access vs. tool/service access. The consequence of
+  // this connector being missing/broken differs by role (see `formatDoctor`'s consequence line): a
+  // missing tool connector fails a member mid-work, a missing model connector means it can't start.
+  role: "model" | "tool";
   plan?: string;
   warning?: string;
   // NOTES C11 part 4: `provenance` names WHERE a present variable came from — '.env' or the shell —
@@ -64,7 +68,7 @@ export function diagnose(connectors: Connector[], env: EnvProbe, probe: CliProbe
       // A subscription connector names no env (validated), so this is vacuously "ok" — env presence
       // was never the thing to check for it; see `warning` for what IS true about it instead.
       const status: ConnectorHealth["status"] = envChecks.every((e) => e.present) ? "ok" : "missing-env";
-      const health: ConnectorHealth = { name: c.name, kind: c.kind, auth: c.auth, env: envChecks, status };
+      const health: ConnectorHealth = { name: c.name, kind: c.kind, auth: c.auth, role: c.role, env: envChecks, status };
       if (c.plan) health.plan = c.plan;
       if (c.auth === "subscription") {
         // NOTES C13: stated plainly, every time — the board and this report must never imply a
@@ -134,13 +138,26 @@ export function formatDoctor(
   out.push(`levare doctor · ${health.length} connector${health.length === 1 ? "" : "s"}`);
   for (const h of health) {
     out.push("");
-    out.push(`${h.name} · ${h.kind}`);
+    out.push(`${h.name} · ${h.kind} · ${h.role}`);
     out.push(`  auth: ${h.auth}${h.plan ? ` · ${h.plan}` : ""}`);
     if (h.warning) out.push(`  ⚠ ${h.warning}`);
     for (const e of h.env) out.push(`  env ${e.name} ${e.present ? `present (${e.provenance})` : "missing"}`);
     if (h.cli) out.push(`  cli ${h.cli.command} ${h.cli.probe === "found" ? "on PATH" : "not found on PATH"}`);
     if (h.mcp) out.push(`  mcp ${h.mcp.server}`);
     out.push(`  → ${h.status}`);
+    // NOTES C15: a broken connector's actual consequence differs by role — this is what
+    // `subscriptionAuthAgents`'s C13-era "granted a subscription connector" proxy always meant to
+    // say, made explicit. A missing model connector means a granted member can't even start; a
+    // missing tool connector lets that member start and fails it mid-work when it reaches for the
+    // tool. `status` (env presence) is the only live "broken" signal doctor has — cli/mcp reachability
+    // stays advisory, per this file's own header comment.
+    if (h.status === "missing-env") {
+      const consequence =
+        h.role === "model"
+          ? `members depending on '${h.name}' for model access cannot start`
+          : `members depending on '${h.name}' will fail mid-work when they reach for it`;
+      out.push(`  ⚠ ${consequence}`);
+    }
   }
   return out.join("\n") + "\n";
 }
