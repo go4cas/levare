@@ -44,6 +44,7 @@ A solo operator's console for directing teams of AI agents, from pitch to produc
 |---|---|
 | **[6 · Operations](06-operations.md)** | Machine prerequisites, credential discipline, sandboxing, and what levare does *not* constrain. |
 | **[7 · Community](07-community.md)** | Run your own. Share definitions, not runtime. |
+| [Current gaps](../current-gaps.md) | A register of what's deliberately deferred or unenforced today, and why — not a roadmap. |
 
 ---
 

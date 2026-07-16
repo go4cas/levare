@@ -7189,3 +7189,64 @@ are untouched — same calls, same assertions). `bun run typecheck` → exit 0 (
 in either file). `tests/layering-boundary.test.ts` — 2/2, unchanged, no new allowlist entry needed.
 `bun run src/cli.ts replay fixtures/golden --stubs` matches the oracle byte-for-byte. `bun run
 deps:check` → `deps ok`. `bun run build` succeeds.
+
+## Item 4 — docs/current-gaps.md, the honest single page of what's deliberately deferred
+
+A newcomer wanting "the state of the union" had to excavate this 7000-line NOTES.md (or the amendment)
+to learn what's real versus what's specified-but-unbuilt. `docs/current-gaps.md` is a REGISTER, not a
+roadmap — every entry is a decision already made (to defer, to leave unenforced, to accept a tradeoff),
+cited to the NOTES entry or PRD amendment where that decision actually happened, deliberately without
+dates or promises about when (or whether) each gap closes.
+
+**Eight entries, each sourced from an existing decision, not invented for this page:**
+- **The v1.1 merge phase + guardrails enforcement** — `docs/prd-amendment-1.md` §2 (invariant 6,
+  "SPECIFIED, NOT IMPLEMENTED") plus NOTES REV1 Finding 2 (guardrails declared/validated/rendered but
+  inert, `checkGuardrails` has zero call sites).
+- **Remote/MCP members** — NOTES REV1 Finding 3 (`kind: remote` validates but is fully mocked by
+  `adapters.ts`'s `RemoteBoundary`).
+- **Conversation persistence** — NOTES UI8 (explicit exclusion: "conversation persistence across
+  navigation stays explicitly out of scope") and NOTES UI10 (closed the narrower in-session DOM-wipe
+  problem only; no durable storage was ever added).
+- **The capability layer** — NOTES C13 (the future per-member isolation phase, named directly in that
+  ruling) plus `docs/guide/07-community.md`'s own pre-existing "the roadmap has real gaps — the
+  capability layer" line, which independently confirms this is an established, named future phase, not
+  a term invented for this page.
+- **Connector role taxonomy** — NOTES C13: connectors are typed only by `kind`/`auth`, with the "grant
+  `auth: subscription` only to trusted members" guidance staying advisory prose in a doctor warning,
+  never an enforced taxonomy.
+- **Per-member subscription-credential scoping** — NOTES C13's own central finding (a subscription CLI
+  reads its credential off disk, outside any env var levare can withhold — "the grant is documentation,
+  not enforcement"), deferred to the same capability-layer work.
+- **Install script and Homebrew formula** — NOTES DIST2 and `README.md`'s Distribution section (both
+  state explicitly that these are deferred, not implied to exist; `tests/release-workflow.test.ts`
+  already asserts the README never claims otherwise).
+- **The loadRepo-per-request position** — this revision's own item 3a: no caching layer exists in
+  front of `loadRepo`, read as a deliberate consequence of PRD invariant 2, not an oversight.
+
+**Linked from two places**, per the goal: `docs/guide/README.md` gains a "Current gaps" row in its
+"Run it for real" table (pointing at `../current-gaps.md`); `docs/guide/07-community.md`'s Contributing
+section gains a paragraph pointing a contributor at it before they propose new work, so a "gap" they've
+found can be checked against "already a known, deliberate decision" before they file it as a bug.
+
+**Verification:** every one of the eight entries cites at least one NOTES entry, NOTES.md section, or
+`docs/prd-amendment-1.md` section by name — checked by hand against the sources above (no NOTES entry
+or amendment section is invented; the "capability layer" and "connector role taxonomy" framings are
+this page's own synthesis of what NOTES C13 establishes, explicitly worded as such rather than
+presented as verbatim NOTES phrasing). Both relative links (`docs/guide/README.md` → `../current-
+gaps.md`, `docs/guide/07-community.md` → `../current-gaps.md`) resolve correctly given each file's own
+directory. `bun test` — 874 pass, 1 pre-existing skip, 0 fail (docs-only change; no test file touches
+`docs/`). `bun run typecheck` → exit 0. `bun run deps:check` → `deps ok`. `bun run build` succeeds.
+
+## Overall (NOTES REV4)
+
+`bun test` — 874 pass, 1 pre-existing skip, 0 fail, across 73 files, unchanged from pre-REV4 (this
+revision is refactors and docs throughout — no new production code paths, so no new tests were needed;
+five existing tests were updated in place for new file layouts / class names / import paths, none
+weakened in what they assert). `bun run typecheck` → exit 0. `bun run src/cli.ts replay fixtures/golden
+--stubs` matches `fixtures/golden/expected.json` byte-for-byte after every single item. `tests/layering-
+boundary.test.ts` passes unchanged throughout — no new allowlist entry was ever needed. `bun run
+deps:check` → `deps ok`. `bun run build` succeeds. `docs/current-gaps.md` exists, is linked from both
+places the goal named, and every entry cites its source. All four items landed as planned; nothing in
+this revision was blocked or left uncertain enough to change scope — the two uncertainties that did
+come up (the render-split barrel-vs-direct-import choice; the achieved-when's own "byte-identical...
+class renames" wording) are recorded in items 1 and 2's own NOTES paragraphs above, not here.

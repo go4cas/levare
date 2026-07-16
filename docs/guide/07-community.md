@@ -61,6 +61,10 @@ levare's constitution ([5.4](05-reference/04-constitution.md)) is the bar. A con
 which invariant or ruling it touches, and it must not weaken the ones that matter — the Conductor as
 sole approver, the honest audit log, the environment allowlist, the receipts that never lie.
 
+Before proposing new work, check **[Current gaps](../current-gaps.md)** — a register of what's
+already known to be deferred or unenforced, and why. It'll tell you whether the gap you found is a
+bug or a documented decision, and point you at the NOTES entry or PRD amendment behind it.
+
 Two principles from levare's own construction, worth inheriting:
 
 - **If a test would still pass with the feature deleted, the test isn't testing the feature.**
