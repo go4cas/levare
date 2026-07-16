@@ -6699,3 +6699,97 @@ skip, 0 fail, across 68 files (up from 839/67 pre-REV1, +19 net new tests across
 `bun run src/cli.ts replay fixtures/golden --stubs` matches the oracle byte-for-byte. `bun run
 deps:check` → `deps ok`. `bun run build` succeeds; the compiled binary's `__worker` subcommand still
 dispatches into the real worker.
+
+# NOTES REV2 — writes must be atomic around commit failure, and startup must be ordered
+
+Two findings from the consolidated review.
+
+## Finding 1 — a mutation with no matching commit is an unaudited change
+
+"Files are the truth + git is the audit log" (PRD §2, §9) means every on-disk mutation must be
+answerable by a commit that recorded it. Before this fix, every mutating path wrote its candidate
+content to disk, validated, and ONLY THEN committed — `writeFileSync` first, `conductorCommit`/
+`runnerCommit` (which can throw: a rejected hook, a corrupt index, no resolvable identity) last, with
+nothing to undo the write if that final step failed. `board/serve.ts`'s registry route already rolled
+back on a VALIDATION failure (an existing `backup`/`writeFileSync` pair), but not on a COMMIT failure
+— the exact gap the goal named. Every other mutating path (`board/gateops.ts`'s gate resolutions,
+`dagwalk.ts`'s produce/block paths, `orchestrator.ts`'s unit operations, `daemon.ts`'s budget-gate
+`stop`) had no rollback of either kind.
+
+**Fix — one shared transactional write helper, `transactionalWrite` (`src/git.ts`):** captures the
+original content of every file about to be touched (`null` when a path doesn't exist yet), writes the
+candidate state, runs an optional caller-supplied `validate()` (deliberately AFTER the write — some
+validators, like the registry route's `validatePath(root)`, re-derive the whole repo from disk and
+need the candidate state already there to see it), then commits via the caller's own identity function
+(`conductorCommit`/`runnerCommit`/a daemon-supplied override — the helper stays identity-agnostic). On
+EITHER failure, it restores every touched file to its captured original (deleting any that didn't
+exist) — AND resets the git index for those paths (`git reset --`), since `git add` may have already
+staged the candidate content before `git commit` itself failed; left alone, that stale index entry
+could ride along into a later, unrelated commit touching the same paths. A `TxFile.content: null`
+candidate (not just an original-state capture) is also supported, for the one call site that commits a
+deletion as part of its own transaction (`orchestrator.ts#promoteIdea`'s idea file, folded into the
+same commit as the new unit it becomes).
+
+Every mutating path now routes through it: `board/gateops.ts` (`doApprove`, `doReject`,
+`doRescopeArtifact`, `doRequest`, `resolveBlockedArtifactGate`'s abandon/skip/retry branches),
+`dagwalk.ts` (`blockUnit`, `produceOne`, `writeBlocked`), `board/serve.ts`'s registry save,
+`orchestrator.ts` (`openUnit`, `captureIdea`, `promoteIdea`, `resolveProposal`,
+`runNewProjectSkill`'s studio-side project-file write), and `daemon.ts`'s `pauseUnit` (the budget
+gate's `stop` verb). `grep -rn writeFileSync src` now turns up only three sites outside `git.ts`
+itself, all deliberately out of scope: `init.ts`'s founding-commit scaffold (a single whole-repo
+first-ever commit — there is no prior *audited* state to roll back to, and `makeFoundingCommit` already
+has its own documented "nothing committed, told loudly" failure story) and
+`orchestrator.ts#runNewProjectSkill`'s `README.md` write into a FRESHLY CLONED, separate project repo
+(not the studio root — a different repository's own bootstrap, committed via its own raw git calls,
+never `conductorCommit`).
+
+A subtlety only surfaced by the refactor: `board/gateops.ts`'s loop-companion cascade
+(`applyLoopCompanionApproval`, C2/F16) used to write the companion artifact's approval DIRECTLY to
+disk, ahead of the primary resolution's own write+commit — meaning a companion approval could land on
+disk even if the primary resolution's validation later failed. It now returns the companion's
+candidate `{ path, content }` instead of writing it, and the caller folds it into the SAME
+`transactionalWrite` call as the primary write — one commit, one transaction, matching the goal's
+"multi-file mutations as one transaction" requirement. This uncovered a real ordering bug during the
+fix: when a loop's `until` names the CRITIC (so `doRequest`'s "second role" branch reassigns
+`supersedeFile` to the round's AUTHOR artifact), the companion cascade's target and `doRequest`'s own
+supersede target are the SAME file — naively concatenating both candidate writes let whichever was
+last in the array clobber the other. Fixed by reading the companion's pending (not-yet-on-disk)
+content as the supersede's "old source" when the paths collide, and writing that path exactly once.
+
+**Tests** (`tests/git-transactional-write.test.ts`, `tests/orchestrator-daemon-transactional.test.ts`):
+direct unit tests of `transactionalWrite` (success; a validate failure restores and never touches
+HEAD; a commit failure — forced by corrupting `.git/index`, since `commitAs` already neutralizes the
+goal's own suggested levers of identity/hook sabotage by always passing explicit `-c user.name=...`/
+`-c core.hooksPath=/dev/null` overrides — restores a multi-file transaction byte-for-byte, including
+deleting a file that didn't exist before). Byte-identical rollback proven for the three mutation shapes
+the goal named: a gate approval (`spec-checkout-flow-v1` approve), a registry save (editing
+`knowledge/house-style.md` through the board), and a dagwalk artifact write (starting `loyalty-flow`'s
+satisfied start gate) — plus two of the additional paths the broader "every mutating path" fix reached:
+`orchestrator.ts#promoteIdea` (multi-file, including the delete-candidate path) and
+`daemon.ts#resolveBudget("stop")`.
+
+## Finding 2 — the daemon's watcher started before the port was bound
+
+`serve()` (`src/board/serve.ts`) called `daemon?.start()` (which opens a `work/` fs.watch) BEFORE
+`Bun.serve` attempted to bind. A bind failure (port already in use) threw past that point with the
+daemon's watcher already live and no handle ever returned to stop it — a failed startup that leaked a
+running background watcher forever (the process either kept running with a headless watcher, or, if
+the caller didn't crash outright, simply had no way to reach it via the `ServeHandle` that was never
+returned).
+
+**Fix:** construct (but do not start) the daemon, create the board, THEN attempt `Bun.serve` inside a
+try/catch. On success, start the daemon. On failure, close the board (tearing down its own fs.watch/
+SSE state) and rethrow — nothing is left running. No ordering here was load-bearing the other way (the
+daemon watches `work/`, which cannot change meaningfully before the HTTP listener exists to serve
+anything), so no daemon-before-bind case needed preserving.
+
+**Test** (`tests/serve-bind-order.test.ts`): occupies an ephemeral port, then calls `serve()` against
+that same port with a real (non-fixture) scratch studio — `Daemon.prototype.start` is spied to prove it
+is never invoked when the bind throws.
+
+## Verification (REV2)
+
+`bun test` — 867 pass, 1 pre-existing skip, 0 fail, across 71 files (up from 858/68 pre-REV2, +9 net
+new tests across 3 new files). `bun run src/cli.ts replay fixtures/golden --stubs` matches
+`fixtures/golden/expected.json` byte-for-byte. `bun run deps:check` → `deps ok`. `bun run build`
+succeeds.
