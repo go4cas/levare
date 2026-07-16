@@ -6,6 +6,7 @@
 import type { Repo } from "../../repo.ts";
 import { esc, captionTime } from "../../derive.ts";
 import { loadExtras } from "../../extra.ts";
+import { STUDIO_SCOPE } from "../../conversation.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
 import { orchTurn } from "../components.ts";
 import { shell, pageBody, railNav, orchestratorPanel, renderBody, lineageEmpty } from "./shell.ts";
@@ -53,7 +54,7 @@ export function renderIdea(repo: Repo, root: string, name: string, status: Orche
     `<p class="turn__body">${esc(idea.name)} is a captured pitch with no project yet. Promoting it opens an inception unit.</p>`,
     { captionTime: captionTime(now.toISOString(), now), captionLabel: "briefing" },
   );
-  const orch = orchestratorPanel("idea", status, briefingBody);
+  const orch = orchestratorPanel(STUDIO_SCOPE, status, briefingBody, "", root, now);
 
   return shell(`levare · idea · ${idea.name}`, "Open context", pageBody(rail, main, orch), status);
 }

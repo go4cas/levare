@@ -115,7 +115,7 @@ export function renderArtifact(repo: Repo, project: string, unit: string, id: st
     `<p class="turn__body">${esc(art.kind)} ${esc(art.id)}, produced by ${esc(art.produced_by)}. ${citedBy.length ? `Cited by ${citedBy.length} artifact${citedBy.length === 1 ? "" : "s"}.` : "Not cited by anything yet."}</p>`,
     { captionTime: captionTime(now.toISOString(), now), captionLabel: "briefing" },
   );
-  const orch = orchestratorPanel("artifact", status, briefingBody);
+  const orch = orchestratorPanel(project, status, briefingBody, "", root, now);
 
   return shell(`levare · ${art.kind} · ${art.id}`, "Open context", pageBody(rail, main, orch), status);
 }

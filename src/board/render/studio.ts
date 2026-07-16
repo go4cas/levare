@@ -15,6 +15,7 @@ import {
   captionTime,
 } from "../../derive.ts";
 import { loadExtras } from "../../extra.ts";
+import { STUDIO_SCOPE } from "../../conversation.ts";
 import type { DaemonInvocation } from "../../daemon.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
 import { statStrip, counter, emptyState, card, orchTurn } from "../components.ts";
@@ -132,7 +133,7 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date(), r
     `<p class="turn__body">${gates.length ? `${gates.length} gate${gates.length === 1 ? " is" : "s are"} on you.` : "Nothing needs a decision right now."} Ask me about any project or open a gate to review it.</p>`,
     { captionTime: captionTime(now.toISOString(), now), captionLabel: "briefing" },
   );
-  const orch = orchestratorPanel("studio", status, briefingBody);
+  const orch = orchestratorPanel(STUDIO_SCOPE, status, briefingBody, "", root, now);
 
   return shell("levare · Studio", "Open registry", pageBody(rail, main, orch), status);
 }

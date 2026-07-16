@@ -289,6 +289,16 @@
       return turn;
     }
 
+    /* NOTES V11-CONV: the panel's own `data-scope` attribute (stamped server-side by
+       render/shell.ts#orchestratorPanel, the same value used to key `conversations/<scope>/...`) is
+       the ONE place this file reads "what scope is the Conductor talking in" — never re-derived from
+       `location.pathname` here, so the routing rules (which URL belongs to which project) live in
+       exactly one place (the server) instead of two. */
+    function currentOrchScope() {
+      var el = document.querySelector('.orch[data-scope]');
+      return el ? el.getAttribute('data-scope') : 'studio';
+    }
+
     /* ---------- summon gate into orchestrator ---------- */
     document.addEventListener('click', function (e) {
       var s = e.target.closest('[data-summon]');
@@ -372,7 +382,7 @@
         fetch('/orchestrator/message', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ text: text })
+          body: JSON.stringify({ text: text, scope: currentOrchScope() })
         }).then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
           .then(function (r) {
             pendingTurn.remove();
@@ -496,9 +506,28 @@
       }, function () { return null; });
     }
 
+    /* NOTES V11-CONV: resyncs ONLY the persisted-tail region (`[data-orch-tail]`) when the destination
+       page's scope differs from the panel's current one — e.g. client-navigating from the studio into
+       a project. Deliberately gated on an actual scope CHANGE, not run on every swap: a same-scope
+       refresh (including the SSE `reload` → `refreshCurrent()` path that fires right after this very
+       tab sends a message) would otherwise re-render a persisted tail that now includes the exchange
+       this tab already appended live a moment ago, showing it twice. The live-appended turns for
+       whatever scope was showing before a genuine scope change stay in the DOM as-is (never cleared —
+       consistent with UI10's original choice to never touch `.orch__body`'s message history on a
+       swap); recorded as a known, accepted limitation in NOTES V11-CONV. */
+    function syncOrchTail(data) {
+      var orch = document.querySelector('.orch[data-scope]');
+      if (!orch || typeof data.scope !== 'string' || orch.getAttribute('data-scope') === data.scope) return;
+      orch.setAttribute('data-scope', data.scope);
+      var tail = document.querySelector('[data-orch-tail]');
+      if (tail && typeof data.orchTail === 'string') tail.innerHTML = data.orchTail;
+    }
+
     /* Replaces `.main` outright (its own opening-tag attributes, e.g. `data-highlight`, differ per
-       page) and re-fills `[data-extras-host]` — never the rail, the Orchestrator `<aside>`, or the app
-       header, which this function never even looks at. */
+       page) and re-fills `[data-extras-host]` — never the rail or the app header, which this function
+       never even looks at. The Orchestrator `<aside>` itself is untouched too (UI10's own conversation-
+       preserving guarantee) except for the persisted-tail resync above, scoped to exactly the one
+       region that can legitimately differ per page. */
     function swapFragment(data) {
       var oldMain = document.querySelector('.main');
       if (!oldMain || !oldMain.parentNode) return false;
@@ -514,6 +543,8 @@
       // listener attached directly to it) was just discarded along with the innerHTML above. Rebind
       // to whichever instance exists now (a fresh one, or none at all on a non-registry page).
       bindEditorOverlay();
+
+      syncOrchTail(data);
 
       if (typeof data.title === 'string' && data.title) document.title = decodeTitleEntities(data.title);
       applyHighlight(newMain);

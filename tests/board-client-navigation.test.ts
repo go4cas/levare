@@ -482,6 +482,9 @@ function buildPage(doc: FakeDocument, opts: { path?: string } = {}) {
 
   const orch = doc.createElement("aside");
   orch.setAttribute("class", "orch");
+  // NOTES V11-CONV: the real orchestratorPanel() always stamps `data-scope` — the page this fixture
+  // stands in for is studio-scoped, matching `setup()`'s own initial `location.pathname = "/studio"`.
+  orch.setAttribute("data-scope", "studio");
   app.appendChild(orch);
   const orchBody = doc.createElement("div");
   orchBody.setAttribute("class", "orch__body");
@@ -493,6 +496,11 @@ function buildPage(doc: FakeDocument, opts: { path?: string } = {}) {
   turnText.textContent = "briefing · now";
   existingTurn.appendChild(turnText);
   orchBody.appendChild(existingTurn);
+  const orchTail = doc.createElement("div");
+  orchTail.setAttribute("class", "orch__tail");
+  orchTail.setAttribute("data-orch-tail", "");
+  orchTail.innerHTML = '<div class="turn turn--orch" id="persisted-tail-turn"><p>studio history</p></div>';
+  orchBody.appendChild(orchTail);
 
   const extrasHost = doc.createElement("div");
   extrasHost.setAttribute("data-extras-host", "");
@@ -501,7 +509,7 @@ function buildPage(doc: FakeDocument, opts: { path?: string } = {}) {
   extrasHost.appendChild(oldExtra);
   doc.body.appendChild(extrasHost);
 
-  return { app, rail, railLink, main, inAppLink, externalLink, downloadLink, orch, orchBody, existingTurn, extrasHost };
+  return { app, rail, railLink, main, inAppLink, externalLink, downloadLink, orch, orchBody, existingTurn, orchTail, extrasHost };
 }
 
 const NEW_FRAGMENT = {
@@ -696,5 +704,73 @@ describe("client-side navigation — in-app link clicks swap .main, push history
     h.fetchCalls[0].resolveHtml();
     await flush();
     expect(h.hrefAssignments).toEqual(["/project/storefront"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NOTES V11-CONV — client-nav resyncs ONLY the persisted-tail region when the destination page's
+// scope differs from the panel's current one (goal item 3's "and after client-nav scope changes"),
+// and deliberately does NOT when the scope is unchanged (a same-scope refresh — e.g. the SSE `reload`
+// path — must never re-render a tail that could now include an exchange this tab already appended
+// live, which would show it twice).
+// ---------------------------------------------------------------------------
+describe("client-side navigation — the persisted-tail region resyncs on a scope change, never otherwise", () => {
+  test("navigating from studio (scope=studio) to a fragment reporting scope=storefront replaces [data-orch-tail] and updates data-scope", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    expect(refs.orch.getAttribute("data-scope")).toBe("studio");
+    expect(refs.orchTail.querySelector("#persisted-tail-turn")).not.toBeNull();
+
+    click(h.doc, refs.inAppLink);
+    h.fetchCalls[0].resolveOk({
+      ...NEW_FRAGMENT,
+      scope: "storefront",
+      orchTail: '<div class="turn turn--orch" id="storefront-tail-turn"><p>storefront history</p></div>',
+    });
+    await flush();
+
+    expect(refs.orch.getAttribute("data-scope")).toBe("storefront");
+    const tail = h.doc.querySelector("[data-orch-tail]")!;
+    expect(tail.querySelector("#storefront-tail-turn")).not.toBeNull();
+    expect(tail.querySelector("#persisted-tail-turn")).toBeNull(); // the old scope's tail is gone
+    // Nothing else about the panel was touched — the pre-existing live turn survives untouched.
+    expect(h.doc.getElementById("persisted-turn")).not.toBeNull();
+  });
+
+  test("navigating to a fragment reporting the SAME scope leaves [data-orch-tail] untouched (no duplicate risk)", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    const tailBefore = h.doc.querySelector("[data-orch-tail]");
+
+    click(h.doc, refs.inAppLink);
+    h.fetchCalls[0].resolveOk({
+      ...NEW_FRAGMENT,
+      scope: "studio", // unchanged from buildPage's initial data-scope="studio"
+      orchTail: '<div class="turn turn--orch" id="should-not-appear"><p>would duplicate</p></div>',
+    });
+    await flush();
+
+    expect(refs.orch.getAttribute("data-scope")).toBe("studio");
+    const tailAfter = h.doc.querySelector("[data-orch-tail]");
+    expect(tailAfter).toBe(tailBefore); // the same node, never touched
+    expect(tailAfter!.querySelector("#persisted-tail-turn")).not.toBeNull(); // original content intact
+    expect(tailAfter!.querySelector("#should-not-appear")).toBeNull(); // the new tail was never applied
+  });
+
+  test("a fragment response with no scope field at all (e.g. an older server) is a safe no-op, never a crash", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    click(h.doc, refs.inAppLink);
+    h.fetchCalls[0].resolveOk(NEW_FRAGMENT); // no `scope`/`orchTail` fields
+    await flush();
+
+    expect(refs.orch.getAttribute("data-scope")).toBe("studio");
+    expect(h.doc.querySelector("[data-orch-tail]")!.querySelector("#persisted-tail-turn")).not.toBeNull();
   });
 });

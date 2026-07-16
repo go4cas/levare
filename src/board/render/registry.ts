@@ -7,6 +7,7 @@ import type { Repo } from "../../repo.ts";
 import { firstParagraph } from "../../repo.ts";
 import { esc, captionTime } from "../../derive.ts";
 import { loadExtras } from "../../extra.ts";
+import { STUDIO_SCOPE } from "../../conversation.ts";
 import { hasDeclaredGuardrails } from "../../guardrails.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
 import { tag, editorOverlay, orchTurn, callout, card } from "../components.ts";
@@ -245,7 +246,7 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
     `<p class="turn__body">This is the registry. The only write here is <span class="mono">Edit source</span>: raw markdown, live validation, then <span class="mono">Save and commit</span>.</p>`,
     { captionTime: captionTime(now.toISOString(), now), captionLabel: "briefing" },
   );
-  const orch = orchestratorPanel("registry", status, briefingBody);
+  const orch = orchestratorPanel(STUDIO_SCOPE, status, briefingBody, "", root, now);
 
   // The overlay is a sibling of `.app`, not nested inside it and not a second page — the board (rail,
   // main, orchestrator) stays exactly as rendered whether or not the overlay is open (UI3 requirement:

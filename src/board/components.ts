@@ -15,8 +15,9 @@
 // see the "no board renderer emits a status class except through the primitive" test in
 // tests/board-components.test.ts.
 
-import { esc } from "../derive.ts";
+import { esc, captionTime } from "../derive.ts";
 import { chipClass, statusLabel, type CanonicalStatus } from "./status.ts";
+import type { Turn } from "../conversation.ts";
 
 // ---------------------------------------------------------------------------
 // statusBadge — the one and only way a lifecycle-status `.chip` is produced anywhere on the board.
@@ -189,6 +190,33 @@ export function turnCaption(time: { text: string; title: string }, label?: strin
 export function orchTurn(bodyHtml: string, opts: { captionTime?: { text: string; title: string }; captionLabel?: string } = {}): string {
   const captionHtml = opts.captionTime ? turnCaption(opts.captionTime, opts.captionLabel) : "";
   return `<div class="turn turn--orch">${orchMark()}<div class="turn__content">${bodyHtml}</div>${captionHtml}</div>`;
+}
+
+// The Conductor's own turn, server-rendered — mirrors `orchTurn` minus the mark (the mark is the
+// Orchestrator's speaker signal only) and matches assets/app.js#appendTurnMessage's `turn--user`
+// markup byte-for-byte, so a persisted, server-rendered turn and a live, client-appended one are
+// indistinguishable (NOTES V11-CONV item 4 — the panel must never look like it's showing two
+// different things depending on whether a message survived a reload).
+export function userTurn(bodyHtml: string, opts: { captionTime?: { text: string; title: string } } = {}): string {
+  const captionHtml = opts.captionTime ? turnCaption(opts.captionTime) : "";
+  return `<div class="turn turn--user"><div class="turn__content">${bodyHtml}</div>${captionHtml}</div>`;
+}
+
+// ---------------------------------------------------------------------------
+// renderPersistedTurns (NOTES V11-CONV) — the ONE place a `conversation.ts#Turn[]` (parsed off disk)
+// becomes HTML, shared by every screen's `orchestratorPanel` call so a persisted turn's markup can
+// never drift from a live-appended one. `now` comes from the render call, never `new Date()` here —
+// every screen already threads its own `now` through for this exact reason (PRD §9, invariant 2:
+// re-derived per request, not read from a clock this function owns).
+// ---------------------------------------------------------------------------
+export function renderPersistedTurns(turns: Turn[], now: Date): string {
+  return turns
+    .map((t) => {
+      const bodyHtml = `<p class="turn__body">${esc(t.text)}</p>`;
+      const time = captionTime(t.at, now);
+      return t.speaker === "orchestrator" ? orchTurn(bodyHtml, { captionTime: time }) : userTurn(bodyHtml, { captionTime: time });
+    })
+    .join("");
 }
 
 // ---------------------------------------------------------------------------

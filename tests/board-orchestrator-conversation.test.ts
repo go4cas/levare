@@ -287,9 +287,13 @@ function flush(): Promise<void> {
 // Builds `<aside class="orch"><div class="orch__body"/><div class="composer"><form><input/></form></div></aside>`
 // on `doc.body` — must run inside `setup()`'s `build` callback (before DOMContentLoaded) so app.js's
 // direct (non-delegated) `querySelectorAll('.composer:not(.is-disabled) form')` attaches its listener.
-function buildComposer(doc: FakeDocument) {
+function buildComposer(doc: FakeDocument, opts: { scope?: string | null } = {}) {
   const aside = doc.createElement("aside");
   aside.setAttribute("class", "orch");
+  // NOTES V11-CONV: real pages always carry `data-scope` (render/shell.ts#orchestratorPanel); this
+  // fixture defaults to a project scope so tests can tell a real value apart from the client's own
+  // 'studio' fallback when the attribute is absent (exercised by a dedicated test below).
+  if (opts.scope !== null) aside.setAttribute("data-scope", opts.scope ?? "storefront");
   doc.body.appendChild(aside);
   const body = doc.createElement("div");
   body.setAttribute("class", "orch__body");
@@ -353,6 +357,38 @@ describe("a Conductor message renders right-aligned in an accent bubble (item 3)
     expect(bubble.textContent).toBe("what needs me?");
     // The Conductor's turn carries no mark — the mark is the Orchestrator's speaker signal only.
     expect(userTurns[0].querySelector(".turn__mark")).toBeNull();
+  });
+});
+
+describe("NOTES V11-CONV: the composer echoes the panel's own data-scope attribute back to the server", () => {
+  test("the POST body's scope matches the panel's data-scope attribute", () => {
+    let refs!: ReturnType<typeof buildComposer>;
+    const { doc, fetchCalls } = setup((doc) => {
+      refs = buildComposer(doc, { scope: "storefront" });
+    });
+    const { form, input } = refs;
+
+    input.value = "how's checkout-flow?";
+    form.dispatchEvent({ type: "submit", preventDefault() {} });
+
+    expect(fetchCalls.length).toBe(1);
+    expect(fetchCalls[0].url).toBe("/orchestrator/message");
+    const body = JSON.parse(fetchCalls[0].opts.body);
+    expect(body).toEqual({ text: "how's checkout-flow?", scope: "storefront" });
+  });
+
+  test("with no data-scope attribute at all (a fixture gap, never a real page), falls back to 'studio' rather than sending an invalid value", () => {
+    let refs!: ReturnType<typeof buildComposer>;
+    const { fetchCalls } = setup((doc) => {
+      refs = buildComposer(doc, { scope: null });
+    });
+    const { form, input } = refs;
+
+    input.value = "hello";
+    form.dispatchEvent({ type: "submit", preventDefault() {} });
+
+    const body = JSON.parse(fetchCalls[0].opts.body);
+    expect(body.scope).toBe("studio");
   });
 });
 

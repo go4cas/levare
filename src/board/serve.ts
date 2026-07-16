@@ -14,6 +14,7 @@ import type { AsyncMemberRunner } from "../dagwalk.ts";
 import { validatePath, formatValidationErrors, type ValidationError } from "../validate.ts";
 import type { Verb } from "../runner.ts";
 import { conductorCommit, CONDUCTOR_NAME, transactionalWrite } from "../git.ts";
+import { appendExchange, sanitizeScope, STUDIO_SCOPE } from "../conversation.ts";
 import { handle as orchestratorHandle, type HandleResult, type OrchestratorBoundary } from "../orchestrator.ts";
 import { selectOrchestratorBoundary, type SelectOrchestratorBoundaryOptions } from "../orchestrator-boundary.ts";
 import { resolveOrchestratorStatus } from "../orchestrator-status.ts";
@@ -147,6 +148,14 @@ export interface Fragment {
   main: string;
   extras: string;
   highlightId: string | null;
+  /** NOTES V11-CONV: the destination page's real conversation scope ("studio", or a project's own
+   * name) — sliced off the SAME already-rendered `<aside class="orch" data-scope="...">` a cold GET
+   * would carry, never a second lookup. The client compares this against the CURRENT panel's own
+   * `data-scope` attribute to decide whether the persisted-tail region needs resyncing. */
+  scope: string;
+  /** The rendered persisted-tail HTML for `scope`, sliced from the `<!--orchtail-->`/`<!--/orchtail-->`
+   * markers `orchestratorPanel` (render/shell.ts) wraps it in — same mechanism as `main`/`extras`. */
+  orchTail: string;
 }
 
 const FRAGMENT_HEADER = "x-levare-fragment";
@@ -167,11 +176,18 @@ export function extractFragment(rendered: string): Fragment | null {
   if (!titleMatch || !mainMatch) return null;
   const mainHtml = mainMatch[1];
   const highlightMatch = /<main[^>]*\sdata-highlight="([^"]*)"/.exec(mainHtml);
+  const scopeMatch = /<aside class="orch[^"]*" data-scope="([^"]*)"/.exec(rendered);
+  const orchTailMatch = /<!--orchtail-->([\s\S]*?)<!--\/orchtail-->/.exec(rendered);
   return {
     title: titleMatch[1],
     main: mainHtml,
     extras: extrasMatch ? extrasMatch[1] : "",
     highlightId: highlightMatch ? highlightMatch[1] : null,
+    // Left exactly as rendered (esc()'d) — this value is never read back into a filesystem path
+    // server-side (sanitizeScope always does that from the ORIGINAL request), only string-compared
+    // against the client's own identically-escaped `data-scope` attribute, so no decode step is needed.
+    scope: scopeMatch ? scopeMatch[1] : STUDIO_SCOPE,
+    orchTail: orchTailMatch ? orchTailMatch[1] : "",
   };
 }
 function serveAsset(name: string): Response {
@@ -391,9 +407,16 @@ export const ROUTES: RouteDef[] = [
     mutating: true,
     handler: async (req, _params, ctx) => {
       let text = "";
+      let scope = STUDIO_SCOPE;
       try {
         const body = await req.json();
         text = String(body?.text ?? "");
+        // NOTES V11-CONV: the client reads its own panel's `data-scope` attribute (stamped by the same
+        // render call that produced the page — see render/shell.ts#orchestratorPanel) and echoes it
+        // back rather than the server re-deriving "what page is this" from a Referer header or similar
+        // — the same "levare derives it once, the client never re-guesses it" discipline as everywhere
+        // else scope shows up. `sanitizeScope` never trusts it wholesale.
+        scope = sanitizeScope(body?.scope);
       } catch {
         /* ignore */
       }
@@ -434,6 +457,17 @@ export const ROUTES: RouteDef[] = [
       if (result && "ok" in result && result.ok && result.commit) {
         ctx.broadcast("reload");
         ctx.daemon?.notify(); // an Orchestrator-driven gate resolution can unblock the walk too.
+      }
+      // NOTES V11-CONV: persist the COMPLETED exchange — reaching this line means a real reply was
+      // obtained (the 503 disabled-boundary return and the 502 SDK-failure return above both exit
+      // before this point, so neither ever calls `appendExchange`; goal's own "persist completed
+      // exchanges only" ruling). This is best-effort logging layered on TOP of an already-successful
+      // reply, not a dependency the chat reply itself can fail on — a persistence failure (e.g. a git
+      // commit hook rejection) is reported loudly to stderr but does not turn an otherwise-successful
+      // reply into an error response; the Conductor still sees their answer either way.
+      const persisted = appendExchange(ctx.root, scope, text, reply, new Date());
+      if (!persisted.ok) {
+        console.error(`levare: failed to persist Orchestrator conversation exchange (scope '${scope}'): ${persisted.error}`);
       }
       ctx.broadcast(`orchestrator:${JSON.stringify({ text: reply })}`);
       return json({ ok: true, reply });

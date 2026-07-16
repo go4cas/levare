@@ -17,7 +17,8 @@ import type { DaemonInvocation } from "../../daemon.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
 import { getVersionInfo } from "../../version.ts";
 import { statusLabel } from "../status.ts";
-import { statusBadge, counter, pendingState, card, confirmModal, orchTurn } from "../components.ts";
+import { statusBadge, counter, pendingState, card, confirmModal, orchTurn, renderPersistedTurns } from "../components.ts";
+import { loadConversationTail } from "../../conversation.ts";
 
 // levare's own release version (item 3: "the release version as a quiet muted mono chip" beside the
 // wordmark) — never from a project's data (that's the `pace`/`deploy`/release vocabulary, a
@@ -131,20 +132,36 @@ function orchestratorIndicator(status: OrchestratorStatus): string {
 // its unit's open gate) is NOT suppressed: a gate card's verbs POST straight to the board's write
 // routes with no LLM involved, so "you can approve, reject, and the runner will advance" — the
 // disabled note's own promise — has to stay true regardless of the Orchestrator's state.
-export function orchestratorPanel(scope: string, status: OrchestratorStatus, briefingHtml: string, actionableHtml: string = ""): string {
+// NOTES V11-CONV: `scope` is now the REAL persistence scope ("studio", or a project's own name) —
+// previously just the page-type literal ("project"/"run"/"artifact"...), which was never actually
+// scope-aware. It doubles as the conversation file's key (conversation.ts#loadConversationTail) and
+// as the `data-scope` attribute below, which `board/serve.ts#extractFragment` reads back out of the
+// rendered HTML so a client-side navigation can tell whether the panel needs a fresh tail (see
+// assets/app.js's own comment on that path — `swapFragment` never touches the rail/header, but DOES
+// resync just the persisted-tail region when the destination page's scope differs from the current
+// one). `root`/`now` load and timestamp that tail exactly like every other per-request derivation in
+// this module (PRD §9, invariant 2) — never a second render path, never a stored, cached history.
+export function orchestratorPanel(scope: string, status: OrchestratorStatus, briefingHtml: string, actionableHtml: string, root: string, now: Date): string {
+  const tailHtml = renderPersistedTurns(loadConversationTail(root, scope, now), now);
+  // The HTML comment markers mirror `pageBody`'s own `<!--main-->`/`<!--extras-->` convention exactly
+  // (inert everywhere else, invisible in the rendered page, never reachable from escaped user content
+  // — `esc()` turns any literal `<`/`>` inside a turn's text to `&lt;`/`&gt;`) so `extractFragment` can
+  // slice this region back out the same string-slicing way, with no HTML parser, no second render call.
+  const tailBlock = `<div class="orch__tail" data-orch-tail><!--orchtail-->${tailHtml}<!--/orchtail--></div>`;
   if (!status.available) {
-    return `<aside class="orch is-disabled">
+    return `<aside class="orch is-disabled" data-scope="${esc(scope)}">
     ${orchHead(scope)}
     <div class="orch__body">
       ${orchTurn(`<p class="turn__body">Orchestrator unavailable — ${esc(status.reason)} The board, the registry, and every gate still work: you can approve, reject, and the runner will advance.</p>`)}
+      ${tailBlock}
       ${actionableHtml}
     </div>
     ${composer({ disabled: true })}
   </aside>`;
   }
-  return `<aside class="orch">
+  return `<aside class="orch" data-scope="${esc(scope)}">
     ${orchHead(scope)}
-    <div class="orch__body">${briefingHtml}${actionableHtml}</div>
+    <div class="orch__body">${briefingHtml}${tailBlock}${actionableHtml}</div>
     ${composer()}
   </aside>`;
 }

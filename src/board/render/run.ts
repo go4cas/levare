@@ -106,7 +106,7 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
     `<p class="turn__body">${gates.length ? `${esc(gates[0].label)} is ready for review below.` : "No open gate on this unit right now."}</p>`,
     { captionTime: captionTime(now.toISOString(), now), captionLabel: "briefing" },
   );
-  const orch = orchestratorPanel("run", status, briefingBody, gateHtml);
+  const orch = orchestratorPanel(project, status, briefingBody, gateHtml, root, now);
 
   return shell(`levare · run · ${unitId}`, "Open score", pageBody(rail, main, orch), status);
 }

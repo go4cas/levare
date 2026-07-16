@@ -449,6 +449,15 @@ function walkMarkdown(root: string): string[] {
     }
     for (const name of entries) {
       if (name === "node_modules" || name === ".git") continue;
+      // `conversations/` (NOTES V11-CONV; the literal must match conversation.ts#CONVERSATIONS_DIR —
+      // not imported here to avoid a validate.ts <-> conversation.ts import cycle, since
+      // conversation.ts itself calls back into this module's own `validatePath`) is the Orchestrator's
+      // append-only exchange log — a record, not a registry entity. It carries no schema (`classify`
+      // below has none for it) and is never read by repo.ts#loadRepo either, so this walk must never
+      // descend into it at all: skipping it here, at the studio root, rather than relying on
+      // `classify`'s incidental null-schema skip, makes the exemption explicit and keeps every other
+      // `validatePath` call zero-cost regardless of how much conversation history has accumulated.
+      if (dir === root && name === "conversations") continue;
       const full = join(dir, name);
       const s = statSync(full);
       if (s.isDirectory()) stack.push(full);

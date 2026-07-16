@@ -194,7 +194,7 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
     `<p class="turn__body">${esc(projectName)} has ${gates.length} unit${gates.length === 1 ? "" : "s"} at a gate. Expand a unit to open its run or summon its gate here.</p>`,
     { captionTime: captionTime(now.toISOString(), now), captionLabel: "briefing" },
   );
-  const orch = orchestratorPanel("project", status, briefingBody);
+  const orch = orchestratorPanel(projectName, status, briefingBody, "", root, now);
 
   return shell(`levare · ${projectName}`, "Open context", pageBody(rail, main, orch, templates), status);
 }
