@@ -32,6 +32,17 @@ function protectsPath(entry: string, path: string): boolean {
   return path === entry || path.startsWith(`${entry}/`);
 }
 
+/**
+ * Whether a team declares a non-empty `guardrails:` block — used only for TELLING the Conductor the
+ * enforcement gap (doctor, the registry card), never for enforcement itself (NOTES REV1 finding 2):
+ * `checkGuardrails` below has no production caller; the merge phase that would call it is formally
+ * deferred to v1.1 (docs/prd-amendment-1.md §2, invariant 6).
+ */
+export function hasDeclaredGuardrails(team: Team): boolean {
+  const g = team.guardrails;
+  return !!g && ((g.protected_paths?.length ?? 0) > 0 || (g.protected_branches?.length ?? 0) > 0 || (g.never?.length ?? 0) > 0);
+}
+
 /** Check a proposed merge diff against a team's guardrails; [] means clear to gate. */
 export function checkGuardrails(team: Team, diff: DiffEntry[]): GuardrailViolation[] {
   const g = team.guardrails;

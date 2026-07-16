@@ -13,6 +13,7 @@ import { resolveOrchestratorStatus } from "./orchestrator-status.ts";
 import { loadOrchestratorPromptSource, ORCHESTRATOR_PROMPT_PATH } from "./orchestrator-boundary.ts";
 import { getVersionInfo, formatVersion } from "./version.ts";
 import { WORKER_COMMAND } from "./sdk-transport.ts";
+import { hasDeclaredGuardrails } from "./guardrails.ts";
 
 // Until the studio repo root is populated, the fixture golden tree stands in as the studio (NOTES
 // A1); context/doctor default their root there. `--root <path>` overrides.
@@ -104,7 +105,10 @@ export function runDoctorCmd(rest: string[]): number {
     const env = { has: (name: string) => typeof process.env[name] === "string" && process.env[name] !== "" };
     const probe = (command: string): "found" | "not-found" => (Bun.which(command) ? "found" : "not-found");
     const orchestrator = resolveOrchestratorStatus(process.env);
-    process.stdout.write(runDoctor([...repo.connectors.values()], env, probe, provenance, orchestrator, getVersionInfo(), checkOrchestratorPrompt()));
+    // NOTES REV1 finding 2: every team declaring a non-empty `guardrails:` block, so doctor can tell
+    // the Conductor the enforcement gap plainly (see runDoctor's own doc comment).
+    const guardrailsTeams = [...repo.teams.values()].filter(hasDeclaredGuardrails).map((t) => t.name);
+    process.stdout.write(runDoctor([...repo.connectors.values()], env, probe, provenance, orchestrator, getVersionInfo(), checkOrchestratorPrompt(), guardrailsTeams));
     return 0;
   } catch (e) {
     console.error(String(e instanceof Error ? e.message : e));

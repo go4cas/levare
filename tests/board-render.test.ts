@@ -340,6 +340,38 @@ describe("registry screen", () => {
     expect(kestrelCard).toContain("data-edit-open");
   });
 
+  // NOTES REV1 finding 2: `checkGuardrails` has zero production callers — the merge phase that would
+  // enforce a team's declared `protected_paths`/`protected_branches`/`never` is deferred to v1.1
+  // (docs/prd-amendment-1.md §2). fixtures/golden's kestrel team declares guardrails, so its card must
+  // say the enforcement gap plainly — via the canonical warning callout (NOTES UI12), not stay silent.
+  test("kestrel's card carries the guardrails-not-yet-enforced warning callout, since it declares guardrails", () => {
+    const kestrelCard = /<article class="entity card"[^>]*data-entity="teams"[^>]*>[\s\S]*?<\/article>/.exec(html)![0];
+    expect(kestrelCard).toContain('notice notice--warning');
+    expect(kestrelCard).toContain("guardrails are declared but not yet enforced");
+    expect(kestrelCard).toContain("merge phase (v1.1)");
+  });
+
+  test("a team with no guardrails (or an empty guardrails block) gets no such callout", () => {
+    function noGuardrailsRepo(guardrails?: Team["guardrails"]): Repo {
+      const t: Team = { name: "plain", consumes: [], produces: ["design"], members: [], flow: [], style: { color: "#2E6FB0" }, charter: "", learnings: "", guardrails };
+      return {
+        root: "/tmp/synthetic-no-guardrails",
+        teams: new Map([[t.name, t]]),
+        types: new Map(),
+        projects: new Map(),
+        agents: new Map(),
+        connectors: new Map(),
+        units: [],
+        artifacts: new Map(),
+        studio: {},
+      };
+    }
+    const noneDeclared = renderRegistry(noGuardrailsRepo(undefined), "/tmp/synthetic-no-guardrails", "teams");
+    expect(noneDeclared).not.toContain("guardrails are declared but not yet enforced");
+    const emptyDeclared = renderRegistry(noGuardrailsRepo({}), "/tmp/synthetic-no-guardrails", "teams");
+    expect(emptyDeclared).not.toContain("guardrails are declared but not yet enforced");
+  });
+
   // UI3: "Edit source" no longer reveals an inline, card-cramped textarea — each card carries only
   // the trigger (data-edit-open, naming the entity's path/name/kind) and a HIDDEN <textarea
   // class="rawmd-source"> holding the on-disk raw markdown, which app.js copies into the ONE shared

@@ -86,8 +86,21 @@ export function diagnose(connectors: Connector[], env: EnvProbe, probe: CliProbe
  * `versionInfo`, when given, prints the run mode first (NOTES DIST1) — compiled binary vs. source
  * run — since a compiled binary and the source tree it was built from can drift, and "is this the
  * code I think it is?" needs a visible answer. A full staleness check (comparing the build commit
- * against the studio/source HEAD) is deferred; this only makes the run mode legible. */
-export function formatDoctor(health: ConnectorHealth[], orchestrator?: OrchestratorStatus, versionInfo?: VersionInfo, promptCheck?: PromptCheck): string {
+ * against the studio/source HEAD) is deferred; this only makes the run mode legible.
+ *
+ * `guardrailsTeams`, when given (NOTES REV1 finding 2): the names of every team in the studio that
+ * declares a non-empty `guardrails:` block. `checkGuardrails` (guardrails.ts) has zero production
+ * call sites — its enforcement point is the merge phase, formally deferred to v1.1
+ * (docs/prd-amendment-1.md §2, invariant 6: "SPECIFIED, NOT IMPLEMENTED"). A Conductor declaring
+ * `protected_branches: [main]` today would otherwise reasonably believe levare already blocks a
+ * matching merge — it doesn't, and doctor must say so, not stay silent. */
+export function formatDoctor(
+  health: ConnectorHealth[],
+  orchestrator?: OrchestratorStatus,
+  versionInfo?: VersionInfo,
+  promptCheck?: PromptCheck,
+  guardrailsTeams?: string[],
+): string {
   const out: string[] = [];
   if (versionInfo) {
     out.push(`run mode: ${versionInfo.build ? `compiled (build ${versionInfo.build.commit})` : "source/dev"}`);
@@ -99,6 +112,12 @@ export function formatDoctor(health: ConnectorHealth[], orchestrator?: Orchestra
   }
   if (promptCheck) {
     out.push(promptCheck.ok ? `orchestrator prompt: readable (${promptCheck.bytes} bytes) at ${promptCheck.path}` : `orchestrator prompt: ERROR — ${promptCheck.error} (${promptCheck.path})`);
+    out.push("");
+  }
+  if (guardrailsTeams && guardrailsTeams.length > 0) {
+    out.push(
+      `⚠ guardrails are declared but not yet enforced — enforcement lands with the merge phase (v1.1): ${guardrailsTeams.join(", ")}`,
+    );
     out.push("");
   }
   out.push(`levare doctor · ${health.length} connector${health.length === 1 ? "" : "s"}`);
@@ -123,6 +142,7 @@ export function runDoctor(
   orchestrator?: OrchestratorStatus,
   versionInfo?: VersionInfo,
   promptCheck?: PromptCheck,
+  guardrailsTeams?: string[],
 ): string {
-  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo, promptCheck);
+  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo, promptCheck, guardrailsTeams);
 }

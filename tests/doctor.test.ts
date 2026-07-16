@@ -230,3 +230,33 @@ describe("doctor: reports auth mode, and warns plainly for auth: subscription (N
     expect(githubBlock).not.toContain("⚠");
   });
 });
+
+// NOTES REV1 finding 2: `checkGuardrails` (guardrails.ts) has zero production call sites — the merge
+// phase that would enforce a team's declared guardrails is deferred to v1.1 (docs/prd-amendment-1.md
+// §2, invariant 6). Doctor must state the gap plainly for any studio that declares guardrails, never
+// let a Conductor believe levare already enforces `protected_branches`/`protected_paths`/`never`.
+describe("doctor: guardrails-declared-but-not-yet-enforced telling (NOTES REV1 finding 2)", () => {
+  test("formatDoctor prints the not-yet-enforced warning, naming every team, when guardrailsTeams is non-empty", () => {
+    const out = formatDoctor(diagnose(connectors, env, noGh), undefined, undefined, undefined, ["kestrel", "atelier"]);
+    expect(out).toContain("⚠ guardrails are declared but not yet enforced — enforcement lands with the merge phase (v1.1): kestrel, atelier");
+  });
+
+  test("with no team declaring guardrails, no such line appears", () => {
+    const out = formatDoctor(diagnose(connectors, env, noGh), undefined, undefined, undefined, []);
+    expect(out).not.toContain("not yet enforced");
+  });
+
+  test("omitting guardrailsTeams entirely leaves the report unchanged (pre-REV1 callers keep working)", () => {
+    const out = formatDoctor(diagnose(connectors, env, noGh));
+    expect(out).not.toContain("not yet enforced");
+  });
+
+  test("`levare doctor fixtures/golden` names kestrel on the real CLI — the fixture team declares guardrails", () => {
+    const p = Bun.spawnSync(["./levare", "doctor", "fixtures/golden"], { env: { ...process.env, ANTHROPIC_API_KEY: "" } });
+    expect(p.exitCode).toBe(0);
+    const out = p.stdout.toString();
+    expect(out).toContain("guardrails are declared but not yet enforced");
+    expect(out).toContain("merge phase (v1.1)");
+    expect(out).toContain("kestrel");
+  });
+});

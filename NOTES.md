@@ -6610,3 +6610,41 @@ of the same seam.
 `fixtures/golden/expected.json` byte-for-byte. `bun run deps:check` → `deps ok`. `bun run build`
 succeeds; the compiled binary's `__worker` subcommand still returns a worker-shaped response
 (`{"ok":false,"error":"sdk worker: malformed request JSON..."}`), not "unknown command".
+
+## Finding 2 — guardrails are declared, validated, rendered — and inert
+
+`checkGuardrails` (`src/guardrails.ts:36`) has zero production call sites; its would-be enforcement
+point is the merge phase, which `docs/prd-amendment-1.md` §2 (invariant 6) formally defers to v1.1:
+"SPECIFIED, NOT IMPLEMENTED." The code is not forgotten — but nothing told a *user*. A Conductor
+writing `protected_branches: [main]` today reasonably believed levare already blocked a matching
+merge; it doesn't.
+
+**Fix — the telling, not the enforcement** (no merge machinery was built; that stays out of scope,
+v1.1's own work):
+
+- `src/guardrails.ts` gains `hasDeclaredGuardrails(team: Team): boolean` — the one place that decides
+  "does this team declare a non-empty guardrails block", shared by both surfaces below so they can
+  never independently drift on the definition.
+- `levare doctor` (`src/doctor.ts#formatDoctor`/`runDoctor`, new optional `guardrailsTeams` param,
+  wired in `cli.ts#runDoctorCmd`): prints `⚠ guardrails are declared but not yet enforced —
+  enforcement lands with the merge phase (v1.1): <team, team, …>` ahead of the connector report, for
+  every team in the studio that declares guardrails.
+- The registry's team card (`src/board/render.ts`) renders the same message via the canonical
+  `callout("warning", …)` primitive (NOTES UI12's message-severity scale) — the same treatment the
+  C13 subscription-connector note already uses — whenever that team declares guardrails.
+- `levare validate` is unchanged: a team's guardrails block still validates exactly as before (this
+  finding is about telling, not about rejecting a legal declaration).
+
+**Test:** `tests/doctor.test.ts` — `formatDoctor`/`runDoctor` print the warning naming every given
+team, print nothing when the list is empty or omitted (pre-REV1 callers unaffected), and the real CLI
+against `fixtures/golden` (whose `kestrel` team already declares
+`protected_branches`/`protected_paths`/`never`) names `kestrel`. `tests/board-render.test.ts` —
+kestrel's registry card carries the warning callout; a synthetic team with no `guardrails:` field, or
+an empty `{}` block, gets no callout.
+
+## Verification (finding 2)
+
+`bun test` — 850 pass, 1 pre-existing skip, 0 fail, across 68 files (up from 844/68). `bun run
+src/cli.ts replay fixtures/golden --stubs` matches `fixtures/golden/expected.json` byte-for-byte
+(this finding touches doctor output and board presentation only). `bun run deps:check` → `deps ok`.
+`bun run build` succeeds.
