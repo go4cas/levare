@@ -41,8 +41,9 @@ import { join } from "node:path";
 import { validateArtifactSource, formatValidationErrors } from "./validate.ts";
 import { parseArtifactDoc } from "./repo.ts";
 import type { Repo } from "./repo.ts";
-import { RunnerError, timeboxSeconds, bumpVersion, roundOf } from "./runner.ts";
-import { responsibleTeamsFor, resolveStep, unmetAfter, patchFrontmatter, upsertFrontmatterField } from "./gates.ts";
+import { timeboxSeconds, bumpVersion, roundOf } from "./runner.ts";
+import { RunnerError, responsibleTeamsFor, resolveStep, unmetAfter, untilSatisfied } from "./flow.ts";
+import { patchFrontmatter, upsertFrontmatterField } from "./gates.ts";
 import { runnerCommit, transactionalWrite, type TxFile } from "./git.ts";
 import { locateArtifactFile } from "./board/locate.ts";
 import type { Artifact, FlowLoop, Receipt, Team, WorkUnit } from "./types.ts";
@@ -108,21 +109,6 @@ export function latestLiveArtifact(repo: Repo, unit: WorkUnit, kind: string): Ar
   return live.sort((a, b) => a.created.localeCompare(b.created)).pop();
 }
 
-/** `kind.status` (e.g. `spec.approved`) — true when SOME artifact of that kind (live or not; a
- * terminal approval is never superseded away) holds that status. Mirrors runner.ts's own private
- * `untilSatisfied` exactly (kept as a small independent copy rather than exported cross-module,
- * matching gates.ts's own precedent for `responsibleTeamFor`/`resolveStep`: a circular import
- * between runner.ts and dagwalk.ts would result otherwise, for a ~5-line pure lookup). */
-export function untilSatisfied(repo: Repo, unit: WorkUnit, until: string): boolean {
-  const [kind, wantStatus] = until.split(".");
-  const m = repo.artifacts.get(`${unit.project}/${unit.unit}`);
-  if (!m) return false;
-  for (const a of m.values()) {
-    if (a.kind === kind && a.status === wantStatus) return true;
-  }
-  return false;
-}
-
 /**
  * Walk `team.flow` in order against the unit's current on-disk artifacts and return the single next
  * action: produce one specific (member, kind), halt (an open gate, or a rejected/blocked step, is in
@@ -151,7 +137,7 @@ export function nextAction(repo: Repo, unit: WorkUnit, team: Team, capabilities:
       // Ruling C14 (see this file's header note): the walk dispatches BOTH members of a loop, in
       // order, every round — never just the first.
       const loop = node as FlowLoop;
-      if (untilSatisfied(repo, unit, loop.until)) continue;
+      if (untilSatisfied(repo.artifacts, unit, loop.until)) continue;
       const [firstLabel, secondLabel] = loop.between;
       let first: { member: string; kind: string };
       try {

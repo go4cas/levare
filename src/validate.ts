@@ -12,6 +12,7 @@ import { spawnSync } from "node:child_process";
 import { parseFrontmatter, YamlError, type YamlValue } from "./yaml.ts";
 import { loadPricing, type Pricing } from "./pricing.ts";
 import { readOverlaid, type OverlayFile } from "./overlay.ts";
+import { kindMatches } from "./flow.ts";
 export type { OverlayFile } from "./overlay.ts";
 
 export interface ValidationError {
@@ -917,16 +918,12 @@ function validateKnownModels(root: string, errors: ValidationError[], overlay?: 
 // unit's first step. A studio whose teams cannot bind is not "valid with a runtime surprise ahead";
 // it is invalid, and it is told so here, naming the team, the kind, and the members it looked at.
 //
-// This is the same resolution rule the Runner applies (runner.ts/gates.ts#resolveStep, NOTES B2):
-// a step label binds to a member producing `kind === label` or `kind.endsWith("-" + label)`; zero
-// matches or more than one is a hard failure, never a silent guess. `kindMatches` is a local copy of
-// runner.ts's for the same reason gates.ts/dagwalk.ts keep theirs — validate.ts is imported BY
-// runner.ts, so importing back would close an import cycle (see NOTES R3's standing item).
+// This is the same resolution rule the Runner applies (flow.ts#resolveStep, NOTES B2): a step label
+// binds to a member producing `kind === label` or `kind.endsWith("-" + label)`; zero matches or more
+// than one is a hard failure, never a silent guess. `kindMatches` is imported from flow.ts (NOTES R3)
+// — a dependency-light leaf module that imports only types.ts, so validate.ts (which repo.ts, in
+// turn, imports) can depend on it without closing an import cycle back to runner.ts.
 // ---------------------------------------------------------------------------
-
-function kindMatches(kind: string, stepLabel: string): boolean {
-  return kind === stepLabel || kind.endsWith(`-${stepLabel}`);
-}
 
 /** Every flow step label a team's flow declares, in order — plain steps plus both halves of a loop. */
 function flowStepLabels(flow: YamlValue): string[] {

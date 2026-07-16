@@ -19,16 +19,13 @@ import { join, relative } from "node:path";
 import { parseFrontmatter } from "./yaml.ts";
 import type { Repo } from "./repo.ts";
 import { teamOf } from "./env.ts";
+import { kindMatches } from "./flow.ts";
 
 export class ContextError extends Error {}
 
 interface Capability {
   member: string;
   kind: string;
-}
-
-function kindMatches(kind: string, label: string): boolean {
-  return kind === label || kind.endsWith(`-${label}`);
 }
 
 /** The flow steps (label + resolved kind) an agent can satisfy, in flow order. */

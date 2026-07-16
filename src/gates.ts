@@ -4,11 +4,15 @@
 // regardless of which surface received it. `applyApproval` and `bumpVersion` (runner.ts) were already
 // shared as of phase 4; `loopMembershipFor` closes the remaining gap — ruling C2 ("on any loop-gate
 // resolution the round's companion review artifact resolves to approved") now has one definition of
-// "is this artifact a loop-gate artifact, and who is its companion", used by both surfaces.
+// "is this artifact a loop-gate artifact, and who is its companion", used by both surfaces. The pure
+// flow-resolution rules themselves (`responsibleTeamsFor`, `resolveStep`, `kindMatches`, `unmetAfter`)
+// live in flow.ts (NOTES R3) — this module re-exports them for its existing callers and builds the
+// loop-membership helpers on top.
 
-import { RunnerError, kindMatches } from "./runner.ts";
-import type { Repo } from "./repo.ts";
-import type { FlowLoop, Team, WorkUnit } from "./types.ts";
+import { kindMatches, responsibleTeamsFor, responsibleTeamFor, resolveStep, unmetAfter } from "./flow.ts";
+import type { FlowLoop, Team } from "./types.ts";
+
+export { responsibleTeamsFor, responsibleTeamFor, resolveStep, unmetAfter };
 
 export interface LoopMembership {
   loop: FlowLoop;
@@ -59,81 +63,6 @@ export function loopMembershipFor(
     if (secondKinds.includes(kind)) return { loop: node, role: "second", companionKind: firstKinds[0] };
   }
   return undefined;
-}
-
-/**
- * The teams responsible for a unit's flow, in the order the walk should run them (ruling C4 — the
- * per-KIND semantics, not the old per-unit shortcut). PRD §6: "find producible kinds ... and invoke
- * the team that produces each" — this is how a unit hands from a shaping team to a build team. We
- * return every team that produces at least one of the unit type's `expects` kinds, ordered by the
- * EARLIEST expected kind each team produces (the type's `expects` list is dependency-ordered, so the
- * shaping team — which produces the first kinds — sorts ahead of a build team that produces later
- * ones), ties broken by name. The walk advances each team's flow in turn: a team whose flow is fully
- * satisfied yields nothing and the walk moves to the next; a team with an open gate halts the walk
- * (a later team's inputs depend on an earlier team's approved output, so the ordering + halt-
- * propagation is what enforces the cross-team `consumes` dependency).
- *
- * While a unit's type is served by a single team (every fixture until a multi-team one lands), this
- * returns that one team and the walk behaves exactly as the old per-unit heuristic did — the
- * divergence only appears the moment two teams produce different kinds for one unit.
- */
-export function responsibleTeamsFor(repo: Repo, unit: WorkUnit): Team[] {
-  const type = repo.types.get(unit.type);
-  const expects = type?.expects ?? [];
-  // Ruling C12/F10 defect 2: an explicit `team:` override names the SOLE responsible team — never
-  // guessed via produces∩expects scoring, which is exactly what silently picks a team when two of
-  // them both produce a kind this unit needs (validate.ts#validateResponsibleTeam rejects that
-  // ambiguity up front unless this override resolves it).
-  if (unit.team) {
-    const named = repo.teams.get(unit.team);
-    return named ? [named] : [];
-  }
-  const scored: Array<{ team: Team; earliest: number }> = [];
-  for (const team of repo.teams.values()) {
-    const producedHere = team.produces.filter((k) => expects.includes(k));
-    if (producedHere.length === 0) continue;
-    const earliest = Math.min(...producedHere.map((k) => expects.indexOf(k)));
-    scored.push({ team, earliest });
-  }
-  scored.sort((a, b) => a.earliest - b.earliest || a.team.name.localeCompare(b.team.name));
-  return scored.map((s) => s.team);
-}
-
-/**
- * The single team that owns a unit's FIRST production (§6) — the head of the dependency-ordered
- * `responsibleTeamsFor` list. This is what the start gate / board `start` verb needs (the team whose
- * first flow step the Conductor is authorizing); the full walk uses `responsibleTeamsFor` to hand a
- * unit across teams. Null when no team produces any of the unit type's kinds.
- */
-export function responsibleTeamFor(repo: Repo, unit: WorkUnit): Team | null {
-  return responsibleTeamsFor(repo, unit)[0] ?? null;
-}
-
-/**
- * Resolve a flow step label to the (member, kind) that satisfies it — the same resolution rule the
- * Runner's private `resolveStep` applies, exposed here so the board's `start` verb (E5) can execute a
- * team's first flow step without duplicating (or drifting from) the Runner's own algorithm.
- */
-export function resolveStep(
-  team: Team,
-  stepLabel: string,
-  capabilities: Array<{ member: string; kind: string }>,
-): { member: string; kind: string } {
-  const caps = capabilities.filter((c) => team.members.includes(c.member) && kindMatches(c.kind, stepLabel));
-  if (caps.length === 0) {
-    throw new RunnerError(`no member of team '${team.name}' can produce a kind for flow step '${stepLabel}'`);
-  }
-  if (caps.length > 1) {
-    const opts = caps.map((c) => `${c.member}:${c.kind}`).join(", ");
-    throw new RunnerError(`flow step '${stepLabel}' is ambiguous in team '${team.name}' (${opts})`);
-  }
-  return caps[0];
-}
-
-/** A unit's unmet `after:` ids — [] means the start gate condition is satisfied. */
-export function unmetAfter(repo: Repo, unit: WorkUnit): string[] {
-  if (!unit.after || unit.after.length === 0) return [];
-  return unit.after.filter((id) => !repo.units.some((u) => u.project === unit.project && u.unit === id && u.status === "shipped"));
 }
 
 // ---------------------------------------------------------------------------

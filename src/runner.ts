@@ -12,6 +12,7 @@
 import { validateArtifactSource, formatValidationErrors } from "./validate.ts";
 import { parseArtifactDoc } from "./repo.ts";
 import type { Repo } from "./repo.ts";
+import { RunnerError, responsibleTeamsFor, resolveStep, untilSatisfied } from "./flow.ts";
 import type {
   Artifact,
   FlowLoop,
@@ -19,12 +20,11 @@ import type {
   Project,
   Receipt,
   Team,
-  TypeTemplate,
   Usage,
   WorkUnit,
 } from "./types.ts";
 
-export class RunnerError extends Error {}
+export { RunnerError };
 
 // ---------------------------------------------------------------------------
 // Injected collaborators
@@ -215,7 +215,7 @@ export class Runner {
     // from a shaping team to a build team as its kinds are produced (§6). A team whose flow completes
     // yields to the next; a pause at any team's gate pauses the unit's walk. While one team serves a
     // type (every current fixture) this runs exactly the one flow the old per-unit heuristic ran.
-    const teams = this.responsibleTeams(unit);
+    const teams = responsibleTeamsFor(this.repo, unit);
     if (teams.length === 0) {
       this.emit({ t: "walk", unit: unit.unit, project: unit.project, note: "no team produces this unit's kinds; nothing to do" });
       return;
@@ -229,26 +229,6 @@ export class Runner {
       }
       // complete → this team's flow is done; hand the unit to the next responsible team, if any.
     }
-  }
-
-  // Mirrors gates.ts#responsibleTeamsFor (kept as an independent copy to avoid a runner.ts ⇄ gates.ts
-  // circular import, matching the F1 precedent for responsibleTeamFor/resolveStep). Ruling C4.
-  private responsibleTeams(unit: WorkUnit): Team[] {
-    const type = this.repo.types.get(unit.type);
-    const expects = type?.expects ?? [];
-    // Ruling C12/F10 defect 2: mirrors gates.ts#responsibleTeamsFor's own `team:` override exactly.
-    if (unit.team) {
-      const named = this.repo.teams.get(unit.team);
-      return named ? [named] : [];
-    }
-    const scored: Array<{ team: Team; earliest: number }> = [];
-    for (const team of this.repo.teams.values()) {
-      const producedHere = team.produces.filter((k) => expects.includes(k));
-      if (producedHere.length === 0) continue;
-      scored.push({ team, earliest: Math.min(...producedHere.map((k) => expects.indexOf(k))) });
-    }
-    scored.sort((a, b) => a.earliest - b.earliest || a.team.name.localeCompare(b.team.name));
-    return scored.map((s) => s.team);
   }
 
   private unitShipped(project: string, unitId: string): boolean {
@@ -304,7 +284,7 @@ export class Runner {
     extraConsumes?: string[],
   ): Produced | "budget-stop" | "timebox-stop" {
     this.pace(unit, project, stepLabel);
-    const { member, kind } = this.resolveStep(team, stepLabel);
+    const { member, kind } = resolveStep(team, stepLabel, this.members.capabilities());
     const { doc, receipt } = this.members.produce(member, kind, unit.unit, unit.project, extraConsumes);
 
     // Boundary contract enforcement (§6) with the same validator used on disk.
@@ -413,7 +393,7 @@ export class Runner {
       this.approve(unit, this.getArtifact(unit, second.id)!, d.by);
       if (d.verb === "approve") {
         this.approve(unit, art, d.by);
-        if (this.untilSatisfied(unit, loop.until)) {
+        if (untilSatisfied(this.artifacts, unit, loop.until)) {
           this.emit({ t: "loop-end", unit: unit.unit, reason: "condition", round });
           return "complete";
         }
@@ -452,18 +432,6 @@ export class Runner {
     }
     this.setUnitStatus(key, "paused", "loop exhausted");
     return "paused";
-  }
-
-  private untilSatisfied(unit: WorkUnit, until: string): boolean {
-    // `kind.status` — e.g. spec.approved. True when a live (non-superseded) artifact of that kind
-    // holds that status.
-    const [kind, wantStatus] = until.split(".");
-    const map = this.artifacts.get(`${unit.project}/${unit.unit}`);
-    if (!map) return false;
-    for (const a of map.values()) {
-      if (a.kind === kind && a.status === wantStatus) return true;
-    }
-    return false;
   }
 
   // -------------------------------------------------------------------------
@@ -575,21 +543,6 @@ export class Runner {
   // Step resolution + artifact bookkeeping
   // -------------------------------------------------------------------------
 
-  // Resolve a flow step label to the (member, kind) that satisfies it: a team member who can produce
-  // a kind matching the label, exactly or by suffix (step `brief` → kind `product-brief`). Ambiguity
-  // or absence is a hard error — a misconfigured flow fails loudly, never silently guesses.
-  private resolveStep(team: Team, stepLabel: string): { member: string; kind: string } {
-    const caps = this.members.capabilities().filter((c) => team.members.includes(c.member) && kindMatches(c.kind, stepLabel));
-    if (caps.length === 0) {
-      throw new RunnerError(`no member of team '${team.name}' can produce a kind for flow step '${stepLabel}'`);
-    }
-    if (caps.length > 1) {
-      const opts = caps.map((c) => `${c.member}:${c.kind}`).join(", ");
-      throw new RunnerError(`flow step '${stepLabel}' is ambiguous in team '${team.name}' (${opts})`);
-    }
-    return caps[0];
-  }
-
   private unitArtifacts(unit: WorkUnit): Map<string, Artifact> {
     return this.artifacts.get(`${unit.project}/${unit.unit}`)!;
   }
@@ -639,10 +592,6 @@ export function applyApproval(art: Artifact, by?: string): void {
   }
   art.status = "approved";
   art.approved_by = by;
-}
-
-export function kindMatches(kind: string, stepLabel: string): boolean {
-  return kind === stepLabel || kind.endsWith(`-${stepLabel}`);
 }
 
 // Bump the trailing -vN of an id to the given round (spec-...-v1 → spec-...-v2). Ids without a
