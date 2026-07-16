@@ -12,11 +12,11 @@
 // production itself now goes through the real `MemberRunner`/`AdapterRunner` boundary (E4) — the same
 // one the Runner and `levare replay` drive — rather than a board-only reuse of the stub's `render()`.
 
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { loadRepo, type Repo } from "../repo.ts";
-import { validateArtifactSource, formatValidationErrors } from "../validate.ts";
+import { validateArtifactSource, validatePath, formatValidationErrors } from "../validate.ts";
 import { bumpVersion, roundOf, type Verb } from "../runner.ts";
 import { productionAdapterRunner } from "../replay.ts";
 import { loopMembershipFor, isLoopCompanionKind, loopUntilKind, resolveStep, responsibleTeamFor, unmetAfter, patchFrontmatter, upsertFrontmatterField } from "../gates.ts";
@@ -557,6 +557,71 @@ async function doStart(root: string, repo: Repo, unit: WorkUnit, memberRunner: A
     return { ok: false, status: 502, error: `start failed: ${result.error}` };
   }
   return { ok: true, commit: result.commit, changedFiles: [result.file] };
+}
+
+// ---------------------------------------------------------------------------
+// New project (NOTES REV4 item 3b) — moved here from orchestrator.ts: a mutating gate-op (git clone +
+// file writes), same family as every other write in this module, not Orchestrator dispatch logic. Not
+// wired into `orchestrator.ts#handle`'s intent grammar today — no `new-project` Intent variant exists
+// — called directly today only by its own test; the future "scaffold a new project" skill is expected
+// to dispatch here the same way `handle()` already dispatches gate decisions to `resolveGate` above.
+// ---------------------------------------------------------------------------
+
+export interface NewProjectOptions {
+  root: string;
+  name: string;
+  /** A bare git repo standing in for `gh repo create`'s result (scratch, never real GitHub). */
+  remoteDir: string;
+  /** Where to clone the new project's working checkout. */
+  cloneDir: string;
+  deploy: string | null;
+  houseRules: string;
+  defaultBranch?: string;
+}
+
+function titleCase(name: string): string {
+  return name.split(/[-_]/).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+}
+
+export function runNewProjectSkill(opts: NewProjectOptions): GateOpResult {
+  if (!existsSync(opts.remoteDir)) return { ok: false, status: 422, error: `remote '${opts.remoteDir}' does not exist — create-repo step failed` };
+  const branch = opts.defaultBranch ?? "main";
+
+  const clone = spawnSync("git", ["-c", "init.defaultBranch=" + branch, "clone", "-q", opts.remoteDir, opts.cloneDir], { encoding: "utf8" });
+  if (clone.status !== 0) return { ok: false, status: 500, error: `clone failed: ${clone.stderr}` };
+
+  writeFileSync(join(opts.cloneDir, "README.md"), `# ${opts.name}\n`);
+  // Reuse the one Conductor identity (git.ts) rather than a second inline "cas" literal — this commits
+  // into the freshly-cloned PROJECT repo (not the studio, so it can't call conductorCommit directly),
+  // but the identity it stamps must never drift from every other Conductor-authored commit.
+  const cloneGitArgs = (args: string[]) => ["-C", opts.cloneDir, "-c", `user.name=${CONDUCTOR_NAME}`, "-c", `user.email=${CONDUCTOR_EMAIL}`, "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args];
+  spawnSync("git", cloneGitArgs(["add", "-A"]));
+  spawnSync("git", cloneGitArgs(["commit", "-q", "-m", "initial commit"]));
+
+  const projectFile = join(opts.root, "projects", `${opts.name}.md`);
+  if (existsSync(projectFile)) return { ok: false, status: 409, error: `project '${opts.name}' already exists` };
+  mkdirSync(dirname(projectFile), { recursive: true });
+  const lines = [
+    "---",
+    `name: ${opts.name}`,
+    `repo: ${opts.cloneDir}`,
+    `remote: ${opts.remoteDir}`,
+    `default_branch: ${branch}`,
+    `deploy: ${opts.deploy ?? "null"}`,
+    "pace: auto",
+    "---",
+    "",
+    `# ${titleCase(opts.name)} — house rules`,
+    "",
+    opts.houseRules,
+    "",
+  ];
+  const result = transactionalWrite(opts.root, [{ path: projectFile, content: lines.join("\n") }], `new-project ${opts.name}`, conductorCommit, () => {
+    const v = validatePath(opts.root);
+    return v.ok ? null : formatValidationErrors(v.errors) || "validation failed";
+  });
+  if (!result.ok) return { ok: false, status: result.stage === "validate" ? 422 : 500, error: result.error };
+  return { ok: true, commit: result.commit, changedFiles: [projectFile] };
 }
 
 // ---------------------------------------------------------------------------

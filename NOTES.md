@@ -7133,3 +7133,59 @@ and `.turn__body` in `assets/styles.css` respectively. `bun run src/cli.ts repla
 --stubs` matches the oracle byte-for-byte (CSS/markup-only change; no runtime data path touched).
 `tests/layering-boundary.test.ts` still passes. `bun run deps:check` → `deps ok`. `bun run build`
 succeeds.
+
+## Item 3 — two small placements
+
+**(a) `withRepo()` in `board/serve.ts`.** A one-line, zero-behaviour alias for `loadRepo` (`return
+loadRepo(root);`) with no caching, no wrapping, nothing added. The goal offered two resolutions: delete
+it and call `loadRepo` directly, or — if the per-request `loadRepo` cost is a deliberate position with
+`withRepo` as its future derivation-cache seam — keep it and say so explicitly. **Decision: delete.**
+PRD invariant 2 ("the binary holds no state that cannot be reconstructed by re-reading the repo") is a
+standing architectural rule, not an implementation detail free to change later — a "future derivation
+cache" behind this seam would directly contradict it, not extend it, so keeping the alias as a
+would-be cache seam would have been dishonest about what the codebase is actually committed to. All
+eight call sites (`board/serve.ts`'s route table) now call `loadRepo(ctx.root)` directly; the now-
+redundant `type Repo` import was dropped alongside it. The "re-derive from disk on every request, no
+caching, ever" position itself is real and worth a reader knowing about — it's documented as its own
+entry in `docs/current-gaps.md` (item 4, below), citing this NOTES paragraph and invariant 2 as its
+source, rather than left implicit in a since-deleted one-line function.
+
+**(b) `runNewProjectSkill` in `orchestrator.ts`.** A mutating gate-op (git clone + two file writes)
+living in the Orchestrator's own module, alongside `handle()`'s natural-language dispatch — but,
+checked against the `Intent` union and `handle()`'s switch, it turns out to be entirely unwired: no
+`new-project` intent variant exists, and nothing in `orchestrator.ts` itself ever calls it. Its only
+caller before this move was its own test. This is a clean case for the goal's placement rule ("move it
+beside the other mutations, board/gateops.ts or a sibling") — it's not Orchestrator dispatch logic at
+all right now, just a standalone write that happened to be defined in the wrong module.
+
+**Fix:** moved `runNewProjectSkill`/`NewProjectOptions` into `src/board/gateops.ts`, immediately before
+the file's own `helpers` section, with a comment noting it's not wired into `handle()`'s intent grammar
+yet and is expected to dispatch the same way `handle()` already dispatches gate decisions to
+`resolveGate` in the same file. `orchestrator.ts` drops the now-dead imports this uncovered
+(`writeFileSync`, `spawnSync`, `CONDUCTOR_NAME`, `CONDUCTOR_EMAIL` — all used by nothing else in the
+file once the function left). `titleCase` (a one-line, zero-dependency string formatter) is still used
+by BOTH `promoteIdea` (staying in orchestrator.ts) and the moved `runNewProjectSkill` (now in
+gateops.ts) — rather than export it across modules or invent a shared string-utils file for one
+one-liner, it's duplicated verbatim in both, per "three similar lines is better than a premature
+abstraction."
+
+**The layering boundary (REV3) is respected, not just avoided:** `orchestrator.ts` already imports
+`board/gateops.ts` for `resolveGate` — an allowlisted, pre-existing exception in `tests/layering-
+boundary.test.ts` (the Orchestrator reusing the board's own gate-write API, not the R3 inversion). This
+move imports one more symbol, `runNewProjectSkill`, from that SAME already-allowlisted path — no new
+exception, no widened allowlist, the boundary test needed zero changes.
+
+**Transactional-write check (REV2):** the studio-side project-file write already routed through
+`transactionalWrite` before this move (REV2 named it explicitly: "orchestrator.ts (…
+`runNewProjectSkill`'s studio-side project-file write)") — that's carried over unchanged. The
+`README.md` write into the freshly-cloned PROJECT repo (a different repository's own bootstrap,
+committed via its own raw git calls) was, per REV2, deliberately never a `transactionalWrite`/
+`conductorCommit` candidate — it isn't the studio's own audited history. Both positions are preserved
+exactly; this item only moved the function's address, not its write behavior.
+
+**Verification:** `bun test` — 874 pass, 1 pre-existing skip, 0 fail (`tests/gateops-phase5.test.ts`'s
+import updated from `../src/orchestrator.ts` to `../src/board/gateops.ts`; the test bodies themselves
+are untouched — same calls, same assertions). `bun run typecheck` → exit 0 (confirms no orphaned import
+in either file). `tests/layering-boundary.test.ts` — 2/2, unchanged, no new allowlist entry needed.
+`bun run src/cli.ts replay fixtures/golden --stubs` matches the oracle byte-for-byte. `bun run
+deps:check` → `deps ok`. `bun run build` succeeds.

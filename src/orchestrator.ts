@@ -23,16 +23,15 @@
 // exactly as invariant 1 requires ("no member process starts... external events may only raise
 // gates") applied to the Orchestrator's own suggestions.
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { spawnSync } from "node:child_process";
 import { loadRepo, type Repo } from "./repo.ts";
 import { openGates, medianGateResponseDays, repoSpend, type OpenGate } from "./derive.ts";
 import { diagnose, type CliProbe, type ConnectorHealth, type EnvProbe } from "./doctor.ts";
 import { resolveGate, type GateOpResult } from "./board/gateops.ts";
 import type { Verb } from "./runner.ts";
 import { validatePath, formatValidationErrors } from "./validate.ts";
-import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL, transactionalWrite, type TxFile } from "./git.ts";
+import { conductorCommit, transactionalWrite, type TxFile } from "./git.ts";
 
 // ---------------------------------------------------------------------------
 // The mocked SDK boundary
@@ -376,59 +375,6 @@ export function resolveProposal(root: string, proposal: Proposal, verb: "approve
 // hand back, and this function performs a REAL `git clone` of it — end to end, nothing mocked below
 // the git-porcelain boundary.
 // ---------------------------------------------------------------------------
-
-export interface NewProjectOptions {
-  root: string;
-  name: string;
-  /** A bare git repo standing in for `gh repo create`'s result (scratch, never real GitHub). */
-  remoteDir: string;
-  /** Where to clone the new project's working checkout. */
-  cloneDir: string;
-  deploy: string | null;
-  houseRules: string;
-  defaultBranch?: string;
-}
-
-export function runNewProjectSkill(opts: NewProjectOptions): GateOpResult {
-  if (!existsSync(opts.remoteDir)) return { ok: false, status: 422, error: `remote '${opts.remoteDir}' does not exist — create-repo step failed` };
-  const branch = opts.defaultBranch ?? "main";
-
-  const clone = spawnSync("git", ["-c", "init.defaultBranch=" + branch, "clone", "-q", opts.remoteDir, opts.cloneDir], { encoding: "utf8" });
-  if (clone.status !== 0) return { ok: false, status: 500, error: `clone failed: ${clone.stderr}` };
-
-  writeFileSync(join(opts.cloneDir, "README.md"), `# ${opts.name}\n`);
-  // Reuse the one Conductor identity (git.ts) rather than a second inline "cas" literal — this commits
-  // into the freshly-cloned PROJECT repo (not the studio, so it can't call conductorCommit directly),
-  // but the identity it stamps must never drift from every other Conductor-authored commit.
-  const cloneGitArgs = (args: string[]) => ["-C", opts.cloneDir, "-c", `user.name=${CONDUCTOR_NAME}`, "-c", `user.email=${CONDUCTOR_EMAIL}`, "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args];
-  spawnSync("git", cloneGitArgs(["add", "-A"]));
-  spawnSync("git", cloneGitArgs(["commit", "-q", "-m", "initial commit"]));
-
-  const projectFile = join(opts.root, "projects", `${opts.name}.md`);
-  if (existsSync(projectFile)) return { ok: false, status: 409, error: `project '${opts.name}' already exists` };
-  mkdirSync(dirname(projectFile), { recursive: true });
-  const lines = [
-    "---",
-    `name: ${opts.name}`,
-    `repo: ${opts.cloneDir}`,
-    `remote: ${opts.remoteDir}`,
-    `default_branch: ${branch}`,
-    `deploy: ${opts.deploy ?? "null"}`,
-    "pace: auto",
-    "---",
-    "",
-    `# ${titleCase(opts.name)} — house rules`,
-    "",
-    opts.houseRules,
-    "",
-  ];
-  const result = transactionalWrite(opts.root, [{ path: projectFile, content: lines.join("\n") }], `new-project ${opts.name}`, conductorCommit, () => {
-    const v = validatePath(opts.root);
-    return v.ok ? null : formatValidationErrors(v.errors) || "validation failed";
-  });
-  if (!result.ok) return { ok: false, status: result.stage === "validate" ? 422 : 500, error: result.error };
-  return { ok: true, commit: result.commit, changedFiles: [projectFile] };
-}
 
 // ---------------------------------------------------------------------------
 // The dispatcher — one entry point for every surface (chat, and anything else that wants the same

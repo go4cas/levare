@@ -7,7 +7,7 @@
 import { watch, type FSWatcher } from "node:fs";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { join, extname, dirname, resolve, relative, sep } from "node:path";
-import { loadRepo, type Repo } from "../repo.ts";
+import { loadRepo } from "../repo.ts";
 import { renderStudio, renderProject, renderRun, renderRegistry, renderArtifact, renderIdea } from "./render.ts";
 import { resolveGate } from "./gateops.ts";
 import type { AsyncMemberRunner } from "../dagwalk.ts";
@@ -181,10 +181,6 @@ function serveAsset(name: string): Response {
   return new Response(readFileSync(file), { headers: { "content-type": `${type}; charset=utf-8` } });
 }
 
-function withRepo(root: string): Repo {
-  return loadRepo(root);
-}
-
 // ---------------------------------------------------------------------------
 // Route table — the single source of truth for both dispatch and the mutating-route-count test.
 // ---------------------------------------------------------------------------
@@ -197,28 +193,28 @@ export const ROUTES: RouteDef[] = [
     page: true,
     // Renders studio directly (200), not a redirect: a plain `curl /` with no `-L` must see real
     // content, not a bounce (NOTES E12 — the phase-4 gate demonstration curls `/` directly).
-    handler: (_req, _params, ctx) => html(renderStudio(withRepo(ctx.root), ctx.root, undefined, ctx.daemon?.running() ?? [])),
+    handler: (_req, _params, ctx) => html(renderStudio(loadRepo(ctx.root), ctx.root, undefined, ctx.daemon?.running() ?? [])),
   },
   {
     method: "GET",
     pattern: "/studio",
     mutating: false,
     page: true,
-    handler: (_req, _params, ctx) => html(renderStudio(withRepo(ctx.root), ctx.root, undefined, ctx.daemon?.running() ?? [])),
+    handler: (_req, _params, ctx) => html(renderStudio(loadRepo(ctx.root), ctx.root, undefined, ctx.daemon?.running() ?? [])),
   },
   {
     method: "GET",
     pattern: "/project/:name",
     mutating: false,
     page: true,
-    handler: (_req, params, ctx) => html(renderProject(withRepo(ctx.root), params.name, ctx.root, undefined, ctx.daemon?.running() ?? [])),
+    handler: (_req, params, ctx) => html(renderProject(loadRepo(ctx.root), params.name, ctx.root, undefined, ctx.daemon?.running() ?? [])),
   },
   {
     method: "GET",
     pattern: "/run/:project/:unit",
     mutating: false,
     page: true,
-    handler: (_req, params, ctx) => html(renderRun(withRepo(ctx.root), params.project, params.unit, ctx.root, undefined, ctx.daemon?.running() ?? [])),
+    handler: (_req, params, ctx) => html(renderRun(loadRepo(ctx.root), params.project, params.unit, ctx.root, undefined, ctx.daemon?.running() ?? [])),
   },
   {
     method: "GET",
@@ -229,7 +225,7 @@ export const ROUTES: RouteDef[] = [
     // existing bookmark or in-flight link never breaks. New links emit the path form below instead.
     handler: (req, _params, ctx) => {
       const entity = new URL(req.url).searchParams.get("entity") ?? undefined;
-      return html(renderRegistry(withRepo(ctx.root), ctx.root, entity));
+      return html(renderRegistry(loadRepo(ctx.root), ctx.root, entity));
     },
   },
   // UI4 item 4: registry URLs as path segments, matching /project/<name> and /idea/<name> elsewhere
@@ -243,14 +239,14 @@ export const ROUTES: RouteDef[] = [
     pattern: "/registry/:entity",
     mutating: false,
     page: true,
-    handler: (_req, params, ctx) => html(renderRegistry(withRepo(ctx.root), ctx.root, params.entity)),
+    handler: (_req, params, ctx) => html(renderRegistry(loadRepo(ctx.root), ctx.root, params.entity)),
   },
   {
     method: "GET",
     pattern: "/registry/:entity/:name",
     mutating: false,
     page: true,
-    handler: (_req, params, ctx) => html(renderRegistry(withRepo(ctx.root), ctx.root, params.entity, undefined, params.name)),
+    handler: (_req, params, ctx) => html(renderRegistry(loadRepo(ctx.root), ctx.root, params.entity, undefined, params.name)),
   },
   // Artifact render view (item 1, phase 7.5) — every artifact id in the product routes here now,
   // instead of falling back to the unit/run view. Read-only: the definition-browser pattern applied
@@ -260,7 +256,7 @@ export const ROUTES: RouteDef[] = [
     pattern: "/artifact/:project/:unit/:id",
     mutating: false,
     page: true,
-    handler: (_req, params, ctx) => html(renderArtifact(withRepo(ctx.root), params.project, params.unit, params.id, ctx.root)),
+    handler: (_req, params, ctx) => html(renderArtifact(loadRepo(ctx.root), params.project, params.unit, params.id, ctx.root)),
   },
   // Idea render view (item 6) — the same artifact render view, applied to ideas/*.md.
   {
@@ -268,7 +264,7 @@ export const ROUTES: RouteDef[] = [
     pattern: "/idea/:name",
     mutating: false,
     page: true,
-    handler: (_req, params, ctx) => html(renderIdea(withRepo(ctx.root), ctx.root, params.name)),
+    handler: (_req, params, ctx) => html(renderIdea(loadRepo(ctx.root), ctx.root, params.name)),
   },
   { method: "GET", pattern: "/styles.css", mutating: false, handler: () => serveAsset("styles.css") },
   { method: "GET", pattern: "/app.js", mutating: false, handler: () => serveAsset("app.js") },
