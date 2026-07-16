@@ -1,5 +1,9 @@
 # 5.2 · Registry entities
 
+> For the terse per-entity field reference and copy-paste skeletons, see the [generated cheatsheets](cheatsheets/)
+> — one page per entity, computed straight from these same schemas, so it can't drift from the code.
+> This page stays the home of the cross-entity rules and the why.
+
 Every field of every registry entity, as levare actually validates it. Each is a markdown file with
 YAML frontmatter; the body (below the frontmatter) has a defined role per entity, noted in each table.
 

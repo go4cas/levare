@@ -28,6 +28,12 @@ jobs:
       - run: bun test
       - run: bun run typecheck
       - run: bun run deps:check
+      # Explicit, human-readable failure on top of tests/cheatsheets.test.ts's own drift check
+      # (already run by `bun test` above): regenerate the cheatsheets and fail if that produced any
+      # diff against what's committed — i.e. the schemas in src/validate.ts changed and
+      # `bun run docs:generate` was not re-run before committing (NOTES DOCS1).
+      - run: bun run docs:generate
+      - run: git diff --exit-code -- docs/guide/05-reference/cheatsheets
 
   macos-build:
     runs-on: macos-latest

@@ -9,6 +9,7 @@ to. Read the workflow first if you haven't; this will make more sense once you'v
 |---|---|
 | [5.1 · The artifact contract](01-artifact-contract.md) | Every frontmatter field, every status, and the rules that govern an artifact's life. |
 | [5.2 · Registry entities](02-registry-entities.md) | Agents, teams, connectors, projects, types, studio settings — every field as `validate` sees it. |
+| [Cheatsheets](cheatsheets/) | One generated page per entity: field table, enum values, and a copy-pasteable skeleton that actually validates — computed straight from the schemas, so it can't drift from the code. |
 | [5.3 · The CLI](03-cli.md) | `init` · `serve` · `validate` · `doctor` · `context` · `replay` |
 | [5.4 · The constitution](04-constitution.md) | The invariants and rulings a contribution must not violate. |
 
