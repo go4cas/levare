@@ -13,7 +13,6 @@ import { resolveOrchestratorStatus } from "./orchestrator-status.ts";
 import { loadOrchestratorPromptSource, ORCHESTRATOR_PROMPT_PATH } from "./orchestrator-boundary.ts";
 import { getVersionInfo, formatVersion } from "./version.ts";
 import { WORKER_COMMAND } from "./sdk-transport.ts";
-import { runSdkWorkerFromStdin } from "./sdk-worker.ts";
 
 // Until the studio repo root is populated, the fixture golden tree stands in as the studio (NOTES
 // A1); context/doctor default their root there. `--root <path>` overrides.
@@ -254,7 +253,14 @@ export function main(argv: string[]): number {
 // command existed.
 export function runCli(argv: string[]): void {
   if (argv[0] === WORKER_COMMAND) {
-    runSdkWorkerFromStdin()
+    // Dynamic, not a top-level `import` (NOTES REV1 finding 1): `sdk-worker.ts` imports
+    // `@anthropic-ai/claude-agent-sdk` at its own module top, and a static import here would load
+    // that module — and therefore require the SDK package to be installed — for EVERY command this
+    // CLI runs, including offline ones (`validate`, `doctor`, `context`) that never touch a model.
+    // Deferring to `await import()` inside this branch means the SDK is only ever required to resolve
+    // when a real `__worker` invocation actually happens (NOTES DIST5's self-invocation spawn).
+    import("./sdk-worker.ts")
+      .then(({ runSdkWorkerFromStdin }) => runSdkWorkerFromStdin())
       .then(() => process.exit(0))
       .catch((e) => {
         console.error(String(e instanceof Error ? e.message : e));

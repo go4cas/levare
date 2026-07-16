@@ -6557,3 +6557,56 @@ replay path and its oracle are untouched, so the byte-for-byte match is expected
 tooling in this sandbox, so the actual rendered contrast/legibility of the new `--warning` amber
 against `--panel` in both themes is asserted from the token values and the `color-mix` derivation
 formula (the same formula already trusted for gate brass), not from an observed render.
+
+# NOTES REV1 — the schema must not promise what the runtime doesn't do
+
+Three findings from the consolidated Claude+Codex review (`docs/code-review.md` lineage), all the
+same species as F8 (native mocked, shipped), F11 (model declared, ignored), C14 (loop in fixture
+only), DIST4 (worker dead in compiled) — a capability real in one mode, absent in another, with
+nothing telling a user so.
+
+## Finding 1 (CRITICAL) — every CLI command required the SDK installed, even offline ones
+
+`src/cli.ts:16` had a top-level `import { runSdkWorkerFromStdin } from "./sdk-worker.ts"`, and
+`sdk-worker.ts` has its own top-level `import { query } from "@anthropic-ai/claude-agent-sdk"`. ES
+module imports execute at load time regardless of which command actually dispatches — so on a fresh
+checkout with no `bun install` (no node_modules at all, or any environment where the SDK package
+can't resolve), `levare validate`, `doctor`, and `context` failed before reaching their own logic with
+`Cannot find module '@anthropic-ai/claude-agent-sdk'` — commands that never touch a model couldn't
+run without the model vendor's package installed. Introduced by DIST5's `__worker` wiring.
+
+**Fix:** the `sdk-worker.ts` import in `cli.ts#runCli` is now a dynamic `await import()`, made only
+inside the `WORKER_COMMAND` (`__worker`) branch — the one place that ever actually needs the SDK.
+Verified `sdk-transport.ts` (imported unconditionally by `cli.ts` for `WORKER_COMMAND`/`workerSpawnArgv`)
+does NOT itself import the SDK package or `sdk-worker.ts` — it only resolves the worker's own file path
+via `Bun.fileURLToPath` (a string operation, no module load) and probes the SDK's platform binary via a
+scoped `createRequire(...).resolve(...)` call (a runtime, catchable resolution attempt, not a static
+import) — confirmed by grep: `@anthropic-ai/claude-agent-sdk` and `sdk-worker` appear in
+`sdk-transport.ts` only in comments/path-construction, never in an `import` statement. `board/serve.ts`
+(also imported unconditionally by `cli.ts`, for `serve`) was checked the same way — its own import
+chain (`orchestrator-boundary.ts`, `adapters.ts`) never imports `sdk-worker.ts` either, only
+`sdk-transport.ts`'s non-SDK-importing surface.
+
+**Test:** new `tests/cli-no-sdk.test.ts`. The cleanest honest simulation of "SDK unresolvable": copy
+just `src/`, `assets/`, `docs/`, `fixtures/`, `package.json` into a scratch tmpdir with no
+`node_modules` anywhere in or above it, and run `bun --no-install <scratch>/src/cli.ts <cmd>` from
+there. `--no-install` is necessary and was discovered empirically — Bun's own runtime defaults to
+`--install=auto` ("auto-installs when no node_modules"), so a bare "delete node_modules" scratch dir
+silently self-heals by fetching the SDK from Bun's global cache/registry, masking the exact bug this
+test exists to catch. `--no-install` is the honest equivalent of the described failure environments (a
+fresh checkout in an offline CI runner, a locked-down registry, or `bun run` with Bun's own
+auto-install disabled). Asserts `validate`/`doctor`/`context --dry-run` all succeed and never mention
+the SDK package or "Cannot find module"; a companion test proves the premise itself — `__worker` (the
+one command that DOES need the SDK) still fails there, with a genuine module-resolution error, never
+"unknown command" and never a silent success. A second describe block proves the fix didn't regress
+`WORKER_COMMAND` when the SDK IS installed, in source mode (`bun src/cli.ts __worker` against the real
+repo) — the counterpart to `tests/orchestrator-compiled-smoke.test.ts`'s existing compiled-binary proof
+of the same seam.
+
+## Verification (finding 1)
+
+`bun test` — 844 pass (+5 from the new file), 1 pre-existing skip, 0 fail, across 68 files (up from
+839/67 pre-REV1). `bun run src/cli.ts replay fixtures/golden --stubs` matches
+`fixtures/golden/expected.json` byte-for-byte. `bun run deps:check` → `deps ok`. `bun run build`
+succeeds; the compiled binary's `__worker` subcommand still returns a worker-shaped response
+(`{"ok":false,"error":"sdk worker: malformed request JSON..."}`), not "unknown command".
