@@ -14,6 +14,7 @@ An external system a member can be granted.
 | `scope` | string | — | — | — |
 | `auth` | enum | — | — | `env` · `subscription` |
 | `plan` | string | — | — | — |
+| `role` | enum | — | — | `model` · `tool` |
 
 ## Minimal valid skeleton
 

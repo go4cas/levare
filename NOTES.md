@@ -7250,3 +7250,92 @@ places the goal named, and every entry cites its source. All four items landed a
 this revision was blocked or left uncertain enough to change scope — the two uncertainties that did
 come up (the render-split barrel-vs-direct-import choice; the achieved-when's own "byte-identical...
 class renames" wording) are recorded in items 1 and 2's own NOTES paragraphs above, not here.
+
+## C15. Connectors declare their ROLE — `kind` is the transport, `role` is the function, and the code already reasoned about the difference without a field to name it
+
+**Finding.** A connector carries `kind: cli | mcp` (the TRANSPORT — how levare connects) and, since
+C13, `auth: env | subscription` (how the backend authenticates). Neither says what the connector is
+*for*. `codex` grants model access; `github`/`linear` grant tool/service capabilities — and the code
+already reasoned about that distinction in at least three places without a field to name it (the F11
+shape): C13's own subscription semantics only make sense for model-ish connectors; the UNKNOWN_MODEL
+exemption (`validate.ts#subscriptionAuthAgents`, pre-this-ruling) keyed off "granted a subscription
+connector" as a proxy for "this member's model arrives through a connector" — an approximation that
+both over-exempted (a subscription TOOL connector, possible in principle, would have exempted an
+agent's model from pricing validation for no reason) and under-exempted (an env-authenticated model
+connector, e.g. a hosted-model API key, didn't exempt at all); and doctor's consequences for a broken
+connector differ by what it's for — a missing tool connector's member starts and fails mid-work
+reaching for it, a missing model connector's member can't start at all.
+
+**The ruling.** Make the distinction declarative, name it correctly, and re-key every implicit site
+onto the real field.
+
+1. **Schema.** `Connector` gains `role: "model" | "tool"` (`types.ts`, `ConnectorRole`), optional,
+   defaulting to `"tool"` — the common case, and unchanged behaviour for every connector defined
+   before this ruling. Validated as an enum (`validate.ts#CONNECTOR_SCHEMA`). The name is deliberate:
+   `kind` = mechanical species (transport), `role` = function in the ecosystem — **not** `type`, which
+   stays reserved for domain templates (a work unit's `type: inception | feature | fix | spike |
+   research`). No existing field is renamed anywhere: agent `kind`, connector `kind`, artifact `kind`,
+   unit `type` are all exactly as they were.
+2. **Re-keyed sites.**
+   (a) The UNKNOWN_MODEL exemption (`validate.ts#modelRoleAgents`, renamed from
+   `subscriptionAuthAgents`) now exempts agents granted (directly or via team) a `role: model`
+   connector — regardless of `auth`. This is what the exemption always *meant*; C13 approximated it
+   with the only field that existed at the time. Proven in both directions: a `role: model` connector
+   authenticated via `auth: env` now exempts (it didn't before — C13's proxy only looked at `auth`); a
+   bare `auth: subscription` connector with no explicit `role` (defaults to `tool`) no longer exempts
+   (it did before — C13's proxy over-exempted on `auth` alone).
+   (b) `validateConnectorAuth` needed no new rules — `role` and `auth` are orthogonal, and a `role:
+   model` + `auth: subscription` connector is simply the canonical C13 shape with its function now
+   also named.
+   (c) `doctor.ts#ConnectorHealth` gains `role`; `formatDoctor` prints it alongside `kind` on the
+   connector's header line, and — for a connector whose `status` is `missing-env` (the one live
+   "broken" signal doctor computes; cli/mcp reachability remain advisory, unchanged from before this
+   ruling) — a consequence line naming which failure mode applies: *"members depending on '<name>' for
+   model access cannot start"* (`role: model`) vs. *"members depending on '<name>' will fail mid-work
+   when they reach for it"* (`role: tool`).
+3. **Migration honesty.** A pre-C15 studio has no connector declaring `role:` at all — silently
+   defaulting every `auth: subscription` connector to `role: tool` would mislabel exactly the
+   connector shape C13 exists to describe (a studio's `codex`-like connector would go from "correctly
+   unlabelled" to "actively mislabelled tool"). `validate.ts#validateConnectorRoleWarning` emits a
+   `SUBSCRIPTION_NO_ROLE` **warning** (REV1 channel — legal declaration, not an error) naming the gap,
+   firing only when `role` is genuinely absent; declaring either role explicitly (including `role:
+   tool`, for a subscription-authenticated tool connector, which is possible in principle) silences
+   it. `fixtures/golden`'s `github`/`linear` now declare `role: tool` explicitly; `levare init`'s
+   scaffold does the same for its own `github`/`linear` connectors and adds a new `connectors/
+   codex.md` (`auth: subscription`, `role: model`, unwired to any scaffolded agent — same "declared,
+   not granted" posture the scaffold's `github`/`linear` already had) to model the canonical
+   `role: model` shape for a fresh studio, rather than leaving a new Conductor to infer it.
+4. **Display + docs.** The registry connector card (`board/render/registry.ts`) shows `role` as a
+   plain chip (`tag()`, the same bare-word treatment knowledge tags already use — not a new badge
+   shape). Cheatsheets regenerated (`bun run docs:generate`) — `connector.md`'s field table now lists
+   `role` automatically, computed straight from the schema, no hand-editing needed. The naming
+   convention itself — `kind` is mechanical species, `type` is domain template, `role` is function —
+   is recorded in `docs/levare-prd.md` §5 (a new short subsection immediately after the Connectors
+   entity) and `docs/guide/03-concepts.md` (a new "What a connector is for" subsection under
+   Connectors). `docs/current-gaps.md`'s "Connector role taxonomy" entry is retitled "Connector
+   trust-tier taxonomy" and corrected: `role` now exists, but the BROADER trust-tier/permission-
+   scoping system that entry actually describes (read-only vs. mutate-production, team-scoped grants)
+   is still not built — this ruling closes the narrower "no field names the function" gap, not the
+   broader one.
+
+**Verification.** `bun test` — all pass, 0 fail (new coverage: `tests/validate.test.ts` gains a "C15:
+connector role" describe block — `role` absent validates clean and resolves to `tool`; `role: model`
+and `role: tool` both validate clean and resolve correctly; an unrecognised `role` value fails the
+ordinary `BAD_ENUM` check; a subscription connector with no `role` gets `SUBSCRIPTION_NO_ROLE`,
+naming it; an explicit `role: model` OR `role: tool` silences it; an `auth: env` connector with no
+`role` gets no such warning. The F11 exemption tests are rewritten to prove the re-key in both
+directions: a `role: model` + `auth: env` connector now exempts; a bare `auth: subscription` connector
+(default `role: tool`) no longer does. `tests/doctor.test.ts` gains a "C15" describe block: every
+connector's health record carries `role`; `formatDoctor` prints it on the header line; a broken
+`role: model` connector's consequence line says "cannot start", a broken `role: tool` connector's says
+"fail mid-work"; a healthy connector of either role gets no consequence line. Every hand-built
+`Connector` literal across the existing suite (`tests/doctor.test.ts`, `tests/board-ui11.test.ts`,
+`tests/board-ui12.test.ts`, `tests/adapters.test.ts` ×2) that models the C13 subscription-codex
+scenario now declares `role: "model"` explicitly, matching what that scenario has always meant.
+`bun run typecheck` → exit 0. `bun run docs:generate` regenerated `connector.md`'s cheatsheet with the
+new field; the drift test (`tests/cheatsheets.test.ts`) is green against the committed output.
+`levare validate` is green on both `fixtures/golden` and a fresh `levare init` scaffold. `bun run src/
+cli.ts replay fixtures/golden --stubs` matches the oracle byte-for-byte (this ruling touches no
+adapter/receipt logic — `env.ts#subscriptionConnector`, which DOES drive `usd: null` cost overrides,
+is deliberately untouched, per item 2(b): `role` and `auth` are orthogonal, and C13's cost-accounting
+behaviour is unaffected by this ruling). `bun run deps:check` → `deps ok`.

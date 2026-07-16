@@ -47,14 +47,14 @@ its own scoped environment — rather than every member sharing one process-leve
 does not exist yet. Everything below in this register that talks about per-member isolation or
 credential scoping is a specific instance of this same missing layer.
 
-## Connector role taxonomy
+## Connector trust-tier taxonomy
 
-A connector is typed only by `kind: cli | mcp` and `auth: env | subscription` — there is no broader
-role or trust-tier system distinguishing, say, a read-only connector from one that can mutate
-production state, or scoping a connector to specific teams beyond whichever agents happen to be
-granted it. NOTES C13's own guidance — "prefer `auth: env`, grant `auth: subscription` only to
-trusted members" — is advisory prose in a doctor warning, not an enforced taxonomy. Building one is
-capability-layer work, not yet started.
+A connector now declares `role: model | tool` (NOTES C15) — what FUNCTION it serves — but there is
+still no broader trust-tier system distinguishing, say, a read-only tool connector from one that can
+mutate production state, or scoping a connector to specific teams beyond whichever agents happen to
+be granted it. NOTES C13's own guidance — "prefer `auth: env`, grant `auth: subscription` only to
+trusted members" — remains advisory prose in a doctor warning, not an enforced taxonomy. Building one
+is capability-layer work, not yet started.
 
 ## Per-member subscription-credential scoping
 

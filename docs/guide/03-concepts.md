@@ -241,6 +241,26 @@ fictional `$0`.
 
 `levare doctor` tells you which connectors are ready, and which mode each one is in.
 
+### What a connector is for
+
+`auth` says *how* a connector's backend authenticates. A separate field, `role`, says *what it's for*:
+
+```yaml
+role: model    # grants access to a model — codex, a hosted-model API key, etc.
+role: tool     # grants access to a tool/service — github, linear, etc. (the default)
+```
+
+This matters because the consequence of a broken connector differs by role: a member depending on a
+missing `role: model` connector can't start at all; one depending on a missing `role: tool` connector
+starts and fails only when it reaches for the tool. `levare doctor` and the registry card both show
+`role` for exactly this reason — so you know which failure mode you're looking at.
+
+**A note on naming, since three fields sound alike:** `kind` answers what a thing is *mechanically* —
+how levare invokes, connects, or parses it (an agent's `native | cli | remote`, a connector's
+`mcp | cli`). `type` answers which *domain template* a thing follows — currently only a work unit's
+`type: feature | fix | ...`. `role` answers what *function* a thing serves — currently only a
+connector's `role: model | tool`.
+
 ---
 
 ## Gates, and the verbs
