@@ -112,7 +112,7 @@ export function renderArtifact(repo: Repo, project: string, unit: string, id: st
   // NOTES UI11: migrated off the pre-UI8 `.msg__label` markup onto the shared `orchTurn` primitive —
   // this screen had never been brought forward when UI8 introduced the turn/caption anatomy.
   const briefingBody = orchTurn(
-    `<p class="msg__body">${esc(art.kind)} ${esc(art.id)}, produced by ${esc(art.produced_by)}. ${citedBy.length ? `Cited by ${citedBy.length} artifact${citedBy.length === 1 ? "" : "s"}.` : "Not cited by anything yet."}</p>`,
+    `<p class="turn__body">${esc(art.kind)} ${esc(art.id)}, produced by ${esc(art.produced_by)}. ${citedBy.length ? `Cited by ${citedBy.length} artifact${citedBy.length === 1 ? "" : "s"}.` : "Not cited by anything yet."}</p>`,
     { captionTime: captionTime(now.toISOString(), now), captionLabel: "briefing" },
   );
   const orch = orchestratorPanel("artifact", status, briefingBody);

@@ -86,8 +86,8 @@ describe("components.ts primitives", () => {
   test("pendingState never emits a spinner — the same quiet dots vocabulary as the composer's pending state", () => {
     const html = pendingState({ label: "dispatching wren · design…" });
     expect(html).toContain('class="pending"');
-    expect(html).toContain('class="msg msg--pending"');
-    expect(html).toContain('class="msg__dots"');
+    expect(html).toContain('class="turn--pending"');
+    expect(html).toContain('class="turn__dots"');
     expect(html).toContain('<span class="pending__label">dispatching wren · design…</span>');
   });
 

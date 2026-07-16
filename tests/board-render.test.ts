@@ -109,7 +109,7 @@ describe("studio screen", () => {
 // Conductor-triggered start never went through. The board must acknowledge the click immediately: the
 // instant the daemon's `running()` projection carries an in-flight invocation for a unit, that unit's
 // gate card renders as dispatching (the quiet pending indicator already built for the Orchestrator
-// composer — assets/styles.css's `.msg--pending .msg__dots`, reused verbatim, no new spinner) instead
+// composer — assets/styles.css's `.turn--pending .turn__dots`, reused verbatim, no new spinner) instead
 // of showing Start/Not yet/Re-scope as if nothing were happening.
 describe("a gate card renders an immediate dispatching state while its unit is in flight (NOTES F10 defect 3)", () => {
   test("loyalty-flow's open start gate shows Start/Not yet/Re-scope with no running invocations", () => {
@@ -118,7 +118,7 @@ describe("a gate card renders an immediate dispatching state while its unit is i
     expect(cardMatch).not.toBeNull();
     expect(cardMatch![0]).toContain('data-verb="start"');
     expect(cardMatch![0]).not.toContain("is-dispatching");
-    expect(cardMatch![0]).not.toContain("msg--pending");
+    expect(cardMatch![0]).not.toContain("turn--pending");
   });
 
   test("loyalty-flow's start gate shows a dispatching state instead of Start/Not yet/Re-scope the instant it's in the daemon's running() projection", () => {
@@ -130,7 +130,7 @@ describe("a gate card renders an immediate dispatching state while its unit is i
     expect(card).not.toContain('data-verb="start"');
     expect(card).not.toContain('data-verb="notyet"');
     expect(card).not.toContain('data-verb="rescope"');
-    expect(card).toContain("msg--pending");
+    expect(card).toContain("turn--pending");
     expect(card).toContain("dispatching wren");
     expect(card).toContain("dispatching</span>"); // the badge, honest — never claims "start gate" as if idle
   });
@@ -150,7 +150,7 @@ describe("a gate card renders an immediate dispatching state while its unit is i
     const runHtml = renderRun(repo, "storefront", "checkout-flow", root, now, running);
     for (const html of [projectHtml, runHtml]) {
       expect(html).toContain("is-dispatching");
-      expect(html).toContain("msg--pending");
+      expect(html).toContain("turn--pending");
       expect(html).toContain("dispatching lyra");
       expect(html).not.toContain('data-verb="approve"');
       expect(html).not.toContain('data-verb="request"');

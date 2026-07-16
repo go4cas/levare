@@ -50,7 +50,7 @@ export function renderIdea(repo: Repo, root: string, name: string, status: Orche
   </main>`;
 
   const briefingBody = orchTurn(
-    `<p class="msg__body">${esc(idea.name)} is a captured pitch with no project yet. Promoting it opens an inception unit.</p>`,
+    `<p class="turn__body">${esc(idea.name)} is a captured pitch with no project yet. Promoting it opens an inception unit.</p>`,
     { captionTime: captionTime(now.toISOString(), now), captionLabel: "briefing" },
   );
   const orch = orchestratorPanel("idea", status, briefingBody);

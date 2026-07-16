@@ -103,7 +103,7 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
 
   const gateHtml = gates.map((g) => gateCardHtml(repo, g, now, { cta: true, dispatching: dispatchingFor(running, g) })).join("\n");
   const briefingBody = orchTurn(
-    `<p class="msg__body">${gates.length ? `${esc(gates[0].label)} is ready for review below.` : "No open gate on this unit right now."}</p>`,
+    `<p class="turn__body">${gates.length ? `${esc(gates[0].label)} is ready for review below.` : "No open gate on this unit right now."}</p>`,
     { captionTime: captionTime(now.toISOString(), now), captionLabel: "briefing" },
   );
   const orch = orchestratorPanel("run", status, briefingBody, gateHtml);

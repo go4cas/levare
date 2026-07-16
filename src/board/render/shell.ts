@@ -108,7 +108,7 @@ function composer(opts: { disabled?: boolean } = {}): string {
 // color — "on" reads as the same quiet green as a healthy connector, "off" the same hollow/outline
 // neutral as an unconfigured one (dot filled for on, hollow for off); this is a configuration state,
 // never a failure, so it is never red, and it never changes mid-response — a live SDK call's own
-// "thinking" state is the Orchestrator panel's concern (`.msg--pending`), not the header's.
+// "thinking" state is the Orchestrator panel's concern (`.turn--pending`), not the header's.
 // ---------------------------------------------------------------------------
 
 function orchestratorIndicator(status: OrchestratorStatus): string {
@@ -136,7 +136,7 @@ export function orchestratorPanel(scope: string, status: OrchestratorStatus, bri
     return `<aside class="orch is-disabled">
     ${orchHead(scope)}
     <div class="orch__body">
-      ${orchTurn(`<p class="msg__body">Orchestrator unavailable — ${esc(status.reason)} The board, the registry, and every gate still work: you can approve, reject, and the runner will advance.</p>`)}
+      ${orchTurn(`<p class="turn__body">Orchestrator unavailable — ${esc(status.reason)} The board, the registry, and every gate still work: you can approve, reject, and the runner will advance.</p>`)}
       ${actionableHtml}
     </div>
     ${composer({ disabled: true })}
@@ -313,7 +313,7 @@ export function railNav(repo: Repo, extras: RegistryExtras, opts: { activeRegist
 
 // NOTES F10 defect 3: an unmistakably HONEST, non-spinner-theatre "this is dispatching right now"
 // state — reused verbatim from the quiet pending indicator already built for the Orchestrator composer
-// (assets/styles.css's `.msg--pending .msg__dots`, unchanged here) rather than inventing a new
+// (assets/styles.css's `.turn--pending .turn__dots`, unchanged here) rather than inventing a new
 // animation. Swapped in for a gate's verb row the instant the daemon's `running()` projection shows an
 // invocation in flight for that unit (render/studio.ts / render/project.ts / render/run.ts callers
 // below), so the board acknowledges a Start/Request-changes click immediately instead of sitting

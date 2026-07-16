@@ -153,7 +153,7 @@ export function emptyState(opts: { message: string; action?: string }): string {
 // identically.
 // ---------------------------------------------------------------------------
 export function pendingState(opts: { label: string }): string {
-  return `<span class="pending"><span class="msg msg--pending"><span class="msg__dots"><span></span><span></span><span></span></span></span><span class="pending__label">${esc(opts.label)}</span></span>`;
+  return `<span class="pending"><span class="turn--pending"><span class="turn__dots"><span></span><span></span><span></span></span></span><span class="pending__label">${esc(opts.label)}</span></span>`;
 }
 
 // ---------------------------------------------------------------------------

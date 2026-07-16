@@ -90,7 +90,7 @@ button{ font-family:inherit; }
 
 /* ---------- disabled Orchestrator panel — visible, never hidden (NOTES C11) ---------- */
 .orch.is-disabled .orch__mark{ opacity:.4; }
-.orch.is-disabled .msg__body{ color:var(--fg-mute); }
+.orch.is-disabled .turn__body{ color:var(--fg-mute); }
 .composer.is-disabled{ opacity:.55; }
 .composer.is-disabled form{ cursor:not-allowed; }
 .composer.is-disabled input{ cursor:not-allowed; }
@@ -305,7 +305,7 @@ button{ font-family:inherit; }
   border-radius:2px; transform:rotate(-11deg); transform-origin:bottom center; }
 .turn__mark b{ position:absolute; left:2.5px; bottom:0; width:5px; height:5px; background:var(--accent); border-radius:50%; }
 .turn__content{ display:flex; flex-direction:column; gap:6px; min-width:0; flex:1; }
-.msg__body{ margin:0; font-size:13.5px; line-height:1.6; color:var(--fg-dim); }
+.turn__body{ margin:0; font-size:13.5px; line-height:1.6; color:var(--fg-dim); }
 /* NOTES UI11: the caption (every turn now, not just the first message — item 4) reads as its own
    quiet row beneath the whole turn, distinctly separated from the message text — `flex:0 0 100%` on a
    `flex-wrap:wrap` row forces it onto a fresh line under the fixed-width mark + flexible content,
@@ -317,7 +317,7 @@ button{ font-family:inherit; }
 
 .turn--user{ justify-content:flex-end; }
 .turn--user .turn__content{ max-width:84%; margin-left:auto; align-items:flex-end; }
-.turn--user .msg__body{ background:var(--bg-user); color:var(--text-user); border:1px solid var(--border); padding:9px 12px; border-radius:10px; }
+.turn--user .turn__body{ background:var(--bg-user); color:var(--text-user); border:1px solid var(--border); padding:9px 12px; border-radius:10px; }
 /* The Conductor's own turn has no mark, and its bubble is right-aligned — its caption sits flush
    right too, reading as "beneath the bubble" rather than under a mark that isn't there. */
 .turn--user .turn__caption{ margin-left:0; text-align:right; }
@@ -333,25 +333,25 @@ button{ font-family:inherit; }
 .composer input{ flex:1; border:none; background:transparent; outline:none; font-family:var(--sans);
   font-size:13px; color:var(--fg); min-width:0; }
 .composer .ret{ font-family:var(--mono); font-size:11px; color:var(--fg-mute); flex:none; }
-/* Pending/thinking state (NOTES phase-7 K17; UI8 generalises the selector off `.msg--pending` so the
+/* Pending/thinking state (NOTES phase-7 K17; UI8 generalises the selector off `.turn--pending` so the
    same dots primitive works both nested under a gate's dispatching state — components.ts#pendingState
    — and, as of UI8, inside the Orchestrator turn's own inline "thinking…" paragraph, item 5): quiet,
    non-attention-seeking per the design brief's motion rules — the pulse class is reserved for live
    things and gate arrival, so this reuses the same understated blink already used for a working
    member's avatar, not a new attention-grabbing animation. Respects prefers-reduced-motion via the
    existing global rule below. */
-.msg__dots{ display:inline-flex; gap:4px; }
-.msg__dots span{ width:4px; height:4px; border-radius:50%; background:var(--fg-mute);
+.turn__dots{ display:inline-flex; gap:4px; }
+.turn__dots span{ width:4px; height:4px; border-radius:50%; background:var(--fg-mute);
   animation:lv-blink 1.2s infinite; }
 /* item 5: the in-flight state is local and inline, exactly where the reply will render — the mark
    (rendered by the shared turn markup) plus this dimmed dots+text paragraph, never a bar/spinner that
    replaces the panel. */
-.msg__body.msg--pending{ display:flex; align-items:center; gap:7px; color:var(--fg-mute); }
-.msg__dots span:nth-child(2){ animation-delay:.25s; }
-.msg__dots span:nth-child(3){ animation-delay:.5s; }
+.turn__body.turn--pending{ display:flex; align-items:center; gap:7px; color:var(--fg-mute); }
+.turn__dots span:nth-child(2){ animation-delay:.25s; }
+.turn__dots span:nth-child(3){ animation-delay:.5s; }
 
 /* orchestrator link/mono inside message */
-.msg__body .link{ border-bottom-color:color-mix(in oklab, var(--accent) 60%, transparent); }
+.turn__body .link{ border-bottom-color:color-mix(in oklab, var(--accent) 60%, transparent); }
 
 /* ---------- timeline ---------- */
 .timeline{ display:flex; flex-direction:column; gap:0; }
@@ -583,10 +583,10 @@ button{ font-family:inherit; }
 .empty__action{ color:var(--fg-dim); }
 
 /* pendingState — LOCAL, in-place action feedback: the same quiet dots already built for the
-   Orchestrator composer (`.msg--pending .msg__dots`, reused verbatim), scoped small enough to sit
+   Orchestrator composer (`.turn--pending .turn__dots`, reused verbatim), scoped small enough to sit
    beside/in place of the control that triggered it rather than replacing a whole card. */
 .pending{ display:inline-flex; align-items:center; gap:8px; }
-.pending .msg--pending{ display:inline-flex; align-items:center; }
+.pending .turn--pending{ display:inline-flex; align-items:center; }
 .pending__label{ font-size:12.5px; color:var(--fg-mute); }
 
 /* ---------- theme toggle ---------- */

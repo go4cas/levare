@@ -129,7 +129,7 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date(), r
   </main>`;
 
   const briefingBody = orchTurn(
-    `<p class="msg__body">${gates.length ? `${gates.length} gate${gates.length === 1 ? " is" : "s are"} on you.` : "Nothing needs a decision right now."} Ask me about any project or open a gate to review it.</p>`,
+    `<p class="turn__body">${gates.length ? `${gates.length} gate${gates.length === 1 ? " is" : "s are"} on you.` : "Nothing needs a decision right now."} Ask me about any project or open a gate to review it.</p>`,
     { captionTime: captionTime(now.toISOString(), now), captionLabel: "briefing" },
   );
   const orch = orchestratorPanel("studio", status, briefingBody);

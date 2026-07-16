@@ -238,7 +238,7 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
   </main>`;
 
   const briefingBody = orchTurn(
-    `<p class="msg__body">This is the registry. The only write here is <span class="mono">Edit source</span>: raw markdown, live validation, then <span class="mono">Save and commit</span>.</p>`,
+    `<p class="turn__body">This is the registry. The only write here is <span class="mono">Edit source</span>: raw markdown, live validation, then <span class="mono">Save and commit</span>.</p>`,
     { captionTime: captionTime(now.toISOString(), now), captionLabel: "briefing" },
   );
   const orch = orchestratorPanel("registry", status, briefingBody);

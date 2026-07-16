@@ -7081,3 +7081,55 @@ registry, one artifact (`spec-checkout-flow-v1`), and one idea (`loyalty-program
 boundary.test.ts` (REV3) still passes unchanged — `render/` sits under `src/board/`, so it's on the
 board side of the boundary the same as render.ts always was. `bun run deps:check` → `deps ok`. `bun run
 build` succeeds.
+
+## Item 2 — absorbing the .msg-era class names into the .turn vocabulary
+
+Two generations of "the Orchestrator's message" class coexisted: UI8's `.turn`/`.turn__mark`/
+`.turn__content`/`.turn__caption` wrapper (the conversation-turn redesign), still wrapping the
+PRE-UI8 `.msg__body`/`.msg--pending`/`.msg__dots` internals for the actual message text and its
+pending-dots state — UI8 never finished renaming what it wrapped.
+
+**Fix — one rename, applied everywhere the classes appear:** `.msg__body` → `.turn__body`,
+`.msg__dots` → `.turn__dots`, `.msg--pending` → `.turn--pending` (`assets/styles.css`,
+`src/board/render/*.ts`, `src/board/components.ts`, `assets/app.js`, and the tests that assert on
+these class strings). `.turn--pending` was chosen over an element-scoped `.turn__body--pending`
+because `components.ts#pendingState` already reuses this exact modifier on a DIFFERENT element (a
+bare `<span>`, not a `.turn__body`) for the gate card's own local dispatching feedback — a block-level
+modifier name reads honestly for both hosts; an element-scoped name would have been wrong for the
+second one. **A pre-existing, unrelated collision risk was checked and ruled out:** `assets/app.js`
+already called `pendingTurn.classList.add('turn--pending')` on the outer `.turn` DIV itself (line 370,
+predating this change) — but no CSS rule ever matched a bare `.turn--pending` with no combinator, only
+`.turn__body.turn--pending` and `.pending .turn--pending` (both scoped combinators); reusing the name
+for the message-body modifier adds a second combinator, not a bare-selector collision, so the
+already-inert outer-div marker stays exactly as inert as it was before this change.
+
+**The bare, unstyled `msg` class** (`components.ts#pendingState`'s `<span class="msg msg--pending">`
+— no `.msg{}` rule ever existed for it; it carried zero visual effect) was dropped rather than renamed,
+since renaming a class that never had a matching rule would just be inventing new dead weight.
+
+**`assets/*.html` (the CD prototype reference markup) were left untouched**, matching established
+precedent (NOTES: "the superseded CD prototype file, never served by serve.ts, was left untouched") —
+`board/serve.ts` never serves these files; only `src/board/render/*.ts` produces real board output.
+
+**Uncertainty recorded:** the goal's achieved-when list says a page spot-check should be
+"byte-identical before/after the render split AND class renames" — read literally that's impossible
+for item 2, since renaming a class necessarily changes the literal HTML string containing it. Resolved
+by treating "byte-identical" as item 1's own requirement (a pure move, verified in item 1's own NOTES
+entry above) and item 2's own explicit line — "Visual output identical" — as the correct bar for the
+rename: every class that had a CSS rule before the rename has the identically-shaped rule after it,
+under its new name, and nothing is left unstyled or double-styled. Verified below.
+
+**Verification:** `bun test` — 874 pass, 1 pre-existing skip, 0 fail (five tests updated for the new
+class strings: `board-components.test.ts`, `board-render.test.ts`, `board-orchestrator-conversation.
+test.ts`, `user-bubble-color.test.ts` — none weakened, all still assert the same structural facts
+under the new names). `bun run typecheck` → exit 0. `grep -rn "msg__body\|msg--pending\|msg__dots"
+src/ assets/*.js assets/*.css tests/` → no hits (the only remaining `.msg`-shaped string anywhere is a
+historical comment in `render/artifact.ts` describing a DIFFERENT, already-fully-deleted pre-UI8 class,
+`.msg__label`, not a live selector). A direct render of the dispatching gate-card state and the
+disabled-Orchestrator panel (both spot-checked against `fixtures/golden` at a fixed clock) confirms the
+new class names land exactly where the old ones did: `<span class="pending"><span class="turn--
+pending"><span class="turn__dots">…` and `<p class="turn__body">…`, matching `.pending .turn--pending`
+and `.turn__body` in `assets/styles.css` respectively. `bun run src/cli.ts replay fixtures/golden
+--stubs` matches the oracle byte-for-byte (CSS/markup-only change; no runtime data path touched).
+`tests/layering-boundary.test.ts` still passes. `bun run deps:check` → `deps ok`. `bun run build`
+succeeds.

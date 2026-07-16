@@ -155,9 +155,9 @@
       var pending = document.createElement('span');
       pending.classList.add('pending');
       var dots = document.createElement('span');
-      dots.classList.add('msg', 'msg--pending');
+      dots.classList.add('turn--pending');
       var dotsInner = document.createElement('span');
-      dotsInner.classList.add('msg__dots');
+      dotsInner.classList.add('turn__dots');
       for (var i = 0; i < 3; i++) dotsInner.appendChild(document.createElement('span'));
       dots.appendChild(dotsInner);
       var label = document.createElement('span');
@@ -229,7 +229,7 @@
        accent bubble (Conductor) is the only speaker signal now, shown/applied once per turn rather
        than a "RESPONSE"/"BRIEFING" header repeated on every message (design brief item 1/4). A
        same-speaker message immediately following the last turn in `.orch__body` merges into it —
-       `buildBodyEl` returns the new message element (a `<p class="msg__body">`, built via textContent
+       `buildBodyEl` returns the new message element (a `<p class="turn__body">`, built via textContent
        so untrusted reply/user text is never parsed as markup); a different speaker (or an empty panel)
        starts a fresh turn instead. */
     function lastTurn(body) {
@@ -301,7 +301,7 @@
       var narrate = s.getAttribute('data-narrate') || 'Here is the gate you asked to review.';
       appendTurnMessage(body, 'orch', function () {
         var p = document.createElement('p');
-        p.className = 'msg__body';
+        p.className = 'turn__body';
         p.textContent = narrate;
         return p;
       });
@@ -327,7 +327,7 @@
         // previous turn if the last thing said was also the Conductor's (item 4).
         appendTurnMessage(body, 'user', function () {
           var p = document.createElement('p');
-          p.className = 'msg__body';
+          p.className = 'turn__body';
           p.textContent = text;
           return p;
         });
@@ -336,7 +336,7 @@
         function showReply(replyText) {
           appendTurnMessage(body, 'orch', function () {
             var p = document.createElement('p');
-            p.className = 'msg__body';
+            p.className = 'turn__body';
             p.textContent = replyText;
             return p;
           });
@@ -347,7 +347,7 @@
         function showError(errText) {
           appendTurnMessage(body, 'orch', function () {
             var p = document.createElement('p');
-            p.className = 'msg__body';
+            p.className = 'turn__body';
             p.style.color = 'var(--danger)';
             p.textContent = errText;
             return p;
@@ -359,9 +359,9 @@
         // Never a bar/spinner that replaces more of the panel than this.
         var pendingTurn = appendTurnMessage(body, 'orch', function () {
           var p = document.createElement('p');
-          p.className = 'msg__body msg--pending';
+          p.className = 'turn__body turn--pending';
           var dots = document.createElement('span');
-          dots.className = 'msg__dots';
+          dots.className = 'turn__dots';
           for (var i = 0; i < 3; i++) dots.appendChild(document.createElement('span'));
           p.appendChild(dots);
           p.appendChild(document.createTextNode('thinking\u2026'));

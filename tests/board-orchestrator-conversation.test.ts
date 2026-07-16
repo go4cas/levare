@@ -328,7 +328,7 @@ describe("consecutive Orchestrator messages merge into one turn (item 4)", () =>
     expect(turns.length).toBe(1);
     expect(turns[0].classList.contains("turn--orch")).toBe(true);
     expect(body.querySelectorAll(".turn__mark").length).toBe(1);
-    const paras = body.querySelectorAll(".msg__body");
+    const paras = body.querySelectorAll(".turn__body");
     expect(paras.length).toBe(2);
     expect(paras[0].textContent).toBe("First narration.");
     expect(paras[1].textContent).toBe("Second narration.");
@@ -348,7 +348,7 @@ describe("a Conductor message renders right-aligned in an accent bubble (item 3)
 
     const userTurns = body.querySelectorAll(".turn--user");
     expect(userTurns.length).toBe(1);
-    const bubble = userTurns[0].querySelector(".msg__body")!;
+    const bubble = userTurns[0].querySelector(".turn__body")!;
     expect(bubble).not.toBeNull();
     expect(bubble.textContent).toBe("what needs me?");
     // The Conductor's turn carries no mark — the mark is the Orchestrator's speaker signal only.
@@ -449,8 +449,8 @@ describe("the in-flight state renders inline, at the reply's own position — ne
     expect(pendingTurn.classList.contains("turn--orch")).toBe(true);
     expect(pendingTurn.classList.contains("turn--pending")).toBe(true);
     expect(pendingTurn.querySelector(".turn__mark")).not.toBeNull();
-    expect(pendingTurn.querySelector(".msg__dots")).not.toBeNull();
-    expect(pendingTurn.querySelector(".msg__body")!.textContent).toContain("thinking");
+    expect(pendingTurn.querySelector(".turn__dots")).not.toBeNull();
+    expect(pendingTurn.querySelector(".turn__body")!.textContent).toContain("thinking");
 
     // The panel's own class never changes to reflect a global loading state.
     expect(aside.className).toBe(asideClassBefore);
@@ -476,7 +476,7 @@ describe("the in-flight state renders inline, at the reply's own position — ne
     expect(turns.length).toBe(2);
     expect(turns[0].classList.contains("turn--user")).toBe(true);
     expect(turns[1].classList.contains("turn--orch")).toBe(true);
-    expect(turns[1].querySelector(".msg__body")!.textContent).toBe("3 gates are on you.");
+    expect(turns[1].querySelector(".turn__body")!.textContent).toBe("3 gates are on you.");
     expect(input.disabled).toBe(false);
   });
 
@@ -498,6 +498,6 @@ describe("the in-flight state renders inline, at the reply's own position — ne
     expect(turns.length).toBe(2);
     expect(turns[1].classList.contains("turn--orch")).toBe(true);
     expect(turns[1].querySelector(".turn__mark")).not.toBeNull();
-    expect(turns[1].querySelector(".msg__body")!.textContent).toBe("boom");
+    expect(turns[1].querySelector(".turn__body")!.textContent).toBe("boom");
   });
 });

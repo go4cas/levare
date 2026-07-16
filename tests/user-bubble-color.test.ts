@@ -1,7 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import { readFileSync } from "node:fs";
 
-// The UI8 chat redesign (NOTES) gave the Conductor's own message bubble (`.turn--user .msg__body`)
+// The UI8 chat redesign (NOTES) gave the Conductor's own message bubble (`.turn--user .turn__body`)
 // the accent role (`--bg-accent`/`--text-accent`, both derived from `--accent`) — but levare's chosen
 // accent direction is Podium vermilion, a warm red/coral (docs/levare-design-brief.md's "Podium —
 // opera-house vermilion, around #C2402A"). A user's own message styled in the same hue as `--danger`
@@ -19,22 +19,22 @@ function rule(selector: string): string {
 }
 
 describe("the user-message bubble reads as 'your message', not an error (goal 2)", () => {
-  test(".turn--user .msg__body never references the accent role, in any form", () => {
-    const r = rule(".turn--user .msg__body");
+  test(".turn--user .turn__body never references the accent role, in any form", () => {
+    const r = rule(".turn--user .turn__body");
     expect(r).not.toContain("var(--accent)");
     expect(r).not.toContain("var(--bg-accent)");
     expect(r).not.toContain("var(--text-accent)");
     expect(r).not.toContain("accent-ink");
   });
 
-  test(".turn--user .msg__body never references the danger/error role either", () => {
-    const r = rule(".turn--user .msg__body");
+  test(".turn--user .turn__body never references the danger/error role either", () => {
+    const r = rule(".turn--user .turn__body");
     expect(r).not.toContain("var(--danger)");
     expect(r).not.toContain("bg-danger");
   });
 
-  test(".turn--user .msg__body uses a neutral fill/text pair", () => {
-    const r = rule(".turn--user .msg__body");
+  test(".turn--user .turn__body uses a neutral fill/text pair", () => {
+    const r = rule(".turn--user .turn__body");
     expect(r).toContain("background:var(--bg-user)");
     expect(r).toContain("color:var(--text-user)");
   });
