@@ -32,7 +32,7 @@ import { diagnose, type CliProbe, type ConnectorHealth, type EnvProbe } from "./
 import { resolveGate, type GateOpResult } from "./board/gateops.ts";
 import type { Verb } from "./runner.ts";
 import { validatePath, formatValidationErrors } from "./validate.ts";
-import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL } from "./git.ts";
+import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL, transactionalWrite, type TxFile } from "./git.ts";
 
 // ---------------------------------------------------------------------------
 // The mocked SDK boundary
@@ -154,13 +154,6 @@ function formatStats(s: StatsSnapshot): string {
 // Intent → unit operations (§7: "open unit of type X, capture idea → ideas/, promote idea → project")
 // ---------------------------------------------------------------------------
 
-function rollbackAndFail(root: string, file: string, existedBefore: boolean, backup: string | null): GateOpResult {
-  if (existedBefore && backup !== null) writeFileSync(file, backup);
-  else rmSync(file, { force: true });
-  const result = validatePath(root);
-  return { ok: false, status: 422, error: formatValidationErrors(result.errors) || "validation failed" };
-}
-
 export interface OpenUnitOptions {
   root: string;
   project: string;
@@ -194,14 +187,15 @@ export function openUnit(opts: OpenUnitOptions): GateOpResult {
     opts.body,
     "",
   ];
-  writeFileSync(file, lines.join("\n"));
-  const result = validatePath(opts.root);
+  const result = transactionalWrite(opts.root, [{ path: file, content: lines.join("\n") }], `open ${opts.type} unit ${opts.project}/${opts.unit}`, conductorCommit, () => {
+    const v = validatePath(opts.root);
+    return v.ok ? null : formatValidationErrors(v.errors) || "validation failed";
+  });
   if (!result.ok) {
-    rmSync(dir, { recursive: true, force: true });
-    return { ok: false, status: 422, error: formatValidationErrors(result.errors) || "validation failed" };
+    rmSync(dir, { recursive: true, force: true }); // the directory itself (not just unit.md) is this call's own creation.
+    return { ok: false, status: result.stage === "validate" ? 422 : 500, error: result.error };
   }
-  const commit = conductorCommit(opts.root, [file], `open ${opts.type} unit ${opts.project}/${opts.unit}`);
-  return { ok: true, commit, changedFiles: [file] };
+  return { ok: true, commit: result.commit, changedFiles: [file] };
 }
 
 export interface CaptureIdeaOptions {
@@ -229,14 +223,12 @@ export function captureIdea(opts: CaptureIdeaOptions): GateOpResult {
     opts.body ?? opts.pitch,
     "",
   ];
-  writeFileSync(file, lines.join("\n"));
-  const result = validatePath(opts.root);
-  if (!result.ok) {
-    rmSync(file, { force: true });
-    return { ok: false, status: 422, error: formatValidationErrors(result.errors) || "validation failed" };
-  }
-  const commit = conductorCommit(opts.root, [file], `capture idea ${opts.name}`);
-  return { ok: true, commit, changedFiles: [file] };
+  const result = transactionalWrite(opts.root, [{ path: file, content: lines.join("\n") }], `capture idea ${opts.name}`, conductorCommit, () => {
+    const v = validatePath(opts.root);
+    return v.ok ? null : formatValidationErrors(v.errors) || "validation failed";
+  });
+  if (!result.ok) return { ok: false, status: result.stage === "validate" ? 422 : 500, error: result.error };
+  return { ok: true, commit: result.commit, changedFiles: [file] };
 }
 
 export interface PromoteIdeaOptions {
@@ -259,20 +251,26 @@ export function promoteIdea(opts: PromoteIdeaOptions): GateOpResult {
   if (existsSync(dir)) return { ok: false, status: 409, error: `unit '${opts.unit}' already exists in project '${opts.project}'` };
   mkdirSync(dir, { recursive: true });
   const unitFile = join(dir, "unit.md");
-  writeFileSync(
-    unitFile,
-    ["---", "type: inception", "status: active", `project: ${opts.project}`, `unit: ${opts.unit}`, "---", "", `# ${opts.unit}`, "", `Promoted from idea '${opts.idea}': ${pitch}`, ""].join("\n"),
+  const unitDoc = ["---", "type: inception", "status: active", `project: ${opts.project}`, `unit: ${opts.unit}`, "---", "", `# ${opts.unit}`, "", `Promoted from idea '${opts.idea}': ${pitch}`, ""].join(
+    "\n",
   );
-  rmSync(ideaFile);
 
-  const result = validatePath(opts.root);
+  // The idea file's candidate state is `null` (deleted) — it is now materialized as a unit, not a
+  // separate pitch — folded into the SAME transaction as the unit's own creation, so a validation or
+  // commit failure restores both together rather than leaving one half of the promotion applied.
+  const files: TxFile[] = [
+    { path: unitFile, content: unitDoc },
+    { path: ideaFile, content: null },
+  ];
+  const result = transactionalWrite(opts.root, files, `promote idea ${opts.idea} → ${opts.project}/${opts.unit}`, conductorCommit, () => {
+    const v = validatePath(opts.root);
+    return v.ok ? null : formatValidationErrors(v.errors) || "validation failed";
+  });
   if (!result.ok) {
-    rmSync(dir, { recursive: true, force: true });
-    writeFileSync(ideaFile, ideaSrc);
-    return { ok: false, status: 422, error: formatValidationErrors(result.errors) || "validation failed" };
+    rmSync(dir, { recursive: true, force: true }); // the unit directory itself is this call's own creation.
+    return { ok: false, status: result.stage === "validate" ? 422 : 500, error: result.error };
   }
-  const commit = conductorCommit(opts.root, [unitFile, ideaFile], `promote idea ${opts.idea} → ${opts.project}/${opts.unit}`);
-  return { ok: true, commit, changedFiles: [unitFile, ideaFile] };
+  return { ok: true, commit: result.commit, changedFiles: [unitFile, ideaFile] };
 }
 
 function titleCase(name: string): string {
@@ -351,22 +349,24 @@ export function resolveProposal(root: string, proposal: Proposal, verb: "approve
   mkdirSync(dirname(file), { recursive: true });
 
   let content: string;
+  let validate: (() => string | null) | undefined;
   if (proposal.kind === "learnings") {
     // Team LEARNINGS.md is a plain markdown note (no frontmatter) — skipped by the schema validator
     // (validate.ts classify()), so no re-validation is needed after appending to it.
     const existing = backup ?? `# ${proposal.team} — learnings\n`;
     content = `${existing.trimEnd()}\n\n## ${by}\n${proposal.text}\n`;
-    writeFileSync(file, content);
   } else {
     const base = basename(proposal.targetFile, ".md");
     const existing = backup ?? `---\nname: ${base}\n---\n`;
     content = `${existing.trimEnd()}\n\n${proposal.text}\n`;
-    writeFileSync(file, content);
-    const result = validatePath(root);
-    if (!result.ok) return rollbackAndFail(root, file, existedBefore, backup);
+    validate = () => {
+      const v = validatePath(root);
+      return v.ok ? null : formatValidationErrors(v.errors) || "validation failed";
+    };
   }
-  const commit = conductorCommit(root, [file], `${proposal.label} — approved by ${by}`);
-  return { ok: true, commit, changedFiles: [file] };
+  const result = transactionalWrite(root, [{ path: file, content }], `${proposal.label} — approved by ${by}`, conductorCommit, validate);
+  if (!result.ok) return { ok: false, status: result.stage === "validate" ? 422 : 500, error: result.error };
+  return { ok: true, commit: result.commit, changedFiles: [file] };
 }
 
 // ---------------------------------------------------------------------------
@@ -422,14 +422,12 @@ export function runNewProjectSkill(opts: NewProjectOptions): GateOpResult {
     opts.houseRules,
     "",
   ];
-  writeFileSync(projectFile, lines.join("\n"));
-  const result = validatePath(opts.root);
-  if (!result.ok) {
-    rmSync(projectFile, { force: true });
-    return { ok: false, status: 422, error: formatValidationErrors(result.errors) || "validation failed" };
-  }
-  const commit = conductorCommit(opts.root, [projectFile], `new-project ${opts.name}`);
-  return { ok: true, commit, changedFiles: [projectFile] };
+  const result = transactionalWrite(opts.root, [{ path: projectFile, content: lines.join("\n") }], `new-project ${opts.name}`, conductorCommit, () => {
+    const v = validatePath(opts.root);
+    return v.ok ? null : formatValidationErrors(v.errors) || "validation failed";
+  });
+  if (!result.ok) return { ok: false, status: result.stage === "validate" ? 422 : 500, error: result.error };
+  return { ok: true, commit: result.commit, changedFiles: [projectFile] };
 }
 
 // ---------------------------------------------------------------------------

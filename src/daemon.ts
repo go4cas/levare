@@ -16,12 +16,12 @@
 // burst of rapid repo changes while a tick is already running coalesces into exactly one follow-up
 // tick, not one per change (tested directly — see tests/daemon.test.ts's concurrency case).
 
-import { watch, readFileSync, writeFileSync, type FSWatcher } from "node:fs";
+import { watch, readFileSync, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import { loadRepo, type Repo } from "./repo.ts";
 import { advanceUnit, type AdvanceResult, type AsyncMemberRunner } from "./dagwalk.ts";
 import { patchFrontmatter } from "./gates.ts";
-import { conductorCommit } from "./git.ts";
+import { conductorCommit, transactionalWrite } from "./git.ts";
 import { productionAdapterRunner } from "./replay.ts";
 
 export interface DaemonInvocation {
@@ -371,7 +371,7 @@ export class Daemon {
     if (!u) return;
     const file = join(u.dir, "unit.md");
     const patched = patchFrontmatter(readFileSync(file, "utf8"), { status: "paused" });
-    writeFileSync(file, patched);
-    conductorCommit(this.root, [file], `stop ${unit}: budget gate → paused`);
+    const result = transactionalWrite(this.root, [{ path: file, content: patched }], `stop ${unit}: budget gate → paused`, conductorCommit);
+    if (!result.ok) throw new Error(result.error);
   }
 }
