@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import {
   statusBadge,
   paceBadge,
@@ -17,7 +17,13 @@ import {
 import { loadRepo } from "../src/repo.ts";
 import { renderStudio, renderProject } from "../src/board/render.ts";
 
-const RENDER_SRC = readFileSync("src/board/render.ts", "utf8");
+// NOTES REV4: render.ts is now a thin re-export barrel over render/ (one module per screen plus a
+// shared shell.ts) — these source-text assertions concern the render LAYER as a whole, so RENDER_SRC
+// concatenates the barrel and every module under render/, not just the barrel file itself.
+const RENDER_SRC = [
+  readFileSync("src/board/render.ts", "utf8"),
+  ...readdirSync("src/board/render").map((f) => readFileSync(`src/board/render/${f}`, "utf8")),
+].join("\n");
 
 const root = "fixtures/golden";
 const repo = loadRepo(root);
@@ -195,6 +201,9 @@ describe("render.ts routes every recurring pattern through components.ts, never 
     expect(RENDER_SRC).not.toContain("function confirmModalHtml");
     expect(RENDER_SRC).not.toContain('id="confirm-modal" hidden');
     expect(RENDER_SRC).not.toContain("function editorOverlay");
-    expect(RENDER_SRC).toContain('from "./components.ts"');
+    // NOTES REV4: render/*.ts modules sit one directory deeper than the old render.ts, so the import
+    // is "../components.ts" now, not "./components.ts" — either relative depth satisfies "imported,
+    // not re-defined locally".
+    expect(RENDER_SRC).toMatch(/from ["']\.+\/components\.ts["']/);
   });
 });

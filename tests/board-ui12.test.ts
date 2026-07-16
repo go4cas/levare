@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { callout } from "../src/board/components.ts";
 import { loadRepo, type Repo } from "../src/repo.ts";
 import { renderRegistry } from "../src/board/render.ts";
@@ -12,7 +12,12 @@ import type { Connector } from "../src/types.ts";
 // alongside (not instead of) the status palette, with warning amber reserved exclusively for this
 // channel — distinct from gate brass, which stays reserved exclusively for entity lifecycle state.
 
-const RENDER_SRC = readFileSync("src/board/render.ts", "utf8");
+// NOTES REV4: render.ts is now a thin re-export barrel over render/ — see board-components.test.ts's
+// identical RENDER_SRC construction for why this concatenates the whole directory, not just the barrel.
+const RENDER_SRC = [
+  readFileSync("src/board/render.ts", "utf8"),
+  ...readdirSync("src/board/render").map((f) => readFileSync(`src/board/render/${f}`, "utf8")),
+].join("\n");
 const COMPONENTS_SRC = readFileSync("src/board/components.ts", "utf8");
 const CSS = readFileSync("assets/styles.css", "utf8");
 
@@ -112,7 +117,10 @@ describe("no board renderer emits a callout-shaped block except through the prim
   });
 
   test("render.ts imports callout from components.ts rather than re-deriving it", () => {
-    expect(RENDER_SRC).toMatch(/import\s*\{[^}]*\bcallout\b[^}]*\}\s*from\s*"\.\/components\.ts"/);
+    // NOTES REV4: render/registry.ts sits one directory deeper than the old render.ts, so its import
+    // is "../components.ts", not "./components.ts" — either relative depth is a real import, not a
+    // re-derivation.
+    expect(RENDER_SRC).toMatch(/import\s*\{[^}]*\bcallout\b[^}]*\}\s*from\s*"\.+\/components\.ts"/);
   });
 
   test("callout() is the only function in components.ts that emits a `notice notice--` string", () => {

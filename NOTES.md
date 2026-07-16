@@ -7028,3 +7028,56 @@ item touches that code path). `bun run docs:generate` twice in a row produces by
 `bun run typecheck` → exit 0. `bun run deps:check` → `deps ok` (the generator imports `src/validate.ts`
 directly at dev time; no new runtime dependency). `git diff --exit-code` on `cheatsheets/` after
 regenerating → clean.
+
+# NOTES REV4 — the review's low-priority batch: four small structural/naming cleanups, byte-identical throughout
+
+Four items from the consolidated review's low-priority batch. All are refactors or docs — no runtime
+behaviour changes anywhere in this revision; every item's own verification proves it independently, and
+`bun run src/cli.ts replay fixtures/golden --stubs` matching the oracle byte-for-byte is the load-bearing
+proof common to all of them.
+
+## Item 1 — splitting render.ts by screen
+
+`src/board/render.ts` had grown to ~1290 lines/41 functions: all six screens (studio, project, run,
+artifact, idea, registry) plus the shell/rail/gate-card/Orchestrator-panel plumbing they all share, in
+one file.
+
+**Fix:** `src/board/render/` — `shell.ts` holds everything genuinely shared across two or more screens
+(the `<html>` shell, `appHeader`, `pageBody`, the Orchestrator panel, `railNav`, `gateCardHtml` and its
+dispatching helpers, avatar/kind-badge/token-link helpers, `projectStatusChip`, and the markdown-body/
+lineage-empty helpers `renderArtifact`/`renderIdea` both need); `studio.ts`, `project.ts`, `run.ts`,
+`artifact.ts`, `idea.ts`, `registry.ts` each hold exactly one screen's `render*` export plus whatever
+helper was ONLY ever called from that one screen (`runningNowHtml` → studio.ts, `miniScoreHtml` →
+project.ts, `scoreNodeClass` → run.ts, `lineageItem`/`lineageUnresolved` → artifact.ts, `entityBlock`/
+`rawFor`/`rawForPath` → registry.ts) — moved to the screen that uses it rather than left in the shared
+file, so each screen module only imports the shared surface it actually touches instead of sharing one
+1290-line scope.
+
+**`render.ts` becomes a thin re-export barrel**, not a fully-updated import graph, and this was a
+deliberate choice, not the default: `board/serve.ts` and thirteen test files import multiple screen
+renderers from `"../src/board/render.ts"` (some by a dozen distinct symbols across a file). Updating
+every one of those call sites to per-screen paths would touch ~14 files for a cosmetic path change and
+add real risk of a missed/misspelled import, for a codebase where nothing about the import graph was
+actually wrong (`serve.ts` importing "the board's render layer" from one place is exactly right — it's
+render.ts's own INTERNAL shape that was the problem, not who imports it externally). The barrel keeps
+every external call site byte-identical; the "cleaner graph" the goal asked for is inside `render/`
+itself, where the split actually happened.
+
+**Two source-text tests (`tests/board-components.test.ts`, `tests/board-ui12.test.ts`) read
+`src/board/render.ts` as a string** to assert absences ("no hand-rolled `.chip` literal", "no re-derived
+`notice notice--` block", "`gate__top` appears exactly 3 times") — with render.ts now a 20-line barrel,
+reading only that file would make every one of those assertions vacuously true regardless of what the
+split-out files actually contain, silently defanging tests whose entire purpose is catching a
+regression. Both now build `RENDER_SRC` from the barrel PLUS every file under `render/` (concatenated),
+preserving the tests' real assertion power; two of the barrel-relative-import checks (`from "./components.ts"` literally) were loosened to accept either `./` or `../`, since `render/*.ts` sit one
+directory deeper than the old render.ts and their real, correct import is `"../components.ts"`.
+
+**Verification:** `bun test` — 874 pass (up from 871 pre-split — no tests removed, two updated for the
+new file layout, none weakened in what they assert). `bun run typecheck` → exit 0. `bun run src/cli.ts
+replay fixtures/golden --stubs` matches `fixtures/golden/expected.json` byte-for-byte. A direct
+before/after spot-check (`git stash` the split, render all six screens against the golden fixture at a
+fixed clock, `git stash pop`, render the same six again) diffed byte-identical — studio, project, run,
+registry, one artifact (`spec-checkout-flow-v1`), and one idea (`loyalty-program`). `tests/layering-
+boundary.test.ts` (REV3) still passes unchanged — `render/` sits under `src/board/`, so it's on the
+board side of the boundary the same as render.ts always was. `bun run deps:check` → `deps ok`. `bun run
+build` succeeds.
