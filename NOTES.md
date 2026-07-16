@@ -7339,3 +7339,145 @@ cli.ts replay fixtures/golden --stubs` matches the oracle byte-for-byte (this ru
 adapter/receipt logic — `env.ts#subscriptionConnector`, which DOES drive `usd: null` cost overrides,
 is deliberately untouched, per item 2(b): `role` and `auth` are orthogonal, and C13's cost-accounting
 behaviour is unaffected by this ruling). `bun run deps:check` → `deps ok`.
+
+# NOTES V11-CONV — the Orchestrator conversation persists to files, closing the last invariant-2 exception
+
+## The gap, precisely
+
+UI8 built the conversation turn UI and named its own boundary explicitly: "conversation persistence
+across navigation stays explicitly out of scope (a separate future goal)." UI10 closed the narrower
+in-session problem (a client-side page swap never tears down the panel), but that's DOM-lifetime
+persistence, not storage — a real page reload, a closed tab, or `levare serve` restarting tomorrow lost
+the conversation outright. It was the one meaningful piece of system state not reconstructable from the
+repo, while the DECISIONS the conversation led to (a gate approval, a rejection note) were already
+fully audited by git. This goal closes that gap: the conversation becomes files, like everything else.
+
+## The shape
+
+`conversations/<scope>/<YYYY-MM>.md` — `scope` is `"studio"` or a project's own name (`conversation.ts
+#STUDIO_SCOPE`/`#sanitizeScope`), one file per calendar month (log rotation — no file grows
+unboundedly). Append-only markdown, designed to be pleasant to `cat`/`git diff`, not a serialization:
+
+```
+# storefront — 2026-07
+
+## conductor · 2026-07-16T14:32:05.000Z
+
+what needs me?
+
+## orchestrator · 2026-07-16T14:32:05.001Z
+
+3 gates are on you.
+```
+
+`conversation.ts#parseConversation` is deliberately lenient — any line that isn't a recognized `##
+speaker · timestamp` header folds into the current turn's running text, so a Conductor hand-annotating
+the file never corrupts the parse. The one accepted imprecision (recorded, not defended against): a
+message body line that happens to exactly match the header pattern would be misread as a new turn
+boundary. No escaping was added for this — keeping the format a plain, human-editable log was judged
+more valuable than defending an extremely unlikely accidental collision, and doing so would have made
+the file itself less pleasant to read, defeating the goal's own stated purpose for the format.
+
+Each completed exchange is ONE commit, authored as `levare-runner` (`git.ts#runnerCommit`) — the same
+identity phase 8 already uses for daemon-authored commits with no Conductor click in that specific
+commit's causal chain, which fits here too: levare itself is writing this file as a record of what
+happened, not the Conductor directly. Routed through the REV2 `transactionalWrite` helper exactly like
+every other mutating write path in this codebase, including its own `validate()` callback (re-derives
+the whole repo from disk) — belt-and-braces on top of item 1 below, not a substitute for it.
+
+**Persist completed exchanges only.** `board/serve.ts`'s `/orchestrator/message` route returns before
+ever calling `appendExchange` on both failure paths: the 503 disabled-boundary return (no `handle()`
+call was even attempted) and the 502 SDK-transport-failure return (a reply was never obtained). A
+persistence failure itself (e.g. a rejected commit hook) is a DIFFERENT kind of problem — the Conductor
+already has a real, successful reply by that point — so it's logged loudly to stderr but does not turn
+an otherwise-successful `/orchestrator/message` response into an error; ancillary logging must not be
+allowed to break the primary feature it's logging.
+
+## Item 1 — the trap, and what was actually true
+
+The goal named this "load-bearing and easy to miss": validate's markdown walk classifying `conversations/`
+as unknown and rejecting it. Reading `validate.ts#classify`/`validateSingleFile` closely first: an
+unrecognized top-level directory's `.md` files were ALREADY silently skipped (`if (!kind.schema)
+return;` — `classify` returns a null schema for any `top` not in `REGISTRY_SCHEMAS` and not `work`),
+so the walk never actually rejected `conversations/` even before this goal touched anything. Confirmed
+this isn't a coincidence specific to well-formed content either — a test proves a conversation file
+with no frontmatter at all, just arbitrary prose, still validates clean.
+
+That incidental safety wasn't good enough to leave as the only guarantee, though: `walkMarkdown` still
+recursed into `conversations/`, reading every file there on every `validatePath` call for zero benefit,
+and the exemption's existence was implicit (an emergent property of two unrelated pieces of code) rather
+than a documented, intentional decision. Fixed by making `walkMarkdown` skip `conversations/` outright
+at the studio root — the same treatment `node_modules`/`.git` already get — so the exemption is explicit,
+tested directly, and genuinely zero-cost regardless of how much conversation history has accumulated.
+`repo.ts#loadRepo` needed no change at all: it never had a generic top-level directory walk to begin
+with, only ever reading a fixed, named set of directories (`teams/agents/types/projects/connectors/
+work/studio.md`) — `conversations/` was already structurally invisible to it. Both facts are proven
+directly (`tests/conversation.test.ts`'s "validate.ts and loadRepo — conversations/ is invisible to
+both" describe block), not just inferred from reading the code.
+
+## The read path, and the one real design tension
+
+`orchestratorPanel` (`render/shell.ts`) now loads and renders the persisted tail (`loadConversationTail`
++ `renderPersistedTurns`, capped to `TAIL_EXCHANGES = 20` exchanges) beneath the live briefing, on every
+GET — this covers "mount" for free, since it's the same render call a cold GET or a `levare serve`
+restart already takes (PRD §9, invariant 2: re-derived per request, never cached).
+
+"And after client-nav scope changes" (goal item 3) is the one place UI10's own architecture pushed
+back: UI10 deliberately made the Orchestrator `<aside>` a persistent DOM subtree that a client-side
+navigation NEVER touches (that was the whole fix for the old per-click conversation wipe). A project
+page's persisted history is scope-dependent, though, so client-navigating from the studio into a
+project needs to show a DIFFERENT scope's tail — something UI10's fragment mechanism (which only ever
+slices `main`/`extras` back out of the one render call) had no channel for at all.
+
+Resolved by extending the SAME mechanism rather than inventing a second one: `orchestratorPanel` wraps
+the persisted-tail HTML in `<!--orchtail-->`/`<!--/orchtail-->` markers (identical to `pageBody`'s own
+`<!--main-->`/`<!--extras-->` convention) and stamps `data-scope` on the `<aside>` itself;
+`extractFragment` slices both back out into the fragment JSON response (`Fragment.scope`/`.orchTail`)
+— no new route, no second render path. `assets/app.js#swapFragment` calls a new `syncOrchTail(data)`
+that resyncs `[data-orch-tail]`'s innerHTML ONLY when `data.scope` differs from the panel's current
+`data-scope` attribute.
+
+That gate is load-bearing, not incidental: an SSE `reload` broadcast (which fires after ANY mutating
+action, including — via `refreshCurrent()` — right after THIS tab's own `/orchestrator/message` call)
+also flows through `navigate()`. If the tail resync ran unconditionally, a same-scope refresh right
+after sending a message would re-fetch a persisted tail that NOW includes the exchange this tab already
+appended live via `appendTurnMessage`, rendering it twice. Gating strictly on a scope CHANGE avoids
+this: a same-scope refresh is a no-op (`orch.getAttribute('data-scope') === data.scope` short-circuits
+before touching the DOM), so the live-appended turns and the persisted-tail region can never overlap.
+
+**Known, accepted limitation** (documented here per the goal's "record uncertainty in NOTES and
+continue" instruction, not something a test enforces): when a genuine scope change DOES occur, the
+live-appended turns from the OLD scope's conversation are not cleared — they remain in `.orch__body`
+below the freshly-synced tail for the new scope, visually mixing two projects' turns in that one
+session view until the next real reload. Clearing them would require giving `appendTurnMessage`'s
+target its own DOM boundary distinct from the persisted-tail region, which touches the well-tested
+turn-merging logic in `assets/app.js`/`tests/board-orchestrator-conversation.test.ts` for a narrow,
+transient cosmetic issue — judged not worth the risk for this goal's scope. The persisted, durable
+record on disk is completely unaffected either way.
+
+**Also deferred, explicitly** (goal item 3's own words): an in-UI "load earlier" affordance beyond the
+current month / `TAIL_EXCHANGES` cap. Older history stays on disk, fully greppable
+(`git log -p conversations/`, plain `cat`), just not reachable from the panel itself.
+
+## Verification
+
+`bun test` — 923 pass, 1 pre-existing skip, 0 fail, across 74 files (up from 889/73 pre-goal — new
+coverage: `tests/conversation.test.ts` (29 tests: sanitizeScope, the turn-block format round-trip,
+month rotation, the tail cap, the validate.ts/loadRepo exemption including a malformed-conversation-file
+case, the write path end-to-end through `POST /orchestrator/message` with a `levare-runner` `git log -1`
+assertion, both failure paths persisting nothing, the restart/read-path tests, and the new fragment
+`scope`/`orchTail` fields), plus extensions to `tests/board-client-navigation.test.ts` (the scope-change
+resync, the same-scope no-op, and the no-`scope`-field-at-all safe fallback) and
+`tests/board-orchestrator-conversation.test.ts` (the composer echoes `data-scope` back to the server).
+`tests/orchestrator-compiled-smoke.test.ts` extended in place (no new file) to prove the write path
+against the REAL compiled binary: the disabled path persists nothing; the credential-present path
+branches on whichever real outcome the (uncredentialed-in-this-sandbox) SDK call actually produces —
+a successful reply would assert the file + `levare-runner` commit, an error asserts nothing was
+persisted, so either branch proves the compiled binary's write path behaves correctly without this
+sandbox needing a live `claude` CLI session. `bun run typecheck` → exit 0. `bun run deps:check` →
+`deps ok`. `bun run build` → succeeds, `dist/levare` compiles clean. `bun run src/cli.ts replay
+fixtures/golden --stubs` → oracle match, byte-for-byte (this goal touches no adapter/replay logic).
+`bun run src/cli.ts validate fixtures/golden` → valid. `docs/current-gaps.md`'s "Conversation
+persistence" entry is retitled "closed" and replaced with the two narrower, genuinely-still-open gaps
+named above (the deferred load-earlier affordance, and the unescaped-format tradeoff) rather than
+deleted outright — the register's own discipline is to name what's still true, not just what changed.

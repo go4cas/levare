@@ -27,17 +27,23 @@ any `kind: remote` declaration so a studio author can't mistake the schema accep
 for the runtime honoring it (NOTES REV1, Finding 3). The wiring itself — an actual MCP client, a real
 remote dispatch path — was and is out of scope; only the honesty layer was built.
 
-## Conversation persistence
+## Conversation persistence — closed (NOTES V11-CONV), two narrower gaps remain
 
-The Orchestrator panel's conversation survives in-app navigation (UI10: the app shell, including the
-`.orch__body` turn history, is one persistent DOM subtree that a client-side page swap never touches),
-but that is DOM-lifetime persistence, not storage. A real page reload, a closed tab, or a new session
-starts the conversation over — nothing writes turn history to disk or a server. This was an explicit,
-named exclusion from the start: NOTES UI8 states plainly that "conversation persistence across
-navigation stays explicitly out of scope (a separate future goal)," and UI10 later closed the
-narrower in-session DOM-wipe problem without revisiting that boundary. It remains consistent with the
-Orchestrator holding no state of its own (PRD §7) — but a durable conversation log is a real, distinct
-feature nobody has built.
+The Orchestrator conversation now persists to `conversations/<scope>/<YYYY-MM>.md` — an append-only,
+per-scope, per-month markdown log, committed as `levare-runner` via the REV2 transactional helper, one
+commit per completed exchange (NOTES V11-CONV closes the exclusion NOTES UI8 named and UI10 left open).
+Two deliberate, narrower gaps remain from that goal:
+
+- **No in-UI "load earlier" affordance.** The panel only ever renders the current scope's
+  current-month segment, capped to the last `TAIL_EXCHANGES` (conversation.ts) exchanges. Older months,
+  and anything beyond the cap, stay on disk — fully greppable (`grep`/`cat`/`git log -p` over
+  `conversations/`) but not reachable from the panel itself. Paging or a "load earlier" control was
+  explicitly deferred, not attempted.
+- **The turn-block format is a plain log, not an escaped serialization.** A message body line that
+  happens to exactly match a `## conductor · <timestamp>` / `## orchestrator · <timestamp>` header
+  would be misread as a new turn boundary on reparse — accepted deliberately (conversation.ts's own
+  comment) to keep the format pleasant to hand-edit and diff, rather than adding escaping for an
+  extremely unlikely accidental collision.
 
 ## The capability layer
 
