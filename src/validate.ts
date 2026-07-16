@@ -69,14 +69,14 @@ export interface ValidationResult {
 // ---------------------------------------------------------------------------
 
 type Scalar = "str" | "num" | "bool" | "date";
-interface FieldSpec {
+export interface FieldSpec {
   type: Scalar | "str[]" | "num[]" | "enum" | "map" | "flow" | "list";
   required?: boolean;
   nullable?: boolean;
   enum?: string[];
   fields?: Record<string, FieldSpec>; // for type: "map"
 }
-interface Schema {
+export interface Schema {
   name: string;
   fields: Record<string, FieldSpec>;
   /** Fields that a prior PRD version accepted and this one rejects: name → the diagnosis message
@@ -89,7 +89,7 @@ interface Schema {
 // abandoned so the walk can continue past it.
 const STATUS_ENUM = ["draft", "in-review", "approved", "rejected", "superseded", "blocked", "skipped"];
 
-const ARTIFACT_SCHEMA: Schema = {
+export const ARTIFACT_SCHEMA: Schema = {
   name: "artifact",
   fields: {
     kind: { type: "str", required: true },
@@ -125,7 +125,7 @@ const ARTIFACT_SCHEMA: Schema = {
   },
 };
 
-const WORK_UNIT_SCHEMA: Schema = {
+export const WORK_UNIT_SCHEMA: Schema = {
   name: "work-unit",
   fields: {
     type: { type: "enum", required: true, enum: ["inception", "feature", "fix", "spike", "research"] },
@@ -282,7 +282,7 @@ const SKILL_SCHEMA: Schema = {
 // `projects/*.md` product pointer. Currently one field: the Orchestrator's declared model, which
 // `validateKnownModels` below checks against `knowledge/model-pricing.md` exactly like an agent's own
 // `model:` field.
-const STUDIO_SCHEMA: Schema = {
+export const STUDIO_SCHEMA: Schema = {
   name: "studio",
   fields: {
     orchestrator_model: { type: "str", required: false },
