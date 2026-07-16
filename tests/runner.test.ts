@@ -114,6 +114,7 @@ function makeRepo(parts: { teams: Team[]; types: TypeTemplate[]; projects: Proje
     connectors: new Map(),
     units: parts.units,
     artifacts: new Map(),
+    studio: {},
   };
 }
 

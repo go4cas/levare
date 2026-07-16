@@ -307,7 +307,14 @@ async function doRequest(
   // than from disk, and only ONE write for that path may survive into `files` below (the further
   // supersede patch on top of it), not two competing writes to the same path in one transaction.
   const companionForSupersede = extraFiles.find((f) => f.path === supersedeFile);
-  const oldSrc = companionForSupersede ? companionForSupersede.content : readFileSync(supersedeFile, "utf8");
+  let oldSrc: string;
+  if (!companionForSupersede) {
+    oldSrc = readFileSync(supersedeFile, "utf8");
+  } else if (companionForSupersede.content === null) {
+    throw new Error(`internal: pending write for '${supersedeFile}' is a deletion, not a supersede source`);
+  } else {
+    oldSrc = companionForSupersede.content;
+  }
   const oldPatched = patchFrontmatter(oldSrc, { status: "superseded", approved_by: null });
   const remainingExtra = extraFiles.filter((f) => f.path !== supersedeFile);
 

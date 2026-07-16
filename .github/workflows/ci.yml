@@ -26,6 +26,7 @@ jobs:
           bun-version: latest
       - run: bun install --frozen-lockfile
       - run: bun test
+      - run: bun run typecheck
       - run: bun run deps:check
 
   macos-build:

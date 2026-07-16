@@ -18,7 +18,7 @@ function fakeAsyncTransport(handler: (req: SdkWorkerRequest) => SdkWorkerRespons
 }
 
 function agent(over: Partial<Agent> = {}): Agent {
-  return { name: "lyra", kind: "native", model: "claude-opus-4-8", style: { avatar: "L" }, body: "You design flows.", ...over };
+  return { name: "lyra", kind: "native", produces: ["design"], model: "claude-opus-4-8", style: { avatar: "L" }, body: "You design flows.", ...over };
 }
 
 function req(over: Partial<InvokeRequest> = {}): InvokeRequest {

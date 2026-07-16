@@ -111,7 +111,7 @@ function syntheticRepoWithGates(): Repo {
     ],
   ]);
   const units: WorkUnit[] = [{ type: "feature", status: "active", project: "p", unit: "u", dir: "/tmp/x" }];
-  return { root: "/tmp/synthetic", teams, agents: new Map(), types: new Map(), projects: new Map(), connectors: new Map(), units, artifacts };
+  return { root: "/tmp/synthetic", teams, agents: new Map(), types: new Map(), projects: new Map(), connectors: new Map(), units, artifacts, studio: {} };
 }
 
 describe("(a) briefing derivation", () => {

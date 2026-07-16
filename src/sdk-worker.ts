@@ -30,6 +30,7 @@
 // every git invocation in this codebase (NOTES A4/E12), now applied to the CLI subprocess too.
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { SdkWorkerRequest, SdkWorkerResponse } from "./sdk-transport.ts";
 import type { Receipt } from "./types.ts";
 
@@ -61,7 +62,7 @@ export function buildQueryOptions(req: SdkWorkerRequest) {
     allowDangerouslySkipPermissions: true,
     // SDK isolation mode (NOTES K15) — no user/project/local settings, so a user-installed hook (the
     // confirmed hang cause on a live host) has nothing to fire from; nothing is persisted to disk.
-    settingSources: [] as const,
+    settingSources: [] as SettingSource[],
     persistSession: false,
     // Explicit, not omitted: spread this process's own env (already scoped by the parent spawn, per
     // sdk-transport.ts's env-trust-boundary note) so the SDK's inner `claude` subprocess is guaranteed

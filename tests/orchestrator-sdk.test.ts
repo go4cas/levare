@@ -617,7 +617,7 @@ describe("checkSdkPreconditions — credential presence + binary resolvability, 
   test("credential present and binary resolvable → viable, and the resolved path is surfaced", () => {
     const check = checkSdkPreconditions({ ANTHROPIC_API_KEY: "sk-ant-test" });
     expect(check.viable).toBe(true);
-    expect(check.binaryPath).toBe(resolveNativeBinary());
+    expect(check.binaryPath).toBe(resolveNativeBinary() ?? undefined);
   });
 });
 
@@ -709,7 +709,7 @@ describe("pathToClaudeCodeExecutable is resolved explicitly and threaded to ever
     const { transport, calls } = fakeTransport(() => ({ ok: true, result: "{}", structuredOutput: { kind: "stats" } }));
     const boundary = createSdkOrchestratorBoundary({ transport });
     await boundary.interpret("stats");
-    expect(calls[0].pathToClaudeCodeExecutable).toBe(resolveNativeBinary());
+    expect(calls[0].pathToClaudeCodeExecutable).toBe(resolveNativeBinary() ?? undefined);
   });
 
   test("an explicit pathToClaudeCodeExecutable override wins over resolution", async () => {
@@ -722,7 +722,8 @@ describe("pathToClaudeCodeExecutable is resolved explicitly and threaded to ever
   test("selectOrchestratorBoundary reuses the EXACT path its own precondition probe resolved — not a second, separate resolution", async () => {
     const { transport, calls } = fakeTransport(() => ({ ok: true, result: "{}", structuredOutput: { kind: "stats" } }));
     const boundary = selectOrchestratorBoundary({ ANTHROPIC_API_KEY: "sk-ant-test" }, { transport });
-    await boundary.interpret("stats");
+    expect(boundary).not.toBeNull();
+    await boundary!.interpret("stats");
     const check = checkSdkPreconditionsCached({ ANTHROPIC_API_KEY: "sk-ant-test" });
     expect(calls[0].pathToClaudeCodeExecutable).toBe(check.binaryPath);
   });

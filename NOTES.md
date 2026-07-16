@@ -2450,14 +2450,8 @@ never produced) and pass under the per-kind walk (a build team produces `code`, 
   name+ISO format guard (validate presence only; safe because the string is hard-constructed).
   Recommended follow-up: route both through `applyApproval`.
 - **N1**: still host-vs-container; untestable from inside the devcontainer. Needs a bare-host `serve`.
-- **Runner⇄dagwalk/gates duplication** (resolveStep, untilSatisfied, the C8/after: computation): the
-  recommended end state is a leaf module both engines import, breaking the gates→runner import cycle
-  that motivates the hand-synced copies (C7's own lesson, applied to the one place it was not).
-  **Partially addressed, C14**: the duplication itself is unchanged (still two independent `runLoop`-
-  shaped implementations), but a cross-engine equivalence test (`tests/loop-c14.test.ts`) now pins the
-  two engines to the SAME member-invocation sequence for the golden fixture's flow, so a future
-  divergence between them fails `bun test` rather than shipping silently, the way this exact
-  duplication just did. The unification itself is still open.
+- ~~**Runner⇄dagwalk/gates duplication**~~ — **CLOSED, REV3.** `src/flow.ts` is now the leaf module
+  (imports only types.ts) both engines import; every "independent copy" is deleted. See NOTES REV3.
 
 ## R4. PRD v1.1 reconciliation — `mode` removed, C3 budget behaviour on the daemon
 Two clauses the v1.1 amendment ratified but the code did not yet do (both listed unresolved in R3).
@@ -6793,3 +6787,164 @@ is never invoked when the bind throws.
 new tests across 3 new files). `bun run src/cli.ts replay fixtures/golden --stubs` matches
 `fixtures/golden/expected.json` byte-for-byte. `bun run deps:check` → `deps ok`. `bun run build`
 succeeds.
+
+# NOTES REV3 — paying the architecture debt (closing R3): shared flow semantics, the layering inversion, and typechecking in the gate
+
+Three items from the consolidated architecture review.
+
+## Item 1 — extracting the shared flow semantics (closing R3 properly)
+
+R3 named the standing risk directly: `responsibleTeams`/`responsibleTeamsFor`, `untilSatisfied`, and
+`resolveStep`/step-matching (`kindMatches`) existed as separately-maintained "independent copies" in
+runner.ts, gates.ts, dagwalk.ts, and a fourth copy in validate.ts — every one of them commented with
+the exact same justification: avoiding a circular import back to runner.ts. C14 (NOTES.md, above) was
+the drift this produced once already: the Runner's batch walk and the live dagwalk walk disagreed on
+when a loop's `until` condition was satisfied. `tests/loop-c14.test.ts`'s cross-engine equivalence test
+contained the drift going forward but never removed the duplication itself — R3 stayed open.
+
+**Fix:** `src/flow.ts` — a dependency-light leaf module that imports only `types.ts` and nothing that
+could import it back. It holds `kindMatches`, `responsibleTeamsFor`/`responsibleTeamFor` (including the
+unit `team:` override, ruling C12/F10), `resolveStep`, `unmetAfter`, and `untilSatisfied`. `FlowRepo` is
+a structural subset of repo.ts's `Repo` (teams/types/units), described rather than imported — repo.ts
+itself imports validate.ts, and validate.ts needs flow.ts, so importing `Repo` here would recreate the
+exact cycle this module exists to end; every real `Repo` already satisfies the shape structurally, so
+callers pass one through unchanged. `untilSatisfied` takes the artifact map directly (not a repo),
+since the Runner's own per-run mutable map (`this.artifacts`, updated live as the batch walk produces
+and approves artifacts) and the live walk's on-disk snapshot (`repo.artifacts`, reloaded before every
+call) are not the same container shape, only the same shape of *value*.
+
+`RunnerError` now lives in flow.ts (a plain zero-dependency `Error` subclass) and is re-exported from
+runner.ts, which still uses it for its own broader error cases (budget/timebox/approval failures, not
+just flow resolution) — moving the class didn't need to change any of its other call sites.
+
+runner.ts, gates.ts, dagwalk.ts, and validate.ts (plus a fifth, unnamed-in-the-goal but structurally
+identical copy in context.ts) now import from flow.ts instead of re-deriving it; every "independent
+copy" comment and the code it justified is deleted (`grep -rn "independent copy" src/` now returns
+nothing under the flow-semantics files — the one remaining hit, `board/gateops.ts`'s `blockedRetryDoc`,
+is a document-formatting helper unrelated to flow resolution, out of this goal's scope). gates.ts keeps
+`loopMembershipFor`/`isLoopCompanionKind`/`loopUntilKind` (gate-specific, built on top of flow.ts's
+primitives) and `patchFrontmatter`/`upsertFrontmatterField` (unrelated frontmatter helpers); it now
+re-exports flow.ts's functions for its own existing callers rather than redefining them.
+
+**Verification:** `bun test` — 867/867 (up from 858 pre-REV3, no new tests added for this item — the
+existing cross-engine equivalence test in `tests/loop-c14.test.ts` now proves the shared module serves
+both engines rather than proving two copies agree, which is the stronger claim). `bun run src/cli.ts
+replay fixtures/golden --stubs` matches `fixtures/golden/expected.json` byte-for-byte — the extraction
+is byte-identical, as it must be for a pure restructuring. `bun run deps:check` → `deps ok`. `bun run
+build` succeeds.
+
+## Item 2 — the core→board layering inversion
+
+`src/orchestrator-projection.ts` (core: the Orchestrator's deterministic studio view, ruling C10)
+imported `board/derive.ts`, `board/extra.ts`, and `board/timeline.ts`; `src/dagwalk.ts` (core: the live
+DAG walk) imported `board/locate.ts`. All four are pure derivation/lookup helpers over a loaded `Repo`
+or the filesystem — no HTML, no HTTP, nothing UI-specific — needed by both the board's render path and
+core. **Uncertainty recorded and resolved by judgment:** the goal named only `derive.ts` explicitly
+("core, misfiled"); grep found orchestrator-projection.ts and dagwalk.ts also depended on `extra.ts`,
+`timeline.ts`, and `locate.ts` for the identical reason. Moving `derive.ts` alone would have left the
+boundary check (below) failing immediately on those three, so all four moved together, under the same
+reasoning the goal gave for `derive.ts` itself.
+
+**Fix:** `board/derive.ts` → `src/derive.ts`, `board/extra.ts` → `src/extra.ts`, `board/timeline.ts` →
+`src/timeline.ts`, `board/locate.ts` → `src/locate.ts`. Every importer updated: `board/gateops.ts`,
+`board/onboarding.ts`, `board/render.ts`, `board/status.ts`, `board/components.ts`,
+`orchestrator.ts`, `orchestrator-projection.ts`, `dagwalk.ts`, and the tests that exercised any of
+them (`tests/binding.test.ts`, `tests/board-render.test.ts`, `tests/f18/f19/f20-*.test.ts`,
+`tests/loop-c14.test.ts`, `tests/extra.test.ts`, plus comment-only references in
+`tests/board-serve.test.ts`/`tests/security-audit.test.ts`).
+
+**The boundary check** (`tests/layering-boundary.test.ts`): scans every file directly under `src/`
+(excluding `src/board/` itself) for an import from `src/board/`, and fails the build if it finds one
+outside a small, named, commented allowlist. **Two pre-existing exceptions are allowlisted, not
+fixed — recorded here rather than silently permitted by a loose check:**
+- `cli.ts` imports `board/serve.ts` — the CLI entrypoint/composition root wiring the board's HTTP
+  server into `levare serve`. This is ordinary top-down layering (the entrypoint depends on everything),
+  not the R3 inversion (core reaching for board-owned derivation logic), so it stays as-is.
+- `orchestrator.ts` imports `board/gateops.ts`'s `resolveGate` — the Orchestrator reuses the board's own
+  gate-write API (the same commit path the board itself uses) rather than a second implementation of
+  gate mutation. This is a real, pre-existing coupling between two non-board layers and *could* be seen
+  as a milder version of the same inversion, but unwinding it means relocating gateops.ts's mutation
+  surface (563 lines, HTTP/Daemon-coupled) out of board/ entirely — a materially larger, riskier change
+  than this goal's named scope. Recorded honestly as deferred rather than silently exempted or papered
+  over with a weaker check.
+
+**Verification:** `bun test` — 869/869 (+2 for the boundary test). `bun run src/cli.ts replay
+fixtures/golden --stubs` matches the oracle byte-for-byte (this item only moves files and updates
+import paths — zero behavioural change). `bun run deps:check` → `deps ok`. `bun run build` succeeds.
+
+## Item 3 — typechecking in the gate
+
+No `tsconfig.json`, no typecheck script existed; Bun executes `.ts` without checking it, so a type
+error only surfaces at runtime, if at all.
+
+**tsconfig.json:** `strict: true`, plus `moduleResolution: "bundler"` + `allowImportingTsExtensions:
+true` (this codebase imports with explicit `.ts` extensions throughout, matching how Bun itself
+resolves them), `lib: ["ESNext", "DOM"]`, and `types: ["bun"]` (`@types/bun`/`bun-types` added as
+devDependencies). **Why DOM lib, on a server-only Bun codebase:** without it, bun-types' own fallback
+shapes for `Request`/`Response`/`Blob` degrade to a near-empty `{}` for methods like `.json()` (no DOM
+lib present to provide the real `Body` mixin) — accounting for roughly 57 of the ~86 errors `strict`
+alone surfaced. Including `DOM` gives `req.json()` etc. their real, precise types instead; the tradeoff
+(pulling in unused browser globals like `window`/`document`) is harmless since nothing here references
+them. **Flags evaluated and deliberately NOT enabled:** `noUncheckedIndexedAccess` was tried first and
+alone added ~360 more errors (`array[i]` reads throughout the test suite going from `T` to `T |
+undefined`) — a real category of rigor, but disproportionate to this goal's scope and exactly the "large
+pre-existing count" the goal anticipated; deferred rather than mechanically silenced at hundreds of call
+sites. `noImplicitOverride` was tried and added zero — folded in as effectively free... then dropped
+again since nothing in this codebase uses class inheritance across module boundaries where it would
+bite; omitted rather than enabled-and-inert. **Everything else `strict: true` implies is enabled, and
+the full include set — `src/**/*.ts` AND `tests/**/*.ts` — passes at zero errors; no flag needed to stay
+off to reach that, and no file needed excluding.** `src/assets.d.ts` declares the three ambient module
+shapes Bun's `with { type: "file" }` asset imports need (`*.css`, `*.md`, and the one `*.js` asset
+import) that bun-types doesn't ship declarations for itself.
+
+**The ~25 errors `strict` (with DOM) surfaced were fixed, not laundered — none used `any`:**
+- `board/gateops.ts`: a `TxFile.content: string | null` read as an unconditional supersede source —
+  restructured into an explicit branch that throws a real, named error on the null (deletion) case
+  instead of asserting past it; this was a genuine latent gap (a companion cascade that happened to be a
+  deletion would have crashed inside `patchFrontmatter` with a confusing message instead of a clear one).
+- `sdk-worker.ts`: `settingSources: [] as const` (a `readonly []`) didn't satisfy the SDK's mutable
+  `SettingSource[]` — fixed with the SDK's own exported `SettingSource` type (`[] as SettingSource[]`).
+- `tests/board-ui12.test.ts`: imported `Repo` from `types.ts`, which never exported it (it's `repo.ts`'s
+  own interface) — a real broken import, silently tolerated only because nothing ran it through a
+  compiler before. Fixed to import from `repo.ts`.
+- `tests/orchestrator.test.ts`, `tests/runner.test.ts`: two synthetic-repo test fixtures were missing
+  the `studio: StudioSettings` field `Repo` has required since NOTES F11 — added `studio: {}`, matching
+  every other fixture in the suite.
+- `tests/native-sdk-boundary.test.ts`: an `agent()` test-fixture helper never set `produces` (an
+  `Agent`-required field) at all, so its one caller built an `Agent` with `produces: undefined` at
+  runtime, silently — a real fixture gap, not just a type annotation gap. Added `produces: ["design"]`.
+- Several `spawnSync`/`Bun.spawn` return values typed via `ReturnType<typeof spawnSync>` /
+  `ReturnType<typeof Bun.spawn>` — a known TS gotcha where `ReturnType<>` of an overloaded function
+  picks a default/last overload rather than the one the concrete call actually resolves to (here,
+  `Buffer`-flavored instead of the `string`/`"pipe"`-flavored result the call's own options produce).
+  Fixed with explicit `SpawnSyncReturns<string>` / `Bun.Subprocess<"ignore", "pipe", "pipe">`
+  annotations naming the real shape.
+- The remaining dozen or so were narrow, genuine `strict`-null-checking gaps in test assertions
+  (`process.env.X` is `string | undefined`; `resolveNativeBinary()` is `string | null` where production
+  code itself already normalizes with `?? undefined`, at `adapters.ts:133,157` — tests now do the same;
+  a `selectOrchestratorBoundary(...)` result used without the `expect(...).not.toBeNull()` +
+  `boundary!` pattern the same file already established at its other call sites, applied consistently
+  here too) — each fixed with the same non-null-assertion/coalescing idiom already in use elsewhere in
+  the same file, not introduced fresh.
+
+**package.json:** `typecheck: "bunx tsc --noEmit"`; `typescript` and `@types/bun` added under
+`devDependencies` only (never `dependencies` — `deps:check` only inspects `dependencies`, and stays
+`deps ok` unchanged, confirmed). **ci.yml:** `bun run typecheck` added to the `test` job, between `bun
+test` and `bun run deps:check`.
+
+**Verification:** `bun run typecheck` (`bunx tsc --noEmit`) exits 0 across the full `src/**/*.ts` +
+`tests/**/*.ts` include set. `bun test` — 869/869, 1 pre-existing skip. `bun run src/cli.ts replay
+fixtures/golden --stubs` matches the oracle byte-for-byte (every fix in this item is either a type
+annotation or a narrow, behavior-preserving guard — none change what any code path does with valid
+input). `bun run deps:check` → `deps ok`. `bun run build` succeeds; the compiled binary's own
+`validate`/`--version` still work (asset embedding is unaffected — `.d.ts` files are compile-time only).
+
+## Overall (NOTES REV3, closing R3)
+
+`bun test` — 869 pass, 1 pre-existing skip, 0 fail, across 72 files (up from 858/68 pre-REV3, +11 net
+new tests: 2 from the layering-boundary check, the rest incidental to fixture repairs). `bun run
+typecheck` passes and runs in CI. `bun run src/cli.ts replay fixtures/golden --stubs` matches
+`fixtures/golden/expected.json` byte-for-byte — the non-negotiable proof that none of the three items
+changed any runtime behavior. `bun run deps:check` → `deps ok`. `bun run build` succeeds. R3 is closed:
+`grep -rn "independent copy" src/` finds nothing under the flow-semantics files; `src/flow.ts` is the
+one shared definition; the core→board import direction is enforced by a test, not just a convention.

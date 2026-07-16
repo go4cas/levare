@@ -195,7 +195,7 @@ describe("initStudio — git init + the founding commit", () => {
     const lines = log.stdout.trim().split("\n").filter(Boolean);
     expect(lines.length).toBe(1);
     expect(lines[0]).toContain("Ada Studio <ada@example.com> levare init");
-    expect(lines[0].split(" ")[0]).toBe(result.git.commit);
+    expect(lines[0].split(" ")[0]).toBe(result.git.commit!);
 
     // The commit actually captured the scaffold — nothing left uncommitted.
     const status = git(root, ["status", "--porcelain"], env);

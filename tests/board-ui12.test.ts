@@ -1,9 +1,9 @@
 import { test, expect, describe } from "bun:test";
 import { readFileSync } from "node:fs";
 import { callout } from "../src/board/components.ts";
-import { loadRepo } from "../src/repo.ts";
+import { loadRepo, type Repo } from "../src/repo.ts";
 import { renderRegistry } from "../src/board/render.ts";
-import type { Repo, Connector } from "../src/types.ts";
+import type { Connector } from "../src/types.ts";
 
 // NOTES UI12 — the message-severity scale (note/warning/danger) and the `callout()` primitive that
 // is now the ONLY way a note/warning/danger message block is produced anywhere on the board. Closes

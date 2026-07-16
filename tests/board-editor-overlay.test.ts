@@ -459,7 +459,7 @@ describe("registry overlay editor — real app.js exercised against a fake DOM",
     // A check fires immediately on open, against the unsaved-but-unmodified buffer.
     expect(h.fetchCalls.length).toBe(1);
     expect(h.fetchCalls[0].url).toBe("/registry/check/teams/kestrel.md");
-    expect(JSON.parse(h.fetchCalls[0].init.body).content).toBe(RAW_SOURCE);
+    expect(JSON.parse(h.fetchCalls[0].init.body!).content).toBe(RAW_SOURCE);
   });
 
   test("rapid keystrokes debounce into exactly one check call; Save is disabled until it resolves ok", async () => {
@@ -478,7 +478,7 @@ describe("registry overlay editor — real app.js exercised against a fake DOM",
     h.flushTimers(); // advances past the 250ms debounce window
     expect(h.fetchCalls.length).toBe(2); // the two rapid keystrokes coalesced into ONE re-check, not two
     expect(h.fetchCalls[1].url).toBe("/registry/check/teams/kestrel.md");
-    expect(JSON.parse(h.fetchCalls[1].init.body).content).toBe(RAW_SOURCE + "\nmore: 12\n");
+    expect(JSON.parse(h.fetchCalls[1].init.body!).content).toBe(RAW_SOURCE + "\nmore: 12\n");
   });
 
   // UI4 item 2: the same ValidationError[] the CLI formats with a code and a file:line locator
@@ -512,7 +512,7 @@ describe("registry overlay editor — real app.js exercised against a fake DOM",
     expect(p.saveBtn.disabled).toBe(true);
     expect(h.fetchCalls.length).toBe(2);
     expect(h.fetchCalls[1].url).toBe("/registry/teams/kestrel.md"); // the save route, distinct from /registry/check/...
-    expect(JSON.parse(h.fetchCalls[1].init.body).content).toBe(RAW_SOURCE);
+    expect(JSON.parse(h.fetchCalls[1].init.body!).content).toBe(RAW_SOURCE);
 
     h.fetchCalls[1].resolve({ ok: true, commit: "deadbeef" });
     await flush();
@@ -524,7 +524,7 @@ describe("registry overlay editor — real app.js exercised against a fake DOM",
     expect(h.reloadCalls.length).toBe(0);
     expect(h.fetchCalls.length).toBe(3);
     expect(h.fetchCalls[2].url).toBe("/registry/teams");
-    expect(h.fetchCalls[2].init.headers["X-Levare-Fragment"]).toBe("1");
+    expect(h.fetchCalls[2].init.headers!["X-Levare-Fragment"]).toBe("1");
   });
 
   test("Save is blocked while invalid — clicking a disabled Save button does nothing", async () => {

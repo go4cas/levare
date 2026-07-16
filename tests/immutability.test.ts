@@ -1,6 +1,6 @@
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { validatePath, type ImmutabilityState } from "../src/validate.ts";
@@ -28,7 +28,7 @@ const HERMETIC_ENV = {
 
 // Run git hermetically inside `repoRoot` and throw (unless allowFail) on non-zero status, so a
 // failed commit fails the suite loudly at setup rather than leaving an empty repo.
-function git(repoRoot: string, args: string[], opts: { allowFail?: boolean } = {}): ReturnType<typeof spawnSync> {
+function git(repoRoot: string, args: string[], opts: { allowFail?: boolean } = {}): SpawnSyncReturns<string> {
   const r = spawnSync(
     "git",
     [

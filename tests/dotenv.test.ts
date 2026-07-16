@@ -164,7 +164,7 @@ describe("NOTES C11 part 4 acceptance: .env loads into the process env, but conn
       writeFileSync(join(root, ".env"), "LEVARE_TEST_DOTENV_PROBE=present\n");
       delete process.env.LEVARE_TEST_DOTENV_PROBE;
       applyStudioEnv(root); // default target = process.env, exactly what cli.ts's runServeCmd/runDoctorCmd call
-      expect(process.env.LEVARE_TEST_DOTENV_PROBE).toBe("present");
+      expect(process.env.LEVARE_TEST_DOTENV_PROBE ?? "").toBe("present");
     } finally {
       if (savedValue === undefined) delete process.env.LEVARE_TEST_DOTENV_PROBE;
       else process.env.LEVARE_TEST_DOTENV_PROBE = savedValue;

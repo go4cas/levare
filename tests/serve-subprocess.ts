@@ -13,7 +13,7 @@
 export async function spawnLevareServe(
   args: string[],
   opts: { cwd: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; bin?: string },
-): Promise<{ proc: ReturnType<typeof Bun.spawn>; port: number; base: string }> {
+): Promise<{ proc: Bun.Subprocess<"ignore", "pipe", "pipe">; port: number; base: string }> {
   const bin = opts.bin ?? "./levare";
   const proc = Bun.spawn([bin, "serve", ...args, "--port", "0"], {
     cwd: opts.cwd,
@@ -28,7 +28,7 @@ export async function spawnLevareServe(
 // `runServeCmd` logs `levare serve · <root> → http://localhost:<port> ...` exactly once, after
 // `Bun.serve` has already bound (Bun.serve resolves the actual port synchronously) — so the port in
 // that line is real and already listening by the time it appears.
-async function readBoundPort(proc: ReturnType<typeof Bun.spawn>, timeoutMs: number, bin: string): Promise<number> {
+async function readBoundPort(proc: Bun.Subprocess<"ignore", "pipe", "pipe">, timeoutMs: number, bin: string): Promise<number> {
   const reader = proc.stdout.getReader();
   const decoder = new TextDecoder();
   let buf = "";

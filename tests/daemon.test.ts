@@ -272,7 +272,7 @@ describe("(c) 'Members running' is a true projection of in-flight invocations", 
     expect(daemon.running()).toEqual([]);
     await daemon.tick(); // advances loyalty-flow to `design`
     expect(sawRunning).not.toBeNull();
-    expect(sawRunning).toEqual([{ project: "storefront", unit: "loyalty-flow", member: "lyra", kind: "design", startedAt: sawRunning![0].startedAt }]);
+    expect(sawRunning!).toEqual([{ project: "storefront", unit: "loyalty-flow", member: "lyra", kind: "design", startedAt: sawRunning![0].startedAt }]);
     // Cleared the instant production finishes.
     expect(daemon.running()).toEqual([]);
   });
