@@ -1,5 +1,7 @@
 import { test, expect, describe } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, writeFileSync, rmSync, cpSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadRepo } from "../src/repo.ts";
 import { runDoctor, formatDoctor, diagnose, type CliProbe, type EnvProbe, type PromptCheck } from "../src/doctor.ts";
 import type { OrchestratorStatus } from "../src/orchestrator-status.ts";
@@ -258,5 +260,43 @@ describe("doctor: guardrails-declared-but-not-yet-enforced telling (NOTES REV1 f
     expect(out).toContain("guardrails are declared but not yet enforced");
     expect(out).toContain("merge phase (v1.1)");
     expect(out).toContain("kestrel");
+  });
+});
+
+// NOTES REV1 finding 3: `kind: remote` validates cleanly but adapters.ts's `RemoteBoundary` is a
+// documented mock in every path today. Doctor repeats the same telling `levare validate` already
+// gives, naming every agent in the studio that declares it.
+describe("doctor: remote-member-not-implemented telling (NOTES REV1 finding 3)", () => {
+  test("formatDoctor prints the not-implemented warning, naming every remote agent, when remoteAgents is non-empty", () => {
+    const out = formatDoctor(diagnose(connectors, env, noGh), undefined, undefined, undefined, undefined, ["echo", "relay"]);
+    expect(out).toContain("⚠ remote members are not yet implemented — these will not produce real work: echo, relay");
+  });
+
+  test("with no remote agent declared, no such line appears", () => {
+    const out = formatDoctor(diagnose(connectors, env, noGh), undefined, undefined, undefined, undefined, []);
+    expect(out).not.toContain("not yet implemented");
+  });
+
+  test("omitting remoteAgents entirely leaves the report unchanged (pre-REV1 callers keep working)", () => {
+    const out = formatDoctor(diagnose(connectors, env, noGh));
+    expect(out).not.toContain("not yet implemented");
+  });
+
+  test("`levare doctor` on a studio with a remote agent names it on the real CLI", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-doctor-remote-"));
+    try {
+      cpSync("fixtures/golden", dir, { recursive: true });
+      writeFileSync(
+        join(dir, "agents", "echo.md"),
+        ["---", "name: echo", "kind: remote", "produces: [report]", "server: echo-mcp", "style:", "  avatar: Ec", "---", "", "A remote member.", ""].join("\n"),
+      );
+      const p = Bun.spawnSync(["./levare", "doctor", dir], { env: { ...process.env, ANTHROPIC_API_KEY: "" } });
+      expect(p.exitCode).toBe(0);
+      const out = p.stdout.toString();
+      expect(out).toContain("remote members are not yet implemented");
+      expect(out).toContain("echo");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

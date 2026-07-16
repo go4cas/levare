@@ -93,13 +93,20 @@ export function diagnose(connectors: Connector[], env: EnvProbe, probe: CliProbe
  * call sites — its enforcement point is the merge phase, formally deferred to v1.1
  * (docs/prd-amendment-1.md §2, invariant 6: "SPECIFIED, NOT IMPLEMENTED"). A Conductor declaring
  * `protected_branches: [main]` today would otherwise reasonably believe levare already blocks a
- * matching merge — it doesn't, and doctor must say so, not stay silent. */
+ * matching merge — it doesn't, and doctor must say so, not stay silent.
+ *
+ * `remoteAgents`, when given (NOTES REV1 finding 3): the names of every agent in the studio declaring
+ * `kind: remote`. A legal declaration — `levare validate` accepts it — but adapters.ts's
+ * `RemoteBoundary` is a documented mock in every path today (no live MCP call exists), so doctor
+ * repeats the same telling the validator's warning already gives, in case the Conductor never ran
+ * (or reread) `validate`'s own output. */
 export function formatDoctor(
   health: ConnectorHealth[],
   orchestrator?: OrchestratorStatus,
   versionInfo?: VersionInfo,
   promptCheck?: PromptCheck,
   guardrailsTeams?: string[],
+  remoteAgents?: string[],
 ): string {
   const out: string[] = [];
   if (versionInfo) {
@@ -118,6 +125,10 @@ export function formatDoctor(
     out.push(
       `⚠ guardrails are declared but not yet enforced — enforcement lands with the merge phase (v1.1): ${guardrailsTeams.join(", ")}`,
     );
+    out.push("");
+  }
+  if (remoteAgents && remoteAgents.length > 0) {
+    out.push(`⚠ remote members are not yet implemented — these will not produce real work: ${remoteAgents.join(", ")}`);
     out.push("");
   }
   out.push(`levare doctor · ${health.length} connector${health.length === 1 ? "" : "s"}`);
@@ -143,6 +154,7 @@ export function runDoctor(
   versionInfo?: VersionInfo,
   promptCheck?: PromptCheck,
   guardrailsTeams?: string[],
+  remoteAgents?: string[],
 ): string {
-  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo, promptCheck, guardrailsTeams);
+  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo, promptCheck, guardrailsTeams, remoteAgents);
 }

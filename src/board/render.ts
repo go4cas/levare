@@ -1171,10 +1171,15 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
       // UI7: kind+model render adjacent ("native · claude-sonnet-5") in one row, the kind itself a
       // shape/treatment badge (RULE B — never colour); no "wears <team>" row (RULE A — the avatar
       // above is already tinted with the team's colour, so the team is shown, not told).
+      // NOTES REV1 finding 3: `kind: remote` validates cleanly but adapters.ts's `RemoteBoundary` is a
+      // documented mock in every path today (no live MCP call exists) — a user can't tell that from
+      // the schema alone, so the card says so via the same canonical warning callout the guardrails
+      // finding above uses.
+      const remoteWarning = a.kind === "remote" ? callout("warning", "remote members are not yet implemented — this member will not produce real work.") : "";
       const inner = `<div class="card__h">Context recipe</div><div class="recipe">${recipe || '<span style="color:var(--fg-mute)">none declared</span>'}</div>
       <div class="card__h">Definition</div>
       <div class="prow"><span class="k">kind</span><span class="v">${agentKindBadge(a.kind)}${a.model ? ` <span class="mono">&middot; ${esc(a.model)}</span>` : ""}</span></div>
-      <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>`;
+      <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>${remoteWarning}`;
       // UI7: no "agent" kind tag (RULE A) — the kind is already the page/URL this card lives on.
       return entityBlock("agents", `${avatar(a.style.avatar || a.name.slice(0, 2), team?.style.color, { size: "lg" })} ${esc(a.name)}`, "agent", inner, `agents/${a.name}.md`, rawFor(root, "agents", a.name), a.name, active === "agents", { showKindTag: false });
     })

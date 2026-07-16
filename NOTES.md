@@ -6648,3 +6648,54 @@ an empty `{}` block, gets no callout.
 src/cli.ts replay fixtures/golden --stubs` matches `fixtures/golden/expected.json` byte-for-byte
 (this finding touches doctor output and board presentation only). `bun run deps:check` → `deps ok`.
 `bun run build` succeeds.
+
+## Finding 3 — `kind: remote` validates cleanly but is fully mocked
+
+An agent declaring `kind: remote` passes validation and, if dispatched, gets a fixture response from
+the mocked `RemoteBoundary` (`adapters.ts` documents this — no live MCP call exists anywhere in the
+codebase). A studio author cannot tell that from the schema alone.
+
+**Fix — the telling, not the capability** (no MCP wiring was built; that stays out of scope):
+
+- `src/validate.ts` gains `ValidationWarning` (a type alias of `ValidationError` — same shape, used
+  for a legal declaration whose runtime doesn't do what it promises, never an ok/not-ok verdict) and
+  a `warnings: ValidationWarning[]` field on `ValidationResult`. `validateAgentRemoteNotice` (called
+  alongside the existing `validateAgentVariant` for every agent) pushes a `REMOTE_NOT_IMPLEMENTED`
+  warning naming the agent, for any `kind: remote` declaration — never rejecting it, since the
+  declaration is legal.
+- `levare validate` (`cli.ts#runValidate`) prints `valid` (exit 0, unchanged) followed by any
+  warnings, using the same per-entry format errors already use.
+- `levare doctor` (new `remoteAgents` param on `formatDoctor`/`runDoctor`, wired in
+  `cli.ts#runDoctorCmd` from `repo.agents`) prints `⚠ remote members are not yet implemented — these
+  will not produce real work: <agent, agent, …>` for every remote-kind agent in the studio — the same
+  repeated-telling pattern as finding 2's guardrails line, in case a Conductor never re-reads
+  `validate`'s own output.
+- The registry's agent card (`src/board/render.ts`) renders the same message via the canonical
+  `callout("warning", …)` primitive whenever that agent declares `kind: remote`.
+
+**Test:** `tests/validate.test.ts` — a `kind: remote` agent validates `ok: true` with a
+`REMOTE_NOT_IMPLEMENTED` warning naming it; a native/cli agent carries no such warning; the real CLI
+prints the warning and still exits 0. `tests/doctor.test.ts` — `formatDoctor`/`runDoctor` print the
+warning naming every given remote agent, print nothing when the list is empty or omitted (pre-REV1
+callers unaffected), and the real CLI against a scratch studio (fixtures/golden plus one added
+`kind: remote` agent) names it. `tests/board-render.test.ts` — a synthetic `kind: remote` agent's card
+carries the warning callout; native/cli agents' cards carry none.
+
+## Verification (finding 3)
+
+`bun test` — 858 pass, 1 pre-existing skip, 0 fail, across 68 files (up from 850/68). `bun run
+src/cli.ts replay fixtures/golden --stubs` matches `fixtures/golden/expected.json` byte-for-byte
+(this finding touches validate/doctor output and board presentation only — no fixture agent declares
+`kind: remote`, so the golden oracle is unaffected). `bun run deps:check` → `deps ok`. `bun run build`
+succeeds.
+
+## Overall (NOTES REV1)
+
+All three findings share one species: a capability real in one mode and silently absent in another,
+with nothing telling a user so. Finding 1 was the load-bearing fix (a genuine capability gap — the
+CLI's own offline commands didn't run); findings 2 and 3 were pure telling fixes — no new enforcement
+or MCP wiring was built, matching the goal's explicit scope. `bun test` — 858 pass, 1 pre-existing
+skip, 0 fail, across 68 files (up from 839/67 pre-REV1, +19 net new tests across three files).
+`bun run src/cli.ts replay fixtures/golden --stubs` matches the oracle byte-for-byte. `bun run
+deps:check` → `deps ok`. `bun run build` succeeds; the compiled binary's `__worker` subcommand still
+dispatches into the real worker.

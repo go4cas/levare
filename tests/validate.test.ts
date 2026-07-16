@@ -790,3 +790,64 @@ describe("C13: connector auth mode", () => {
     }
   });
 });
+
+// NOTES REV1 finding 3: `kind: remote` validates cleanly — it's a legal declaration — but
+// adapters.ts's `RemoteBoundary` is a documented mock in every path today (no live MCP call exists).
+// `levare validate` must warn, never reject, and never stay silent about the gap.
+describe("kind: remote — legal, valid, and warned about (NOTES REV1 finding 3)", () => {
+  test("a remote agent validates ok, with a REMOTE_NOT_IMPLEMENTED warning naming it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-remote-agent-"));
+    try {
+      mkdirSync(join(dir, "agents"), { recursive: true });
+      writeFileSync(
+        join(dir, "agents", "echo.md"),
+        ["---", "name: echo", "kind: remote", "produces: [report]", "server: echo-mcp", "style:", "  avatar: Ec", "---", "", "A remote member.", ""].join("\n"),
+      );
+      const r = validatePath(dir);
+      expect(r.ok).toBe(true);
+      expect(r.errors).toEqual([]);
+      expect(r.warnings.map((w) => w.code)).toContain("REMOTE_NOT_IMPLEMENTED");
+      const w = r.warnings.find((w) => w.code === "REMOTE_NOT_IMPLEMENTED")!;
+      expect(w.message).toContain("echo");
+      expect(w.message).toContain("not yet implemented");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a native/cli agent carries no such warning", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-native-agent-"));
+    try {
+      mkdirSync(join(dir, "agents"), { recursive: true });
+      writeFileSync(
+        join(dir, "agents", "scribe.md"),
+        ["---", "name: scribe", "kind: native", "produces: [report]", "model: claude-sonnet-5", "style:", "  avatar: Sc", "---", "", "A native member.", ""].join("\n"),
+      );
+      const r = validatePath(dir);
+      expect(r.ok).toBe(true);
+      expect(r.warnings).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the real CLI's `levare validate` prints the warning and still exits 0", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-remote-cli-"));
+    try {
+      mkdirSync(join(dir, "agents"), { recursive: true });
+      writeFileSync(
+        join(dir, "agents", "echo.md"),
+        ["---", "name: echo", "kind: remote", "produces: [report]", "server: echo-mcp", "style:", "  avatar: Ec", "---", "", "A remote member.", ""].join("\n"),
+      );
+      const p = Bun.spawnSync(["./levare", "validate", dir], { env: process.env });
+      expect(p.exitCode).toBe(0);
+      const out = p.stdout.toString();
+      expect(out).toContain("valid");
+      expect(out).toContain("warning");
+      expect(out).toContain("REMOTE_NOT_IMPLEMENTED");
+      expect(out).toContain("not yet implemented");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

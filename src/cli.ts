@@ -24,19 +24,29 @@ function flag(args: string[], name: string): string | undefined {
   return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
 }
 
-function formatResult(result: ValidationResult): string {
+function formatEntries(entries: { code: string; message: string; file: string; line?: number }[]): string {
   const lines: string[] = [];
-  for (const e of result.errors) {
+  for (const e of entries) {
     const loc = e.line !== undefined ? `${e.file}:${e.line}` : e.file;
     lines.push(`  ${e.code}  ${loc}\n    ${e.message}`);
   }
   return lines.join("\n");
 }
 
+function formatResult(result: ValidationResult): string {
+  return formatEntries(result.errors);
+}
+
 export function runValidate(path: string): number {
   const result = validatePath(path);
   if (result.ok) {
     console.log("valid");
+    // NOTES REV1 finding 3: a warning never flips `ok` — the declaration (e.g. kind: remote) is legal
+    // — but it still needs telling, printed after the "valid" line rather than suppressed.
+    if (result.warnings.length > 0) {
+      console.log(`${result.warnings.length} warning(s):`);
+      console.log(formatEntries(result.warnings));
+    }
     return 0;
   }
   console.error(`invalid — ${result.errors.length} error(s):`);
@@ -108,7 +118,12 @@ export function runDoctorCmd(rest: string[]): number {
     // NOTES REV1 finding 2: every team declaring a non-empty `guardrails:` block, so doctor can tell
     // the Conductor the enforcement gap plainly (see runDoctor's own doc comment).
     const guardrailsTeams = [...repo.teams.values()].filter(hasDeclaredGuardrails).map((t) => t.name);
-    process.stdout.write(runDoctor([...repo.connectors.values()], env, probe, provenance, orchestrator, getVersionInfo(), checkOrchestratorPrompt(), guardrailsTeams));
+    // NOTES REV1 finding 3: every agent declaring `kind: remote` — a legal declaration that produces
+    // no real work today (adapters.ts's RemoteBoundary is a mocked fixture).
+    const remoteAgents = [...repo.agents.values()].filter((a) => a.kind === "remote").map((a) => a.name);
+    process.stdout.write(
+      runDoctor([...repo.connectors.values()], env, probe, provenance, orchestrator, getVersionInfo(), checkOrchestratorPrompt(), guardrailsTeams, remoteAgents),
+    );
     return 0;
   } catch (e) {
     console.error(String(e instanceof Error ? e.message : e));

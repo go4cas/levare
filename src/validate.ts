@@ -21,6 +21,13 @@ export interface ValidationError {
   line?: number;
 }
 
+// A legal declaration whose runtime doesn't (yet) do what it promises — never an ok/not-ok verdict
+// (that's what `errors` is for). Same shape as ValidationError so every existing formatter/display
+// path works unchanged; kept as a distinct type/field because a warning must never flip `ok` to
+// false (NOTES REV1 finding 3: `kind: remote` is a legal, valid declaration — it just isn't wired to
+// a live MCP call yet).
+export type ValidationWarning = ValidationError;
+
 // NOTES F22: `validatePath`/`validateArtifactSource` already accumulate EVERY error for a touched
 // entity in one pass (per-file walking, per-field schema checks — neither short-circuits). The gap
 // was downstream: every caller that turns a `ValidationError[]` into ONE human-facing message
@@ -51,6 +58,7 @@ export interface ImmutabilityCheck {
 export interface ValidationResult {
   ok: boolean;
   errors: ValidationError[];
+  warnings: ValidationWarning[];
   fileCount: number;
   immutability: ImmutabilityCheck[];
 }
@@ -334,6 +342,7 @@ export function validateArtifactSource(src: string, file = "<member-output>", di
  */
 export function validatePath(target: string, overlay?: OverlayFile): ValidationResult {
   const errors: ValidationError[] = [];
+  const warnings: ValidationWarning[] = [];
   let fileCount = 0;
   const artifacts: DiscoveredArtifact[] = [];
 
@@ -342,6 +351,7 @@ export function validatePath(target: string, overlay?: OverlayFile): ValidationR
     return {
       ok: false,
       errors: [{ code: "NOT_FOUND", message: `path does not exist: ${target}`, file: target }],
+      warnings: [],
       fileCount: 0,
       immutability: [],
     };
@@ -349,13 +359,13 @@ export function validatePath(target: string, overlay?: OverlayFile): ValidationR
 
   if (st.isFile()) {
     fileCount = 1;
-    validateSingleFile(target, classify(target), errors, artifacts, overlay);
+    validateSingleFile(target, classify(target), errors, artifacts, overlay, warnings);
   } else {
     // Directory tree: walk registry folders + work/.
     const mdFiles = walkMarkdown(target);
     fileCount = mdFiles.length;
     for (const f of mdFiles) {
-      validateSingleFile(f, classify(relative(target, f)), errors, artifacts, overlay);
+      validateSingleFile(f, classify(relative(target, f)), errors, artifacts, overlay, warnings);
     }
     // Folder-artifact discovery + index-count check on work/ subdirectories.
     discoverFolderArtifacts(target, errors, artifacts);
@@ -375,7 +385,7 @@ export function validatePath(target: string, overlay?: OverlayFile): ValidationR
   crossReference(artifacts, errors);
   const immutability = gitImmutabilityCheck(target, artifacts, errors);
 
-  return { ok: errors.length === 0, errors, fileCount, immutability };
+  return { ok: errors.length === 0, errors, warnings, fileCount, immutability };
 }
 
 type Kind =
@@ -449,6 +459,7 @@ function validateSingleFile(
   errors: ValidationError[],
   artifacts: DiscoveredArtifact[],
   overlay?: OverlayFile,
+  warnings: ValidationWarning[] = [],
 ): void {
   if (!kind.schema) return; // unknown location or non-schema file (e.g. README) — skip.
   let data: Record<string, YamlValue>;
@@ -468,6 +479,7 @@ function validateSingleFile(
     artifacts.push({ file, dir: dirname(file), isFolder: false, data });
   }
   if (kind.schema === AGENT_SCHEMA) validateAgentVariant(data, file, errors);
+  if (kind.schema === AGENT_SCHEMA) validateAgentRemoteNotice(data, file, warnings);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorAuth(data, file, errors);
 }
 
@@ -709,6 +721,20 @@ function validateAgentVariant(data: Record<string, YamlValue>, file: string, err
       }
     }
   } else if (data.kind === "remote") need("server");
+}
+
+// NOTES REV1 finding 3: `kind: remote` validates cleanly and is a LEGAL declaration — but
+// adapters.ts's `RemoteBoundary` is a documented mock in every path today (no live MCP call exists).
+// A studio author cannot tell that from the schema alone, so this is a warning, never an error — the
+// declaration is not rejected, it's told plainly, the same "fix the telling, not the capability"
+// posture as the guardrails finding (this file's own goal).
+function validateAgentRemoteNotice(data: Record<string, YamlValue>, file: string, warnings: ValidationWarning[]): void {
+  if (data.kind !== "remote") return;
+  warnings.push({
+    code: "REMOTE_NOT_IMPLEMENTED",
+    message: `agent '${String(data.name)}' declares kind: remote — remote members are not yet implemented; this member will not produce real work (levare's RemoteBoundary is a mocked fixture, no live MCP call exists yet)`,
+    file,
+  });
 }
 
 // NOTES C13: a connector's `auth:` and `env:` must agree. `auth: env` (default) is levare's

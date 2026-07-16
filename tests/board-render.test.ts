@@ -372,6 +372,35 @@ describe("registry screen", () => {
     expect(emptyDeclared).not.toContain("guardrails are declared but not yet enforced");
   });
 
+  // NOTES REV1 finding 3: `kind: remote` validates cleanly but adapters.ts's `RemoteBoundary` is a
+  // documented mock in every path today — a user can't tell that from the schema alone, so the
+  // agent's own registry card carries the same canonical warning callout.
+  test("a `kind: remote` agent's card carries the not-yet-implemented warning callout; native/cli agents carry none", () => {
+    function agentKindRepo(kind: "native" | "cli" | "remote"): Repo {
+      const a = { name: "echo", kind, produces: ["report"], server: kind === "remote" ? "echo-mcp" : undefined, model: kind === "native" ? "claude-sonnet-5" : undefined, command: kind === "cli" ? ["codex"] : undefined, style: { avatar: "Ec" } } as unknown as import("../src/types.ts").Agent;
+      return {
+        root: "/tmp/synthetic-remote-agent",
+        teams: new Map(),
+        types: new Map(),
+        projects: new Map(),
+        agents: new Map([[a.name, a]]),
+        connectors: new Map(),
+        units: [],
+        artifacts: new Map(),
+        studio: {},
+      };
+    }
+    const remoteHtml = renderRegistry(agentKindRepo("remote"), "/tmp/synthetic-remote-agent", "agents");
+    expect(remoteHtml).toContain('notice notice--warning');
+    expect(remoteHtml).toContain("remote members are not yet implemented");
+
+    const nativeHtml = renderRegistry(agentKindRepo("native"), "/tmp/synthetic-remote-agent", "agents");
+    expect(nativeHtml).not.toContain("remote members are not yet implemented");
+
+    const cliHtml = renderRegistry(agentKindRepo("cli"), "/tmp/synthetic-remote-agent", "agents");
+    expect(cliHtml).not.toContain("remote members are not yet implemented");
+  });
+
   // UI3: "Edit source" no longer reveals an inline, card-cramped textarea — each card carries only
   // the trigger (data-edit-open, naming the entity's path/name/kind) and a HIDDEN <textarea
   // class="rawmd-source"> holding the on-disk raw markdown, which app.js copies into the ONE shared
