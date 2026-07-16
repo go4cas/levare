@@ -5,7 +5,7 @@
 // overrides: a Conductor action must never hang on a host signing prompt or a stray commit hook.
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 export const CONDUCTOR_NAME = "cas";
@@ -49,6 +49,71 @@ export function conductorCommit(root: string, files: string[], message: string):
 /** The daemon's own commit identity (phase 8) — see RUNNER_NAME's own doc comment above. */
 export function runnerCommit(root: string, files: string[], message: string): string {
   return commitAs(root, files, message, { name: RUNNER_NAME, email: RUNNER_EMAIL });
+}
+
+// ---------------------------------------------------------------------------
+// Transactional writes ("files are the truth + git is the audit log" — a write with no matching
+// commit is an unaudited mutation, and must never be left on disk).
+// ---------------------------------------------------------------------------
+
+export interface TxFile {
+  path: string;
+  /** Candidate content, or null meaning this path must NOT exist in the candidate state (e.g.
+   * orchestrator.ts#promoteIdea's idea file, deleted as part of materializing it into a unit) —
+   * deleted if currently present. */
+  content: string | null;
+}
+
+export type TxResult = { ok: true; commit: string } | { ok: false; stage: "validate" | "commit"; error: string };
+
+/**
+ * Write every file in `files` to its candidate content (or delete it, for a `null` candidate), run
+ * `validate` (if given), then commit — and on ANY failure (validation, `git add`, or `git commit`),
+ * restore every touched file to exactly what was on disk before this call (deleting any that didn't
+ * exist), so a rejected mutation never lingers as an unaudited change to the working tree. `validate`
+ * runs AFTER the candidate content is written (not before) because some validators (board/serve.ts's
+ * registry route) re-derive the whole repo from disk and need the candidate state to already be
+ * there to see it.
+ *
+ * `git add` may have already staged the candidate content into the index before `git commit` itself
+ * fails (e.g. a rejected commit hook, or a corrupt index) — left alone, that stale staged content
+ * could ride along into a LATER, unrelated commit that happens to touch the same paths again. The
+ * rollback resets the index for these paths too, not just the working tree, so a failed transaction
+ * never has an afterlife via the index.
+ */
+export function transactionalWrite(root: string, files: TxFile[], message: string, commit: (root: string, files: string[], message: string) => string, validate?: () => string | null): TxResult {
+  const originals = files.map((f) => ({ path: f.path, content: existsSync(f.path) ? readFileSync(f.path, "utf8") : null }));
+  const apply = (state: Array<{ path: string; content: string | null }>) => {
+    for (const s of state) {
+      if (s.content === null) {
+        if (existsSync(s.path)) unlinkSync(s.path);
+      } else {
+        writeFileSync(s.path, s.content);
+      }
+    }
+  };
+  const restore = () => {
+    apply(originals);
+    spawnSync("git", ["-C", root, "reset", "--", ...files.map((f) => f.path)], { encoding: "utf8" });
+  };
+
+  apply(files);
+
+  if (validate) {
+    const error = validate();
+    if (error) {
+      restore();
+      return { ok: false, stage: "validate", error };
+    }
+  }
+
+  try {
+    const sha = commit(root, files.map((f) => f.path), message);
+    return { ok: true, commit: sha };
+  } catch (e) {
+    restore();
+    return { ok: false, stage: "commit", error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -12,7 +12,7 @@
 // production itself now goes through the real `MemberRunner`/`AdapterRunner` boundary (E4) — the same
 // one the Runner and `levare replay` drive — rather than a board-only reuse of the stub's `render()`.
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { loadRepo, type Repo } from "../repo.ts";
@@ -21,7 +21,7 @@ import { bumpVersion, roundOf, type Verb } from "../runner.ts";
 import { productionAdapterRunner } from "../replay.ts";
 import { loopMembershipFor, isLoopCompanionKind, loopUntilKind, resolveStep, responsibleTeamFor, unmetAfter, patchFrontmatter, upsertFrontmatterField } from "../gates.ts";
 import { locateArtifactFile } from "./locate.ts";
-import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL } from "../git.ts";
+import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL, transactionalWrite, type TxFile } from "../git.ts";
 import { advanceUnit, latestLiveArtifact, type AsyncMemberRunner } from "../dagwalk.ts";
 import type { Daemon } from "../daemon.ts";
 import type { Artifact, WorkUnit } from "../types.ts";
@@ -114,8 +114,8 @@ export async function resolveGate(root: string, project: string, target: string,
   // companion review artifact to approved — the Conductor accepted it as read — exactly as the
   // Runner's own `runLoop` does. Applied once, here, ahead of the verb-specific write, so the
   // companion lands in the same commit as the primary resolution.
-  const companionFile = applyLoopCompanionApproval(root, repo, unit, art, today, memberRunner.capabilities());
-  const extra = companionFile ? [companionFile] : [];
+  const companion = applyLoopCompanionApproval(root, repo, unit, art, today, memberRunner.capabilities());
+  const extra: TxFile[] = companion ? [companion] : [];
 
   if (verb === "approve") return doApprove(root, located.file, target, today, opts.note, extra);
   if (verb === "reject") return doReject(root, located.file, target, opts.note, extra);
@@ -141,26 +141,26 @@ function stampApproval(src: string, today: string, root: string): string {
   return head ? upsertFrontmatterField(patched, "approved_commit", head) : patched;
 }
 
-function doApprove(root: string, file: string, id: string, today: string, note: string | undefined, extraFiles: string[]): GateOpResult {
+function doApprove(root: string, file: string, id: string, today: string, note: string | undefined, extraFiles: TxFile[]): GateOpResult {
   const src = readFileSync(file, "utf8");
   const patched = stampApproval(src, today, root);
   const errs = validateArtifactSource(patched, file, dirname(file));
   if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
-  writeFileSync(file, patched);
-  const files = [file, ...extraFiles];
-  const commit = conductorCommit(root, files, `approve ${id}${note ? `\n\n${note}` : ""}`);
-  return { ok: true, commit, changedFiles: files };
+  const files: TxFile[] = [{ path: file, content: patched }, ...extraFiles];
+  const result = transactionalWrite(root, files, `approve ${id}${note ? `\n\n${note}` : ""}`, conductorCommit);
+  if (!result.ok) return { ok: false, status: 500, error: result.error };
+  return { ok: true, commit: result.commit, changedFiles: files.map((f) => f.path) };
 }
 
-function doReject(root: string, file: string, id: string, note: string | undefined, extraFiles: string[]): GateOpResult {
+function doReject(root: string, file: string, id: string, note: string | undefined, extraFiles: TxFile[]): GateOpResult {
   const src = readFileSync(file, "utf8");
   const patched = patchFrontmatter(src, { status: "rejected" });
   const errs = validateArtifactSource(patched, file, dirname(file));
   if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
-  writeFileSync(file, patched);
-  const files = [file, ...extraFiles];
-  const commit = conductorCommit(root, files, `reject ${id}${note ? `\n\n${note}` : ""}`);
-  return { ok: true, commit, changedFiles: files };
+  const files: TxFile[] = [{ path: file, content: patched }, ...extraFiles];
+  const result = transactionalWrite(root, files, `reject ${id}${note ? `\n\n${note}` : ""}`, conductorCommit);
+  if (!result.ok) return { ok: false, status: 500, error: result.error };
+  return { ok: true, commit: result.commit, changedFiles: files.map((f) => f.path) };
 }
 
 // NOTES F20: the on_exhaust gate's third decision, alongside "approve anyway" (doApprove, unchanged —
@@ -184,11 +184,13 @@ function doRescopeArtifact(root: string, unit: WorkUnit, art: Artifact, note: st
   const unitSrc = readFileSync(unitFile, "utf8");
   const unitPatched = patchFrontmatter(unitSrc, { status: "paused" });
 
-  writeFileSync(located.file, patched);
-  writeFileSync(unitFile, unitPatched);
-  const files = [located.file, unitFile];
-  const commit = conductorCommit(root, files, `re-scope ${unit.unit} at ${art.id}: loop exhausted${note ? `\n\n${note}` : ""}`);
-  return { ok: true, commit, changedFiles: files };
+  const files: TxFile[] = [
+    { path: located.file, content: patched },
+    { path: unitFile, content: unitPatched },
+  ];
+  const result = transactionalWrite(root, files, `re-scope ${unit.unit} at ${art.id}: loop exhausted${note ? `\n\n${note}` : ""}`, conductorCommit);
+  if (!result.ok) return { ok: false, status: 500, error: result.error };
+  return { ok: true, commit: result.commit, changedFiles: files.map((f) => f.path) };
 }
 
 async function doRequest(
@@ -199,7 +201,7 @@ async function doRequest(
   art: { id: string; kind: string; produced_by: string; unit: string; project: string },
   note: string | undefined,
   memberRunner: AsyncMemberRunner,
-  extraFiles: string[],
+  extraFiles: TxFile[],
   today: string,
   daemon?: Daemon,
 ): Promise<GateOpResult> {
@@ -293,21 +295,27 @@ async function doRequest(
   const errs = validateArtifactSource(newDoc, `${newId}.md`, unitDir);
   if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
 
-  const oldSrc = readFileSync(supersedeFile, "utf8");
   // F16: the artifact being superseded may already be `approved` — the loop-companion cascade
   // (resolveGate, above) resolves the round's OTHER member to approved for every verb including
-  // request, before this runs — an approved artifact superseded without clearing `approved_by` fails
-  // the validator's own "only an approved artifact may name an approver" invariant (mirrors
-  // dagwalk.ts's identical supersede-clears-approval handling for the live walk's own loop rounds; a
-  // no-op when the old doc was already `in-review` with no approver, the pre-existing, unaffected case).
+  // request — an approved artifact superseded without clearing `approved_by` fails the validator's
+  // own "only an approved artifact may name an approver" invariant (mirrors dagwalk.ts's identical
+  // supersede-clears-approval handling for the live walk's own loop rounds; a no-op when the old doc
+  // was already `in-review` with no approver, the pre-existing, unaffected case). When the round's
+  // `until` names the CRITIC (membership.role === "second", above), that companion cascade's target
+  // IS this same `supersedeFile` (the reassigned AUTHOR artifact) — its approval is still only a
+  // pending candidate write in `extraFiles`, not yet on disk, so it must be read from there rather
+  // than from disk, and only ONE write for that path may survive into `files` below (the further
+  // supersede patch on top of it), not two competing writes to the same path in one transaction.
+  const companionForSupersede = extraFiles.find((f) => f.path === supersedeFile);
+  const oldSrc = companionForSupersede ? companionForSupersede.content : readFileSync(supersedeFile, "utf8");
   const oldPatched = patchFrontmatter(oldSrc, { status: "superseded", approved_by: null });
+  const remainingExtra = extraFiles.filter((f) => f.path !== supersedeFile);
 
   const newFile = join(unitDir, `${newId}.md`);
-  writeFileSync(supersedeFile, oldPatched);
-  writeFileSync(newFile, newDoc);
-  const files = [supersedeFile, newFile, ...extraFiles];
-  const commit = conductorCommit(root, files, `request changes on ${supersedeId} → ${newId}\n\n${note}`);
-  return { ok: true, commit, changedFiles: files };
+  const files: TxFile[] = [{ path: supersedeFile, content: oldPatched }, { path: newFile, content: newDoc }, ...remainingExtra];
+  const result = transactionalWrite(root, files, `request changes on ${supersedeId} → ${newId}\n\n${note}`, conductorCommit);
+  if (!result.ok) return { ok: false, status: 500, error: result.error };
+  return { ok: true, commit: result.commit, changedFiles: files.map((f) => f.path) };
 }
 
 // The same doc shape dagwalk.ts#writeBlocked writes for the live walk's own member failures — kept as
@@ -364,9 +372,10 @@ async function resolveBlockedArtifactGate(
   if (verb === "abandon") {
     const unitFile = join(unit.dir, "unit.md");
     const unitPatched = patchFrontmatter(readFileSync(unitFile, "utf8"), { status: "paused" });
-    writeFileSync(unitFile, unitPatched);
-    const commit = conductorCommit(root, [unitFile], `abandon ${unit.unit}: pausing after ${art.id} blocked${opts.note ? `\n\n${opts.note}` : ""}`);
-    return { ok: true, commit, changedFiles: [unitFile] };
+    const files: TxFile[] = [{ path: unitFile, content: unitPatched }];
+    const result = transactionalWrite(root, files, `abandon ${unit.unit}: pausing after ${art.id} blocked${opts.note ? `\n\n${opts.note}` : ""}`, conductorCommit);
+    if (!result.ok) return { ok: false, status: 500, error: result.error };
+    return { ok: true, commit: result.commit, changedFiles: files.map((f) => f.path) };
   }
 
   if (verb === "skip") {
@@ -376,9 +385,10 @@ async function resolveBlockedArtifactGate(
     const patched = patchFrontmatter(readFileSync(located.file, "utf8"), { status: "skipped" });
     const errs = validateArtifactSource(patched, located.file, dirname(located.file));
     if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
-    writeFileSync(located.file, patched);
-    const commit = conductorCommit(root, [located.file], `skip ${art.id}: marking abandoned so the walk can continue${opts.note ? `\n\n${opts.note}` : ""}`);
-    return { ok: true, commit, changedFiles: [located.file] };
+    const files: TxFile[] = [{ path: located.file, content: patched }];
+    const result = transactionalWrite(root, files, `skip ${art.id}: marking abandoned so the walk can continue${opts.note ? `\n\n${opts.note}` : ""}`, conductorCommit);
+    if (!result.ok) return { ok: false, status: 500, error: result.error };
+    return { ok: true, commit: result.commit, changedFiles: files.map((f) => f.path) };
   }
 
   // retry
@@ -400,10 +410,12 @@ async function resolveBlockedArtifactGate(
     const doc = blockedRetryDoc(art, newId, msg, today);
     const oldPatched = patchFrontmatter(readFileSync(located.file, "utf8"), { status: "superseded" });
     const newFile = join(unit.dir, `${newId}.md`);
-    writeFileSync(located.file, oldPatched);
-    writeFileSync(newFile, doc);
-    conductorCommit(root, [located.file, newFile], `retry ${art.id} → ${newId} FAILED again: ${msg.slice(0, 120)}`);
-    return { ok: false, status: 502, error: `retry failed: ${msg}` };
+    const files: TxFile[] = [{ path: located.file, content: oldPatched }, { path: newFile, content: doc }];
+    const result = transactionalWrite(root, files, `retry ${art.id} → ${newId} FAILED again: ${msg.slice(0, 120)}`, conductorCommit);
+    // The retry itself failed either way (502) — a commit failure on TOP of that additionally means
+    // this attempt's own failure was never recorded, which the caller should be told too.
+    const error = result.ok ? `retry failed: ${msg}` : `retry failed: ${msg}; additionally failed to record the failure: ${result.error}`;
+    return { ok: false, status: 502, error };
   } finally {
     if (invocation) opts.daemon!.endInvocation(invocation);
   }
@@ -413,11 +425,10 @@ async function resolveBlockedArtifactGate(
   if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
   const oldPatched = patchFrontmatter(readFileSync(located.file, "utf8"), { status: "superseded" });
   const newFile = join(unit.dir, `${newId}.md`);
-  writeFileSync(located.file, oldPatched);
-  writeFileSync(newFile, newDoc);
-  const files = [located.file, newFile];
-  const commit = conductorCommit(root, files, `retry ${art.id} → ${newId} produced ${art.kind}`);
-  return { ok: true, commit, changedFiles: files };
+  const files: TxFile[] = [{ path: located.file, content: oldPatched }, { path: newFile, content: newDoc }];
+  const result = transactionalWrite(root, files, `retry ${art.id} → ${newId} produced ${art.kind}`, conductorCommit);
+  if (!result.ok) return { ok: false, status: 500, error: result.error };
+  return { ok: true, commit: result.commit, changedFiles: files.map((f) => f.path) };
 }
 
 // C2/C7 shared companion rule, generalized by ruling F16: if `art.kind` is the artifact a loop's
@@ -427,10 +438,12 @@ async function resolveBlockedArtifactGate(
 // mirroring exactly what the Runner's `runLoop` does inside a live walk (see runner.ts). Previously
 // hardcoded to "the loop's first (author) member is always the gate" — false for a loop whose `until`
 // names its SECOND (critic) member, e.g. `until: review.approved`; the cascade now keys off `until`
-// itself, so it fires regardless of which role is actually the gate. Returns the companion's file path
-// when one was patched, so the caller folds it into the same commit; null when there is nothing to do
-// (no loop, or no live companion — e.g. the golden fixture's static spec gate, which has no review
-// artifact on disk yet).
+// itself, so it fires regardless of which role is actually the gate. Returns the companion's file/
+// candidate content (NOT yet written — the caller folds it into the same `transactionalWrite` call as
+// the primary resolution, so a validation or commit failure on the primary rolls the companion back
+// too, rather than the companion landing on disk unaudited ahead of a mutation that never committed);
+// null when there is nothing to do (no loop, or no live companion — e.g. the golden fixture's static
+// spec gate, which has no review artifact on disk yet).
 function applyLoopCompanionApproval(
   root: string,
   repo: Repo,
@@ -438,7 +451,7 @@ function applyLoopCompanionApproval(
   art: Artifact,
   today: string,
   capabilities: Array<{ member: string; kind: string }>,
-): string | null {
+): TxFile | null {
   const [teamName] = art.produced_by.split("/");
   const team = repo.teams.get(teamName);
   if (!team) return null;
@@ -460,8 +473,7 @@ function applyLoopCompanionApproval(
   const patched = stampApproval(src, today, root);
   const errs = validateArtifactSource(patched, located.file, dirname(located.file));
   if (errs.length > 0) return null; // never let a companion validation edge case block the primary resolution.
-  writeFileSync(located.file, patched);
-  return located.file;
+  return { path: located.file, content: patched };
 }
 
 async function resolveStartGate(

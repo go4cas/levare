@@ -36,14 +36,14 @@
 //      bumps a round on its own initiative, only ever completes the round the Conductor already
 //      authorized by producing the first artifact.
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { validateArtifactSource, formatValidationErrors } from "./validate.ts";
 import { parseArtifactDoc } from "./repo.ts";
 import type { Repo } from "./repo.ts";
 import { RunnerError, timeboxSeconds, bumpVersion, roundOf } from "./runner.ts";
 import { responsibleTeamsFor, resolveStep, unmetAfter, patchFrontmatter, upsertFrontmatterField } from "./gates.ts";
-import { runnerCommit } from "./git.ts";
+import { runnerCommit, transactionalWrite, type TxFile } from "./git.ts";
 import { locateArtifactFile } from "./board/locate.ts";
 import type { Artifact, FlowLoop, Receipt, Team, WorkUnit } from "./types.ts";
 
@@ -373,13 +373,13 @@ function blockUnit(
   const src = readFileSync(file, "utf8");
   let patched = patchFrontmatter(src, { status: "blocked" });
   patched = upsertFrontmatterField(patched, "blocked_reason", reason);
-  writeFileSync(file, patched);
   // NOTES F18: `team` is null when no team in the studio is even responsible for this unit at all
   // (the walk never got as far as trying to bind a step within one) — the commit message says so
   // rather than naming a team that was never in play.
   const cause = team ? `team ${team.name} cannot bind flow step '${stepLabel}'` : `no team produces '${stepLabel}'`;
-  const commit = commitFn(root, [file], `block ${unit.unit}: ${cause}: ${reason.slice(0, 120)}`);
-  return { outcome: "unbindable", reason, stepLabel, file, commit };
+  const result = transactionalWrite(root, [{ path: file, content: patched }], `block ${unit.unit}: ${cause}: ${reason.slice(0, 120)}`, commitFn);
+  if (!result.ok) throw new Error(result.error);
+  return { outcome: "unbindable", reason, stepLabel, file, commit: result.commit };
 }
 
 function spentUsd(repo: Repo, unit: WorkUnit): number {
@@ -450,7 +450,7 @@ async function produceOne(
 
   const art = parseArtifactDoc(doc);
   const file = join(unit.dir, `${art.id}.md`);
-  const files = [file];
+  const files: TxFile[] = [];
 
   // Ruling C14: a loop companion produced for round > 1 supersedes the PRIOR round's live companion —
   // the same supersession board/gateops.ts#doRequest already does for the loop's first member, applied
@@ -464,15 +464,15 @@ async function produceOne(
       // superseded without clearing `approved_by` fails the validator's own invariant ("only an
       // approved artifact may name an approver"). Superseding always clears it, matching how a
       // never-approved (in-review) companion already carries `approved_by: null`.
-      writeFileSync(located.file, patchFrontmatter(oldSrc, { status: "superseded", approved_by: null }));
-      files.unshift(located.file);
+      files.push({ path: located.file, content: patchFrontmatter(oldSrc, { status: "superseded", approved_by: null }) });
     }
   }
+  files.push({ path: file, content: doc });
 
-  writeFileSync(file, doc);
   const roundNote = loop ? ` (loop round ${round})` : "";
-  const commit = commitFn(root, files, `${verb} ${unit.unit} → ${team.name}/${member} produced ${art.kind} ${art.id}${roundNote}`);
-  return { outcome: "produced", member, kind, artifactId: art.id, file, commit };
+  const result = transactionalWrite(root, files, `${verb} ${unit.unit} → ${team.name}/${member} produced ${art.kind} ${art.id}${roundNote}`, commitFn);
+  if (!result.ok) throw new Error(result.error);
+  return { outcome: "produced", member, kind, artifactId: art.id, file, commit: result.commit };
 }
 
 // Deliverable (f): a member error, a timeout (AdapterError), a guardrail violation, or an off-contract
@@ -515,7 +515,7 @@ function writeBlocked(
     "",
   ].join("\n");
   const file = join(unit.dir, `${id}.md`);
-  writeFileSync(file, doc);
-  const commit = commitFn(root, [file], `${verb} ${unit.unit} → ${team.name}/${member} FAILED producing ${kind}: ${msg.slice(0, 120)}`);
-  return { outcome: "blocked", member, kind, artifactId: id, file, commit, error: msg };
+  const result = transactionalWrite(root, [{ path: file, content: doc }], `${verb} ${unit.unit} → ${team.name}/${member} FAILED producing ${kind}: ${msg.slice(0, 120)}`, commitFn);
+  if (!result.ok) throw new Error(result.error);
+  return { outcome: "blocked", member, kind, artifactId: id, file, commit: result.commit, error: msg };
 }

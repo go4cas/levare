@@ -13,7 +13,7 @@ import { resolveGate } from "./gateops.ts";
 import type { AsyncMemberRunner } from "../dagwalk.ts";
 import { validatePath, formatValidationErrors, type ValidationError } from "../validate.ts";
 import type { Verb } from "../runner.ts";
-import { conductorCommit, CONDUCTOR_NAME } from "../git.ts";
+import { conductorCommit, CONDUCTOR_NAME, transactionalWrite } from "../git.ts";
 import { handle as orchestratorHandle, type HandleResult, type OrchestratorBoundary } from "../orchestrator.ts";
 import { selectOrchestratorBoundary, type SelectOrchestratorBoundaryOptions } from "../orchestrator-boundary.ts";
 import { resolveOrchestratorStatus } from "../orchestrator-status.ts";
@@ -371,27 +371,22 @@ export const ROUTES: RouteDef[] = [
       } catch {
         return json({ ok: false, error: "expected JSON body { content }" }, 400);
       }
-      const backup = existsSync(file) ? readFileSync(file, "utf8") : null;
       const dir = dirname(file);
       if (!existsSync(dir)) return json({ ok: false, error: `directory does not exist: ${dir}` }, 404);
-      const { writeFileSync } = await import("node:fs");
-      writeFileSync(file, content);
-      // Validate with the same validator the whole repo is checked against (PRD §9: "validate → write → commit").
-      const result = validatePath(ctx.root);
-      if (!result.ok) {
-        if (backup === null) {
-          const { rmSync } = await import("node:fs");
-          rmSync(file);
-        } else {
-          writeFileSync(file, backup);
-        }
+      // Validate with the same validator the whole repo is checked against (PRD §9: "validate → write →
+      // commit"); `transactionalWrite` writes the candidate content first (this validator re-derives the
+      // whole repo from disk, so it needs to already be there) and restores the original file — deleting
+      // it if it didn't previously exist — on EITHER a validation failure or a commit failure (NOTES REV2:
+      // a commit failure used to leave the write on disk with no matching commit, an unaudited mutation).
+      const result = transactionalWrite(ctx.root, [{ path: file, content }], `edit ${relPath}`, conductorCommit, () => {
+        const v = validatePath(ctx.root);
         // NOTES F22: every accumulated error, not just a capped subset — one shared formatter
         // (validate.ts#formatValidationErrors) for every place a ValidationError[] becomes one string.
-        return json({ ok: false, error: formatValidationErrors(result.errors) }, 422);
-      }
-      const commit = conductorCommit(ctx.root, [file], `edit ${relPath}`);
+        return v.ok ? null : formatValidationErrors(v.errors);
+      });
+      if (!result.ok) return json({ ok: false, error: result.error }, result.stage === "validate" ? 422 : 500);
       ctx.broadcast("reload");
-      return json({ ok: true, commit });
+      return json({ ok: true, commit: result.commit });
     },
   },
   {
@@ -736,7 +731,6 @@ export function serve(
   const keepAlive = opts.keepProcessAlive ?? true;
   const readOnly = opts.readOnly ?? isUnderFixtures(root);
   const daemon = opts.daemon ?? (opts.noDaemon || readOnly ? null : new Daemon(root));
-  daemon?.start();
   const board = createBoard(root, {
     readOnly: opts.readOnly,
     orchestratorBoundary: opts.orchestratorBoundary,
@@ -755,7 +749,20 @@ export function serve(
   // The actual guarantee is the SDK transport's own setTimeout-based kill (sdk-transport.ts, proven in
   // tests/sdk-transport-hermetic.test.ts's hung-worker tests) plus this route's degrade-to-offline
   // catch below, both method/body-agnostic. This idleTimeout is defense in depth for the HTTP layer.
-  const server = Bun.serve({ port, hostname: "0.0.0.0", idleTimeout: opts.idleTimeoutSeconds ?? 180, fetch: (req) => board.fetch(req) });
+  //
+  // NOTES REV2: the daemon (and its own `work/` filesystem watcher) starts only AFTER a successful
+  // bind, not before. A failed bind (port already in use) used to leave the daemon's watcher running
+  // with no handle ever returned to stop it — a startup failure that leaked a live background process.
+  // `board.close()` on a bind failure tears down the board's own fs.watch/SSE state for the same
+  // reason: nothing should still be running once `serve()` has thrown.
+  let server: ReturnType<typeof Bun.serve>;
+  try {
+    server = Bun.serve({ port, hostname: "0.0.0.0", idleTimeout: opts.idleTimeoutSeconds ?? 180, fetch: (req) => board.fetch(req) });
+  } catch (e) {
+    board.close();
+    throw e;
+  }
+  daemon?.start();
   // Bind 0.0.0.0 (above) so the port is reachable from outside the container, but never hand back
   // "0.0.0.0" as the connect address: "0.0.0.0" is a bind wildcard, not a real destination, and
   // connecting to it literally is OS/resolver-dependent — observed, while chasing the phase-7 K17
