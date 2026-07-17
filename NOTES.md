@@ -7481,3 +7481,223 @@ fixtures/golden --stubs` → oracle match, byte-for-byte (this goal touches no a
 persistence" entry is retitled "closed" and replaced with the two narrower, genuinely-still-open gaps
 named above (the deferred load-earlier affordance, and the unescaped-format tradeoff) rather than
 deleted outright — the register's own discipline is to name what's still true, not just what changed.
+
+# NOTES CAP-A — v1.1 capability layer, part A: side-effecting connectors are gated as proposals
+
+Conductor rulings from a design session, encoded directly (this goal's own instruction: "Conductor
+rulings from the design session are final and encoded here"). The shape is the LEARNINGS/knowledge-
+promotion family (§7, orchestrator.ts's `Proposal`/`resolveProposal`) generalized to a THIRD member: the
+member drafts, the Conductor approves, levare acts. It is a deliberately distinct mechanism from
+orchestrator.ts's own in-memory `Proposal` type (a conversational proposal the Orchestrator carries
+across chat turns, resolved through `resolveProposal`) — this ruling's proposal is an on-disk artifact,
+produced by a studio member through the ordinary flow/gate machinery, resolved through the SAME three
+mutating routes the board already has. The two never share code or a type name.
+
+## 1. Schema
+
+`Connector` (`types.ts`) gains `effects: "read" | "write"` (optional, defaults `"read"` — every
+connector defined before this ruling is unchanged) and `gate: "proposal" | "trusted"` (optional,
+defaults `"proposal"`, meaningful only when `effects: write`). `validate.ts#validateConnectorEffects`
+enforces the cross-field agreement `validateConnectorAuth` already modeled for `auth`/`env`: a `gate:`
+on an `effects: read` connector is `GATE_ON_READ_CONNECTOR` (gate is meaningless without something to
+gate); an `effects: write` connector with no `actions:` is `MISSING_ACTIONS` (a write connector must
+declare its argv template vocabulary — a member can never supply raw argv, only fill a placeholder in a
+template its author already wrote); `actions:` on an `effects: read` connector is
+`ACTIONS_ON_READ_CONNECTOR`.
+
+`actions:` (action name → argv template array, e.g. `create-issue: ["gh", "issue", "create", "--title",
+"{title}"]`) needed a new `FieldSpec` shape the existing schema DSL couldn't express — `"map"` requires
+a FIXED, closed key set (`spec.fields`); an action vocabulary's key set is open (whatever the connector
+author names). Two new `FieldSpec.type` values were added: `"action-map"` (arbitrary key → non-empty
+array of non-empty strings, for `actions:`) and `"str-map"` (arbitrary key → plain string, for a
+proposal's `params:`, item 3). `generate-cheatsheets.ts`'s `humanType`/`placeholderValue` switches
+gained matching cases (`"map (action name → argv template array)"` / `"map (arbitrary key → string)"`;
+placeholder `{}` for both — neither is ever a required field, so the skeleton-healing loop never needs
+to fill one). **Judgment call, recorded since the goal only said "for cli write connectors, `actions:`"
+without addressing `kind: mcp`:** `actions:` is required for EVERY `effects: write` connector regardless
+of `kind` — an `mcp` write connector still declares its action/placeholder vocabulary so item 3's
+proposal validation (does the action exist, do params cover every placeholder) applies identically to
+both transports, even though `kind: mcp` execution is a documented skip (item 4). Splitting the
+requirement by `kind` would have meant two different "what does a proposal need to validate against"
+rules for the two transports, for no benefit — an mcp connector's placeholder vocabulary is exactly as
+real a declaration as a cli connector's argv template, just not yet executable.
+
+Cheatsheets regenerated (`bun run docs:generate`) — `connector.md` gained the three new field rows,
+`artifact.md` gained `connector`/`action`/`params`/`execution` (item 3). The drift test
+(`tests/cheatsheets.test.ts`) is green against the committed output.
+
+## 2. The enforcement teeth — env withholding
+
+`env.ts#buildMemberEnv` (the allowlist every member's spawned process is built from) now skips a
+granted connector's own vars entirely when `effects === "write" && gate !== "trusted"` — the withheld
+case is the DEFAULT for a write connector, not an opt-in. `gate: trusted` and every `effects: read`
+connector (the entire pre-existing behavior) inject exactly as before — proven both directions in
+`tests/capability-cap-a.test.ts`'s "item 2" describe block. A new `env.ts#buildConnectorEnv(connector,
+base)` is the execution-time counterpart: baseline + ONE connector's own vars, with no member or grant
+involved at all — this is the ONLY function in the codebase `execution.ts` (item 4) ever calls to reach
+a write connector's credential, and it never reads a member's grant set to decide anything; the
+connector object itself is the entire input. `buildMemberEnv`'s doc comment and `env.ts`'s own module
+header were updated to state the new guarantee plainly, matching this file's existing "say what's
+actually enforced" discipline (C13's own precedent).
+
+## 3. The proposal artifact
+
+Artifact kind `proposal` is reserved. `Artifact` (`types.ts`) gains `connector`/`action`/`params`
+(member-authored, describing the proposed action) and `execution` (levare-authored on approval, item 4)
+— all optional/nullable, so every pre-existing artifact kind is unaffected; `repo.ts#toArtifact` parses
+them straight off frontmatter like every other optional field.
+
+Validation is split exactly the way `validateConnectorAuth`/`role` already split shape from semantics:
+`ARTIFACT_SCHEMA` gains the four fields as shape-only (`connector`/`action`: `str`; `params`: the new
+`str-map`; `execution`: a `map` with a fixed, closed field set — `executed_at`/`status`/`exit`/
+`output_digest`/`warning` — since THAT shape's keys ARE fixed, unlike `actions`/`params`). A new
+`validate.ts#validateProposalArtifact` does everything else, in two tiers:
+
+- **Structural (always runs, no root needed):** a non-`proposal` kind declaring any of the four fields
+  is `PROPOSAL_FIELDS_ON_NON_PROPOSAL` (reserved fields, never accidentally reused); a `proposal`
+  missing `connector`/`action`/`params` is `MISSING_FIELD` for each.
+- **Cross-entity (runs only when a studio `root` is given):** the named connector exists
+  (`UNKNOWN_CONNECTOR`), is `effects: write` (`PROPOSAL_AGAINST_READ_CONNECTOR` otherwise — a proposal
+  against a read connector is a DEFINITION error, per the goal's own wording, not a runtime surprise),
+  the action is declared on that connector (`UNDECLARED_ACTION`), `params` covers every `{placeholder}`
+  in the action's template exactly — a missing one is `MISSING_PARAM`, an extra one not used by the
+  template is `UNKNOWN_PARAM` (never silently accepted — an extra param is exactly the kind of thing
+  that could smuggle an unintended value into a future templating change) — and the producing member
+  (`produced_by: team/member`) is actually granted that connector, directly or via its team
+  (`CONNECTOR_NOT_GRANTED`, hand-parsed off disk the same way `validate.ts#modelRoleAgents` already
+  resolves grants, never via `repo.ts#loadRepo` — that dependency direction is closed, on purpose, per
+  this file's own precedent).
+
+**Threading `root` to the boundary, not just the tree walk — the harder design decision in this item.**
+Every existing cross-entity check in this file (`validateStudioBindings`, `validateResponsibleTeam`,
+`modelRoleAgents`) runs ONLY at whole-tree `validatePath` time, never at the single-document member-
+output boundary (`validateArtifactSource`, called by `dagwalk.ts#produceOne`/`gateops.ts` BEFORE a
+member's output is committed). That precedent exists because those checks are about STUDIO DEFINITION
+mistakes (a Conductor's own team/agent files disagreeing) — never something a member's own runtime
+OUTPUT could trigger. A proposal is different: its `connector`/`action`/`params` are exactly the kind of
+thing a buggy or malicious member's OUTPUT could get wrong, and letting that reach disk uncommitted-
+checked would mean the first sign of trouble is `loadRepo` throwing `RepoError` for the WHOLE studio on
+the next call, rather than one `blocked` artifact (F22/C12's own boundary-enforcement point) naming the
+problem. So `validateArtifactSource`/`validateArtifactSemantics`/`validateSingleFile` all gained an
+optional `root?: string` parameter, threaded explicitly by every caller that has one in scope
+(`dagwalk.ts#produceOne`, every `board/gateops.ts` write path, `runner.ts`'s batch engine via
+`this.repo.root`) — explicit, not inferred from `file`/`dir` (an earlier design considered deriving
+`root` via `dirname` chains off the artifact's own path; rejected as fragile — a folder artifact's index
+sits one directory deeper than a single-file artifact's, so a fixed dirname-count would silently
+mis-derive `root` for one shape or the other). `root` absent (a bare schema check, or a single-file
+`validatePath` target — proven fail-open in `tests/capability-cap-a.test.ts`) skips the cross-entity
+tier only; the structural tier always runs regardless.
+
+## 4. Execution on approval
+
+New `src/execution.ts` — the one module in this codebase that ever reads a write connector's credential
+for a `gate: proposal` connector, and it does so exactly once, at approval time, never earlier.
+`executeProposal(connector, action, params, opts)`:
+
+- **`kind: mcp`** — never spawns anything. Returns `{status: "skipped", exit: null, output_digest:
+  null, warning: REMOTE_NOT_IMPLEMENTED_EXEC_WARNING}` — the same "declared, not pretended" honesty
+  ruling REV1 finding 3 established for `kind: remote` agents, named explicitly in this module's own
+  warning text and doc comment so a reader finds the precedent without having to already know it.
+- **`kind: cli`** — `substituteTemplate` fills the connector's OWN declared `{placeholder}` template,
+  one argv element per template element (the identical non-shell-split guarantee
+  `adapters.ts#defaultCliCommand` already gives a cli AGENT's own command template — never a shell
+  string a param value could break out of). Spawns via `Bun.spawn` (mirroring
+  `adapters.ts#asyncBunSpawn`'s process-group-kill-on-timeout precedent, NOTES phase-7 K15) with
+  `env.ts#buildConnectorEnv(connector, baseEnv)` — ONLY that connector's vars plus baseline, never a
+  member's grant set. The outcome is `output_digest` (a `sha256:` hash of stdout+stderr, deliberately
+  NOT the raw bytes — an execution record commits into git, and a connector's own output could echo
+  exactly the kind of thing invariant 11 exists to keep out of the audit log) plus `exit`/`status`
+  (`"ok"` on exit 0, `"failed"` otherwise or on timeout — never throws for an ordinary execution
+  failure, so approval always leaves a record).
+
+`board/gateops.ts#doApprove` is where this wires into the existing gate-resolution path — the goal's own
+constraint ("no new routes — the write surface stays exactly three") is satisfied structurally: a
+proposal artifact is approved through the SAME `POST /gates/:project/:artifact/:verb` route every other
+artifact already uses (`tests/board-routes.test.ts`'s route-count test needed no change, confirmed
+green). `doApprove` gained `repo`/`unit`/`art` parameters (previously it only needed the raw file path)
+so it can detect `art.kind === "proposal"`, run `executeProposal`, and fold the execution record into
+the SAME `patched` content `stampApproval` already produced — via a new `gates.ts#upsertFrontmatterMap`
+(insert-or-replace a nested frontmatter block; `patchFrontmatter`/`upsertFrontmatterField` only handle
+scalar values, and an execution record is a multi-key block like `usage:`). The whole thing — approval
+patch + execution record — goes through the SAME `transactionalWrite` call as every other gate
+resolution (REV2's own helper; "commit the resolution + record as one transaction" from the goal's own
+words is what `transactionalWrite`'s existing all-or-nothing multi-file contract already gives for
+free, no new mechanism needed).
+
+**A failed execution never un-approves** — `doApprove` always writes `status: approved` regardless of
+the execution outcome; ruling item 4's "the unit blocks with a named reason" is implemented as an
+ADDITIONAL patch, in the SAME transaction, to `work/<project>/<unit>/unit.md`: `status: blocked` +
+`blocked_reason` naming the proposal id, the connector, the action, and the exit code. This reuses the
+EXISTING `WorkUnit.blocked_reason` field (NOTES F1's own "why this unit is blocked, written by the walk
+when it cannot bind a flow step" — generalized here to a second cause: a member bound and ran, and its
+proposal was approved, but the real-world action it named failed). A `"skipped"` (mcp) or `"ok"` outcome
+never blocks the unit — only a genuine `"failed"` does. Rejection executes nothing (unchanged — `verb
+=== "reject"` never reaches `doApprove` at all).
+
+Test-injection seams (`ResolveOpts.connectorSpawn`, `.now`, `.connectorBaseEnv`) mirror the pre-existing
+`memberRunner`/`today` seams exactly, defaulting to the real `Bun.spawn` + `Date` + `process.env` in
+every production call site (`board/serve.ts`, `daemon.ts` — neither was touched, since neither ever
+passed these options before either).
+
+## 5. Context
+
+`context.ts#assembleContext` gained a conditional §6 section 8, `proposalCapabilitySection`: for a
+member granted at least one `effects: write` + `gate: proposal` connector, it states plainly that direct
+calls are unavailable, names the required artifact shape (`proposal` naming `connector:`/`action:`/
+`params:`), and lists each granted connector's declared actions with their placeholder names (derived
+from the SAME `{placeholder}` regex `validate.ts`'s own `MISSING_PARAM`/`UNKNOWN_PARAM` checks use — one
+derivation, not two that could drift). Appended ONLY when there's something to say (zero such grants —
+every pre-existing agent, including the frozen `fixtures/context/lyra.txt` fixture — means the section
+is entirely absent, not "(none)") so the existing frozen-fixture test needed no update at all; a
+`gate: trusted` connector also produces no section (the member holds the credential directly, nothing to
+propose).
+
+## 6. Docs + honesty
+
+`docs/guide/03-concepts.md` gained a new "Effects and gates: side-effecting connectors are proposals"
+subsection under Connectors (the `effects`/`gate`/`actions` shape, the member-drafts/Conductor-approves/
+levare-acts sentence, the env-withholding guarantee, the mcp-skip honesty note). `docs/guide/
+06-operations.md` gained a matching "Side-effecting connectors: the grant is not the credential"
+subsection under "What a member can see" (the operational framing: what a Conductor actually observes
+running this), and its own former forward-reference ("side-effecting connectors gated as proposals... is
+designed but not built") was corrected to state plainly that this closed, immediately followed by naming
+what's STILL deferred (tool forwarding/scoped `HOME` — part B; OS-level sandboxing — v2) rather than
+leaving the old blanket "not built" claim standing next to code that now contradicts it.
+`docs/current-gaps.md`'s "The capability layer" entry narrows the same way: part A is named closed, part
+B and v2 are named as what remains, in the goal's own words. The adjacent "Connector trust-tier
+taxonomy" entry (a distinct, still-fully-open gap — team-scoped grants, finer tiers within `effects:
+write` itself) got a one-paragraph update noting `effects`/`gate` narrows but does not close it, rather
+than leaving it read as if nothing had changed.
+
+## Verification
+
+`bun test` — 954 pass, 1 pre-existing skip, 0 fail, across 75 files (up from 923/74 pre-goal — new
+coverage: `tests/capability-cap-a.test.ts`, 31 tests across six describe blocks matching this file's own
+items 1–5: env withholding both directions plus `buildConnectorEnv`'s isolation from any member grant;
+connector schema validation for `effects`/`gate`/`actions` (six cases); proposal artifact validation
+(ten cases — structural presence, non-proposal reuse, unknown connector, read-connector target,
+undeclared action, missing param, unknown param, ungranted connector, a clean pass, and the fail-open
+no-root case via `validateArtifactSource` directly); `execution.ts` unit tests including a REAL spawned
+stub shell script proving argv substitution and env isolation byte-for-byte (a hostile env var is
+present in the base but never reaches the stub's own captured environment), a non-zero exit, an mcp
+skip, and a timeout; a full round-trip through `board/gateops.ts#resolveGate` — member produces a
+`proposal` artifact that validates at the boundary → `start` gate → `approve` gate spawns the real stub
+binary with substituted argv and ONLY the connector's env → the execution record and the approval land
+in ONE commit (asserted via `git rev-parse HEAD` before/after and `approved.commit` equality) — plus a
+second round-trip proving a failed execution blocks the unit with a named reason without un-approving
+the proposal, and a third proving an mcp connector's approval records `executed: skipped` with the
+warning and never blocks the unit; a context-assembly describe block proving the capability section is
+absent for a member with no grant (frozen `lyra.txt` fixture untouched), present and correctly worded
+for a `write`+`proposal` grant, and absent again for a `gate: trusted` grant). Five pre-existing
+hand-built `Connector` literals across `tests/adapters.test.ts` (×2), `tests/board-ui11.test.ts`,
+`tests/board-ui12.test.ts`, and `tests/doctor.test.ts` gained explicit `effects: "read", gate:
+"proposal"` fields (the new interface fields are non-optional, matching how `auth`/`role` already are —
+a hand-built literal predating this ruling needed the same catch-up C13/C15 themselves required of
+their own predecessors). `bun run typecheck` → exit 0. `bun run deps:check` → `deps ok`. `bun run src/
+cli.ts replay fixtures/golden --stubs` → oracle match, byte-for-byte (this goal touches no adapter/
+replay logic for the golden fixture's own two connectors, which declare no `effects`/`gate` and so
+default to unchanged `effects: read` behavior). `bun run src/cli.ts validate fixtures/golden` → valid.
+`tests/board-routes.test.ts`'s route-count test — unchanged, green (`MUTATING_ROUTES.length === 3`,
+still exactly the §9 table). `bun run docs:generate` regenerated `connector.md`/`artifact.md`; the
+drift test (`tests/cheatsheets.test.ts`) is green against the committed output. `bun run build`
+succeeds.

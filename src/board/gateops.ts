@@ -63,6 +63,10 @@ export interface ResolveOpts {
   /** NOTES CAP-A: injectable clock for a proposal's `execution.executed_at` — default real `Date`;
    * tests inject a fixed value for deterministic assertions, mirroring `today` above. */
   now?: () => string;
+  /** NOTES CAP-A: the environment a proposal's connector execution draws its own vars from (default
+   * real `process.env`, mirroring `AdapterRunnerOptions.baseEnv`) — tests inject an isolated map so a
+   * connector-env assertion never depends on (or mutates) the real process environment. */
+  connectorBaseEnv?: Record<string, string | undefined>;
 }
 
 /** Resolve one gate verb against `target` (an artifact id, or — for start/notyet, and rescope of a
@@ -125,7 +129,7 @@ export async function resolveGate(root: string, project: string, target: string,
   const companion = applyLoopCompanionApproval(root, repo, unit, art, today, memberRunner.capabilities());
   const extra: TxFile[] = companion ? [companion] : [];
 
-  if (verb === "approve") return await doApprove(root, repo, unit, art, located.file, target, today, opts.note, extra, opts.connectorSpawn, opts.now);
+  if (verb === "approve") return await doApprove(root, repo, unit, art, located.file, target, today, opts.note, extra, opts.connectorSpawn, opts.now, opts.connectorBaseEnv);
   if (verb === "reject") return doReject(root, located.file, target, opts.note, extra);
   if (verb === "request") return await doRequest(root, repo, unit, located.file, art, opts.note, memberRunner, extra, today, opts.daemon);
   return { ok: false, status: 400, error: `verb '${verb}' is not valid for an artifact gate` };
@@ -169,6 +173,7 @@ async function doApprove(
   extraFiles: TxFile[],
   connectorSpawn?: ExecuteProposalOptions["spawn"],
   now?: () => string,
+  connectorBaseEnv?: Record<string, string | undefined>,
 ): Promise<GateOpResult> {
   const src = readFileSync(file, "utf8");
   let patched = stampApproval(src, today, root);
@@ -181,7 +186,7 @@ async function doApprove(
     }
     const connector = repo.connectors.get(art.connector);
     if (!connector) return { ok: false, status: 422, error: `proposal '${id}' references unknown connector '${art.connector}'` };
-    const record = await executeProposal(connector, art.action, art.params, { spawn: connectorSpawn, now });
+    const record = await executeProposal(connector, art.action, art.params, { spawn: connectorSpawn, now, baseEnv: connectorBaseEnv });
     patched = upsertFrontmatterMap(patched, "execution", {
       executed_at: record.executed_at,
       status: record.status,

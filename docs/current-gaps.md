@@ -49,18 +49,39 @@ Two deliberate, narrower gaps remain from that goal:
 
 Referenced repeatedly (NOTES C13; `docs/guide/07-community.md`'s own "roadmap has real gaps" note)
 as the future phase that would give each member its own isolated runtime view — its own filesystem,
-its own scoped environment — rather than every member sharing one process-level env allowlist. It
-does not exist yet. Everything below in this register that talks about per-member isolation or
-credential scoping is a specific instance of this same missing layer.
+its own scoped environment — rather than every member sharing one process-level env allowlist.
+
+**Part A is built (NOTES CAP-A):** a connector now declares `effects: read | write`, and a `write`
+connector's `gate: proposal | trusted` — a member granted a `write` + `gate: proposal` connector (the
+default) never sees that connector's own env vars at all; it drafts an artifact of kind `proposal`
+naming a connector-declared action and params, a Conductor's gate approval is what triggers levare's
+own execution step (the only code that ever reads the credential), and a `kind: mcp` proposal's
+execution is honestly recorded `executed: skipped` rather than pretended. This closes the "levare
+cannot tell a read from a write" gap named above and gives the member-drafts/Conductor-approves/
+levare-acts shape a real, gated write path for the first time.
+
+**What remains, still not built:**
+
+- **Tool forwarding and a scoped `HOME` (part B).** A `native` member's SDK-level `tools:` allowlist is
+  enforced; a `cli` member's own filesystem/network reach is still whatever the wrapped binary itself
+  can do, and every member still shares one process `$HOME` (the C13 gap: a subscription-authenticated
+  CLI's disk-stored session is reachable by any member that can spawn the binary, granted or not — see
+  "Per-member subscription-credential scoping" below, unchanged by part A).
+- **OS-level sandboxing (v2).** Process isolation — a member-specific filesystem view, network
+  restriction — beyond environment/credential scoping. Part A governs WHAT a member can read/act
+  through; it still does not sit between a `cli` member and the operating system it runs on.
 
 ## Connector trust-tier taxonomy
 
-A connector now declares `role: model | tool` (NOTES C15) — what FUNCTION it serves — but there is
-still no broader trust-tier system distinguishing, say, a read-only tool connector from one that can
-mutate production state, or scoping a connector to specific teams beyond whichever agents happen to
-be granted it. NOTES C13's own guidance — "prefer `auth: env`, grant `auth: subscription` only to
-trusted members" — remains advisory prose in a doctor warning, not an enforced taxonomy. Building one
-is capability-layer work, not yet started.
+A connector now declares `role: model | tool` (NOTES C15) — what FUNCTION it serves — and, since NOTES
+CAP-A, `effects: read | write` — whether a grant lets a member merely read through it or only propose
+against it. That narrows this gap (a read-only tool connector and a state-mutating one are now
+distinguishable, and the latter is gated by default) but does not close it: there is still no team-
+scoped grant system beyond whichever agents happen to be granted a connector, and no finer tier within
+`effects: write` itself (e.g. "may propose against production, may not against staging"). NOTES C13's
+own guidance — "prefer `auth: env`, grant `auth: subscription` only to trusted members" — remains
+advisory prose in a doctor warning, not an enforced taxonomy. Building the rest is capability-layer
+work, not yet started.
 
 ## Per-member subscription-credential scoping
 

@@ -53,6 +53,29 @@ codex · cli
 Prefer `auth: env` where the vendor offers it. Grant subscription connectors only to members you'd
 trust with the login.
 
+### Side-effecting connectors: the grant is not the credential
+
+A connector declared `effects: write` (NOTES CAP-A, v1.1 capability layer) — one that posts an issue,
+comments, or otherwise reaches out and changes something — behaves differently from every connector
+above **by default**: a member granted it does **not** see its environment variables at all. The
+allowlist that builds a member's process (`env.ts#buildMemberEnv`) skips a `write` connector's own vars
+entirely unless it's explicitly declared `gate: trusted`. The grant means "you may draft a proposal
+against this", never "you hold this credential".
+
+To act, the member produces an artifact of kind `proposal` — naming the connector, one of its declared
+`actions:`, and `params` covering every placeholder in that action's argv template. It can never supply
+raw argv; only the connector's own author, at definition time, decides what's possible. The proposal
+gates like any other artifact. Approving it is what triggers execution: **only then**, and only inside
+that one execution step (`execution.ts`), does levare read the connector's credential — substitute the
+params into the template, spawn it with an environment containing *just* that connector's vars plus the
+baseline, and record the outcome (exit code, a hash of the output, never the raw bytes) on the same
+commit as your approval. Rejecting a proposal executes nothing. A failed execution never un-approves the
+proposal — it blocks the unit with the failure named, so the next move is yours, not a retry loop's.
+
+`gate: trusted` is the visible opt-out, for a write connector you've decided a member should hold
+directly — it injects exactly like an `effects: read` connector always has. Declare it deliberately;
+the default (`proposal`) is the safer posture for anything that changes state outside the studio.
+
 ---
 
 ## What levare does not constrain
@@ -74,10 +97,14 @@ machine leaks in), and `--ephemeral` (no session state persists). levare cannot 
 member definition can *declare* them, and they're visible in the registry for anyone to audit. When a
 vendor hands you a guardrail, use it, and make it visible.
 
-The fuller story — OS-level sandboxing, side-effecting connectors gated as proposals, an `effects:
-read | write` declaration — is designed but not built. It is the capability layer, and it is levare's
-most significant deferred work. Until it exists, treat a `cli` member with the same caution you'd treat
-any script you're about to run: know what the binary is, and grant it only what it needs.
+Side-effecting connectors gated as proposals (the `effects: read | write` declaration above) is now
+built — that closes the "levare cannot tell a read from a write" half of the capability layer. What
+remains, still deferred: **tool forwarding and a scoped `HOME`** for a `native` member (part B of the
+capability layer — a member's declared `tools:` currently bounds SDK-native tool calls, but a `cli`
+member's own filesystem/network reach is still whatever the binary itself can do), and **OS-level
+sandboxing** (v2 — process isolation, not just environment/credential scoping). Until those land, treat
+a `cli` member with the same caution you'd treat any script you're about to run: know what the binary
+is, and grant it only what it needs.
 
 ---
 

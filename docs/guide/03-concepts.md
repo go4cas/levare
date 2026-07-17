@@ -261,6 +261,49 @@ how levare invokes, connects, or parses it (an agent's `native | cli | remote`, 
 `type: feature | fix | ...`. `role` answers what *function* a thing serves — currently only a
 connector's `role: model | tool`.
 
+### Effects and gates: side-effecting connectors are proposals
+
+A third field, `effects`, says whether a grant lets a member merely *read* through a connector or
+*write* through it — post an issue, comment, merge a branch, anything that reaches out and changes
+something:
+
+```yaml
+effects: read     # the default — a grant IS the credential, exactly as above
+effects: write    # a grant is only the right to PROPOSE — see below
+gate: proposal    # the default for a write connector — env withheld, see below
+gate: trusted     # the declared, visible opt-out — injects exactly like effects: read
+```
+
+For an `effects: write` connector, the connector's own author also declares its **action vocabulary**
+— the only argv a member can ever cause to run:
+
+```yaml
+actions:
+  create-issue: ["gh", "issue", "create", "--title", "{title}", "--body-file", "{body_file}"]
+```
+
+**The member drafts, the Conductor approves, levare acts.** A member granted a `gate: proposal`
+connector never holds its credential — `env.ts`'s allowlist withholds that connector's variables from
+the member's process entirely, the same way an ungranted connector's variables were always withheld.
+The grant now means "you may draft a proposal against this", not "you hold this". To act, the member
+produces an artifact of kind `proposal` naming the connector, one of its declared actions, and `params`
+covering every `{placeholder}` in that action's template — never raw argv; it can only ever ask for
+something the connector's author already declared possible. That proposal flows to a gate like any
+other artifact. When you approve it, levare itself — never the member — substitutes the params into the
+template and spawns it, with an environment containing *only* that one connector's variables. The
+outcome (exit code, a digest of the output — never the raw bytes, which could echo a secret) is
+recorded on the artifact in the same commit as your approval. A failed run never un-approves the
+proposal; it blocks the unit with the failure named, so you decide what happens next.
+
+`gate: trusted` is the honest opt-out for a connector you've decided a member should hold directly —
+it injects exactly like an `effects: read` connector always has, no proposal required. Use it
+deliberately, the same way you'd choose `auth: subscription` over `auth: env`: it's a real capability,
+not a default to reach for.
+
+An `effects: write` connector's `kind: mcp` proposal validates and gates identically — but approving it
+records `executed: skipped` with a warning, honestly, rather than pretending a call was made. levare has
+no live MCP execution path yet (the same documented gap as `kind: remote` members).
+
 ---
 
 ## Gates, and the verbs
