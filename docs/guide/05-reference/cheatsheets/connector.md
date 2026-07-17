@@ -18,6 +18,7 @@ An external system a member can be granted.
 | `effects` | enum | — | — | `read` · `write` |
 | `gate` | enum | — | — | `proposal` · `trusted` |
 | `actions` | map (action name → argv template array) | — | — | — |
+| `home` | string[] | — | — | — |
 
 ## Minimal valid skeleton
 

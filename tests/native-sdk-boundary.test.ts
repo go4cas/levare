@@ -30,7 +30,7 @@ function req(over: Partial<InvokeRequest> = {}): InvokeRequest {
     project: "storefront",
     context: "── 1. agent · lyra ──\nYou design flows.\n",
     env: { PATH: "/bin", HOME: "/h" },
-    tools: ["read", "write"],
+    tools: ["Read", "Write"],
     ...over,
   };
 }
@@ -44,8 +44,8 @@ describe("createSdkNativeBoundary (mocked transport)", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].prompt).toBe("── 1. agent · lyra ──\nYou design flows.\n");
     expect(calls[0].model).toBe("claude-opus-4-8");
-    expect(calls[0].tools).toEqual(["read", "write"]);
-    expect(calls[0].allowedTools).toEqual(["read", "write"]);
+    expect(calls[0].tools).toEqual(["Read", "Write"]);
+    expect(calls[0].allowedTools).toEqual(["Read", "Write"]);
   });
 
   test("forwards ANTHROPIC_API_KEY into the spawn env even though it is never a connector grant", () => {
@@ -101,8 +101,8 @@ describe("createAsyncSdkNativeBoundary (mocked transport) — NOTES F8, the non-
     expect(calls).toHaveLength(1);
     expect(calls[0].prompt).toBe("── 1. agent · lyra ──\nYou design flows.\n");
     expect(calls[0].model).toBe("claude-opus-4-8");
-    expect(calls[0].tools).toEqual(["read", "write"]);
-    expect(calls[0].allowedTools).toEqual(["read", "write"]);
+    expect(calls[0].tools).toEqual(["Read", "Write"]);
+    expect(calls[0].allowedTools).toEqual(["Read", "Write"]);
   });
 
   test("forwards ANTHROPIC_API_KEY into the spawn env even though it is never a connector grant, and never leaks an ungranted secret", async () => {

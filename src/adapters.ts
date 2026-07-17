@@ -28,7 +28,7 @@
 import { existsSync, statSync, accessSync, constants as fsConstants } from "node:fs";
 import { isAbsolute, join as pathJoin } from "node:path";
 import { normalizeReceipt } from "./receipts.ts";
-import { buildMemberEnv, teamOf, subscriptionConnector } from "./env.ts";
+import { buildMemberEnv, teamOf, subscriptionConnector, scopeHome } from "./env.ts";
 import { allowedTools } from "./guardrails.ts";
 import { assembleContext, unitArtifactPaths } from "./context.ts";
 import { asyncSdkTransport, bunSdkTransport, resolveNativeBinary, type AsyncSdkTransport, type SdkTransport } from "./sdk-transport.ts";
@@ -488,7 +488,7 @@ export class AdapterRunner implements MemberRunner {
     let receipt: Receipt | undefined;
     switch (agent.kind) {
       case "native": {
-        const res = this.opts.native.invoke(req);
+        const res = this.withHomeScope(member, req, (r) => this.opts.native.invoke(r));
         raw = res.doc;
         receipt = res.receipt;
         break;
@@ -497,7 +497,7 @@ export class AdapterRunner implements MemberRunner {
         raw = this.opts.remote.call(req).doc;
         break;
       case "cli": {
-        const { content, tokensUsed } = this.runCli(agent, req);
+        const { content, tokensUsed } = this.withHomeScope(member, req, (r) => this.runCli(agent, r));
         raw = content;
         receipt = this.cliReceipt(agent, tokensUsed);
         break;
@@ -522,7 +522,7 @@ export class AdapterRunner implements MemberRunner {
     let receipt: Receipt | undefined;
     switch (agent.kind) {
       case "native": {
-        const res = this.opts.asyncNative ? await this.opts.asyncNative.invoke(req) : this.opts.native.invoke(req);
+        const res = await this.withHomeScopeAsync(member, req, async (r) => (this.opts.asyncNative ? await this.opts.asyncNative.invoke(r) : this.opts.native.invoke(r)));
         raw = res.doc;
         receipt = res.receipt;
         break;
@@ -531,7 +531,7 @@ export class AdapterRunner implements MemberRunner {
         raw = this.opts.remote.call(req).doc;
         break;
       case "cli": {
-        const { content, tokensUsed } = await this.runCliAsync(agent, req);
+        const { content, tokensUsed } = await this.withHomeScopeAsync(member, req, (r) => this.runCliAsync(agent, r));
         raw = content;
         receipt = this.cliReceipt(agent, tokensUsed);
         break;
@@ -540,6 +540,31 @@ export class AdapterRunner implements MemberRunner {
         throw new AdapterError(`unknown agent kind '${(agent as Agent).kind}' for '${member}'`);
     }
     return this.author(req, raw, receipt, extraConsumes);
+  }
+
+  // NOTES CAP-B (part B, item 4): wraps a native/cli invocation with a per-spawn scoped HOME
+  // (env.ts#scopeHome) — a no-op (returns `req` unchanged) unless `member` is granted a subscription
+  // connector that declares `home:`. Scratch dirs are created here, immediately before the spawn, and
+  // removed in `finally` immediately after — never shared across calls, never left behind on either a
+  // success or a thrown AdapterError. `remote` never goes through this (mocked, no real spawn — see
+  // both callers above): scoping a HOME that never reaches a real process would only cost a wasted
+  // mkdtemp/rm pair for no isolation benefit.
+  private withHomeScope<T>(member: string, req: InvokeRequest, fn: (req: InvokeRequest) => T): T {
+    const scoped = scopeHome(this.repo, member, req.env);
+    try {
+      return fn({ ...req, env: scoped.env });
+    } finally {
+      scoped.cleanup();
+    }
+  }
+
+  private async withHomeScopeAsync<T>(member: string, req: InvokeRequest, fn: (req: InvokeRequest) => Promise<T>): Promise<T> {
+    const scoped = scopeHome(this.repo, member, req.env);
+    try {
+      return await fn({ ...req, env: scoped.env });
+    } finally {
+      scoped.cleanup();
+    }
   }
 
   // Shared setup for both produce/produceAsync: resolve the agent, assemble its §6 context, scope its

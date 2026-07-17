@@ -17,7 +17,7 @@ name: scribe
 kind: native
 produces: [product-brief]
 model: claude-sonnet-5
-tools: [read, write]
+tools: [Read, Write]
 style:
   avatar: Sc
 ---

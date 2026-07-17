@@ -272,9 +272,9 @@ describe("`levare serve` invokes a native member through the real SDK boundary (
       expect(res.status).toBe(200);
 
       expect(calls).toHaveLength(1);
-      // Tool allowlist: exactly wren's declared `tools: [read, write]` — both fields, never implicit.
-      expect(calls[0].tools).toEqual(["read", "write"]);
-      expect(calls[0].allowedTools).toEqual(["read", "write"]);
+      // Tool allowlist: exactly wren's declared `tools: [Read, Write]` — both fields, never implicit.
+      expect(calls[0].tools).toEqual(["Read", "Write"]);
+      expect(calls[0].allowedTools).toEqual(["Read", "Write"]);
 
       // Env allowlist: PATH/HOME baseline plus the forwarded platform credential — GITHUB_TOKEN (a
       // connector wren was never granted) never reaches the spawned call.
@@ -294,7 +294,7 @@ describe("`levare serve` invokes a native member through the real SDK boundary (
       // unit test, proving the empty allowlist survives the full context-assembly/env-scoping path.
       const wrenFile = join(root, "agents/wren.md");
       const original = readFileSync(wrenFile, "utf8");
-      const noTools = original.replace("tools: [read, write]\n", "");
+      const noTools = original.replace("tools: [Read, Write]\n", "");
       writeFileSync(wrenFile, noTools);
       git(root, ["add", "-A"]);
       git(root, ["commit", "-q", "-m", "wren declares no tools"]);

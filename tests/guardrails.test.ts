@@ -51,7 +51,7 @@ describe("protected-path / never guardrails", () => {
 
 describe("tool allowlist", () => {
   test("a native agent's allowlist is exactly its declared tools", () => {
-    expect(allowedTools(repo.agents.get("lyra")!)).toEqual(["read", "write"]);
+    expect(allowedTools(repo.agents.get("lyra")!)).toEqual(["Read", "Write"]);
   });
 
   test("an agent with no declared tools gets an empty allowlist (nothing implicit)", () => {

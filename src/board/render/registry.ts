@@ -137,10 +137,17 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
       // the schema alone, so the card says so via the same canonical warning callout the guardrails
       // finding above uses.
       const remoteWarning = a.kind === "remote" ? callout("warning", "remote members are not yet implemented — this member will not produce real work.") : "";
+      // NOTES CAP-B (part B item 3): a cli member's tools: is a legal declaration levare cannot
+      // enforce — there is no SDK boundary in the cli spawn path for an allowlist to reach. Same
+      // callout treatment as the remote-members warning above.
+      const cliToolsWarning =
+        a.kind === "cli" && (a.tools?.length ?? 0) > 0
+          ? callout("warning", "tools: on a cli member is not enforceable by levare — encode the constraint in the connector/command via the vendor's own flags.")
+          : "";
       const inner = `<div class="card__h">Context recipe</div><div class="recipe">${recipe || '<span style="color:var(--fg-mute)">none declared</span>'}</div>
       <div class="card__h">Definition</div>
       <div class="prow"><span class="k">kind</span><span class="v">${agentKindBadge(a.kind)}${a.model ? ` <span class="mono">&middot; ${esc(a.model)}</span>` : ""}</span></div>
-      <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>${remoteWarning}`;
+      <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>${remoteWarning}${cliToolsWarning}`;
       // UI7: no "agent" kind tag (RULE A) — the kind is already the page/URL this card lives on.
       return entityBlock("agents", `${avatar(a.style.avatar || a.name.slice(0, 2), team?.style.color, { size: "lg" })} ${esc(a.name)}`, "agent", inner, `agents/${a.name}.md`, rawFor(root, "agents", a.name), a.name, active === "agents", { showKindTag: false });
     })
@@ -187,9 +194,17 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
       // defines a message-severity scale with its own warning amber, so this becomes a genuine
       // `callout("warning", …)` — see `callout`'s own doc comment (components.ts) and the design
       // brief's "message severity" section for the amber-split reasoning.
+      // NOTES CAP-B: the same home-aware split doctor.ts's `diagnose` now uses — declaring `home:`
+      // narrows the honest claim (scoped to the vendor's own config dir) but never closes the residual
+      // (any OTHER member granted this same connector can still use the live login).
       const authWarning =
         c.auth === "subscription"
-          ? callout("warning", `levare cannot scope this credential — any member that can spawn \`${esc(c.command ?? c.name)}\` can use this login. The grant is documentation, not enforcement.`)
+          ? callout(
+              "warning",
+              c.home && c.home.length > 0
+                ? `this credential is scoped to \`${c.home.map(esc).join(", ")}\` under a per-run HOME — but any member granted this connector can still use the login (the grant is not per-member revocable; only the real login is).`
+                : `levare cannot scope this credential — any member that can spawn \`${esc(c.command ?? c.name)}\` can use this login. The grant is documentation, not enforcement. Declare 'home:' to scope it to the vendor's own config directory.`,
+            )
           : "";
       // NOTES UI11: the connector kind (cli/mcp) gets the same shape-treatment badge as an agent's
       // kind — no status-palette colour, consistent with UI7's agent-kind badges.

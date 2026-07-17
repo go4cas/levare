@@ -121,8 +121,22 @@ export function runDoctorCmd(rest: string[]): number {
     // NOTES REV1 finding 3: every agent declaring `kind: remote` — a legal declaration that produces
     // no real work today (adapters.ts's RemoteBoundary is a mocked fixture).
     const remoteAgents = [...repo.agents.values()].filter((a) => a.kind === "remote").map((a) => a.name);
+    // NOTES CAP-B: every `kind: cli` agent that also declares `tools:` — legal, but not enforceable by
+    // levare (see validate.ts#validateAgentCliToolsWarning, the same warning repeated here).
+    const cliToolAgents = [...repo.agents.values()].filter((a) => a.kind === "cli" && (a.tools?.length ?? 0) > 0).map((a) => a.name);
     process.stdout.write(
-      runDoctor([...repo.connectors.values()], env, probe, provenance, orchestrator, getVersionInfo(), checkOrchestratorPrompt(), guardrailsTeams, remoteAgents),
+      runDoctor(
+        [...repo.connectors.values()],
+        env,
+        probe,
+        provenance,
+        orchestrator,
+        getVersionInfo(),
+        checkOrchestratorPrompt(),
+        guardrailsTeams,
+        remoteAgents,
+        cliToolAgents,
+      ),
     );
     return 0;
   } catch (e) {

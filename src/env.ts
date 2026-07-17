@@ -5,6 +5,9 @@
 //
 // Grants are the union of the member's agent-level `connectors:` and its team's `connectors:` (§5).
 
+import { mkdtempSync, mkdirSync, symlinkSync, rmSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { tmpdir } from "node:os";
 import type { Connector, Team } from "./types.ts";
 import type { Repo } from "./repo.ts";
 
@@ -108,4 +111,74 @@ export function describeMemberEnv(env: Record<string, string>): Array<{ name: st
   return Object.keys(env)
     .sort()
     .map((name) => ({ name, present: true as const }));
+}
+
+/**
+ * NOTES CAP-B (v1.1 capability layer, part B, item 4): the outcome of `scopeHome` below — `env` is
+ * `buildMemberEnv`'s own record, with `HOME` overridden to a scratch directory when scoping applied
+ * (unchanged otherwise, same object reference when there was nothing to scope). `cleanup()` removes the
+ * scratch directory (a no-op when none was created) — the caller MUST call it after the spawn this env
+ * was built for completes, success or failure, so a scratch `HOME` never outlives the one run it was
+ * made for.
+ */
+export interface ScopedHome {
+  env: Record<string, string>;
+  cleanup(): void;
+}
+
+export interface ScopeHomeOptions {
+  /** Test-only override for the scratch-dir parent (default `os.tmpdir()`). */
+  tmpRoot?: string;
+}
+
+/**
+ * NOTES CAP-B: when `member` is granted a `auth: subscription` connector that declares `home:`, give
+ * it a PER-RUN scratch `HOME` containing SYMLINKS to only the declared dotpaths from the real `HOME` —
+ * never a copy (the vendor's on-disk login is a LIVE credential; revoking the real login must still
+ * revoke it here, which only a symlink guarantees). Every other member, and a subscription connector
+ * declaring no `home:` (the pre-CAP-B default — see the `SUBSCRIPTION_NO_HOME` validate/doctor
+ * warning), gets back `env` completely unchanged — real, unscoped `HOME`, exactly as before this item.
+ *
+ * `env` must already be `buildMemberEnv`'s own output (its `HOME`, when present, is the real one this
+ * function symlinks FROM) — this function only ever narrows an already-allowlisted env, never widens
+ * one, and reads no connector env vars of its own (a write-gated connector's vars stay withheld exactly
+ * as `buildMemberEnv` already decided; `home:` scoping and env-var withholding are orthogonal).
+ *
+ * Scratch dirs are created fresh on every call (never cached/shared across spawns) and MUST be removed
+ * by the caller via the returned `cleanup()` once the spawn this env was built for is done.
+ */
+export function scopeHome(repo: Repo, member: string, env: Record<string, string>, opts: ScopeHomeOptions = {}): ScopedHome {
+  const sub = subscriptionConnector(repo, member);
+  const dotpaths = sub?.home;
+  const realHome = env.HOME;
+  if (!dotpaths || dotpaths.length === 0 || !realHome) return { env, cleanup() {} };
+
+  const scratch = mkdtempSync(join(opts.tmpRoot ?? tmpdir(), "levare-home-"));
+  for (const dotpath of dotpaths) {
+    const target = join(realHome, dotpath);
+    const link = join(scratch, dotpath);
+    mkdirSync(dirname(link), { recursive: true });
+    try {
+      // No `type` argument: POSIX symlinks don't need one, and this codebase runs on Linux/macOS
+      // (every other spawn helper in this repo — sdk-transport.ts, adapters.ts — is POSIX-only too).
+      // A dangling target (the vendor CLI's config doesn't exist yet, e.g. before first login) is not
+      // an error — the symlink is created regardless, exactly like a real `ln -s` would.
+      symlinkSync(target, link);
+    } catch {
+      /* best-effort — a single unresolvable dotpath must not abort the whole spawn */
+    }
+  }
+  return {
+    env: { ...env, HOME: scratch },
+    cleanup() {
+      try {
+        // `recursive: true` unlinks symlink ENTRIES inside `scratch`, never follows them into the
+        // real target directories (standard rm -rf semantics) — the live credential this scopes is
+        // never touched by cleanup, only the scratch dir's own symlinks are.
+        rmSync(scratch, { recursive: true, force: true });
+      } catch {
+        /* best-effort — a scratch dir surviving a failed rm is not worth failing the run over */
+      }
+    },
+  };
 }

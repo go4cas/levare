@@ -13,6 +13,7 @@ import { parseFrontmatter, YamlError, type YamlValue } from "./yaml.ts";
 import { loadPricing, type Pricing } from "./pricing.ts";
 import { readOverlaid, type OverlayFile } from "./overlay.ts";
 import { kindMatches } from "./flow.ts";
+import { SDK_TOOL_NAMES } from "./sdk-transport.ts";
 export type { OverlayFile } from "./overlay.ts";
 
 export interface ValidationError {
@@ -287,6 +288,9 @@ const CONNECTOR_SCHEMA: Schema = {
     // (required-ness here would reject an absent `actions:` on a perfectly valid effects: read
     // connector, the same reasoning `env`'s own required-ness is auth-mode-conditional, not schema-fixed).
     actions: { type: "action-map", required: false },
+    // NOTES CAP-B: dotpaths under $HOME the vendor CLI needs (e.g. [".codex"]) — meaningful for
+    // auth: subscription connectors; see env.ts#scopeHome and Connector.home's own doc (types.ts).
+    home: { type: "str[]", required: false },
   },
 };
 
@@ -535,8 +539,11 @@ function validateSingleFile(
   }
   if (kind.schema === AGENT_SCHEMA) validateAgentVariant(data, file, errors);
   if (kind.schema === AGENT_SCHEMA) validateAgentRemoteNotice(data, file, warnings);
+  if (kind.schema === AGENT_SCHEMA) validateAgentTools(data, file, errors);
+  if (kind.schema === AGENT_SCHEMA) validateAgentCliToolsWarning(data, file, warnings);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorAuth(data, file, errors);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorRoleWarning(data, file, warnings);
+  if (kind.schema === CONNECTOR_SCHEMA) validateConnectorHomeWarning(data, file, warnings);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorEffects(data, file, errors);
 }
 
@@ -929,6 +936,44 @@ function validateAgentRemoteNotice(data: Record<string, YamlValue>, file: string
   });
 }
 
+// NOTES CAP-B (part B, item 1): `tools:` is a validated fixed enum, not a free-form registry — every
+// name must be a real Claude Agent SDK tool name (SDK_TOOL_NAMES, sdk-transport.ts, derived honestly
+// from the installed SDK's own tool-schema surface). An unknown name is caught here, at validation
+// time, rather than discovered live as a name the SDK boundary silently never matches against
+// anything — the vocabulary is named in the error so a studio author can fix it without spelunking.
+function validateAgentTools(data: Record<string, YamlValue>, file: string, errors: ValidationError[]): void {
+  if (!Array.isArray(data.tools)) return; // shape already caught by the str[] schema check.
+  const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+  for (const t of data.tools) {
+    if (typeof t === "string" && !SDK_TOOL_NAMES.includes(t)) {
+      errors.push({
+        code: "UNKNOWN_TOOL",
+        message: `agent '${name}' declares tool '${t}', which is not a Claude Agent SDK tool name — valid tools: ${SDK_TOOL_NAMES.join(", ")}`,
+        file,
+      });
+    }
+  }
+}
+
+// NOTES CAP-B (part B, item 3): a `kind: cli` member's `tools:` cannot be enforced by levare at all —
+// there is no SDK boundary in the cli path for an allowlist to reach (adapters.ts's `runCli`/
+// `runCliAsync` spawn the vendor binary directly; `req.tools` is read only by the native worker
+// request, never threaded into a cli spawn's argv/env). Declaring `tools:` on a cli agent is legal —
+// it is never rejected — but it is silently misleading otherwise: the studio author reasonably expects
+// the same enforcement a native member gets. Warned here (never an error, the same "legal declaration,
+// told plainly" posture as `validateAgentRemoteNotice` above), and doctor.ts repeats it; the ONLY way
+// to silence it is to remove `tools:` — declare the constraint in the connector/command instead, via
+// the vendor's own flags (`codex --sandbox read-only` is this repo's own in-tree precedent).
+function validateAgentCliToolsWarning(data: Record<string, YamlValue>, file: string, warnings: ValidationWarning[]): void {
+  if (data.kind !== "cli" || !Array.isArray(data.tools) || data.tools.length === 0) return;
+  const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+  warnings.push({
+    code: "CLI_TOOLS_NOT_ENFORCEABLE",
+    message: `agent '${name}' declares kind: cli and 'tools:' — tools: on a cli member is not enforceable by levare — encode the constraint in the connector/command via the vendor's own flags`,
+    file,
+  });
+}
+
 // NOTES C13: a connector's `auth:` and `env:` must agree. `auth: env` (default) is levare's
 // enforced grant — an empty env list declares nothing for the Runner to inject or scope, so it's a
 // definition error, not a connector with nothing to do. `auth: subscription` names a backend that
@@ -966,6 +1011,23 @@ function validateConnectorRoleWarning(data: Record<string, YamlValue>, file: str
   warnings.push({
     code: "SUBSCRIPTION_NO_ROLE",
     message: `connector '${name}' is subscription-authenticated but declares no role — if it provides model access, declare 'role: model'`,
+    file,
+  });
+}
+
+// NOTES CAP-B (part B, item 4): the sibling to SUBSCRIPTION_NO_ROLE above, for the same "legal but
+// worth flagging" family — a subscription connector with no `home:` gives every member it's granted to
+// the OPERATOR'S ENTIRE `$HOME` (today's pre-CAP-B behaviour, unchanged, still the default). Declaring
+// `home:` is what actually scopes the credential (env.ts#scopeHome); this warning is how a studio
+// author discovers that opt-in exists at all, rather than assuming a bare `auth: subscription` grant is
+// already scoped. Fires only when `home` is genuinely absent — declaring it (even `home: []`, though
+// that scopes to nothing) silences it.
+function validateConnectorHomeWarning(data: Record<string, YamlValue>, file: string, warnings: ValidationWarning[]): void {
+  if (data.auth !== "subscription" || data.home !== undefined) return;
+  const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+  warnings.push({
+    code: "SUBSCRIPTION_NO_HOME",
+    message: `connector '${name}' is subscription-authenticated but declares no 'home:' — the member receives your entire HOME; declare the vendor's config path (e.g. 'home: [".codex"]') to scope it`,
     file,
   });
 }

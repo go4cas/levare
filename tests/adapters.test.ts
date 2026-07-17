@@ -69,7 +69,7 @@ describe("native adapter (mocked SDK boundary)", () => {
       baseEnv: { PATH: "/bin", HOME: "/h", GITHUB_TOKEN: "secret" },
     });
     runner.produce("lyra", "spec", "checkout-flow", "storefront");
-    expect(seen!.tools).toEqual(["read", "write"]);
+    expect(seen!.tools).toEqual(["Read", "Write"]);
     // lyra grants no connector → GITHUB_TOKEN must not appear in its scoped env.
     expect(seen!.env.GITHUB_TOKEN).toBeUndefined();
     expect(seen!.env.PATH).toBe("/bin");

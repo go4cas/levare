@@ -49,14 +49,69 @@ import { tmpdir } from "node:os";
 import type { Receipt } from "./types.ts";
 import { isCompiledBuild } from "./version.ts";
 
+// NOTES CAP-B (v1.1 capability layer, part B, item 1): the fixed vocabulary an agent's `tools:` may
+// name — validated (validate.ts#validateAgentTools), never a free-form registry. Derived HONESTLY from
+// this installed SDK version's own `ToolInputSchemas` union
+// (node_modules/@anthropic-ai/claude-agent-sdk/sdk-tools.d.ts), the one place this SDK version
+// documents, machine-checkably, every tool name `query()`'s `tools`/`allowedTools` options can name —
+// every entry below is that union's own `*Input` interface name with the `Input` suffix stripped, and
+// `File` stripped from `FileRead`/`FileWrite`/`FileEdit` (confirmed against `sdk.d.ts`'s own two
+// worked examples: `tools: ['Read', 'Grep', 'Glob', 'Bash']` and `['Bash', 'Read', 'Edit']` — the
+// capitalized, un-prefixed forms are what the SDK's own docs use). Never hand-invented: a name that
+// isn't a sibling of an actual `*Input` schema in this SDK version does not appear here, and a
+// version bump that adds/removes a tool schema is the only thing that should ever change this list.
+export const SDK_TOOL_NAMES: readonly string[] = [
+  "Agent",
+  "Artifact",
+  "AskUserQuestion",
+  "Bash",
+  "ClaudeDesign",
+  "CronCreate",
+  "CronDelete",
+  "CronList",
+  "Edit",
+  "EnterPlanMode",
+  "EnterWorktree",
+  "ExitPlanMode",
+  "ExitWorktree",
+  "Glob",
+  "Grep",
+  "ListMcpResources",
+  "Mcp",
+  "Monitor",
+  "NotebookEdit",
+  "Projects",
+  "PushNotification",
+  "Read",
+  "ReadMcpResource",
+  "ReadMcpResourceDir",
+  "REPL",
+  "RemoteTrigger",
+  "ReportFindings",
+  "ScheduleWakeup",
+  "ShowOnboardingRolePicker",
+  "TaskCreate",
+  "TaskGet",
+  "TaskList",
+  "TaskOutput",
+  "TaskStop",
+  "TaskUpdate",
+  "TodoWrite",
+  "WebFetch",
+  "WebSearch",
+  "Workflow",
+  "Write",
+] as const;
+
 export interface SdkWorkerRequest {
   /** The user-turn content sent to the model this call. */
   prompt: string;
   /** Loaded verbatim from disk by the caller (never edited/appended here) when set. */
   systemPrompt?: string;
   model?: string;
-  /** Base tool set the model may see (levare's own `tools:` vocabulary — passed through as-is; see
-   * NOTES phase-7 K2 for the scope boundary on SDK built-in tool-name mapping). */
+  /** Base tool set the model may see (levare's own `tools:` vocabulary, validated against
+   * `SDK_TOOL_NAMES` above at `levare validate` time — passed through as-is here; see NOTES phase-7 K2
+   * for the scope boundary on SDK built-in tool-name mapping). */
   tools?: string[];
   allowedTools?: string[];
   outputFormat?: { type: "json_schema"; schema: Record<string, unknown> };

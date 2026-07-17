@@ -154,6 +154,10 @@ function toConnector(d: Record<string, YamlValue>): Connector {
     effects: d.effects === "write" ? "write" : "read",
     gate: d.gate === "trusted" ? "trusted" : "proposal",
     actions: toActions(d.actions),
+    // NOTES CAP-B: absent (undefined) means "no scoping declared" — env.ts#scopeHome's own no-op path,
+    // distinct from an explicit empty list (which would also no-op, but is not how an author expresses
+    // "I haven't scoped this yet").
+    home: d.home ? strArr(d.home) : undefined,
   };
 }
 

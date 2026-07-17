@@ -152,7 +152,7 @@ kind: native
 produces: [product-brief]
 model: claude-sonnet-5
 skills: [product-brief]
-tools: [read, write]
+tools: [Read, Write]
 knowledge: [house-style]
 style:
   avatar: Wr
@@ -169,7 +169,7 @@ kind: native
 produces: [design, spec]
 model: claude-sonnet-5
 skills: [flow-design, spec-writing]
-tools: [read, write]
+tools: [Read, Write]
 knowledge: [house-style]
 style:
   avatar: Ly
@@ -361,7 +361,11 @@ model access (NOTES C15).
 // (agents/finch.md) authenticates itself from its own stored session (\`codex login\`) rather than an
 // env var levare could inject (NOTES C13). Declared here, unwired to any agent, purely to model the
 // shape a studio should declare when it grants model access through a connector: \`auth: subscription\`
-// (the credential lives outside levare's scoping) plus \`role: model\` (what it's FOR).
+// (the credential lives outside levare's scoping) plus \`role: model\` (what it's FOR). NOTES CAP-B:
+// \`home: [".codex"]\` is the canonical scoping declaration this connector's own doctor/card warning
+// asks for — a granted member's spawned process gets a scratch HOME symlinking only \`~/.codex\`, not
+// the operator's entire real HOME (env.ts#scopeHome); the residual (any OTHER member granted THIS
+// connector can still use the live login) stays true and stays named, in the body below.
 const CONNECTOR_CODEX = `---
 name: codex
 kind: cli
@@ -370,14 +374,18 @@ env: []
 auth: subscription
 role: model
 plan: "ChatGPT Plus — flat monthly rate"
-scope: "Model access for Codex-backed members. levare cannot scope this credential — see auth: subscription (NOTES C13)."
+scope: "Model access for Codex-backed members. levare scopes this credential to ~/.codex via home: — see auth: subscription (NOTES C13/CAP-B)."
+home: [".codex"]
 ---
 
 # Codex connector
 
 Models the \`role: model\` + \`auth: subscription\` shape: \`codex login\` writes a session to
-\`~/.codex\` that any member able to spawn \`codex\` can use, granted or not — the grant here is
-documentation of intent, not enforcement. \`role: model\` names what it's for.
+\`~/.codex\`. \`home: [".codex"]\` scopes a granted member's spawned process to a scratch HOME
+symlinking only that path — real \`~/.ssh\`, \`~/.aws\`, and everything else stays invisible to it. The
+login itself remains usable by any OTHER member granted this same connector; only the real
+\`codex login\` revokes it. Declaring \`home:\` is what turns "documentation of intent" into an actual
+filesystem boundary — see doctor's own warning when it's left absent.
 `;
 
 const KNOWLEDGE_HOUSE_STYLE = `---

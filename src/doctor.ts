@@ -71,9 +71,16 @@ export function diagnose(connectors: Connector[], env: EnvProbe, probe: CliProbe
       const health: ConnectorHealth = { name: c.name, kind: c.kind, auth: c.auth, role: c.role, env: envChecks, status };
       if (c.plan) health.plan = c.plan;
       if (c.auth === "subscription") {
-        // NOTES C13: stated plainly, every time — the board and this report must never imply a
-        // scoping guarantee levare is not providing.
-        health.warning = `levare cannot scope this credential — any member that can spawn \`${c.command ?? c.name}\` can use this login. The grant is documentation, not enforcement.`;
+        // NOTES C13/CAP-B: stated plainly, every time — the board and this report must never imply a
+        // scoping guarantee levare is not providing. CAP-B narrows the honest claim rather than
+        // changing its shape: a connector declaring `home:` gets its credential scoped to the vendor's
+        // own config directory (env.ts#scopeHome gives a granted member a scratch $HOME symlinking
+        // only those paths) — but the login itself remains usable by any OTHER member granted this
+        // SAME connector, which is the residual C13 always named and CAP-B does not close.
+        health.warning =
+          c.home && c.home.length > 0
+            ? `this credential is scoped to \`${c.home.join(", ")}\` under a per-run HOME — but any member granted this connector can still use the login (the grant is not per-member revocable; only the real login is).`
+            : `levare cannot scope this credential — any member that can spawn \`${c.command ?? c.name}\` can use this login. The grant is documentation, not enforcement. Declare 'home:' to scope it to the vendor's own config directory.`;
       }
       if (c.kind === "cli" && c.command) health.cli = { command: c.command, probe: probe(c.command) };
       if (c.kind === "mcp" && c.server) health.mcp = { server: c.server };
@@ -103,7 +110,11 @@ export function diagnose(connectors: Connector[], env: EnvProbe, probe: CliProbe
  * `kind: remote`. A legal declaration — `levare validate` accepts it — but adapters.ts's
  * `RemoteBoundary` is a documented mock in every path today (no live MCP call exists), so doctor
  * repeats the same telling the validator's warning already gives, in case the Conductor never ran
- * (or reread) `validate`'s own output. */
+ * (or reread) `validate`'s own output.
+ *
+ * `cliToolAgents`, when given (NOTES CAP-B, part B item 3): the names of every `kind: cli` agent that
+ * also declares `tools:` — legal, but levare cannot enforce it (there is no SDK boundary in the cli
+ * spawn path for an allowlist to reach); doctor repeats `validateAgentCliToolsWarning`'s own telling. */
 export function formatDoctor(
   health: ConnectorHealth[],
   orchestrator?: OrchestratorStatus,
@@ -111,6 +122,7 @@ export function formatDoctor(
   promptCheck?: PromptCheck,
   guardrailsTeams?: string[],
   remoteAgents?: string[],
+  cliToolAgents?: string[],
 ): string {
   const out: string[] = [];
   if (versionInfo) {
@@ -133,6 +145,12 @@ export function formatDoctor(
   }
   if (remoteAgents && remoteAgents.length > 0) {
     out.push(`⚠ remote members are not yet implemented — these will not produce real work: ${remoteAgents.join(", ")}`);
+    out.push("");
+  }
+  if (cliToolAgents && cliToolAgents.length > 0) {
+    out.push(
+      `⚠ tools: on a cli member is not enforceable by levare — encode the constraint in the connector/command via the vendor's own flags: ${cliToolAgents.join(", ")}`,
+    );
     out.push("");
   }
   out.push(`levare doctor · ${health.length} connector${health.length === 1 ? "" : "s"}`);
@@ -172,6 +190,7 @@ export function runDoctor(
   promptCheck?: PromptCheck,
   guardrailsTeams?: string[],
   remoteAgents?: string[],
+  cliToolAgents?: string[],
 ): string {
-  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo, promptCheck, guardrailsTeams, remoteAgents);
+  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo, promptCheck, guardrailsTeams, remoteAgents, cliToolAgents);
 }

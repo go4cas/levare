@@ -203,7 +203,7 @@ describe("doctor: reports auth mode, and warns plainly for auth: subscription (N
     const health = diagnose(withSubscription, allPresent, foundGh);
     const codex = health.find((h) => h.name === "codex")!;
     expect(codex.warning).toBe(
-      "levare cannot scope this credential — any member that can spawn `codex` can use this login. The grant is documentation, not enforcement.",
+      "levare cannot scope this credential — any member that can spawn `codex` can use this login. The grant is documentation, not enforcement. Declare 'home:' to scope it to the vendor's own config directory.",
     );
     expect(health.find((h) => h.name === "github")!.warning).toBeUndefined();
     expect(health.find((h) => h.name === "linear")!.warning).toBeUndefined();
@@ -230,6 +230,32 @@ describe("doctor: reports auth mode, and warns plainly for auth: subscription (N
     const githubBlock = out.split("\n\n").find((b) => b.startsWith("github"))!;
     expect(githubBlock).toContain("auth: env");
     expect(githubBlock).not.toContain("⚠");
+  });
+});
+
+// NOTES CAP-B (part B, item 4): a subscription connector that DOES declare `home:` narrows the C13
+// warning above — the credential is scoped to the vendor's own config directory — but never claims the
+// residual (any OTHER member granted this connector can still use the live login) is closed.
+describe("doctor: a subscription connector declaring `home:` gets a narrower, scoped warning (NOTES CAP-B)", () => {
+  const withScopedHome: Connector[] = [
+    ...connectors,
+    { name: "codex", kind: "cli", command: "codex", env: [], auth: "subscription", role: "model", plan: "ChatGPT Plus — flat monthly rate", effects: "read", gate: "proposal", home: [".codex"] },
+  ];
+  const allPresent: EnvProbe = { has: () => true };
+  const foundGh: CliProbe = () => "found";
+
+  test("the warning names the scoped path, not the blanket 'cannot scope' claim", () => {
+    const health = diagnose(withScopedHome, allPresent, foundGh);
+    const codex = health.find((h) => h.name === "codex")!;
+    expect(codex.warning).toBe(
+      "this credential is scoped to `.codex` under a per-run HOME — but any member granted this connector can still use the login (the grant is not per-member revocable; only the real login is).",
+    );
+    expect(codex.warning).not.toContain("cannot scope this credential");
+  });
+
+  test("formatDoctor prints the scoped warning for a home-declaring subscription connector", () => {
+    const out = formatDoctor(diagnose(withScopedHome, allPresent, foundGh));
+    expect(out).toContain("⚠ this credential is scoped to `.codex`");
   });
 });
 
@@ -341,5 +367,24 @@ describe("doctor: remote-member-not-implemented telling (NOTES REV1 finding 3)",
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// NOTES CAP-B (part B, item 3): a `kind: cli` agent's `tools:` is legal but not enforceable by levare —
+// doctor repeats the same telling `levare validate` gives (validateAgentCliToolsWarning).
+describe("doctor: cli-tools-not-enforceable telling (NOTES CAP-B)", () => {
+  test("formatDoctor prints the warning, naming every cli agent that declares tools:, when cliToolAgents is non-empty", () => {
+    const out = formatDoctor(diagnose(connectors, env, noGh), undefined, undefined, undefined, undefined, undefined, ["finch"]);
+    expect(out).toContain("⚠ tools: on a cli member is not enforceable by levare — encode the constraint in the connector/command via the vendor's own flags: finch");
+  });
+
+  test("with no cli agent declaring tools:, no such line appears", () => {
+    const out = formatDoctor(diagnose(connectors, env, noGh), undefined, undefined, undefined, undefined, undefined, []);
+    expect(out).not.toContain("not enforceable by levare");
+  });
+
+  test("omitting cliToolAgents entirely leaves the report unchanged", () => {
+    const out = formatDoctor(diagnose(connectors, env, noGh));
+    expect(out).not.toContain("not enforceable by levare");
   });
 });

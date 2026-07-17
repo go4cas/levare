@@ -4,7 +4,7 @@ kind: native
 produces: [design, spec]
 model: claude-sonnet-5
 skills: [flow-design, spec-writing]
-tools: [read, write]
+tools: [Read, Write]
 knowledge: [house-style]
 style:
   avatar: Ly

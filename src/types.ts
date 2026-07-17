@@ -169,6 +169,19 @@ export interface Connector {
    * here even though execution is not yet implemented for MCP (see execution.ts).
    */
   actions?: Record<string, string[]>;
+  /**
+   * NOTES CAP-B (v1.1 capability layer, part B, item 4): dotpaths under `$HOME` the vendor CLI actually
+   * needs (e.g. `[".codex"]`) — meaningful for `auth: subscription` connectors, whose credential is a
+   * live, disk-stored login rather than an env var. When a member is granted a subscription connector
+   * that declares `home`, `env.ts#scopeHome` gives that member's spawned process a per-run scratch
+   * `$HOME` containing SYMLINKS to only these paths from the real home — never a copy, since the login
+   * is a live credential (revoking it in the real home revokes it everywhere it's symlinked). A
+   * subscription connector declaring no `home` keeps the pre-CAP-B behaviour: the member's spawned
+   * process sees the real, unscoped `$HOME` (see the `SUBSCRIPTION_NO_HOME` doctor/validate warning).
+   * Undeclared/empty is a no-op for an `auth: env` connector — there is no live credential on disk for
+   * one to scope.
+   */
+  home?: string[];
 }
 
 export interface TypeTemplate {

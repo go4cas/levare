@@ -4,7 +4,7 @@ kind: native
 produces: [product-brief]
 model: claude-sonnet-5
 skills: [product-brief]
-tools: [read, write]
+tools: [Read, Write]
 knowledge: [house-style]
 style:
   avatar: Wr
