@@ -8211,3 +8211,147 @@ and cannot click "recheck" — recorded here rather than left for the next sessi
 programmatic (`bun test`, typecheck, replay, build); none of them exercise the board's rendered HTML for a
 merge gate specifically, so this gap did not surface as a failing test — it is named here precisely
 because a green suite would otherwise let it go unnoticed.
+
+**Closed by NOTES MERGE-2** (below): the dedicated card now exists, wired to the real `approve`/`recheck`
+verbs, never a doomed one.
+
+# NOTES MERGE-2 — the merge gate's dedicated board card (closing NOTES MERGE-1's own residual)
+
+Goal: presentation only, exactly as scoped — render what the server already carries (trial-merge state,
+guardrail result, conflict files), wire buttons to verbs that already exist (`approve`, `recheck`). No new
+routes, no new verbs, no server logic changes anywhere in this goal's diff. Constraint: never ask
+questions, record uncertainty here and continue.
+
+## The card (`board/render/shell.ts#mergeGateCardHtml`)
+
+`gateCardHtml` now branches on `art.kind === "merge"` immediately after resolving `art` (ahead of the
+generic in-review-artifact path it used to fall through to) into a dedicated variant — same discipline as
+its pre-existing `start`/`blocked`/`artifact-blocked` branches, built from the same primitives every other
+card in the product uses (`card`, `statusBadge`, `callout`, `tag`) rather than a bespoke markup family. Its
+anatomy, top to bottom: a name-row identifying it as the unit's merge gate (`levare · merge gate` in the
+producer slot — `produced_by: levare-runner` has no team/member, so the generic fallthrough's
+`member/<b></b>` would have printed empty parens); the TRIAL STATE badge, prominent, in the canonical
+palette's own positive/danger treatment (`statusBadge("done", "CLEAN")` / `statusBadge("failed",
+"CONFLICTED")` — never an invented third colour); on conflict, the files (mono) plus the exact
+resolve-by-hand-then-recheck instruction the server already words elsewhere (merge.ts's own artifact body,
+gateops.ts's 409 error) — repeated verbatim here, not reinvented; a chiprow (the existing `tag`/`.chiprow`
+stat idiom, same one `registry.ts`'s `producesChips` already uses) carrying the work branch, the
+commits-ahead count, and a compact diffstat summary (a new pure helper, `diffstatSummary`, that pulls just
+`git diff --stat`'s own trailing "N files changed, X insertions(+), Y deletions(-)" line — never the
+per-file listing, per the goal's own "compactly... not a full diff"); the guardrail result (a quiet muted
+note when it passes — the SAME inline `style="color:var(--fg-mute)"` idiom `registry.ts` already uses for
+"none declared"-shaped facts, not a new CSS value — or the UI12 danger callout naming the violated rule(s)
+verbatim when it doesn't, `merge.guardrail_violations` already arriving pre-formatted as `"rule: detail"`
+strings from both write sites); and the age, honestly labelled "opened", not "checked" (see the residual
+below). No new CSS class carries any new colour or spacing value — `.tag`/`.chiprow`/`.chip.is-done`/
+`.chip.is-failed`/`.notice--danger`/`.notice--warning` are all pre-existing, themed in both
+`:root`/`[data-theme="dark"]` already (verified: every token this card touches resolves in both).
+
+**The one behavioural rule, enforced by construction, not by convention:** `canApprove = !conflicted &&
+guardrailsPass`. A conflicted trial OR any guardrail violation renders Re-check as the only action —
+never approve/merge — because `board/gateops.ts#doApproveMerge` would 409 either one (the SAME two checks,
+re-run against a fresh trial at execution time — M3). `reject`/`request` are never rendered at all: the
+server has refused both against a merge gate since NOTES MERGE-1 (409 — "resolve by hand ... then
+recheck"). Clean + guardrails-pass renders exactly one button — `project.remote ? "Merge & push" :
+"Merge"` (the project's own declared `remote:`, read honestly, never assumed) — wired to `approve`; this
+is "no recheck-only layout" from the acceptance criteria, read literally: the verbs row is ALWAYS exactly
+one button, approve/merge OR recheck, never both, never neither (bar the defensive no-`merge:`-block
+fallback below).
+
+**Defensive-only branch:** `merge.ts#formatMergeArtifact` always writes `merge:` at gate-open time and
+`doRecheckMerge` only ever rewrites it in place, never clears it — a merge artifact with no `merge:` block
+should be unreachable. Since a card is a pure function of on-disk data (PRD §9, invariant 2), this renders
+as a warning callout + Re-check rather than throwing, on the same "never crash on data the schema
+theoretically allows" posture the rest of the board already takes.
+
+## The client (`assets/app.js`)
+
+Two verbs neither existed in the click handler's dispatch table before this goal:
+
+- **`recheck`** joins the `start`/`request`/`retry` group that gets the quiet local `pendingState`
+  treatment (NOTES UI6/F10) instead of the generic optimistic-resolve `map` — a git/worktree round-trip
+  is not instant, and recheck isn't in that `map` at all (it never was; clicking it before this goal did
+  nothing visible until the next SSE reload).
+- **A merge gate's own `approve`** (detected via `card.classList.contains('gate--merge')`) ALSO joins that
+  group, deliberately never the generic `map`'s instant "approved" line every other kind's approve gets.
+  This is the goal's own explicit ask (item 2: "with the UI6 local pendingState during execution") and it
+  matters more here than anywhere else in the product: a merge gate's `approve` is EXECUTION at repository
+  scale (M4/M5 — a real merge, and where declared a push) that can still fail server-side AFTER the
+  Conductor's click — the one gate verb in this whole table for which "approved" would sometimes be a lie
+  the instant it's shown.
+- The eventual re-render (both verbs) is the PRE-EXISTING generic mechanism, untouched: every gate
+  resolution already ends in `ctx.broadcast("reload")` (board/serve.ts), the client's one persistent SSE
+  connection already calls `refreshCurrent()` on it (NOTES UI10 — proven generically in
+  tests/board-client-navigation.test.ts's own "the SSE reload trigger refreshes the current URL's content
+  in place" case), which re-fetches the current page as a fragment and swaps `.main`/`.extras` — the fresh
+  server-rendered merge card, in its new trial state, is exactly what lands. Nothing new was needed here;
+  this goal only had to make sure `recheck` (and merge's own `approve`) didn't leave the OLD card's verbs
+  frozen mid-request until that reload arrived.
+
+**One genuinely new piece of client behaviour, `showMergeExecutionFailure`:** M5's rollback on a push/merge
+failure is byte-perfect — nothing is EVER written to disk on that path, so the next server render (or SSE
+reload) would show this card completely unchanged, as if the click had never happened. Read literally, the
+goal's own item 2 ("the gate blocks with the reason ... the established blocked-unit treatment") describes
+a PERSISTED state the server does not actually create for this specific failure (see "Honest residuals"
+below) — so this is implemented as an ephemeral, session-only notice instead: `postGate`'s response is now
+read (previously discarded entirely — no `.then` at all, only a network-level `.catch`), and a merge
+approve's `{ ok: false, error }` swaps the pending verbs row for a `.notice.notice--danger` (the same
+severity class `callout()` itself emits, minus its svg icon — a client-reconstructed notice never needing
+server-markup byte parity) naming the reason verbatim, plus a fresh Re-check button so the Conductor isn't
+left stuck. A page reload naturally clears it, since there is truly nothing to show once it's gone.
+
+## Honest residuals (recorded, not fixed — server logic was out of scope)
+
+**No persisted "checked_at" timestamp.** The goal asked for "checked 2m ago"-shaped staleness honesty "if
+the artifact carries them." It doesn't: `merge.ts#formatMergeArtifact` stamps `created` once, at gate-open
+time, and `doRecheckMerge` (board/gateops.ts) rewrites the `merge:` block's own fields in place without
+touching `created` or adding any recheck-time field. Labelling the card's existing age as "checked" would
+be actively dishonest — a gate opened three days ago and rechecked ten seconds ago would still read
+"checked 3d ago." The card instead labels it "opened `<age>`" (still `ageLabel(art.created, now)` — the
+one honest fact the data actually carries), and does not claim anything about the last recheck. Closing
+this for real would mean a small, additive `MergeInfo` schema change (a `checked_at` field, stamped by both
+the gate-open writer and `doRecheckMerge`) — real, small, server-side scope this goal's own brief drew a
+hard line around ("no server logic changes"), left for the next session.
+
+**No persisted state for a failed merge/push EXECUTION.** M5's rollback is deliberately byte-perfect — "the
+repo ends the call in EXACTLY the state it was in before this function ran" (NOTES MERGE-1's own words).
+That is correct and was never in question; it does mean there is no on-disk fact for the CARD (a pure
+function of on-disk data) to ever render for this case — `board/gateops.ts#doApproveMerge` returns the
+error to its caller and writes nothing, full stop. The client-side `showMergeExecutionFailure` (above)
+covers the interaction that just happened, in the moment; a Conductor who reloads the page, or returns to
+it later, sees a perfectly ordinary clean-and-approvable merge gate, with no trace that an attempt was
+ever made or failed. This is the DATA MODEL's own honest limit, not an oversight in this card — surfacing
+it durably would need the server to persist a failed-execution record somewhere (a new, additive artifact
+field, mirroring how `execution:` already does this for a `proposal` — see `ExecutionRecord`'s own doc
+comment contrasting the two), which is server logic, out of this goal's scope.
+
+**A trial-merge `error` (distinct from `conflicted`) has no card-visible shape.** `TrialMergeResult.error`
+(merge.ts) is set when the trial couldn't even run (e.g. `default_branch` failed to resolve) — but
+`MergeInfo`, the persisted frontmatter shape, has no `error` field at all; `formatMergeArtifact` folds an
+errored trial into `conflicted: false, commits_ahead: 0, diffstat: ""` with the explanation living only in
+the artifact's markdown BODY (never parsed back out by the card, which reads only the structured `merge:`
+block). In practice this looks exactly like a genuinely clean, zero-commit merge gate — `approve` would
+still correctly refuse it at execution time (422, `doApproveMerge` re-runs `trialMerge` and gets the same
+error), so nothing is unsafe, but the CARD cannot currently tell a Conductor "this trial itself couldn't
+run" apart from "this trial ran clean with nothing to merge." An honest fix is a `MergeInfo.error` field
+threaded through the same three write sites (`formatMergeArtifact`, `doApproveMerge`, `doRecheckMerge`) —
+server-side schema scope, left for the next session, and unlikely to trigger in practice (it requires
+`default_branch` itself to stop resolving between gate-open and every subsequent recheck).
+
+## Verification
+
+`bun test`: 1037 pass (up from 1018), 1 pre-existing skip, 0 fail, across 80 files (three new:
+`tests/board-merge-gate-card.test.ts` — pure `gateCardHtml` render assertions over a synthetic in-memory
+Repo for clean/conflicted/guardrail-violation/cta/dispatching states, plus a `vm`-harness proof (real
+`assets/app.js`, loaded verbatim, against a hand-rolled fake DOM — the same no-browser-dependency approach
+every sibling UI suite already takes) that Merge/Re-check wire to the real `approve`/`recheck` verbs with
+local pending state, and that a failed execution surfaces via the danger-notice treatment;
+`tests/board-merge-gate-recheck-refresh.test.ts` — an end-to-end proof against a REAL local git project
+repo and a REAL `board/serve.ts` server (`createBoard`), driving a planted conflict through
+resolve-by-hand → `POST /gates/.../recheck` → a fragment `GET /studio`, asserting the studio inbox's merge
+card flips from `CONFLICTED`/Re-check to `CLEAN`/Merge — the goal's own "recheck's response re-renders the
+card to the new state" criterion, proven through the real fragment mechanism rather than re-derived against
+a fake one). `bun run typecheck` → exit 0. `bun run deps:check` → `deps ok`. `bun run src/cli.ts validate
+fixtures/golden` → `valid`. `bun run src/cli.ts replay fixtures/golden --stubs` → oracle match, byte-for-byte
+(this goal never touches `dagwalk.ts`/`gateops.ts`/`merge.ts` — presentation-only, exactly as scoped — so
+replay's own walk is unaffected by construction). `bun run build` → succeeds.
