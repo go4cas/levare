@@ -34,6 +34,18 @@ A markdown deliverable with YAML frontmatter, produced by a member and tracked t
 | `execution.exit` | number | — | ✅ | — |
 | `execution.output_digest` | string | — | ✅ | — |
 | `execution.warning` | string | — | ✅ | — |
+| `merge` | map | — | ✅ | — |
+| `merge.branch` | string | ✅ | — | — |
+| `merge.target` | string | ✅ | — | — |
+| `merge.commits_ahead` | number | ✅ | — | — |
+| `merge.diffstat` | string | ✅ | — | — |
+| `merge.conflicted` | boolean | ✅ | — | — |
+| `merge.conflicts` | string[] | ✅ | — | — |
+| `merge.guardrail_violations` | string[] | ✅ | — | — |
+| `merge_result` | map | — | ✅ | — |
+| `merge_result.executed_at` | string | ✅ | — | — |
+| `merge_result.merge_commit` | string | ✅ | — | — |
+| `merge_result.pushed` | boolean | ✅ | ✅ | — |
 
 ## Minimal valid skeleton
 

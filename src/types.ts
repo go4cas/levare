@@ -267,6 +267,37 @@ export interface ExecutionRecord {
   warning: string | null;
 }
 
+// NOTES MERGE-1 (PRD Amendment 2, M1/M2): reserved for `kind: merge` — the merge gate's own trial-merge
+// report, written by levare itself (never a member) when the gate opens, and rewritten in place by the
+// `recheck` verb. `conflicted: true` is what makes the gate unapprovable (board/gateops.ts refuses
+// `approve` while it holds) — `conflicts` names the files so resolution (human work in the project repo)
+// knows exactly where to look. `guardrail_violations` is the human-readable record of what the SAME
+// diff's guardrail check found at gate-open time — advisory here; the binding check re-runs at
+// execution time (M3) against whatever the diff looks like the instant approval is spent.
+export interface MergeInfo {
+  branch: string;
+  target: string;
+  commits_ahead: number;
+  diffstat: string;
+  conflicted: boolean;
+  conflicts: string[];
+  guardrail_violations: string[];
+}
+
+// NOTES MERGE-1 (M4/M5): the on-approval record of a merge gate's SUCCESSFUL execution — appended by
+// levare, never a member, only once the merge (and, where declared, the push) actually landed. Unlike
+// `ExecutionRecord` (CAP-A: a failed proposal execution is still recorded, and the approval stands
+// regardless), a merge gate's failure is never recorded here at all: M5's rollback is byte-perfect and
+// "un-approves nothing", so a guardrail violation, a merge conflict rediscovered at execution time, or
+// a push failure all return an error to the caller with nothing written to disk — the artifact stays
+// `in-review`, exactly as if approval had never been attempted. `pushed: null` means the project
+// declares no `remote:` (push never attempted); `pushed: true` means it landed there too.
+export interface MergeResultRecord {
+  executed_at: string;
+  merge_commit: string;
+  pushed: boolean | null;
+}
+
 export interface Artifact {
   kind: string;
   id: string;
@@ -290,6 +321,11 @@ export interface Artifact {
   params?: Record<string, string> | null;
   /** NOTES CAP-A: reserved for `kind: proposal` — set by levare on gate approval, never by a member. */
   execution?: ExecutionRecord | null;
+  /** NOTES MERGE-1: reserved for `kind: merge` — the trial-merge report, written by levare when the
+   * merge gate opens and rewritten in place by the `recheck` verb. */
+  merge?: MergeInfo | null;
+  /** NOTES MERGE-1: reserved for `kind: merge` — set by levare only on a successful `approve`. */
+  merge_result?: MergeResultRecord | null;
 }
 
 export interface Usage {

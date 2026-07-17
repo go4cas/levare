@@ -296,7 +296,7 @@ export const ROUTES: RouteDef[] = [
     mutating: true,
     handler: async (req, params, ctx) => {
       const verb = params.verb as Verb;
-      const allowed: Verb[] = ["approve", "request", "reject", "start", "notyet", "rescope", "retry", "skip", "abandon"];
+      const allowed: Verb[] = ["approve", "request", "reject", "start", "notyet", "rescope", "retry", "skip", "abandon", "recheck"];
       // Ruling C3 (extended): budget-gate verbs target a UNIT and are resolved against the daemon's
       // in-memory C3 state, not the on-disk artifact gate machinery — so they route separately.
       const budgetVerbs: Verb[] = ["continue", "raise", "stop"];

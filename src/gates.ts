@@ -104,9 +104,13 @@ function formatScalarLine(key: string, value: string | null): string {
   return `${key}: ${JSON.stringify(value)}`;
 }
 
-function formatScalar(value: string | number | boolean | null): string {
+function formatScalar(value: string | number | boolean | null | string[]): string {
   if (value === null) return "null";
   if (typeof value === "number" || typeof value === "boolean") return String(value);
+  // NOTES MERGE-1: a merge gate's `conflicts`/`guardrail_violations` are string LISTS, not scalars —
+  // the one shape `execution:`/`usage:` (both fixed sets of scalar fields) never needed. Rendered as an
+  // inline flow sequence, same convention adapters.ts#author already uses for `consumes: […]`.
+  if (Array.isArray(value)) return `[${value.map((v) => (/^[A-Za-z0-9._/-]+$/.test(v) ? v : JSON.stringify(v))).join(", ")}]`;
   return /^[A-Za-z0-9._/-]+$/.test(value) ? value : JSON.stringify(value);
 }
 
@@ -146,7 +150,7 @@ export function upsertFrontmatterField(src: string, key: string, value: string |
  * continuation line that follows it) before appending the new one, so re-execution never leaves a
  * stale block behind.
  */
-export function upsertFrontmatterMap(src: string, key: string, value: Record<string, string | number | boolean | null>): string {
+export function upsertFrontmatterMap(src: string, key: string, value: Record<string, string | number | boolean | null | string[]>): string {
   const lines = src.split("\n");
   if (lines[0]?.trim() !== "---") throw new Error("document has no frontmatter fence");
   let end = -1;

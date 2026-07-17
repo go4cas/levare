@@ -340,15 +340,14 @@ describe("registry screen", () => {
     expect(kestrelCard).toContain("data-edit-open");
   });
 
-  // NOTES REV1 finding 2: `checkGuardrails` has zero production callers — the merge phase that would
-  // enforce a team's declared `protected_paths`/`protected_branches`/`never` is deferred to v1.1
-  // (docs/prd-amendment-1.md §2). fixtures/golden's kestrel team declares guardrails, so its card must
-  // say the enforcement gap plainly — via the canonical warning callout (NOTES UI12), not stay silent.
-  test("kestrel's card carries the guardrails-not-yet-enforced warning callout, since it declares guardrails", () => {
+  // NOTES MERGE-1: the REV1 "declared but not yet enforced" notice is retired — `checkGuardrails`
+  // acquired its production call site (board/gateops.ts's merge-gate execution, PRD Amendment 2 M3),
+  // so kestrel's card (fixtures/golden, declares guardrails) no longer carries a warning about a gap
+  // that no longer exists.
+  test("kestrel's card carries no guardrails-enforcement warning — the gap it once named is closed", () => {
     const kestrelCard = /<article class="entity card"[^>]*data-entity="teams"[^>]*>[\s\S]*?<\/article>/.exec(html)![0];
-    expect(kestrelCard).toContain('notice notice--warning');
-    expect(kestrelCard).toContain("guardrails are declared but not yet enforced");
-    expect(kestrelCard).toContain("merge phase (v1.1)");
+    expect(kestrelCard).not.toContain("guardrails are declared but not yet enforced");
+    expect(kestrelCard).not.toContain("merge phase (v1.1)");
   });
 
   test("a team with no guardrails (or an empty guardrails block) gets no such callout", () => {

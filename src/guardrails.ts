@@ -1,6 +1,8 @@
 // levare guardrails (§6): deterministic, no LLM. Two families, both enforced by inspecting a diff
-// before a merge gate — `protected_paths` (files/branches a team may not touch) and `never` actions
-// (e.g. force-push, delete-branch). A violation blocks the merge; it never silently proceeds.
+// at merge-gate EXECUTION time (NOTES MERGE-1, PRD Amendment 2 M3; board/gateops.ts#doApproveMerge is
+// `checkGuardrails`'s production call site) — `protected_paths` (files/branches a team may not touch)
+// and `never` actions (e.g. force-push, delete-branch). A violation FAILS the execution, even after
+// Conductor approval; it never silently proceeds.
 //
 // Tool allowlists and env scoping are the other two guardrails; env scoping lives in env.ts, and the
 // tool allowlist is a pure projection of an agent's declared `tools:` (allowedTools below).
@@ -32,12 +34,7 @@ function protectsPath(entry: string, path: string): boolean {
   return path === entry || path.startsWith(`${entry}/`);
 }
 
-/**
- * Whether a team declares a non-empty `guardrails:` block — used only for TELLING the Conductor the
- * enforcement gap (doctor, the registry card), never for enforcement itself (NOTES REV1 finding 2):
- * `checkGuardrails` below has no production caller; the merge phase that would call it is formally
- * deferred to v1.1 (docs/prd-amendment-1.md §2, invariant 6).
- */
+/** Whether a team declares a non-empty `guardrails:` block. */
 export function hasDeclaredGuardrails(team: Team): boolean {
   const g = team.guardrails;
   return !!g && ((g.protected_paths?.length ?? 0) > 0 || (g.protected_branches?.length ?? 0) > 0 || (g.never?.length ?? 0) > 0);

@@ -65,7 +65,11 @@ export type Verb =
   // Runner (it has no notion of a `blocked` artifact) — resolved entirely in board/gateops.ts.
   | "retry"
   | "skip"
-  | "abandon";
+  | "abandon"
+  // NOTES MERGE-1 (M2): re-run a merge gate's trial merge on demand — the "re-check affordance" the
+  // PRD calls for once a conflict has been resolved by hand in the project repo. Only ever resolved
+  // against a `kind: merge` artifact (board/gateops.ts); never produced by the phase-2 batch Runner.
+  | "recheck";
 
 export interface Decision {
   verb: Verb;

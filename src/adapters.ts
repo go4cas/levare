@@ -33,6 +33,7 @@ import { allowedTools } from "./guardrails.ts";
 import { assembleContext, unitArtifactPaths } from "./context.ts";
 import { asyncSdkTransport, bunSdkTransport, resolveNativeBinary, type AsyncSdkTransport, type SdkTransport } from "./sdk-transport.ts";
 import { repoCapabilities } from "./repo.ts";
+import { resolveProjectRepoPath, workBranchName, branchExists, ensureWorkBranchCheckedOut } from "./merge.ts";
 import type { Pricing } from "./pricing.ts";
 import type { Repo } from "./repo.ts";
 import type { MemberRunner } from "./runner.ts";
@@ -52,6 +53,13 @@ export interface InvokeRequest {
   context: string;
   env: Record<string, string>;
   tools: string[];
+  /** NOTES MERGE-1 (goal item 1): the unit's project repo, resolved to a real local checkout — only
+   * when `resolveProjectRepoPath` finds one (a project with no `repo:`, or one that doesn't resolve
+   * locally, or the studio's own root, leaves this undefined; see that function's own doc). This is
+   * what `{feature_repo}` substitutes to (adapters.ts#defaultCliCommand) — undefined leaves the
+   * placeholder unresolved, exactly the pre-existing (inert) behaviour for every project that isn't a
+   * real local checkout, e.g. the golden fixture's own `storefront`. */
+  projectRepoPath?: string;
 }
 
 /** The native SDK boundary — synchronous, used by the phase-2 batch `Runner` (`levare replay`) and by
@@ -103,12 +111,23 @@ function nativeSpawnEnv(req: InvokeRequest, baseEnv: Record<string, string | und
   return env;
 }
 
+// NOTES MERGE-1: `{feature_repo}` (declared for `command`/`cwd` templates since before this goal) has
+// exactly one resolution — the unit's project repo, when it resolves to a real local checkout
+// (`req.projectRepoPath`). Undefined leaves the placeholder verbatim in the returned string, the same
+// no-op every project without a real local checkout already got (a self-reference: `agent.cwd` for a
+// fixture agent literally holding the string `"{feature_repo}"` substitutes to itself unchanged).
+function resolveFeatureRepo(template: string | undefined, projectRepoPath: string | undefined): string | undefined {
+  if (template === undefined) return undefined;
+  return projectRepoPath ? template.replace(/\{feature_repo\}/g, projectRepoPath) : template;
+}
+
 function nativeWorkerRequest(req: InvokeRequest, pathToClaudeCodeExecutable: string | undefined) {
   // Tool allowlist (security-audit Surface 3/8's now-closed K5 pre-arm): `req.tools` is
   // `guardrails.ts#allowedTools(agent)` — exactly the agent's declared `tools:`, `[]` when it
   // declares none. Passed as BOTH `tools` and `allowedTools` so an agent declaring no tools reaches
   // the SDK with an empty allowlist, never an implicit/full one.
-  return { prompt: req.context, model: req.agent.model, tools: req.tools, allowedTools: req.tools, cwd: req.agent.cwd, pathToClaudeCodeExecutable };
+  const cwd = resolveFeatureRepo(req.agent.cwd, req.projectRepoPath);
+  return { prompt: req.context, model: req.agent.model, tools: req.tools, allowedTools: req.tools, cwd, pathToClaudeCodeExecutable };
 }
 
 /**
@@ -327,7 +346,9 @@ export interface AdapterRunnerOptions {
 function defaultCliCommand(req: InvokeRequest): string[] {
   const template = req.agent.command;
   if (!template || template.length === 0) throw new AdapterError(`cli agent '${req.member}' has no command template`);
-  const feature = req.agent.cwd ?? ".";
+  // NOTES MERGE-1: prefer the resolved project repo path when one exists; a project with no real
+  // local checkout falls back to the pre-existing `agent.cwd` self-reference (see resolveFeatureRepo).
+  const feature = req.projectRepoPath ?? req.agent.cwd ?? ".";
   const model = req.agent.model ?? "";
   return template.map((element) => element.replace(/\{task\}/g, req.context).replace(/\{feature_repo\}/g, feature).replace(/\{model\}/g, model));
 }
@@ -574,8 +595,40 @@ export class AdapterRunner implements MemberRunner {
     if (!agent) throw new AdapterError(`no agent definition for member '${member}'`);
     const context = this.assemble(member, unit, project, extraConsumes);
     const env = buildMemberEnv(this.repo, member, this.opts.baseEnv);
-    const req: InvokeRequest = { agent, member, kind, unit, project, context, env, tools: allowedTools(agent) };
+    const projectRepoPath = this.memberWorkingContext(member, unit, project);
+    const req: InvokeRequest = { agent, member, kind, unit, project, context, env, tools: allowedTools(agent), projectRepoPath };
     return { agent, req };
+  }
+
+  // NOTES MERGE-1 (goal item 1 — "wire what the adapter layer supports"): a member dispatched for a
+  // unit on a repo-bearing project gets the work branch checked out in its working context, when that
+  // context is real (resolveProjectRepoPath finds a local checkout) and the branch actually exists
+  // (board/gateops.ts#doStart creates it at unit-open, before any member for this unit is ever
+  // dispatched — see M1). A no-op for every project that isn't a real local checkout (unchanged from
+  // before this goal) and for a unit whose branch hasn't been created yet (shouldn't happen given the
+  // ordering above, but never assumed).
+  //
+  // What this deliberately does NOT do — recorded here, not just in NOTES.md, because it is the one
+  // limit a caller of this function needs to know: it checks out the branch in the project's ONE
+  // shared working tree, not a per-member scratch copy. Two members dispatched concurrently against
+  // the SAME repo-bearing project (a loop's two members in the same round, or two units on the same
+  // project advanced in the same daemon tick) race each other's checkout — whichever runs last wins,
+  // and a CLI member that reads the filesystem mid-race could see either branch's content. Per-member
+  // worktree isolation (`git worktree add` per dispatch, mirroring the trial-merge/execution scratch
+  // worktrees in merge.ts) would close this, but is real, separate scope beyond what this goal's
+  // acceptance criteria ask for (the merge MACHINERY, not full member-authoring concurrency) — deferred
+  // honestly rather than half-built. Every fixture-git-repo test this goal adds dispatches at most one
+  // member at a time per project, so the race is real but untriggered by anything in this test suite.
+  private memberWorkingContext(member: string, unit: string, project: string): string | undefined {
+    const proj = this.repo.projects.get(project);
+    if (!proj) return undefined;
+    const repoPath = resolveProjectRepoPath(this.repo.root, proj);
+    if (!repoPath) return undefined;
+    const branch = workBranchName(unit);
+    if (!branchExists(repoPath, branch)) return repoPath;
+    const co = ensureWorkBranchCheckedOut(repoPath, branch);
+    if (!co.ok) throw new AdapterError(`member '${member}': could not check out work branch '${branch}' in '${repoPath}': ${co.error}`);
+    return repoPath;
   }
 
   // NOTES F17: build a Receipt from a CLI's own parsed token trailer (extractCliUsageTrailer), when it
@@ -672,9 +725,13 @@ export class AdapterRunner implements MemberRunner {
   private cliInvocation(agent: Agent, req: InvokeRequest): { argv: string[]; cwd: string | undefined; timeoutMs: number; stdin: string | undefined } {
     const argv = (this.opts.cliCommand ?? defaultCliCommand)(req);
     const timeoutMs = (agent.timeout ?? 600) * 1000;
-    // A `cwd` template that still holds an unresolved `{…}` (no feature repo bound this run) is not a
-    // real directory — spawn in the default cwd rather than fail on a bogus path.
-    const cwd = agent.cwd && !agent.cwd.includes("{") ? agent.cwd : undefined;
+    // NOTES MERGE-1: resolve `{feature_repo}` before checking for a leftover `{…}` — a cwd template
+    // like finch's own `"{feature_repo}"` now resolves to the real project checkout when one exists
+    // (req.projectRepoPath), and spawns there instead of falling back to the default cwd. A `cwd`
+    // template that STILL holds an unresolved `{…}` after that (no real local checkout this run) is
+    // not a real directory — spawn in the default cwd rather than fail on a bogus path, unchanged.
+    const resolvedCwd = resolveFeatureRepo(agent.cwd, req.projectRepoPath);
+    const cwd = resolvedCwd && !resolvedCwd.includes("{") ? resolvedCwd : undefined;
     // NOTES F7: context_via: stdin writes the full context to the child's stdin (and closes it);
     // context_via: arg (default) leaves stdin unset here — the CliSpawn boundary closes it regardless
     // (see CliSpawnOptions.stdin), so a CLI that unexpectedly reads stdin sees immediate EOF, never a

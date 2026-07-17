@@ -19,11 +19,12 @@ import { loadRepo, type Repo } from "../repo.ts";
 import { validateArtifactSource, validatePath, formatValidationErrors } from "../validate.ts";
 import { bumpVersion, roundOf, type Verb } from "../runner.ts";
 import { productionAdapterRunner } from "../replay.ts";
-import { loopMembershipFor, isLoopCompanionKind, loopUntilKind, resolveStep, responsibleTeamFor, unmetAfter, patchFrontmatter, upsertFrontmatterField, upsertFrontmatterMap } from "../gates.ts";
+import { loopMembershipFor, isLoopCompanionKind, loopUntilKind, resolveStep, responsibleTeamFor, responsibleTeamsFor, unmetAfter, patchFrontmatter, upsertFrontmatterField, upsertFrontmatterMap } from "../gates.ts";
 import { locateArtifactFile } from "../locate.ts";
 import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL, transactionalWrite, type TxFile } from "../git.ts";
 import { advanceUnit, latestLiveArtifact, type AsyncMemberRunner } from "../dagwalk.ts";
 import { executeProposal, type ExecuteProposalOptions } from "../execution.ts";
+import { resolveProjectRepoPath, workBranchName, trialMerge, checkGuardrailsForMerge, executeMerge, createWorkBranch } from "../merge.ts";
 import type { Daemon } from "../daemon.ts";
 import type { Artifact, WorkUnit } from "../types.ts";
 
@@ -104,6 +105,23 @@ export async function resolveGate(root: string, project: string, target: string,
   const located = locateArtifactFile(unit.dir, target);
   if (!located) return { ok: false, status: 404, error: `artifact file for '${target}' not found on disk` };
 
+  // NOTES MERGE-1: a merge gate (kind: merge) is levare's own synthetic artifact, not a member's
+  // production — it never goes through the loop/companion machinery below (produced_by "levare-runner"
+  // has no team, so that machinery would no-op anyway; refused explicitly here for a clearer error) and
+  // supports exactly two verbs: `approve` (dispatched below, alongside every other kind) and `recheck`
+  // (M2's re-check affordance — re-runs the trial merge and rewrites the SAME artifact in place, never
+  // superseding it). `reject`/`request` are refused: there is no "changes" to request against a trial
+  // merge report, and rejecting would leave the unit stuck with no path forward other than abandoning it
+  // by hand — resolution is human work IN THE PROJECT REPO (M2), not a levare verb.
+  if (art.kind === "merge") {
+    if (verb === "recheck") return doRecheckMerge(root, repo, unit, located.file, target, opts.note);
+    if (verb === "reject" || verb === "request") {
+      return { ok: false, status: 409, error: `merge gate '${target}' only supports 'approve' and 'recheck' — resolve conflicts by hand on the work branch in the project repo, then recheck` };
+    }
+  } else if (verb === "recheck") {
+    return { ok: false, status: 400, error: `verb 'recheck' is only valid for a merge gate, not kind '${art.kind}'` };
+  }
+
   // Ruling F16: while a loop is in progress, only the artifact its `until` condition actually names
   // may be resolved directly — the loop's OTHER member never independently gates (derive.ts's
   // `openGates` already never lists it), and a direct API call naming it anyway is refused here too,
@@ -129,6 +147,7 @@ export async function resolveGate(root: string, project: string, target: string,
   const companion = applyLoopCompanionApproval(root, repo, unit, art, today, memberRunner.capabilities());
   const extra: TxFile[] = companion ? [companion] : [];
 
+  if (verb === "approve" && art.kind === "merge") return doApproveMerge(root, repo, unit, located.file, target, today, opts.note);
   if (verb === "approve") return await doApprove(root, repo, unit, art, located.file, target, today, opts.note, extra, opts.connectorSpawn, opts.now, opts.connectorBaseEnv);
   if (verb === "reject") return doReject(root, located.file, target, opts.note, extra);
   if (verb === "request") return await doRequest(root, repo, unit, located.file, art, opts.note, memberRunner, extra, today, opts.daemon);
@@ -208,6 +227,99 @@ async function doApprove(
   if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
   files.push({ path: file, content: patched }, ...extraFiles);
   const result = transactionalWrite(root, files, `approve ${id}${commitSuffix}${note ? `\n\n${note}` : ""}`, conductorCommit);
+  if (!result.ok) return { ok: false, status: 500, error: result.error };
+  return { ok: true, commit: result.commit, changedFiles: files.map((f) => f.path) };
+}
+
+// NOTES MERGE-1 (M3, M4, M5): approving a `merge` gate is execution-on-approval at repository scale —
+// "the members drafted, the Conductor approved, levare merges" (PRD Amendment 2, M1). Guardrails
+// re-check HERE, at execution time, against a FRESH trial merge (never the possibly-stale `merge:`
+// block the gate opened with — M3: "the actual diff", not the diff as of gate-open) — a violation
+// fails the execution even though the Conductor already clicked approve (the law outranks the wish).
+// A clean merge lands as a real merge commit (never squash/rebase — M4), and where the project declares
+// `remote:`, the push is part of this same call (M5) — a push failure means NOTHING is written here at
+// all: the artifact stays `in-review`, the unit stays whatever it was, exactly as if approval had never
+// been attempted (executeMerge's own rollback already undid the local merge byte-perfectly).
+async function doApproveMerge(root: string, repo: Repo, unit: WorkUnit, file: string, id: string, today: string, note: string | undefined): Promise<GateOpResult> {
+  const project = repo.projects.get(unit.project);
+  const projectRepoPath = project ? resolveProjectRepoPath(root, project) : undefined;
+  if (!project || !projectRepoPath) {
+    return { ok: false, status: 422, error: `merge gate '${id}': project '${unit.project}' no longer resolves to a local repo checkout` };
+  }
+  const branch = workBranchName(unit.unit);
+
+  const trial = trialMerge(projectRepoPath, branch, project.default_branch);
+  if (trial.error) return { ok: false, status: 422, error: `merge gate '${id}': ${trial.error}` };
+  if (trial.conflicted) {
+    return {
+      ok: false,
+      status: 409,
+      error: `merge gate '${id}' is conflicted — cannot approve: ${trial.conflicts.join(", ")} (resolve by hand on '${branch}' in the project repo, then recheck)`,
+    };
+  }
+  const teams = responsibleTeamsFor(repo, unit);
+  const violations = checkGuardrailsForMerge(teams, trial.diffFiles, project.default_branch, !!project.remote);
+  if (violations.length > 0) {
+    return { ok: false, status: 409, error: `merge gate '${id}' blocked by guardrail: ${violations.map((v) => `${v.rule}: ${v.detail}`).join("; ")}` };
+  }
+
+  const message = `merge ${branch} -> ${project.default_branch}: unit ${unit.unit} (gate ${id})`;
+  const exec = executeMerge(projectRepoPath, branch, project.default_branch, message, project.remote);
+  if (!exec.ok) {
+    return { ok: false, status: exec.stage === "push" ? 502 : 500, error: `merge gate '${id}' execution FAILED (${exec.stage}): ${exec.error}` };
+  }
+
+  const src = readFileSync(file, "utf8");
+  let patched = stampApproval(src, today, root);
+  patched = upsertFrontmatterMap(patched, "merge_result", { executed_at: today, merge_commit: exec.mergeCommit, pushed: exec.pushed });
+  const errs = validateArtifactSource(patched, file, dirname(file), root);
+  if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
+
+  // M4/M5: "success closes the unit" — the studio-side resolution commit (below) references the
+  // project-side merge SHA for the audit trail; this IS that reference.
+  const unitFile = join(unit.dir, "unit.md");
+  const unitPatched = patchFrontmatter(readFileSync(unitFile, "utf8"), { status: "shipped" });
+
+  const files: TxFile[] = [
+    { path: file, content: patched },
+    { path: unitFile, content: unitPatched },
+  ];
+  const pushedNote = project.remote ? (exec.pushed ? " (pushed)" : "") : "";
+  const message2 = `approve ${id}: merged ${branch} -> ${project.default_branch} @ ${exec.mergeCommit}${pushedNote}${note ? `\n\n${note}` : ""}`;
+  const result = transactionalWrite(root, files, message2, conductorCommit);
+  if (!result.ok) return { ok: false, status: 500, error: result.error };
+  return { ok: true, commit: result.commit, changedFiles: files.map((f) => f.path) };
+}
+
+// NOTES MERGE-1 (M2): the re-check affordance — re-run the trial merge and rewrite the SAME artifact's
+// `merge:` block in place (never a new version/id: this is a status refresh, not a new round). Human
+// resolution happens in the project repo, on the work branch, between this call and the last.
+function doRecheckMerge(root: string, repo: Repo, unit: WorkUnit, file: string, id: string, note: string | undefined): GateOpResult {
+  const project = repo.projects.get(unit.project);
+  const projectRepoPath = project ? resolveProjectRepoPath(root, project) : undefined;
+  if (!project || !projectRepoPath) {
+    return { ok: false, status: 422, error: `merge gate '${id}': project '${unit.project}' no longer resolves to a local repo checkout` };
+  }
+  const branch = workBranchName(unit.unit);
+  const trial = trialMerge(projectRepoPath, branch, project.default_branch);
+  if (trial.error) return { ok: false, status: 422, error: `merge gate '${id}': ${trial.error}` };
+  const teams = responsibleTeamsFor(repo, unit);
+  const violations = checkGuardrailsForMerge(teams, trial.diffFiles, project.default_branch, !!project.remote);
+
+  const src = readFileSync(file, "utf8");
+  const patched = upsertFrontmatterMap(src, "merge", {
+    branch: trial.branch,
+    target: trial.target,
+    commits_ahead: trial.commitsAhead,
+    diffstat: trial.diffstat,
+    conflicted: trial.conflicted,
+    conflicts: trial.conflicts,
+    guardrail_violations: violations.map((v) => `${v.rule}: ${v.detail}`),
+  });
+  const errs = validateArtifactSource(patched, file, dirname(file), root);
+  if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
+  const files: TxFile[] = [{ path: file, content: patched }];
+  const result = transactionalWrite(root, files, `recheck ${id}: ${trial.conflicted ? "still CONFLICTED" : "clean"}${note ? `\n\n${note}` : ""}`, conductorCommit);
   if (!result.ok) return { ok: false, status: 500, error: result.error };
   return { ok: true, commit: result.commit, changedFiles: files.map((f) => f.path) };
 }
@@ -584,6 +696,22 @@ async function doStart(root: string, repo: Repo, unit: WorkUnit, memberRunner: A
   if (unmet.length > 0) return { ok: false, status: 409, error: `unit '${unit.unit}' still has unmet after: [${unmet.join(", ")}]` };
   const team = responsibleTeamFor(repo, unit);
   if (!team) return { ok: false, status: 409, error: `no team produces kinds for unit type '${unit.type}'` };
+
+  // NOTES MERGE-1 (M1): as part of THIS unit-opening transaction — the Conductor's own `start` click,
+  // the one invariant-1 approval that makes every production in this unit's flow legitimate — create
+  // its work branch (`levare/<unit>`, from `default_branch`'s tip) in a repo-bearing project's checkout,
+  // so member code lands there and never on `default_branch` directly. A project whose `repo:` doesn't
+  // resolve to a real local checkout (resolveProjectRepoPath's own doc: a bare placeholder/URL never
+  // cloned locally, or the studio's own self-referential root) gets no work branch and no merge gate —
+  // unaffected, exactly as before this goal. Branch creation is a plain ref write (never a checkout —
+  // see merge.ts), so it cannot itself fail this transaction by disturbing anything already checked out.
+  const project = repo.projects.get(unit.project);
+  const projectRepoPath = project ? resolveProjectRepoPath(root, project) : undefined;
+  if (project && projectRepoPath) {
+    const branch = workBranchName(unit.unit);
+    const created = createWorkBranch(projectRepoPath, branch, project.default_branch);
+    if (!created.ok) return { ok: false, status: 500, error: `unit '${unit.unit}': could not create work branch '${branch}': ${created.error}` };
+  }
 
   // NOTES F10 defect 3: registers the invocation with the daemon's inFlight projection the instant
   // advanceUnit resolves what it's about to produce — the SAME window `daemon.ts#tickOnce`'s own

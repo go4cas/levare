@@ -5,18 +5,39 @@ unenforced, or to accept a tradeoff — not a wish list with dates. Each paragra
 entry or PRD amendment where the decision was actually made; read that source for the full reasoning.
 If you're deciding whether to build one of these, start there, not here.
 
-## The v1.1 merge phase, and guardrails enforcement
+## The v1.1 merge phase — closed (NOTES MERGE-1), invariant 6 in full force
 
-levare produces artifacts through gates; it does not yet take a branch through a merge gate to a
-project's `main`. **Invariant 6 is formally reclassified as "SPECIFIED, NOT IMPLEMENTED — v1.1"**
-([`docs/prd-amendment-1.md`](prd-amendment-1.md) §2) — it remains the intended design and the single
-largest missing feature, but until it ships, levare makes no claim about how code lands. A direct
-consequence: a team's declared `guardrails:` block (`protected_paths`/`protected_branches`/`never`)
-validates, renders on the registry card, and is completely inert — `checkGuardrails` has zero
-production call sites, because its only enforcement point is the merge phase that doesn't exist yet.
-Rather than stay silent about that, `levare doctor` and the registry's team card both surface an
-explicit warning naming the gap (NOTES REV1, Finding 2) — the telling was built; the enforcement is
-still v1.1's own work.
+levare now takes a work unit's code through a merge gate to a project's `main`
+([`docs/prd-amendment-2.md`](prd-amendment-2.md), rulings M1–M5) — **invariant 6 is back in full
+force**; Amendment 1 §2's "SPECIFIED, NOT IMPLEMENTED" reclassification and its own REV1 guardrails
+notice are both retired, per Amendment 2 §2. A unit opened on a project declaring `repo:` gets a work
+branch (`levare/<unit>`, created from `default_branch`'s tip at unit-open time); when its flow
+completes, a merge gate opens with a trial-merge report (branch, commits ahead, diffstat, clean or
+conflicted with files named); approving a clean gate runs `checkGuardrails` against the actual diff
+(a violation fails the execution, named, even post-approval) and, if clear, produces a real merge
+commit (never squash/rebase) authored `levare-runner`, pushing in the same transaction where the
+project declares `remote:` — a push failure rolls the local merge back byte-perfectly and blocks the
+gate with the reason named. `checkGuardrails` (guardrails.ts) is no longer dormant: its production
+call site is `board/gateops.ts#doApproveMerge`.
+
+Two things this closure deliberately does NOT cover, both recorded honestly rather than silently
+assumed:
+
+- **Member-side work-branch checkout is single-working-tree, not per-member isolated.** A member
+  dispatched for a unit on a repo-bearing project gets the work branch checked out in the PROJECT's own
+  one working tree (`adapters.ts#AdapterRunner`'s `memberWorkingContext`) — not a scratch worktree per
+  dispatch. Two members dispatched concurrently against the same repo-bearing project (a loop's two
+  members in one round; two units on the same project advanced in the same daemon tick) race each
+  other's checkout. Per-member worktree isolation would close this and was considered in scope for a
+  *future* goal, not this one — the merge MACHINERY itself (trial merge, execution, rollback) already
+  uses scratch worktrees throughout and is unaffected by this gap.
+- **Self-referential projects (`repo: .`, e.g. the golden fixture's own `studio` project) are excluded
+  from the whole mechanism** — no work branch, no merge gate — because that path IS the studio's own
+  repo, the same one every gate resolution in this app commits artifacts into. Mixing branch-switching
+  into that tree would be a correctness hazard, not a feature; `resolveProjectRepoPath` (merge.ts)
+  excludes it structurally. A project whose `repo:` doesn't resolve to a real local git checkout at all
+  (an unfetched SSH URL, a placeholder) is likewise unaffected — no work branch, no merge gate, flow
+  completion behaves exactly as it did before this goal.
 
 ## Remote/MCP members
 

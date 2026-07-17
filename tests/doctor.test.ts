@@ -302,33 +302,23 @@ describe("doctor: reports connector role, and the consequence differs by role fo
   });
 });
 
-// NOTES REV1 finding 2: `checkGuardrails` (guardrails.ts) has zero production call sites — the merge
-// phase that would enforce a team's declared guardrails is deferred to v1.1 (docs/prd-amendment-1.md
-// §2, invariant 6). Doctor must state the gap plainly for any studio that declares guardrails, never
-// let a Conductor believe levare already enforces `protected_branches`/`protected_paths`/`never`.
-describe("doctor: guardrails-declared-but-not-yet-enforced telling (NOTES REV1 finding 2)", () => {
-  test("formatDoctor prints the not-yet-enforced warning, naming every team, when guardrailsTeams is non-empty", () => {
-    const out = formatDoctor(diagnose(connectors, env, noGh), undefined, undefined, undefined, ["kestrel", "atelier"]);
-    expect(out).toContain("⚠ guardrails are declared but not yet enforced — enforcement lands with the merge phase (v1.1): kestrel, atelier");
-  });
-
-  test("with no team declaring guardrails, no such line appears", () => {
-    const out = formatDoctor(diagnose(connectors, env, noGh), undefined, undefined, undefined, []);
-    expect(out).not.toContain("not yet enforced");
-  });
-
-  test("omitting guardrailsTeams entirely leaves the report unchanged (pre-REV1 callers keep working)", () => {
+// NOTES MERGE-1: the REV1 "declared but not yet enforced" notice is retired — `checkGuardrails`
+// acquired its production call site (board/gateops.ts's merge-gate execution, PRD Amendment 2 M3).
+// `formatDoctor` no longer takes a `guardrailsTeams` param at all; these tests prove the retirement,
+// not a still-live feature.
+describe("doctor: the guardrails-not-yet-enforced notice is retired (NOTES MERGE-1)", () => {
+  test("formatDoctor never prints a guardrails-enforcement warning, regardless of what the studio declares", () => {
     const out = formatDoctor(diagnose(connectors, env, noGh));
     expect(out).not.toContain("not yet enforced");
+    expect(out).not.toContain("guardrails are declared");
   });
 
-  test("`levare doctor fixtures/golden` names kestrel on the real CLI — the fixture team declares guardrails", () => {
+  test("`levare doctor fixtures/golden` (whose kestrel team declares guardrails) names no such gap", () => {
     const p = Bun.spawnSync(["./levare", "doctor", "fixtures/golden"], { env: { ...process.env, ANTHROPIC_API_KEY: "" } });
     expect(p.exitCode).toBe(0);
     const out = p.stdout.toString();
-    expect(out).toContain("guardrails are declared but not yet enforced");
-    expect(out).toContain("merge phase (v1.1)");
-    expect(out).toContain("kestrel");
+    expect(out).not.toContain("not yet enforced");
+    expect(out).not.toContain("merge phase (v1.1)");
   });
 });
 
@@ -337,12 +327,12 @@ describe("doctor: guardrails-declared-but-not-yet-enforced telling (NOTES REV1 f
 // gives, naming every agent in the studio that declares it.
 describe("doctor: remote-member-not-implemented telling (NOTES REV1 finding 3)", () => {
   test("formatDoctor prints the not-implemented warning, naming every remote agent, when remoteAgents is non-empty", () => {
-    const out = formatDoctor(diagnose(connectors, env, noGh), undefined, undefined, undefined, undefined, ["echo", "relay"]);
+    const out = formatDoctor(diagnose(connectors, env, noGh), undefined, undefined, undefined, ["echo", "relay"]);
     expect(out).toContain("⚠ remote members are not yet implemented — these will not produce real work: echo, relay");
   });
 
   test("with no remote agent declared, no such line appears", () => {
-    const out = formatDoctor(diagnose(connectors, env, noGh), undefined, undefined, undefined, undefined, []);
+    const out = formatDoctor(diagnose(connectors, env, noGh), undefined, undefined, undefined, []);
     expect(out).not.toContain("not yet implemented");
   });
 
@@ -374,12 +364,12 @@ describe("doctor: remote-member-not-implemented telling (NOTES REV1 finding 3)",
 // doctor repeats the same telling `levare validate` gives (validateAgentCliToolsWarning).
 describe("doctor: cli-tools-not-enforceable telling (NOTES CAP-B)", () => {
   test("formatDoctor prints the warning, naming every cli agent that declares tools:, when cliToolAgents is non-empty", () => {
-    const out = formatDoctor(diagnose(connectors, env, noGh), undefined, undefined, undefined, undefined, undefined, ["finch"]);
+    const out = formatDoctor(diagnose(connectors, env, noGh), undefined, undefined, undefined, undefined, ["finch"]);
     expect(out).toContain("⚠ tools: on a cli member is not enforceable by levare — encode the constraint in the connector/command via the vendor's own flags: finch");
   });
 
   test("with no cli agent declaring tools:, no such line appears", () => {
-    const out = formatDoctor(diagnose(connectors, env, noGh), undefined, undefined, undefined, undefined, undefined, []);
+    const out = formatDoctor(diagnose(connectors, env, noGh), undefined, undefined, undefined, undefined, []);
     expect(out).not.toContain("not enforceable by levare");
   });
 

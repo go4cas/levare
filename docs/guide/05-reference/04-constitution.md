@@ -45,6 +45,15 @@ lineage, cost, and identity — from what it already knows. A member's self-repo
 **9 · Cost is never faked.** A receipt records what was actually spent. Silence is recorded as
 `unreported`, a subscription as `usd: null` with the plan named — never as `$0`.
 
+**10 · Code reaches a project's `main` branch only through the review loop plus a merge gate** (the
+PRD's own invariant 6 — numbered differently there; see `docs/levare-prd.md`'s own list). In full
+force as of the merge phase (NOTES MERGE-1; `docs/prd-amendment-2.md`, rulings M1–M5, is its design
+record). A work unit's code lands on a work branch, never `default_branch`, directly; a conflicted
+merge gate cannot be approved; a guardrail violation fails the merge even after approval, named; the
+push is part of the same transaction as the merge, and a push failure rolls the merge back
+byte-perfectly. Spike code never merges — promotion means a new feature unit consuming the spike's
+findings.
+
 ---
 
 ## The rulings
@@ -62,6 +71,7 @@ this is the index.
 | **C12** | levare authors the artifact; members produce content only (invariant 8). |
 | **C13** | Connectors declare `auth: env \| subscription`. levare scopes environment credentials; a disk-authenticated CLI is outside that boundary, and the grant is documentation, not enforcement. |
 | **C14** | A loop dispatches both members every round. The gate is at the loop's outcome, never on each turn (invariant 4). |
+| **M1–M5** | The merge phase (`docs/prd-amendment-2.md`): work branch, trial merge, guardrails at execution on the actual diff, merge-commit-always, push-in-transaction with rollback. Invariant 10 above, in full force. |
 
 ---
 

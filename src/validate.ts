@@ -146,6 +146,37 @@ export const ARTIFACT_SCHEMA: Schema = {
         warning: { type: "str", required: false, nullable: true },
       },
     },
+    // NOTES MERGE-1 (PRD Amendment 2, M1/M2): reserved for `kind: merge` — the trial-merge report a
+    // merge gate carries. Structurally optional on every artifact (mirroring `execution:`'s own
+    // reservation for `kind: proposal`) rather than schema-gated by kind — a merge gate is levare's
+    // own synthetic artifact, never a member's output, so there is no member-facing contract to police
+    // here the way validateProposalArtifact polices a member-authored proposal.
+    merge: {
+      type: "map",
+      required: false,
+      nullable: true,
+      fields: {
+        branch: { type: "str", required: true },
+        target: { type: "str", required: true },
+        commits_ahead: { type: "num", required: true },
+        diffstat: { type: "str", required: true },
+        conflicted: { type: "bool", required: true },
+        conflicts: { type: "str[]", required: true },
+        guardrail_violations: { type: "str[]", required: true },
+      },
+    },
+    // NOTES MERGE-1 (M4/M5): reserved for `kind: merge` — set by levare only once a merge gate's
+    // approval actually executed a clean merge (and, where declared, a successful push).
+    merge_result: {
+      type: "map",
+      required: false,
+      nullable: true,
+      fields: {
+        executed_at: { type: "str", required: true },
+        merge_commit: { type: "str", required: true },
+        pushed: { type: "bool", required: true, nullable: true },
+      },
+    },
   },
 };
 

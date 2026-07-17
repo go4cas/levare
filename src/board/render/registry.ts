@@ -8,7 +8,6 @@ import { firstParagraph } from "../../repo.ts";
 import { esc, captionTime } from "../../derive.ts";
 import { loadExtras } from "../../extra.ts";
 import { STUDIO_SCOPE } from "../../conversation.ts";
-import { hasDeclaredGuardrails } from "../../guardrails.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
 import { tag, editorOverlay, orchTurn, callout, card } from "../components.ts";
 import {
@@ -104,20 +103,14 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
         .join('<span class="arr">&rarr;</span>');
       const memberAvatars = t.members.map((m) => avatar(repo.agents.get(m)?.style.avatar ?? m.slice(0, 2), t.style.color, { title: m })).join("");
       const producesChips = t.produces.map((p) => tag(p, "tag")).join("");
-      // NOTES REV1 finding 2: `checkGuardrails` (guardrails.ts) has zero production call sites — the
-      // merge phase that would enforce `protected_paths`/`protected_branches`/`never` is formally
-      // deferred to v1.1 (docs/prd-amendment-1.md §2, invariant 6: "SPECIFIED, NOT IMPLEMENTED"). A
-      // Conductor declaring `protected_branches: [main]` today would otherwise reasonably believe
-      // levare already blocks a matching merge — it doesn't. The card says so plainly, the same
-      // `callout("warning", …)` treatment the C13 subscription-connector note already uses, rather
-      // than staying silent about the gap.
-      const guardrailsWarning = hasDeclaredGuardrails(t)
-        ? callout("warning", "guardrails are declared but not yet enforced — enforcement lands with the merge phase (v1.1).")
-        : "";
+      // NOTES MERGE-1: the REV1 "declared but not yet enforced" notice is retired — `checkGuardrails`
+      // acquired its production call site (board/gateops.ts's merge-gate execution, PRD Amendment 2
+      // M3) — so a team's declared `guardrails:` are enforced at every merge, and the card no longer
+      // needs to warn the Conductor about a gap that no longer exists.
       const inner = `<div class="card__h">Declared flow</div><div class="flowstrip">${flow}</div>
       <div class="card__h">Definition</div>
       <div class="prow"><span class="k">members</span><span class="v chiprow">${memberAvatars}</span></div>
-      <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>${guardrailsWarning}`;
+      <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>`;
       // UI7: no "team" kind tag (RULE A) — the declared colour, now a left-edge card border, is the
       // card's identity instead of a swatch/hex value printed inside it.
       return entityBlock("teams", esc(t.name), "team", inner, `teams/${t.name}.md`, rawFor(root, "teams", t.name), t.name, active === "teams", { showKindTag: false, accentColor: t.style.color });

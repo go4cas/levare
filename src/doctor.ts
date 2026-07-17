@@ -99,13 +99,6 @@ export function diagnose(connectors: Connector[], env: EnvProbe, probe: CliProbe
  * code I think it is?" needs a visible answer. A full staleness check (comparing the build commit
  * against the studio/source HEAD) is deferred; this only makes the run mode legible.
  *
- * `guardrailsTeams`, when given (NOTES REV1 finding 2): the names of every team in the studio that
- * declares a non-empty `guardrails:` block. `checkGuardrails` (guardrails.ts) has zero production
- * call sites — its enforcement point is the merge phase, formally deferred to v1.1
- * (docs/prd-amendment-1.md §2, invariant 6: "SPECIFIED, NOT IMPLEMENTED"). A Conductor declaring
- * `protected_branches: [main]` today would otherwise reasonably believe levare already blocks a
- * matching merge — it doesn't, and doctor must say so, not stay silent.
- *
  * `remoteAgents`, when given (NOTES REV1 finding 3): the names of every agent in the studio declaring
  * `kind: remote`. A legal declaration — `levare validate` accepts it — but adapters.ts's
  * `RemoteBoundary` is a documented mock in every path today (no live MCP call exists), so doctor
@@ -120,7 +113,6 @@ export function formatDoctor(
   orchestrator?: OrchestratorStatus,
   versionInfo?: VersionInfo,
   promptCheck?: PromptCheck,
-  guardrailsTeams?: string[],
   remoteAgents?: string[],
   cliToolAgents?: string[],
 ): string {
@@ -135,12 +127,6 @@ export function formatDoctor(
   }
   if (promptCheck) {
     out.push(promptCheck.ok ? `orchestrator prompt: readable (${promptCheck.bytes} bytes) at ${promptCheck.path}` : `orchestrator prompt: ERROR — ${promptCheck.error} (${promptCheck.path})`);
-    out.push("");
-  }
-  if (guardrailsTeams && guardrailsTeams.length > 0) {
-    out.push(
-      `⚠ guardrails are declared but not yet enforced — enforcement lands with the merge phase (v1.1): ${guardrailsTeams.join(", ")}`,
-    );
     out.push("");
   }
   if (remoteAgents && remoteAgents.length > 0) {
@@ -188,9 +174,8 @@ export function runDoctor(
   orchestrator?: OrchestratorStatus,
   versionInfo?: VersionInfo,
   promptCheck?: PromptCheck,
-  guardrailsTeams?: string[],
   remoteAgents?: string[],
   cliToolAgents?: string[],
 ): string {
-  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo, promptCheck, guardrailsTeams, remoteAgents, cliToolAgents);
+  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo, promptCheck, remoteAgents, cliToolAgents);
 }

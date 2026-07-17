@@ -46,6 +46,7 @@ import { RunnerError, responsibleTeamsFor, resolveStep, unmetAfter, untilSatisfi
 import { patchFrontmatter, upsertFrontmatterField } from "./gates.ts";
 import { runnerCommit, transactionalWrite, type TxFile } from "./git.ts";
 import { locateArtifactFile } from "./locate.ts";
+import { resolveProjectRepoPath, workBranchName, branchExists, trialMerge, checkGuardrailsForMerge, formatMergeArtifact } from "./merge.ts";
 import type { Artifact, FlowLoop, Receipt, Team, WorkUnit } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -331,7 +332,54 @@ export async function advanceUnit(root: string, repo: Repo, unit: WorkUnit, memb
     }
     // action.type === "nothing": this team's flow is fully satisfied — hand off to the next team.
   }
+
+  // NOTES MERGE-1 (PRD Amendment 2, M1/M2): every responsible team's flow is now satisfied — this IS
+  // "the unit's flow completed". For a repo-bearing project whose work branch already exists (M1
+  // creates it at unit-open — board/gateops.ts#doStart — so its absence here means either a project
+  // with no `repo:`, a `repo:` that doesn't resolve to a real local checkout, or the studio's own
+  // self-referential project, none of which get a merge gate at all — see resolveProjectRepoPath's own
+  // doc), open the merge gate as the unit's final gate. A unit whose merge gate is already open (an
+  // in-review `kind: merge` artifact) halts here exactly like any other open gate, rather than trying
+  // to open a second one; a unit whose merge gate already resolved is `shipped` and never reaches this
+  // function at all (the `unit.status !== "active"` guard at the top returns first).
+  const project = repo.projects.get(unit.project);
+  const projectRepoPath = project ? resolveProjectRepoPath(root, project) : undefined;
+  if (project && projectRepoPath) {
+    const branch = workBranchName(unit.unit);
+    if (branchExists(projectRepoPath, branch)) {
+      const openMerge = [...(repo.artifacts.get(`${unit.project}/${unit.unit}`)?.values() ?? [])].find(
+        (a) => a.kind === "merge" && a.status === "in-review",
+      );
+      if (openMerge) return { outcome: "halted", reason: `merge gate open on ${openMerge.id}` };
+      return openMergeGate(root, unit, teams, project, projectRepoPath, branch, opts);
+    }
+  }
   return { outcome: "nothing" };
+}
+
+/** NOTES MERGE-1 (M2): open a unit's merge gate — run the trial merge, check every responsible team's
+ * guardrails against the resulting diff (advisory at open time; the binding check re-runs at execution
+ * — M3, board/gateops.ts#doApproveMerge), and write the `kind: merge` artifact that IS the gate. */
+function openMergeGate(
+  root: string,
+  unit: WorkUnit,
+  teams: Team[],
+  project: { default_branch: string; remote: string | null },
+  projectRepoPath: string,
+  branch: string,
+  opts: AdvanceOptions,
+): AdvanceResult {
+  const today = opts.today ?? new Date().toISOString().slice(0, 10);
+  const commitFn = opts.commit ?? runnerCommit;
+  const trial = trialMerge(projectRepoPath, branch, project.default_branch);
+  const violations = trial.error ? [] : checkGuardrailsForMerge(teams, trial.diffFiles, project.default_branch, !!project.remote).map((v) => `${v.rule}: ${v.detail}`);
+  const id = `merge-${unit.unit}-v1`;
+  const doc = formatMergeArtifact(unit.unit, unit.project, id, today, trial, violations);
+  const file = join(unit.dir, `${id}.md`);
+  const verb = opts.verb ?? "advance";
+  const result = transactionalWrite(root, [{ path: file, content: doc }], `${verb} ${unit.unit}: merge gate opened on ${branch} (${trial.conflicted ? "CONFLICTED" : "clean"})`, commitFn);
+  if (!result.ok) throw new Error(result.error);
+  return { outcome: "produced", member: "levare-runner", kind: "merge", artifactId: id, file, commit: result.commit };
 }
 
 /**
