@@ -17,7 +17,7 @@ import type { DaemonInvocation } from "../../daemon.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
 import { getVersionInfo } from "../../version.ts";
 import { statusLabel } from "../status.ts";
-import { statusBadge, counter, pendingState, card, confirmModal, orchTurn, renderPersistedTurns } from "../components.ts";
+import { statusBadge, counter, pendingState, card, confirmModal, orchTurn, renderPersistedTurns, tag, callout } from "../components.ts";
 import { loadConversationTail } from "../../conversation.ts";
 
 // levare's own release version (item 3: "the release version as a quiet muted mono chip" beside the
@@ -424,6 +424,15 @@ export function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?
   }
 
   const art = gate.artifact!;
+
+  // NOTES MERGE-2: closes NOTES MERGE-1's own named residual — a `kind: merge` artifact used to fall
+  // through to the generic in-review-artifact branch below (Approve/Request/Reject), which routes
+  // Approve correctly but offers Request/Reject buttons the server has always 409'd, and has never
+  // offered `recheck` at all. See `mergeGateCardHtml` for the dedicated variant.
+  if (art.kind === "merge") {
+    return mergeGateCardHtml(repo, gate, now, opts);
+  }
+
   const consumesHtml = art.consumes.length
     ? `<div class="gate__consumes">consumes: ${art.consumes.map((id) => artifactTokenLink(gate.project, gate.unit, id, id)).join(" &middot; ")}</div>`
     : "";
@@ -485,6 +494,132 @@ export function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?
     titleExtra: `<p class="gate__ctx">${ctx}</p>${consumesHtml}${meta}`,
     status: `<span class="gate__badge${gate.loop?.exhausted ? " is-exhausted" : ""}">${gate.loop?.exhausted ? statusLabel("exhausted") : "on you"}</span>`,
     meta: verbs,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Merge gate card (NOTES MERGE-2, closing NOTES MERGE-1's own named residual) — the dedicated `kind:
+// merge` variant, built from the same primitives as every other gate (card/statusBadge/callout/tag),
+// never a bespoke markup family. The one behavioural rule the server already enforces
+// (board/gateops.ts#doApproveMerge: `approve` 409s whenever the trial is conflicted OR a guardrail
+// violates) governs every verb choice below: a conflicted or guardrail-violating trial never renders
+// an approve/merge button — Re-check is the only primary action offered instead, since only a re-run
+// of the trial (a by-hand fix on the work branch, or a guardrail fix in the studio) can change the
+// outcome. `reject`/`request` are never rendered either — resolveGate already refuses both against a
+// merge gate (NOTES MERGE-1) — there is no "changes" to request against a trial-merge report.
+// ---------------------------------------------------------------------------
+
+// Compact "N files changed · +ins/-del" pulled from `git diff --stat`'s own trailing summary line —
+// never the full per-file listing (the goal: "render compactly... not a full diff"). Returns null for
+// anything that doesn't match (an empty diffstat — 0 commits ahead — or a shape this hasn't seen), in
+// which case the card simply omits the chip rather than guessing.
+function diffstatSummary(diffstat: string): string | null {
+  const lines = diffstat
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const last = lines[lines.length - 1];
+  if (!last) return null;
+  const m = /^(\d+) files? changed(?:, (\d+) insertions?\(\+\))?(?:, (\d+) deletions?\(-\))?/.exec(last);
+  if (!m) return null;
+  const files = Number(m[1]);
+  const ins = m[2] ?? "0";
+  const del = m[3] ?? "0";
+  // A literal middle-dot character, not the `&middot;` entity — this string is passed through
+  // `tag()`, which `esc()`s its text (correctly: it's a plain-text label, not an HTML fragment), and
+  // `esc()` would otherwise double-escape a literal ampersand into `&amp;middot;`.
+  return `${files} file${files === 1 ? "" : "s"} changed · +${ins}/-${del}`;
+}
+
+function mergeGateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: boolean; dispatching?: { member: string; kind: string } }): string {
+  const art = gate.artifact!;
+  const merge = art.merge;
+  const unit = repo.units.find((u) => u.project === gate.project && u.unit === gate.unit);
+  const type = unit ? repo.types.get(unit.type) : undefined;
+  const glyph = type?.glyph ?? "&#9702;";
+  const dispatching = opts.dispatching;
+  const age = ageLabel(art.created, now);
+
+  // `produced_by: levare-runner` (merge.ts#formatMergeArtifact) has no team/member — the producer slot
+  // says what this gate actually IS instead of the generic "member/<b></b>" the fallthrough path would
+  // have printed for a team-less producer.
+  const nameRow = `${gateUnitTitle(gate.project, gate.unit)}<div class="gate__name-row">${artifactTokenLink(gate.project, gate.unit, art.id, artifactFileName(art))}<span class="gate__producer">levare &middot; merge gate</span></div>`;
+
+  // Defensive only: merge.ts#formatMergeArtifact always writes `merge:` at gate-open time, and
+  // doRecheckMerge only ever rewrites it in place, never clears it — this branch should be
+  // unreachable. A card is a pure function of on-disk data, though, so an honestly-empty report
+  // renders as a stalled state (recheck is always safe to offer) rather than throwing.
+  if (!merge) {
+    const verbs = dispatching
+      ? dispatchingHtml(dispatching.member, dispatching.kind)
+      : `<div class="gate__verbs"><button class="verb is-primary" data-verb="recheck">Re-check</button></div>`;
+    return card({
+      as: "article",
+      cls: `gate gate--merge${dispatching ? " is-dispatching" : ""}`,
+      attrs: { "data-gate-project": gate.project, "data-gate-target": art.id },
+      topCls: "gate__top",
+      pre: `<span class="gate__marker" aria-hidden="true">${glyph}</span>`,
+      bodyWrapCls: "gate__body",
+      title: nameRow,
+      titleExtra: callout("warning", "this merge gate has no trial-merge report on disk yet &mdash; re-check to generate one."),
+      status: `<span class="gate__badge">on you</span>`,
+      meta: verbs,
+    });
+  }
+
+  const conflicted = merge.conflicted;
+  const violations = merge.guardrail_violations ?? [];
+  const guardrailsPass = violations.length === 0;
+  // Never render approve/merge when the server would refuse it (409): conflicted, or a guardrail
+  // violation the SAME execution-time re-check (M3) would re-discover and fail on anyway.
+  const canApprove = !conflicted && guardrailsPass;
+
+  const statsHtml = `<div class="chiprow">${tag(merge.branch, "tag")}${tag(`${merge.commits_ahead} commit${merge.commits_ahead === 1 ? "" : "s"} ahead`, "tag")}${
+    diffstatSummary(merge.diffstat) ? tag(diffstatSummary(merge.diffstat)!, "tag") : ""
+  }</div>`;
+
+  const trialBadge = conflicted ? statusBadge("failed", "CONFLICTED") : statusBadge("done", "CLEAN");
+  // The instruction the server already words at every layer that names a conflict (merge.ts's own
+  // artifact body, gateops.ts's 409 error) — repeated here verbatim rather than invented afresh.
+  const conflictDetail = conflicted
+    ? `<p class="gate__ctx">Conflicts on: ${merge.conflicts.map((f) => `<span class="mono">${esc(f)}</span>`).join(", ")}. Resolve by hand on <span class="mono">${esc(merge.branch)}</span> in the project repo, then re-check.</p>`
+    : "";
+  const guardrailHtml = guardrailsPass
+    ? `<p class="gate__ctx" style="color:var(--fg-mute)">guardrails pass</p>`
+    : callout("danger", `blocked by guardrail: ${violations.map(esc).join("; ")}`);
+  const meta = `<div class="gate__meta"><span>opened ${esc(age)}</span></div>`;
+
+  const project = repo.projects.get(gate.project);
+  const verbsHtml = dispatching
+    ? dispatchingHtml(dispatching.member, dispatching.kind)
+    : canApprove
+      ? `<div class="gate__verbs"><button class="verb is-primary" data-verb="approve">${project?.remote ? "Merge &amp; push" : "Merge"}</button></div>`
+      : `<div class="gate__verbs"><button class="verb is-primary" data-verb="recheck">Re-check</button></div>`;
+
+  const titleExtra = `${trialBadge}${conflictDetail}${statsHtml}${guardrailHtml}${meta}`;
+
+  if (opts.cta) {
+    return `<article class="gate gate--merge gate--cta${dispatching ? " is-dispatching" : ""}" data-gate-project="${esc(gate.project)}" data-gate-target="${esc(art.id)}">
+      <div class="gate__banner"><span class="dia" aria-hidden="true"></span><span class="t">Gate &middot; merge review</span></div>
+      <div class="gate__inner">
+        ${nameRow}
+        ${titleExtra}
+        ${verbsHtml}
+      </div>
+    </article>`;
+  }
+
+  return card({
+    as: "article",
+    cls: `gate gate--merge${dispatching ? " is-dispatching" : ""}`,
+    attrs: { "data-gate-project": gate.project, "data-gate-target": art.id },
+    topCls: "gate__top",
+    pre: `<span class="gate__marker" aria-hidden="true">${glyph}</span>`,
+    bodyWrapCls: "gate__body",
+    title: nameRow,
+    titleExtra,
+    status: `<span class="gate__badge">on you</span>`,
+    meta: verbsHtml,
   });
 }
 

@@ -89,12 +89,18 @@
     function postGate(card, verb, note) {
       var project = card.getAttribute('data-gate-project');
       var target = card.getAttribute('data-gate-target');
-      if (!project || !target) return Promise.resolve();
+      if (!project || !target) return Promise.resolve(null);
       return fetch('/gates/' + encodeURIComponent(project) + '/' + encodeURIComponent(target) + '/' + encodeURIComponent(verb), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ note: note || undefined })
-      }).catch(function (err) { console.error('gate verb failed', err); });
+      // NOTES MERGE-2: the response body is now read (`{ ok, error }`, board/serve.ts's own gate
+      // route shape) — a merge gate's `approve` is EXECUTION (a real git merge, and where declared a
+      // push), the one verb in this whole table that can still fail after the Conductor's click
+      // resolved server-side successfully-dispatched; every other verb resolves synchronously with no
+      // further failure mode worth surfacing, so this parse is otherwise unused.
+      }).then(function (res) { return res.json().catch(function () { return null; }); })
+        .catch(function (err) { console.error('gate verb failed', err); return null; });
     }
 
     document.addEventListener('click', function (e) {
@@ -116,18 +122,63 @@
       };
       var realVerb = verb === 'send' ? (card._pendingVerb || 'request') : verb;
       var note = verb === 'send' && card._note ? card._note.querySelector('.gate__note').value : undefined;
-      postGate(card, realVerb, note);
+      // NOTES MERGE-2: a merge gate's own `approve` is EXECUTION at repository scale (a real merge,
+      // and where declared a push) — never the instant, always-true "approved" the generic map below
+      // claims for every other kind. It gets the same quiet dispatching treatment as start/request/
+      // retry instead, and `recheck` (re-running the trial merge; not a member dispatch, but still a
+      // git/worktree round-trip worth acknowledging locally) joins it — neither verb existed in this
+      // table before this goal.
+      var isMergeGate = card.classList.contains('gate--merge');
+      var isMergeApprove = isMergeGate && realVerb === 'approve';
+      var promise = postGate(card, realVerb, note);
       // `start`, `send` (re-invokes the producer), and `retry` (NOTES F19 — re-invokes the same
       // member, costing money again) all dispatch a real member call that can take seconds to
       // minutes — an immediate resolved-line would be a premature claim of completion. Show the quiet
       // pending state instead (NOTES F10 defect 3) and let the SSE-driven reload replace it with the
       // server's real post-production render; every other verb resolves synchronously server-side, so
       // its immediate optimistic label stays accurate.
-      if (realVerb === 'start' || realVerb === 'request' || realVerb === 'retry') { markDispatching(card); return; }
+      if (realVerb === 'start' || realVerb === 'request' || realVerb === 'retry' || realVerb === 'recheck' || isMergeApprove) {
+        markDispatching(card);
+        // M5's rollback on a push/merge failure is byte-perfect — nothing is written to disk, so the
+        // next server render (or SSE reload) would show this card completely unchanged, with no trace
+        // of the failed attempt. The established blocked-unit treatment (a named reason, danger-toned)
+        // is surfaced here instead, client-side and session-only, so the Conductor sees WHY the click
+        // didn't land rather than a card that silently reverted with no explanation.
+        if (isMergeApprove) {
+          promise.then(function (result) {
+            if (result && result.ok === false) showMergeExecutionFailure(card, result.error);
+          });
+        }
+        return;
+      }
       var m = map[verb];
       if (!m) return;
       resolveGate(card, m[0], m[1]);
     });
+
+    // NOTES MERGE-2: the one place a gate verb's FAILURE is shown at all — see the comment above this
+    // function's one call site. `.notice.notice--danger` mirrors render/components.ts#callout's own
+    // markup (minus its svg icon, an ephemeral client notice never needing exact byte parity with a
+    // server-rendered one) so the severity reads identically to every other danger callout on the board.
+    function showMergeExecutionFailure(card, message) {
+      var verbs = card.querySelector('.gate__verbs');
+      if (!verbs) return;
+      card.classList.remove('is-dispatching');
+      verbs.classList.remove('gate__verbs--pending');
+      var notice = document.createElement('div');
+      notice.className = 'notice notice--danger';
+      var text = document.createElement('span');
+      text.className = 'notice__text';
+      text.textContent = message || 'merge execution failed';
+      notice.appendChild(text);
+      verbs.parentNode.insertBefore(notice, verbs);
+      verbs.textContent = '';
+      var retry = document.createElement('button');
+      retry.className = 'verb is-primary';
+      retry.setAttribute('data-verb', 'recheck');
+      retry.textContent = 'Re-check';
+      verbs.appendChild(retry);
+    }
 
     /* Local, in-place pending feedback (NOTES UI6 — the goal's one intended behaviour change):
        a Start/Request-changes/Retry click used to wipe the WHOLE card's innerHTML with a bare
