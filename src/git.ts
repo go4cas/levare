@@ -20,6 +20,28 @@ export const CONDUCTOR_EMAIL = "cas@levare.local";
 export const RUNNER_NAME = "levare-runner";
 export const RUNNER_EMAIL = "runner@levare.local";
 
+// NOTES CAP-B-FIX: `commitAs` sets identity via `-c user.name=`/`-c user.email=` — but git gives
+// GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL/GIT_COMMITTER_NAME/GIT_COMMITTER_EMAIL *environment variables*
+// higher precedence than a `-c` config override, and `spawnSync` with no `env` option inherits
+// `process.env` verbatim. Every other git-spawning helper in this file (`makeFoundingCommit`) and
+// every test's own seeding helper already hermeticize their spawn env (GIT_CONFIG_GLOBAL/SYSTEM to
+// `/dev/null`, an explicit env object) — `commitAs` was the one holdout, silently trusting that
+// nothing in the ambient process env ever sets those four vars. This is the function EVERY real
+// Conductor/runner commit in the app funnels through (board gate resolution, the Orchestrator,
+// registry edits) — a stray GIT_AUTHOR_NAME et al. anywhere in the process (a leaked test mutation
+// today, a future one, a wrapping shell) would silently misattribute every commit this makes, with
+// no error, ever. Scoped here once, unconditionally, rather than trusted to stay unset.
+const HERMETIC_GIT_ENV: NodeJS.ProcessEnv = {
+  ...process.env,
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_SYSTEM: "/dev/null",
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_AUTHOR_NAME: undefined,
+  GIT_AUTHOR_EMAIL: undefined,
+  GIT_COMMITTER_NAME: undefined,
+  GIT_COMMITTER_EMAIL: undefined,
+};
+
 function commitAs(root: string, files: string[], message: string, identity: { name: string; email: string }): string {
   const gitArgs = (args: string[]) => [
     "-C",
@@ -34,11 +56,11 @@ function commitAs(root: string, files: string[], message: string, identity: { na
     "core.hooksPath=/dev/null",
     ...args,
   ];
-  const add = spawnSync("git", gitArgs(["add", "--", ...files]), { encoding: "utf8" });
+  const add = spawnSync("git", gitArgs(["add", "--", ...files]), { encoding: "utf8", env: HERMETIC_GIT_ENV });
   if (add.status !== 0) throw new Error(`git add failed: ${add.stderr}`);
-  const commit = spawnSync("git", gitArgs(["commit", "-q", "-m", message]), { encoding: "utf8" });
+  const commit = spawnSync("git", gitArgs(["commit", "-q", "-m", message]), { encoding: "utf8", env: HERMETIC_GIT_ENV });
   if (commit.status !== 0) throw new Error(`git commit failed: ${commit.stderr}${commit.stdout}`);
-  const rev = spawnSync("git", gitArgs(["rev-parse", "HEAD"]), { encoding: "utf8" });
+  const rev = spawnSync("git", gitArgs(["rev-parse", "HEAD"]), { encoding: "utf8", env: HERMETIC_GIT_ENV });
   return rev.stdout.trim();
 }
 

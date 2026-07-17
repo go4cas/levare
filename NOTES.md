@@ -7894,3 +7894,115 @@ existing generic field-table code with no `generate-cheatsheets.ts` change neede
 (`tests/cheatsheets.test.ts`) is green against the committed output. `bun run build` succeeds;
 `tests/orchestrator-compiled-smoke.test.ts` — 6 pass, 0 fail, unaffected (this goal touches no
 conversation-persistence or orchestrator-boundary code path).
+
+# NOTES CAP-B-FIX — intermittent cross-file test interference (`orchestrator.test.ts` (b), full-suite-only)
+
+Goal: bisection (done before this work started) found `main` green across two consecutive full `bun
+test` runs (955/955 twice) while this branch failed `tests/orchestrator.test.ts`'s "(b) approving via
+chat produces the same file mutation and commit shape as the board route" in roughly 2 of 3 full-suite
+runs — passing in isolation and passing paired with `tests/adapters*.test.ts`. That signature was read
+as shared global state leaking across test files, prime suspect the scratch-HOME lifecycle
+(`env.ts#scopeHome`, `adapters.ts`'s `withHomeScope`/`withHomeScopeAsync`) added in CAP-B part B.
+
+## What was actually checked
+
+Read every line CAP-B's diff touches (`env.ts`, `adapters.ts`, `doctor.ts`, `repo.ts`, `validate.ts`,
+`types.ts`, `cli.ts`, `init.ts`, `sdk-transport.ts`, `board/render/registry.ts`, and every test file the
+diff changed or added, above all the new `tests/capability-cap-b.test.ts`). None of it mutates
+`process.env` (or `Bun.env`) directly — every env value flows through a freshly-built local object
+(`buildMemberEnv`/`scopeHome`'s own `env: { ...env, HOME: scratch }`), every scratch resource is a
+`mkdtempSync` directory cleaned up in `finally`/a test's own `try/finally`, and `loadRepo` has no
+module-level cache (confirmed by reading it end to end) — so a test mutating a `repo.connectors`/
+`repo.agents` Map it got back (`capability-cap-b.test.ts`'s `repoWithScopedSubscription`) cannot leak
+into a different `loadRepo` call in a different file. `scopeHome`/`withHomeScope`/`withHomeScopeAsync`
+scope correctly by construction: a fresh `mkdtempSync` per call, `cleanup()` in a `finally` around the
+one spawn it was built for, never cached or shared across calls (a dedicated test in
+`capability-cap-b.test.ts` already proves two `scopeHome` calls never share a scratch dir).
+
+Checked bun's actual test-execution model empirically (this repo's `bun test` invocation, in `package.json`
+and `.github/workflows/ci.yml`, passes no `--parallel`/`--concurrent`/`--isolate` flag, and no test file
+uses `.concurrent`): wrote two throwaway test files, one with a blocking `Bun.sleepSync`, one with an
+`await Bun.sleep` — in both cases the second file's test did not start until the first file's test fully
+finished. `bun test` 1.3.14 with this repo's invocation runs every test **strictly sequentially, single
+process, single thread** — there is no true concurrency for a leaked mutation to race against; a leftover
+mutation would need either (a) a leaked async handle (timer/`fs.watch`) from an earlier test firing during
+a later test's own `await`, or (b) a deterministic ordering effect. Checked (a): the one `fs.watch`/
+`setTimeout` debounce in the touched surface area (`board/serve.ts`'s `createBoard`) closes both the
+watcher and the pending debounce timer in `close()`, correctly, and `capability-cap-b.test.ts` never calls
+`createBoard` at all. Checked file-execution order stability (`bun test --reporter=junit`, four repeated
+runs): identical every time — `capability-cap-a.test.ts` → `adapters.test.ts` → `capability-cap-b.test.ts`
+→ `orchestrator.test.ts`, always in that order — ruling out non-deterministic file-glob ordering as the
+intermittency's own source.
+
+**Reproduction: not achieved.** Ran the full suite 34 consecutive times after checkout (an initial batch
+of 9 foreground, then a 25-run background loop) — 34/34 green, 980/980 (981 counting the one pre-existing
+skip) every time, zero failures of any kind, let alone the named test. This is strong evidence the failure
+either needs a machine/timing profile this sandbox doesn't reproduce (the bisection's own environment may
+differ in core count, memory, or bun version/build), or is rare enough that 34 runs wasn't enough — for a
+true 2-in-3 rate, 34/34 green has probability roughly (1/3)^34 ≈ 10^-18 if the failure model bisection
+found were exactly reproducible here, so the far more likely read is that the failure condition itself
+depends on something this environment doesn't have (e.g. tighter memory: this sandbox showed ~350MB free
+of 2.8GB with swap already in use, which is itself memory-constrained, so "more constrained still" or
+"different constraint shape" is the live possibility, not "unconstrained").
+
+## The one concrete, verified gap found (fixed regardless of whether it is THE mechanism)
+
+`git.ts#commitAs` — the ONE function every real Conductor/runner commit in the whole app funnels
+through (`conductorCommit`/`runnerCommit`; board gate resolution, the Orchestrator's own writes, the
+registry edit route — and specifically the function BOTH the chat path and the board-route path in the
+failing test call, identically, per ruling C7) — was the only git-spawning helper anywhere in `src/`
+that did not pass an explicit `env` to its `spawnSync` calls. It sets commit identity via `-c
+user.name=`/`-c user.email=`, but git gives the `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/
+`GIT_COMMITTER_NAME`/`GIT_COMMITTER_EMAIL` environment variables **higher precedence** than a `-c`
+config override — so any code, anywhere in the process (a test, a future dependency, a wrapping shell),
+that ever sets those four vars on `process.env` without restoring them before `commitAs` next runs would
+silently misattribute every commit `commitAs` makes afterward, with no error surfaced anywhere. Every
+OTHER git-spawning helper in this codebase already defends against exactly this class of thing —
+`makeFoundingCommit` (same file) takes an injectable `env`; every test's own local `git()` seeding helper
+sets `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` to `/dev/null`. `commitAs` was the one holdout, trusting the
+ambient environment implicitly. No test in the current suite was found to actually set those four vars
+(audited with a repo-wide grep, several phrasings), so this is not confirmed as the live mechanism behind
+bisection's finding — but it is a real, currently-unguarded gap in exactly the function the failing
+test's own two code paths both call, and closing it is strictly a hardening (it changes no behavior when
+the ambient env is already clean, which — per every reproduction attempt above — it always was here).
+
+**Fix**: `commitAs` now spawns with a `HERMETIC_GIT_ENV` — `process.env` plus `GIT_CONFIG_GLOBAL`/
+`GIT_CONFIG_SYSTEM` forced to `/dev/null`, `GIT_TERMINAL_PROMPT` forced to `"0"`, and all four
+`GIT_AUTHOR_*`/`GIT_COMMITTER_*` vars explicitly unset (verified empirically that Bun's `spawnSync`
+drops an `undefined`-valued env key entirely, rather than passing the literal string `"undefined"`) —
+built once at module scope, reused across all three of `commitAs`'s spawns. Guaranteed restoration is
+structural here, not test-lifecycle-dependent: every commit computes its own hermetic env fresh from
+whatever `process.env` looks like at call time, so there is nothing to "leak" going forward regardless of
+what any test does to `process.env` around it.
+
+**Guard added for future test authorship** (goal item d): `tests/env-helpers.ts` — `withEnv`/
+`withEnvAsync`, scoped `process.env` mutation with guaranteed `finally`-restoration. Not retrofitted onto
+any existing test, since the audit above found no test in the current suite doing a bare, unrestored (or
+late-restored) `process.env` mutation to retrofit it onto (`tests/dotenv.test.ts`'s one direct-`process.env`
+test already saves/restores correctly in `finally`, under a collision-proof probe var name). It exists so
+the next test that needs to stub an env var for one assertion has a scoped way to do it on hand, rather
+than reaching for a bare mutation because nothing better was available.
+
+## Verification
+
+`bun run typecheck` → exit 0. `bun run deps:check` → `deps ok`. `bun run src/cli.ts replay
+fixtures/golden --stubs` → oracle match, byte-for-byte, unchanged. Five consecutive full `bun test` runs
+after the fix: 980/980 pass, 1 pre-existing skip, 0 fail, every run (21.9s–22.6s each) — combined with
+the 34 pre-fix green runs above, 39 consecutive full-suite runs total across this investigation, 0
+failures observed at any point, before or after the fix.
+
+## Honest residual
+
+The failure this goal describes was not caught in the act. Everything reachable by static review scopes
+correctly; the one asymmetry found (`commitAs`'s ambient-env inheritance) is now closed regardless. If
+the 2-in-3 rate reproduces again in the environment that originally found it, the next diagnostic step
+would be: instrument `commitAs`'s `HERMETIC_GIT_ENV` construction to log a diff against `process.env`
+on every call (catches a transient env mutation this fix didn't fully anticipate), and re-run bisection
+with `bun test --rerun-each=20` on a single file pairing at a time to narrow which specific test
+introduces the divergence, since full-suite-only + this sandbox's inability to reproduce it together
+suggest a resource-pressure-sensitive trigger (memory/FD headroom) rather than a pure logic leak — CAP-B
+added `tests/capability-cap-b.test.ts` (~30 new tests, real `mkdtempSync`/symlink/`rmSync` filesystem
+I/O each) immediately upstream of `orchestrator.test.ts` in file-execution order, which is the single
+heaviest git-subprocess-spawning test in the whole suite (~14 spawns in one `test()` body) — added
+volume immediately before the most spawn-heavy test is consistent with tipping a resource-marginal CI
+runner without any code defect being the proximate cause.
