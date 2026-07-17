@@ -288,7 +288,7 @@ export class Runner {
     const { doc, receipt } = this.members.produce(member, kind, unit.unit, unit.project, extraConsumes);
 
     // Boundary contract enforcement (§6) with the same validator used on disk.
-    const errs = validateArtifactSource(doc, `${member}:${kind}`);
+    const errs = validateArtifactSource(doc, `${member}:${kind}`, undefined, this.repo.root);
     if (errs.length > 0) {
       // NOTES F22: every accumulated error, not just the first.
       throw new RunnerError(`member '${member}' produced off-contract '${kind}': ${formatValidationErrors(errs)}`);

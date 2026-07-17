@@ -130,6 +130,18 @@ export type ConnectorAuth = "env" | "subscription";
 // domain templates (work-unit type).
 export type ConnectorRole = "model" | "tool";
 
+// NOTES CAP-A (v1.1 capability layer, part A). `effects` names whether granting this connector lets a
+// member merely READ through it (unchanged since phase 3 — the grant IS the enforcement, env.ts injects
+// the named vars) or WRITE through it (a side-effecting action against the outside world). `gate` only
+// has meaning for an `effects: write` connector: `proposal` (default) means the grant is "may draft a
+// proposal against this connector", never "holds its credential" — env.ts#buildMemberEnv withholds the
+// connector's env vars from every member's own process; only levare's own execution step (on gate
+// approval) reads them. `gate: trusted` is the declared, visible opt-out — injects exactly as an
+// `effects: read` connector always has. A `gate:` on an `effects: read` connector is a definition error
+// (gate is meaningless without something to gate).
+export type ConnectorEffects = "read" | "write";
+export type ConnectorGate = "proposal" | "trusted";
+
 export interface Connector {
   name: string;
   kind: "mcp" | "cli";
@@ -143,6 +155,20 @@ export interface Connector {
   plan?: string;
   /** NOTES C15: this connector's function — a model connector or a tool/service connector. */
   role: ConnectorRole;
+  /** NOTES CAP-A: defaults to "read" — every connector defined before this ruling is unchanged. */
+  effects: ConnectorEffects;
+  /** NOTES CAP-A: defaults to "proposal" — only meaningful when effects: write. */
+  gate: ConnectorGate;
+  /**
+   * NOTES CAP-A: the declared action vocabulary for an `effects: write` connector — action name →
+   * argv template array with `{placeholder}` slots, e.g. `create-issue: ["gh", "issue", "create",
+   * "--title", "{title}"]`. Templates are DECLARED here, in the connector's own definition; a member
+   * proposing against this connector names an action and fills the placeholders with `params:` — it
+   * can never supply raw argv. Required (non-empty) for every `effects: write` connector, whichever
+   * `kind` — a `kind: mcp` write connector still declares its action vocabulary/placeholder shape
+   * here even though execution is not yet implemented for MCP (see execution.ts).
+   */
+  actions?: Record<string, string[]>;
 }
 
 export interface TypeTemplate {
@@ -214,6 +240,20 @@ export type ArtifactStatus =
   // from `rejected` (a content review outcome, not a produce-failure one).
   | "skipped";
 
+// NOTES CAP-A: the on-approval record of a proposal artifact's execution — appended by levare itself,
+// never authored by a member. `status: "skipped"` names the honest mcp-not-implemented case (never
+// pretend a call happened); `status: "failed"` records a real, non-zero/timed-out cli execution — the
+// approval itself is never undone by a failed execution, this record is what explains why the unit
+// then blocks. `output_digest` is a hash of stdout+stderr, not the raw bytes — never grows a commit
+// unbounded and never risks echoing a secret the connector's own output happened to include.
+export interface ExecutionRecord {
+  executed_at: string;
+  status: "ok" | "failed" | "skipped";
+  exit: number | null;
+  output_digest: string | null;
+  warning: string | null;
+}
+
 export interface Artifact {
   kind: string;
   id: string;
@@ -229,6 +269,14 @@ export interface Artifact {
   usage?: Usage | null;
   /** First body paragraph is the display summary (NOTES A8). */
   body?: string;
+  /** NOTES CAP-A: reserved for `kind: proposal` — the connector this proposal targets. */
+  connector?: string | null;
+  /** NOTES CAP-A: reserved for `kind: proposal` — one of the connector's declared `actions:` names. */
+  action?: string | null;
+  /** NOTES CAP-A: reserved for `kind: proposal` — params covering every placeholder in the action's template. */
+  params?: Record<string, string> | null;
+  /** NOTES CAP-A: reserved for `kind: proposal` — set by levare on gate approval, never by a member. */
+  execution?: ExecutionRecord | null;
 }
 
 export interface Usage {

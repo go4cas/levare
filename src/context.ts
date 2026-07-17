@@ -18,7 +18,7 @@ import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { parseFrontmatter } from "./yaml.ts";
 import type { Repo } from "./repo.ts";
-import { teamOf } from "./env.ts";
+import { teamOf, grantedConnectors } from "./env.ts";
 import { kindMatches } from "./flow.ts";
 
 export class ContextError extends Error {}
@@ -174,7 +174,40 @@ export function assembleContext(repo: Repo, opts: AssembleOptions): string {
     out.push(`── end consumed artifact: ${c.id} ──`);
   }
 
+  // NOTES CAP-A (item 5): a member granted an `effects: write` + `gate: proposal` connector never
+  // holds its credential (env.ts#buildMemberEnv withholds it) — it must be told, in its own context,
+  // that direct calls are unavailable and how to act instead. Appended only when there's something to
+  // say, so every pre-existing agent's context (no such grant) is byte-for-byte unchanged.
+  const proposalBlock = proposalCapabilitySection(repo, opts.agent);
+  if (proposalBlock.length > 0) out.push(...proposalBlock);
+
   return out.join("\n") + "\n";
+}
+
+function proposalCapabilitySection(repo: Repo, member: string): string[] {
+  const grants = grantedConnectors(repo, member).filter((c) => c.effects === "write" && c.gate !== "trusted");
+  if (grants.length === 0) return [];
+  const out: string[] = [
+    "",
+    "── 8. capability: proposal-gated connectors ──",
+    "You are granted the connector(s) below, but direct calls are unavailable — their credentials are " +
+      "withheld from your process. To act, produce an artifact of kind `proposal` naming `connector:`, " +
+      "`action:` (one of the actions listed for that connector), and `params:` covering every " +
+      "placeholder in that action's template. The Conductor approves the proposal gate; levare executes it.",
+  ];
+  for (const c of grants) {
+    out.push(`### ${c.name} (${c.kind})`);
+    const actions = Object.entries(c.actions ?? {});
+    if (actions.length === 0) {
+      out.push("  (no actions declared)");
+      continue;
+    }
+    for (const [name, template] of actions) {
+      const placeholders = [...new Set(template.flatMap((el) => [...el.matchAll(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map((m) => m[1])))];
+      out.push(`  - ${name}: params [${placeholders.join(", ")}]`);
+    }
+  }
+  return out;
 }
 
 // Read an entity's markdown body (frontmatter stripped) from a registry dir, or a not-found marker.

@@ -44,10 +44,23 @@ export function subscriptionConnector(repo: Repo, member: string): Connector | u
   return grantedConnectors(repo, member).find((c) => c.auth === "subscription");
 }
 
+function allowlist(names: readonly string[], base: Record<string, string | undefined>, env: Record<string, string>): void {
+  for (const name of names) {
+    const v = base[name];
+    if (typeof v === "string") env[name] = v;
+  }
+}
+
 /**
  * Build the allowlisted environment for a member's spawned process. Contains exactly: the baseline
  * vars that are present in `base`, plus the env vars named by the member's granted connectors that
- * are present in `base`. Nothing else from `base` is carried through.
+ * are present in `base` — EXCEPT a connector's vars are withheld entirely when `effects: write` and
+ * `gate: proposal` (the default for a write connector, NOTES CAP-A): the grant now means "may draft a
+ * proposal against this connector", never "holds its credential" — only `execution.ts`'s own
+ * execution step (run once a Conductor approves the proposal gate) ever reads those vars, and it
+ * reads them straight from the process, never from this function. `gate: trusted` is the declared,
+ * visible opt-out — it injects exactly like an `effects: read` connector always has. Nothing else
+ * from `base` is carried through.
  */
 export function buildMemberEnv(
   repo: Repo,
@@ -55,14 +68,29 @@ export function buildMemberEnv(
   base: Record<string, string | undefined> = process.env,
 ): Record<string, string> {
   const env: Record<string, string> = {};
-  const allow = (name: string) => {
-    const v = base[name];
-    if (typeof v === "string") env[name] = v;
-  };
-  for (const name of ENV_BASELINE) allow(name);
+  allowlist(ENV_BASELINE, base, env);
   for (const c of grantedConnectors(repo, member)) {
-    for (const varName of c.env) allow(varName);
+    if (c.effects === "write" && c.gate !== "trusted") continue; // withheld — proposal-gated (NOTES CAP-A).
+    allowlist(c.env, base, env);
   }
+  return env;
+}
+
+/**
+ * NOTES CAP-A: the execution-time counterpart to `buildMemberEnv` — used ONLY by `execution.ts` when
+ * a Conductor approves a proposal gate, never by a member's own spawned process. Contains exactly the
+ * baseline plus this ONE connector's own named vars — not a member's full grant set, and not gated by
+ * anything a member could influence (a proposal names a connector; it is levare's own execution step,
+ * not the member, that reads the connector's credential, and only for the one connector the approved
+ * proposal named).
+ */
+export function buildConnectorEnv(
+  connector: Connector,
+  base: Record<string, string | undefined> = process.env,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  allowlist(ENV_BASELINE, base, env);
+  allowlist(connector.env, base, env);
   return env;
 }
 

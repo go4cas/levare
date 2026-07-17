@@ -26,7 +26,7 @@ const repo = loadRepo(root);
 
 function subscriptionConnectorRepo(): Repo {
   const connectors = new Map<string, Connector>([
-    ["codex", { name: "codex", kind: "cli", command: "codex", env: [], auth: "subscription", role: "model", plan: "ChatGPT Plus — flat monthly rate" }],
+    ["codex", { name: "codex", kind: "cli", command: "codex", env: [], auth: "subscription", role: "model", plan: "ChatGPT Plus — flat monthly rate", effects: "read", gate: "proposal" }],
   ]);
   return { root: "/tmp/nonexistent-ui12-connectors", teams: new Map(), agents: new Map(), types: new Map(), projects: new Map(), connectors, units: [], artifacts: new Map(), studio: {} };
 }

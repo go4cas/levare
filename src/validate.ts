@@ -70,7 +70,12 @@ export interface ValidationResult {
 
 type Scalar = "str" | "num" | "bool" | "date";
 export interface FieldSpec {
-  type: Scalar | "str[]" | "num[]" | "enum" | "map" | "flow" | "list";
+  // NOTES CAP-A: "action-map" is a mapping of arbitrary action names to a non-empty argv template
+  // array (a connector's declared `actions:`); "str-map" is a mapping of arbitrary keys to a plain
+  // string value (a proposal's `params:`). Both differ from "map" in that the KEY SET is not fixed by
+  // the schema — "map"'s `fields:` describes a known, closed set of sub-keys, these describe an
+  // open set whose value shape is fixed instead.
+  type: Scalar | "str[]" | "num[]" | "enum" | "map" | "flow" | "list" | "action-map" | "str-map";
   required?: boolean;
   nullable?: boolean;
   enum?: string[];
@@ -120,6 +125,24 @@ export const ARTIFACT_SCHEMA: Schema = {
         // NOTES C13: set only when the member's receipt came from an auth: subscription connector —
         // names the plan covering the cost, since usd above is always null for these.
         plan: { type: "str", required: false, nullable: true },
+      },
+    },
+    // NOTES CAP-A: reserved for kind: proposal — validateProposalArtifact below enforces presence/
+    // shape/cross-entity checks conditionally on kind, the same "shape-only here, semantics below"
+    // split validateConnectorAuth already uses for auth/env.
+    connector: { type: "str", required: false, nullable: true },
+    action: { type: "str", required: false, nullable: true },
+    params: { type: "str-map", required: false, nullable: true },
+    execution: {
+      type: "map",
+      required: false,
+      nullable: true,
+      fields: {
+        executed_at: { type: "str", required: true },
+        status: { type: "enum", required: true, enum: ["ok", "failed", "skipped"] },
+        exit: { type: "num", required: false, nullable: true },
+        output_digest: { type: "str", required: false, nullable: true },
+        warning: { type: "str", required: false, nullable: true },
       },
     },
   },
@@ -253,6 +276,17 @@ const CONNECTOR_SCHEMA: Schema = {
     // `kind` (the transport) and never confused with `type` (reserved for domain templates). Defaults
     // to "tool" when absent, the common case.
     role: { type: "enum", required: false, enum: ["model", "tool"] },
+    // NOTES CAP-A: whether a grant lets a member merely read through this connector (default) or
+    // write through it — a write connector's env is withheld from members (env.ts), never injected.
+    effects: { type: "enum", required: false, enum: ["read", "write"] },
+    // NOTES CAP-A: only meaningful when effects: write — validateConnectorEffects below rejects it on
+    // an effects: read connector rather than silently ignoring it.
+    gate: { type: "enum", required: false, enum: ["proposal", "trusted"] },
+    // NOTES CAP-A: action name → argv template, declared here so a member can never supply raw argv —
+    // required (non-empty) for an effects: write connector, enforced by validateConnectorEffects below
+    // (required-ness here would reject an absent `actions:` on a perfectly valid effects: read
+    // connector, the same reasoning `env`'s own required-ness is auth-mode-conditional, not schema-fixed).
+    actions: { type: "action-map", required: false },
   },
 };
 
@@ -319,7 +353,7 @@ interface DiscoveredArtifact {
  * Reuses the exact ARTIFACT_SCHEMA and semantic checks used for on-disk validation; no second copy.
  * Returns [] when the document is on-contract. `dir`, if given, is where listed `files:` are resolved.
  */
-export function validateArtifactSource(src: string, file = "<member-output>", dir?: string): ValidationError[] {
+export function validateArtifactSource(src: string, file = "<member-output>", dir?: string, root?: string, overlay?: OverlayFile): ValidationError[] {
   const errors: ValidationError[] = [];
   let data: Record<string, YamlValue>;
   try {
@@ -331,7 +365,12 @@ export function validateArtifactSource(src: string, file = "<member-output>", di
   }
   validateAgainstSchema(data, ARTIFACT_SCHEMA, file, errors);
   // Resolve listed files relative to `dir` (a synthetic path lets the shared semantics run unchanged).
-  validateArtifactSemantics(data, dir ? join(dir, basename(file)) : file, errors);
+  // NOTES CAP-A: `root`, when given, lets the proposal-artifact cross-entity check (does the named
+  // connector exist, is it effects: write, is the action declared, is it granted to the producer) run
+  // at the SAME member-output boundary every other artifact-contract check already runs at — a bad
+  // proposal becomes a `blocked` artifact (dagwalk.ts/gateops.ts's existing failure path), never a
+  // committed-then-repo-wide-RepoError surprise on the next `loadRepo`.
+  validateArtifactSemantics(data, dir ? join(dir, basename(file)) : file, errors, root, overlay);
   return errors;
 }
 
@@ -364,13 +403,14 @@ export function validatePath(target: string, overlay?: OverlayFile): ValidationR
 
   if (st.isFile()) {
     fileCount = 1;
+    // No studio root to cross-check a proposal artifact's connector against — fail-open (NOTES CAP-A).
     validateSingleFile(target, classify(target), errors, artifacts, overlay, warnings);
   } else {
-    // Directory tree: walk registry folders + work/.
+    // Directory tree: walk registry folders + work/. `target` IS the studio root here.
     const mdFiles = walkMarkdown(target);
     fileCount = mdFiles.length;
     for (const f of mdFiles) {
-      validateSingleFile(f, classify(relative(target, f)), errors, artifacts, overlay, warnings);
+      validateSingleFile(f, classify(relative(target, f)), errors, artifacts, overlay, warnings, target);
     }
     // Folder-artifact discovery + index-count check on work/ subdirectories.
     discoverFolderArtifacts(target, errors, artifacts);
@@ -474,6 +514,7 @@ function validateSingleFile(
   artifacts: DiscoveredArtifact[],
   overlay?: OverlayFile,
   warnings: ValidationWarning[] = [],
+  root?: string,
 ): void {
   if (!kind.schema) return; // unknown location or non-schema file (e.g. README) — skip.
   let data: Record<string, YamlValue>;
@@ -488,7 +529,7 @@ function validateSingleFile(
     return;
   }
   validateAgainstSchema(data, kind.schema, file, errors);
-  if (kind.schema === ARTIFACT_SCHEMA) validateArtifactSemantics(data, file, errors);
+  if (kind.schema === ARTIFACT_SCHEMA) validateArtifactSemantics(data, file, errors, root, overlay);
   if (kind.isArtifact) {
     artifacts.push({ file, dir: dirname(file), isFolder: false, data });
   }
@@ -496,6 +537,7 @@ function validateSingleFile(
   if (kind.schema === AGENT_SCHEMA) validateAgentRemoteNotice(data, file, warnings);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorAuth(data, file, errors);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorRoleWarning(data, file, warnings);
+  if (kind.schema === CONNECTOR_SCHEMA) validateConnectorEffects(data, file, errors);
 }
 
 function discoverFolderArtifacts(root: string, errors: ValidationError[], artifacts: DiscoveredArtifact[]): void {
@@ -637,6 +679,32 @@ function checkField(
         }
       }
       break;
+    case "action-map":
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        typeError("a mapping of action name to argv template array");
+      } else {
+        for (const [actionName, template] of Object.entries(value as Record<string, YamlValue>)) {
+          if (!Array.isArray(template) || template.length === 0 || !template.every((el) => typeof el === "string" && el.length > 0)) {
+            errors.push({
+              code: "BAD_TYPE",
+              message: `action '${key}.${actionName}' must be a non-empty array of non-empty strings (an argv template) in ${schemaName}`,
+              file,
+            });
+          }
+        }
+      }
+      break;
+    case "str-map":
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        typeError("a mapping of string to string");
+      } else {
+        for (const [k, v] of Object.entries(value as Record<string, YamlValue>)) {
+          if (typeof v !== "string") {
+            errors.push({ code: "BAD_TYPE", message: `field '${key}.${k}' must be a string in ${schemaName}`, file });
+          }
+        }
+      }
+      break;
     case "map":
       if (value === null || typeof value !== "object" || Array.isArray(value)) {
         typeError("a mapping");
@@ -673,7 +741,7 @@ function isIsoDate(s: string): boolean {
 // Artifact-specific semantics
 // ---------------------------------------------------------------------------
 
-function validateArtifactSemantics(data: Record<string, YamlValue>, file: string, errors: ValidationError[]): void {
+function validateArtifactSemantics(data: Record<string, YamlValue>, file: string, errors: ValidationError[], root?: string, overlay?: OverlayFile): void {
   // An approved artifact must name its approver (conductor-only; §4).
   if (data.status === "approved" && (data.approved_by === null || data.approved_by === undefined)) {
     errors.push({
@@ -699,6 +767,115 @@ function validateArtifactSemantics(data: Record<string, YamlValue>, file: string
       }
     }
   }
+  validateProposalArtifact(data, file, errors, root, overlay);
+}
+
+// NOTES CAP-A: `kind: proposal` is the artifact shape a member drafts to act through a granted
+// `effects: write` connector — "the member drafts, the Conductor approves, levare acts" (item 4,
+// execution.ts). Structural presence (connector/action/params all set) is checked unconditionally;
+// the cross-entity half (does the connector exist, is it effects: write, is the action declared, do
+// params cover every placeholder, is the connector actually granted to the producing member/team)
+// only runs when `root` is given — fail-open (no studio to check against) mirrors this file's other
+// unverifiable-state postures (UNKNOWN_MODEL's own pricing-table fallback, the git-immutability S0/S1
+// states) rather than a hard requirement every caller must satisfy.
+function validateProposalArtifact(data: Record<string, YamlValue>, file: string, errors: ValidationError[], root?: string, overlay?: OverlayFile): void {
+  if (data.kind !== "proposal") {
+    if (data.connector !== undefined || data.action !== undefined || data.params !== undefined || data.execution !== undefined) {
+      errors.push({
+        code: "PROPOSAL_FIELDS_ON_NON_PROPOSAL",
+        message: `artifact kind '${String(data.kind)}' declares connector/action/params/execution — these fields are reserved for kind: proposal`,
+        file,
+      });
+    }
+    return;
+  }
+
+  const connectorName = typeof data.connector === "string" ? data.connector : undefined;
+  const action = typeof data.action === "string" ? data.action : undefined;
+  const params = data.params !== null && typeof data.params === "object" && !Array.isArray(data.params) ? (data.params as Record<string, YamlValue>) : undefined;
+  if (!connectorName) errors.push({ code: "MISSING_FIELD", message: "a 'proposal' artifact requires 'connector'", file });
+  if (!action) errors.push({ code: "MISSING_FIELD", message: "a 'proposal' artifact requires 'action'", file });
+  if (!params) errors.push({ code: "MISSING_FIELD", message: "a 'proposal' artifact requires 'params'", file });
+  if (!connectorName || !action || !params) return;
+  if (!root) return;
+
+  const connectorFile = join(root, "connectors", `${connectorName}.md`);
+  if (!existsSync(connectorFile)) {
+    errors.push({ code: "UNKNOWN_CONNECTOR", message: `proposal references connector '${connectorName}', which does not exist`, file });
+    return;
+  }
+  let cdata: Record<string, YamlValue>;
+  try {
+    ({ data: cdata } = parseFrontmatter(readOverlaid(connectorFile, overlay)));
+  } catch {
+    return; // its own PARSE_ERROR is already recorded by the per-file pass.
+  }
+  const effects = cdata.effects === "write" ? "write" : "read";
+  if (effects !== "write") {
+    errors.push({
+      code: "PROPOSAL_AGAINST_READ_CONNECTOR",
+      message: `proposal targets connector '${connectorName}', which is effects: read — a proposal against a read connector is a definition error`,
+      file,
+    });
+    return;
+  }
+  const actions = cdata.actions !== null && typeof cdata.actions === "object" && !Array.isArray(cdata.actions) ? (cdata.actions as Record<string, YamlValue>) : {};
+  const template = actions[action];
+  if (!Array.isArray(template) || !template.every((x) => typeof x === "string")) {
+    errors.push({ code: "UNDECLARED_ACTION", message: `proposal names action '${action}', which connector '${connectorName}' does not declare`, file });
+    return;
+  }
+  const placeholders = new Set<string>();
+  const placeholderRe = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+  for (const el of template as string[]) {
+    let m: RegExpExecArray | null;
+    while ((m = placeholderRe.exec(el))) placeholders.add(m[1]);
+  }
+  const paramKeys = Object.keys(params);
+  for (const p of placeholders) {
+    if (!(p in params)) errors.push({ code: "MISSING_PARAM", message: `proposal action '${connectorName}/${action}' requires param '${p}', not provided in 'params'`, file });
+  }
+  for (const k of paramKeys) {
+    if (!placeholders.has(k)) errors.push({ code: "UNKNOWN_PARAM", message: `proposal provides param '${k}', which action '${connectorName}/${action}''s template does not use`, file });
+  }
+
+  const producedBy = typeof data.produced_by === "string" ? data.produced_by : undefined;
+  if (producedBy && producedBy.includes("/")) {
+    const [teamName, memberName] = producedBy.split("/");
+    if (!isConnectorGrantedTo(root, connectorName, teamName, memberName, overlay)) {
+      errors.push({
+        code: "CONNECTOR_NOT_GRANTED",
+        message: `proposal produced by '${producedBy}' targets connector '${connectorName}', which is not granted to that member or its team`,
+        file,
+      });
+    }
+  }
+}
+
+// Whether `connectorName` is granted (agent-level or team-level) to `memberName` — hand-parsed
+// straight off disk, the same technique every other cross-entity check in this file uses (never via
+// repo.ts#loadRepo, which itself depends on this module).
+function isConnectorGrantedTo(root: string, connectorName: string, teamName: string, memberName: string, overlay?: OverlayFile): boolean {
+  const granted = new Set<string>();
+  const agentFile = join(root, "agents", `${memberName}.md`);
+  if (existsSync(agentFile)) {
+    try {
+      const { data } = parseFrontmatter(readOverlaid(agentFile, overlay));
+      for (const c of strList(data.connectors)) granted.add(c);
+    } catch {
+      /* its own PARSE_ERROR is already recorded by the per-file pass */
+    }
+  }
+  const teamFile = join(root, "teams", `${teamName}.md`);
+  if (existsSync(teamFile)) {
+    try {
+      const { data } = parseFrontmatter(readOverlaid(teamFile, overlay));
+      for (const c of strList(data.connectors)) granted.add(c);
+    } catch {
+      /* its own PARSE_ERROR is already recorded by the per-file pass */
+    }
+  }
+  return granted.has(connectorName);
 }
 
 function validateAgentVariant(data: Record<string, YamlValue>, file: string, errors: ValidationError[]): void {
@@ -791,6 +968,39 @@ function validateConnectorRoleWarning(data: Record<string, YamlValue>, file: str
     message: `connector '${name}' is subscription-authenticated but declares no role — if it provides model access, declare 'role: model'`,
     file,
   });
+}
+
+// NOTES CAP-A: `gate` is only meaningful for an `effects: write` connector, and an `effects: write`
+// connector must declare its action vocabulary (`actions:`) — a member drafting a proposal can only
+// ever name an action the connector's OWN author declared, never raw argv (item 1). Mirrors
+// validateConnectorAuth's own "shape-only in the schema, cross-field agreement here" split.
+function validateConnectorEffects(data: Record<string, YamlValue>, file: string, errors: ValidationError[]): void {
+  const effects = data.effects === "write" ? "write" : "read";
+  const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+  if (data.gate !== undefined && effects !== "write") {
+    errors.push({
+      code: "GATE_ON_READ_CONNECTOR",
+      message: `connector '${name}' declares 'gate' but is effects: read — gate is only meaningful for an effects: write connector`,
+      file,
+    });
+  }
+  if (effects === "write") {
+    const actions = data.actions;
+    const hasActions = actions !== null && typeof actions === "object" && !Array.isArray(actions) && Object.keys(actions).length > 0;
+    if (!hasActions) {
+      errors.push({
+        code: "MISSING_ACTIONS",
+        message: `connector '${name}' declares effects: write but names no 'actions' — a write connector must declare its argv template vocabulary so a member can never supply raw argv`,
+        file,
+      });
+    }
+  } else if (data.actions !== undefined) {
+    errors.push({
+      code: "ACTIONS_ON_READ_CONNECTOR",
+      message: `connector '${name}' declares 'actions' but is effects: read — actions are only meaningful for an effects: write connector`,
+      file,
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------

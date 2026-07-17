@@ -19,10 +19,11 @@ import { loadRepo, type Repo } from "../repo.ts";
 import { validateArtifactSource, validatePath, formatValidationErrors } from "../validate.ts";
 import { bumpVersion, roundOf, type Verb } from "../runner.ts";
 import { productionAdapterRunner } from "../replay.ts";
-import { loopMembershipFor, isLoopCompanionKind, loopUntilKind, resolveStep, responsibleTeamFor, unmetAfter, patchFrontmatter, upsertFrontmatterField } from "../gates.ts";
+import { loopMembershipFor, isLoopCompanionKind, loopUntilKind, resolveStep, responsibleTeamFor, unmetAfter, patchFrontmatter, upsertFrontmatterField, upsertFrontmatterMap } from "../gates.ts";
 import { locateArtifactFile } from "../locate.ts";
 import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL, transactionalWrite, type TxFile } from "../git.ts";
 import { advanceUnit, latestLiveArtifact, type AsyncMemberRunner } from "../dagwalk.ts";
+import { executeProposal, type ExecuteProposalOptions } from "../execution.ts";
 import type { Daemon } from "../daemon.ts";
 import type { Artifact, WorkUnit } from "../types.ts";
 
@@ -55,6 +56,13 @@ export interface ResolveOpts {
    * it later. Absent in every context with no live daemon (read-only board, most tests) — nothing
    * registers, exactly the pre-existing behavior. */
   daemon?: Daemon;
+  /** NOTES CAP-A: test-only override of the connector-action spawn boundary (execution.ts) — mirrors
+   * `memberRunner`'s own injection seam. Defaults to a real `Bun.spawn` against the connector's
+   * declared argv template. */
+  connectorSpawn?: ExecuteProposalOptions["spawn"];
+  /** NOTES CAP-A: injectable clock for a proposal's `execution.executed_at` — default real `Date`;
+   * tests inject a fixed value for deterministic assertions, mirroring `today` above. */
+  now?: () => string;
 }
 
 /** Resolve one gate verb against `target` (an artifact id, or — for start/notyet, and rescope of a
@@ -117,7 +125,7 @@ export async function resolveGate(root: string, project: string, target: string,
   const companion = applyLoopCompanionApproval(root, repo, unit, art, today, memberRunner.capabilities());
   const extra: TxFile[] = companion ? [companion] : [];
 
-  if (verb === "approve") return doApprove(root, located.file, target, today, opts.note, extra);
+  if (verb === "approve") return await doApprove(root, repo, unit, art, located.file, target, today, opts.note, extra, opts.connectorSpawn, opts.now);
   if (verb === "reject") return doReject(root, located.file, target, opts.note, extra);
   if (verb === "request") return await doRequest(root, repo, unit, located.file, art, opts.note, memberRunner, extra, today, opts.daemon);
   return { ok: false, status: 400, error: `verb '${verb}' is not valid for an artifact gate` };
@@ -141,13 +149,60 @@ function stampApproval(src: string, today: string, root: string): string {
   return head ? upsertFrontmatterField(patched, "approved_commit", head) : patched;
 }
 
-function doApprove(root: string, file: string, id: string, today: string, note: string | undefined, extraFiles: TxFile[]): GateOpResult {
+// NOTES CAP-A (item 4): approving a `proposal` artifact triggers execution — a cli connector's
+// declared action template is substituted and spawned with an env containing ONLY that connector's own
+// vars (execution.ts, never a member's own env); an mcp connector's proposal is honestly recorded
+// `executed: skipped` (RemoteBoundary is still a documented mock). The execution record lands in the
+// SAME transactionalWrite as the approval itself — REV2's "resolution + record, one commit" — and a
+// FAILED execution never un-approves the proposal: the record shows the failure, and the unit is
+// additionally patched to `blocked` with a named reason so the walk doesn't silently proceed as if the
+// action had actually happened. A skipped (mcp) or ok execution never blocks the unit.
+async function doApprove(
+  root: string,
+  repo: Repo,
+  unit: WorkUnit,
+  art: Artifact,
+  file: string,
+  id: string,
+  today: string,
+  note: string | undefined,
+  extraFiles: TxFile[],
+  connectorSpawn?: ExecuteProposalOptions["spawn"],
+  now?: () => string,
+): Promise<GateOpResult> {
   const src = readFileSync(file, "utf8");
-  const patched = stampApproval(src, today, root);
-  const errs = validateArtifactSource(patched, file, dirname(file));
+  let patched = stampApproval(src, today, root);
+  const files: TxFile[] = [];
+  let commitSuffix = "";
+
+  if (art.kind === "proposal") {
+    if (!art.connector || !art.action || !art.params) {
+      return { ok: false, status: 422, error: `proposal '${id}' is missing connector/action/params — cannot execute` };
+    }
+    const connector = repo.connectors.get(art.connector);
+    if (!connector) return { ok: false, status: 422, error: `proposal '${id}' references unknown connector '${art.connector}'` };
+    const record = await executeProposal(connector, art.action, art.params, { spawn: connectorSpawn, now });
+    patched = upsertFrontmatterMap(patched, "execution", {
+      executed_at: record.executed_at,
+      status: record.status,
+      exit: record.exit,
+      output_digest: record.output_digest,
+      warning: record.warning,
+    });
+    if (record.status === "failed") {
+      const unitFile = join(unit.dir, "unit.md");
+      const unitSrc = readFileSync(unitFile, "utf8");
+      const reason = `proposal '${id}' approved but connector '${art.connector}' action '${art.action}' failed (exit ${record.exit ?? "n/a"}${record.warning ? `: ${record.warning}` : ""})`;
+      const unitPatched = upsertFrontmatterField(patchFrontmatter(unitSrc, { status: "blocked" }), "blocked_reason", reason);
+      files.push({ path: unitFile, content: unitPatched });
+      commitSuffix = " — execution FAILED, unit blocked";
+    }
+  }
+
+  const errs = validateArtifactSource(patched, file, dirname(file), root);
   if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
-  const files: TxFile[] = [{ path: file, content: patched }, ...extraFiles];
-  const result = transactionalWrite(root, files, `approve ${id}${note ? `\n\n${note}` : ""}`, conductorCommit);
+  files.push({ path: file, content: patched }, ...extraFiles);
+  const result = transactionalWrite(root, files, `approve ${id}${commitSuffix}${note ? `\n\n${note}` : ""}`, conductorCommit);
   if (!result.ok) return { ok: false, status: 500, error: result.error };
   return { ok: true, commit: result.commit, changedFiles: files.map((f) => f.path) };
 }
@@ -155,7 +210,7 @@ function doApprove(root: string, file: string, id: string, today: string, note: 
 function doReject(root: string, file: string, id: string, note: string | undefined, extraFiles: TxFile[]): GateOpResult {
   const src = readFileSync(file, "utf8");
   const patched = patchFrontmatter(src, { status: "rejected" });
-  const errs = validateArtifactSource(patched, file, dirname(file));
+  const errs = validateArtifactSource(patched, file, dirname(file), root);
   if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
   const files: TxFile[] = [{ path: file, content: patched }, ...extraFiles];
   const result = transactionalWrite(root, files, `reject ${id}${note ? `\n\n${note}` : ""}`, conductorCommit);
@@ -177,7 +232,7 @@ function doRescopeArtifact(root: string, unit: WorkUnit, art: Artifact, note: st
   if (!located) return { ok: false, status: 404, error: `artifact file for '${art.id}' not found on disk` };
   const src = readFileSync(located.file, "utf8");
   const patched = patchFrontmatter(src, { status: "rejected" });
-  const errs = validateArtifactSource(patched, located.file, dirname(located.file));
+  const errs = validateArtifactSource(patched, located.file, dirname(located.file), root);
   if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
 
   const unitFile = join(unit.dir, "unit.md");
@@ -292,7 +347,7 @@ async function doRequest(
   const baseId = idOfDoc(baseDoc);
   const newId = bumpVersion(baseId, nextRound);
   const newDoc = patchFrontmatter(baseDoc, { id: newId, supersedes: supersedeId });
-  const errs = validateArtifactSource(newDoc, `${newId}.md`, unitDir);
+  const errs = validateArtifactSource(newDoc, `${newId}.md`, unitDir, root);
   if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
 
   // F16: the artifact being superseded may already be `approved` — the loop-companion cascade
@@ -390,7 +445,7 @@ async function resolveBlockedArtifactGate(
     // step — the walk continues past this kind on its next tick, if the rest of the flow can proceed
     // without it.
     const patched = patchFrontmatter(readFileSync(located.file, "utf8"), { status: "skipped" });
-    const errs = validateArtifactSource(patched, located.file, dirname(located.file));
+    const errs = validateArtifactSource(patched, located.file, dirname(located.file), root);
     if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
     const files: TxFile[] = [{ path: located.file, content: patched }];
     const result = transactionalWrite(root, files, `skip ${art.id}: marking abandoned so the walk can continue${opts.note ? `\n\n${opts.note}` : ""}`, conductorCommit);
@@ -428,7 +483,7 @@ async function resolveBlockedArtifactGate(
   }
 
   const newDoc = patchFrontmatter(baseDoc, { id: newId, supersedes: art.id });
-  const errs = validateArtifactSource(newDoc, `${newId}.md`, unit.dir);
+  const errs = validateArtifactSource(newDoc, `${newId}.md`, unit.dir, root);
   if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
   const oldPatched = patchFrontmatter(readFileSync(located.file, "utf8"), { status: "superseded" });
   const newFile = join(unit.dir, `${newId}.md`);
@@ -478,7 +533,7 @@ function applyLoopCompanionApproval(
   if (!located) return null;
   const src = readFileSync(located.file, "utf8");
   const patched = stampApproval(src, today, root);
-  const errs = validateArtifactSource(patched, located.file, dirname(located.file));
+  const errs = validateArtifactSource(patched, located.file, dirname(located.file), root);
   if (errs.length > 0) return null; // never let a companion validation edge case block the primary resolution.
   return { path: located.file, content: patched };
 }

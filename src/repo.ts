@@ -149,7 +149,23 @@ function toConnector(d: Record<string, YamlValue>): Connector {
     // NOTES C15: defaults to "tool" — unchanged behaviour for every connector defined before this
     // field existed.
     role: d.role === "model" ? "model" : "tool",
+    // NOTES CAP-A: defaults to "read"/"proposal" — unchanged behaviour for every connector defined
+    // before this ruling.
+    effects: d.effects === "write" ? "write" : "read",
+    gate: d.gate === "trusted" ? "trusted" : "proposal",
+    actions: toActions(d.actions),
   };
+}
+
+// NOTES CAP-A: action name → argv template array, hand-parsed the same way every other nested
+// mapping in this file is (strArr per value) — the connector definition is where a template's
+// {placeholder} slots are declared; a member never supplies raw argv (see execution.ts).
+function toActions(v: YamlValue): Record<string, string[]> | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "object" || Array.isArray(v)) throw new RepoError(`expected 'actions' to be a mapping, got ${typeof v}`);
+  const out: Record<string, string[]> = {};
+  for (const [name, template] of Object.entries(v as Record<string, YamlValue>)) out[name] = strArr(template);
+  return out;
 }
 
 function toAgent(d: Record<string, YamlValue>, body: string): Agent {
@@ -278,6 +294,11 @@ function toArtifact(d: Record<string, YamlValue>, body: string): Artifact {
     files: d.files ? strArr(d.files) : [],
     usage: (d.usage as Usage | null) ?? null,
     body: body.trim(),
+    // NOTES CAP-A: reserved for kind: proposal — undefined for every other artifact.
+    connector: optStr(d.connector) ?? null,
+    action: optStr(d.action) ?? null,
+    params: (d.params as Record<string, string> | null) ?? null,
+    execution: (d.execution as Artifact["execution"]) ?? null,
   };
 }
 

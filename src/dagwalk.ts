@@ -427,7 +427,7 @@ async function produceOne(
     return writeBlocked(root, unit, team, member, kind, newId, e, today, commitFn, verb);
   }
 
-  const errs = validateArtifactSource(doc, `${member}:${kind}`, unit.dir);
+  const errs = validateArtifactSource(doc, `${member}:${kind}`, unit.dir, root);
   if (errs.length > 0) {
     // NOTES F22: every accumulated error, not just the first — a Conductor fixing a produced
     // artifact's off-contract shape must see every problem in one blocked_reason, not one per retry.

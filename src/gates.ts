@@ -104,6 +104,12 @@ function formatScalarLine(key: string, value: string | null): string {
   return `${key}: ${JSON.stringify(value)}`;
 }
 
+function formatScalar(value: string | number | boolean | null): string {
+  if (value === null) return "null";
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return /^[A-Za-z0-9._/-]+$/.test(value) ? value : JSON.stringify(value);
+}
+
 /**
  * Set a top-level frontmatter scalar field, patching it in place if present or inserting it as a new
  * line just before the closing `---` if absent — unlike `patchFrontmatter`, which fails loud on a
@@ -130,4 +136,41 @@ export function upsertFrontmatterField(src: string, key: string, value: string |
   }
   lines.splice(end, 0, formatScalarLine(key, value));
   return lines.join("\n");
+}
+
+/**
+ * NOTES CAP-A: insert (or replace) a top-level frontmatter MAP field — `patchFrontmatter`/
+ * `upsertFrontmatterField` only handle scalar values; a proposal's `execution:` record is a nested
+ * block (executed_at/status/exit/output_digest/warning), the same shape adapters.ts#author already
+ * hand-builds for `usage:`. Replaces any existing block for `key` (its own line plus every indented
+ * continuation line that follows it) before appending the new one, so re-execution never leaves a
+ * stale block behind.
+ */
+export function upsertFrontmatterMap(src: string, key: string, value: Record<string, string | number | boolean | null>): string {
+  const lines = src.split("\n");
+  if (lines[0]?.trim() !== "---") throw new Error("document has no frontmatter fence");
+  let end = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === "---") {
+      end = i;
+      break;
+    }
+  }
+  if (end === -1) throw new Error("frontmatter is not terminated");
+
+  const kept: string[] = [];
+  let i = 1;
+  while (i < end) {
+    const m = /^([A-Za-z_][A-Za-z0-9_]*):/.exec(lines[i]);
+    if (m && m[1] === key) {
+      i++;
+      while (i < end && /^[ \t]/.test(lines[i])) i++; // skip the existing block's own continuation lines.
+      continue;
+    }
+    kept.push(lines[i]);
+    i++;
+  }
+
+  const block = [`${key}:`, ...Object.entries(value).map(([k, v]) => `  ${k}: ${formatScalar(v)}`)];
+  return ["---", ...kept, ...block, "---", ...lines.slice(end + 1)].join("\n");
 }

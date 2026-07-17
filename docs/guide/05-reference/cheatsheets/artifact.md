@@ -25,6 +25,15 @@ A markdown deliverable with YAML frontmatter, produced by a member and tracked t
 | `usage.usd` | number | — | ✅ | — |
 | `usage.wall_clock_s` | number | — | ✅ | — |
 | `usage.plan` | string | — | ✅ | — |
+| `connector` | string | — | ✅ | — |
+| `action` | string | — | ✅ | — |
+| `params` | map (arbitrary key → string) | — | ✅ | — |
+| `execution` | map | — | ✅ | — |
+| `execution.executed_at` | string | ✅ | — | — |
+| `execution.status` | enum | ✅ | — | `ok` · `failed` · `skipped` |
+| `execution.exit` | number | — | ✅ | — |
+| `execution.output_digest` | string | — | ✅ | — |
+| `execution.warning` | string | — | ✅ | — |
 
 ## Minimal valid skeleton
 

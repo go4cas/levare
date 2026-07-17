@@ -188,7 +188,7 @@ describe("doctor: reports whether the orchestrator prompt actually loaded (NOTES
 describe("doctor: reports auth mode, and warns plainly for auth: subscription (NOTES C13)", () => {
   const withSubscription: Connector[] = [
     ...connectors,
-    { name: "codex", kind: "cli", command: "codex", env: [], auth: "subscription", role: "model", plan: "ChatGPT Plus — flat monthly rate" },
+    { name: "codex", kind: "cli", command: "codex", env: [], auth: "subscription", role: "model", plan: "ChatGPT Plus — flat monthly rate", effects: "read", gate: "proposal" },
   ];
   const allPresent: EnvProbe = { has: () => true };
   const foundGh: CliProbe = () => "found";
@@ -239,7 +239,7 @@ describe("doctor: reports auth mode, and warns plainly for auth: subscription (N
 // consequence a role: model connector's breakage has (a granted member can't even start) vs a
 // role: tool connector's (that member starts, and fails mid-work when it reaches for the tool).
 describe("doctor: reports connector role, and the consequence differs by role for a broken connector (NOTES C15)", () => {
-  const modelConnector: Connector = { name: "hosted-model", kind: "cli", command: "hosted", env: ["HOSTED_MODEL_KEY"], auth: "env", role: "model" };
+  const modelConnector: Connector = { name: "hosted-model", kind: "cli", command: "hosted", env: ["HOSTED_MODEL_KEY"], auth: "env", role: "model", effects: "read", gate: "proposal" };
   const withModelConnector: Connector[] = [...connectors, modelConnector];
   const allPresent: EnvProbe = { has: () => true };
   const noneMissing: EnvProbe = { has: () => false };

@@ -15,6 +15,9 @@ An external system a member can be granted.
 | `auth` | enum | — | — | `env` · `subscription` |
 | `plan` | string | — | — | — |
 | `role` | enum | — | — | `model` · `tool` |
+| `effects` | enum | — | — | `read` · `write` |
+| `gate` | enum | — | — | `proposal` · `trusted` |
+| `actions` | map (action name → argv template array) | — | — | — |
 
 ## Minimal valid skeleton
 

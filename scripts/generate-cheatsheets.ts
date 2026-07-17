@@ -142,6 +142,10 @@ function humanType(spec: FieldSpec): string {
       return "flow list (`step` / `gate` / `loop` entries)";
     case "list":
       return "list";
+    case "action-map":
+      return "map (action name → argv template array)";
+    case "str-map":
+      return "map (arbitrary key → string)";
   }
 }
 
@@ -200,6 +204,9 @@ function placeholderValue(key: string, spec: FieldSpec): YamlValue {
       return [];
     case "flow":
       return [{ gate: "human" }]; // a single, minimal, always-legal flow entry — binds to no member.
+    case "action-map":
+    case "str-map":
+      return {}; // never a required field today — an empty mapping is a legal placeholder either way.
     case "map": {
       const m: Record<string, YamlValue> = {};
       if (spec.fields) for (const [k, sub] of Object.entries(spec.fields)) if (sub.required) m[k] = placeholderValue(k, sub);
