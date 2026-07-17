@@ -8006,3 +8006,208 @@ I/O each) immediately upstream of `orchestrator.test.ts` in file-execution order
 heaviest git-subprocess-spawning test in the whole suite (~14 spawns in one `test()` body) — added
 volume immediately before the most spawn-heavy test is consistent with tipping a resource-marginal CI
 runner without any code defect being the proximate cause.
+
+# NOTES MERGE-1 — v1.1 finale: the merge phase (PRD Amendment 2, rulings M1–M5)
+
+Goal: ship the merge phase Amendment 2 ratified — a work unit's code lands on a work branch, never
+`default_branch`; when its flow completes, a merge gate opens with a trial-merge report; a conflicted
+gate cannot be approved; guardrails enforce at execution on the actual diff, even post-approval; a
+clean approval produces a real merge commit (never squash/rebase) and, where declared, pushes in the
+same transaction, rolling back byte-perfectly on failure. When it ships, invariant 6 returns to full
+force. Constraint: never ask questions, record uncertainty here and continue.
+
+## The mechanism (`src/merge.ts`)
+
+One new module owns every git operation against a PROJECT's own repo — deliberately never mixed with
+git.ts's studio-repo helpers (conductorCommit/runnerCommit/transactionalWrite), even though both now
+exist side by side in the same gate-resolution call for an approved merge gate (one write to the
+project repo, one to the studio repo, in that order, within `doApproveMerge`).
+
+**M1 — work branch.** `createWorkBranch` is a plain `git branch <name> <default_branch-tip>` — never a
+checkout, so it cannot disturb whatever the project repo's working tree currently has checked out.
+Wired into `board/gateops.ts#doStart`, right after the responsible-team lookup and before `advanceUnit`
+runs — the Conductor's own `start` click, the one invariant-1 approval that makes the unit's first
+production legitimate, is also what authorizes opening its work branch. A creation failure fails the
+whole start (500) rather than silently proceeding without a branch.
+
+**M2 — trial merge.** `trialMerge` never touches real branch state: `git worktree add --detach <scratch>
+<default_branch>` checks out `default_branch`'s COMMIT (not the branch itself) into a scratch dir with
+its own detached HEAD, so the attempt — `git merge --no-commit --no-ff <work-branch>`, then always `git
+merge --abort` regardless of outcome — can never move `default_branch` or the work branch, and never
+touches the project's own working tree/index either (a worktree's HEAD is independent of every other
+worktree sharing the same repo). Cleanup is unconditional: `worktree remove --force` + `worktree prune`
+in a `finally`, plus an outer `rmSync(..., {force:true})` in a second `finally` as a backstop — proven by
+a dedicated test asserting `git worktree list` shows exactly one entry (the main one) after every trial
+merge, clean or conflicted or erroring. The result reports branch, target, commits ahead
+(`git rev-list --count`), diffstat, and — the thing a Conductor actually needs to act on — `conflicted`
+plus the exact `conflicts` files (`git diff --name-only --diff-filter=U` inside the aborted-but-still-
+readable merge state, read before the abort).
+
+**The gate itself** is a `kind: merge` artifact (types.ts's new `MergeInfo`/`MergeResultRecord`,
+ARTIFACT_SCHEMA's new `merge`/`merge_result` map fields) — levare's own synthetic content, `produced_by:
+levare-runner`, never a member's. Opened by `dagwalk.ts#advanceUnit`: once every responsible team's flow
+returns "nothing" (ruling C4's per-kind walk — a unit can have more than one responsible team, and a
+merge gate is the landing for ALL of their work together, so `checkGuardrailsForMerge` unions violations
+across every one of them), a repo-bearing project whose work branch already exists (`resolveProjectRepoPath`
++ `branchExists`) gets its merge gate opened — one `kind: merge` artifact, committed as `levare-runner`
+(the walk producing it is autonomous, not a fresh human click). A unit whose merge gate is already open
+(an in-review `merge` artifact) halts instead of opening a duplicate; a unit whose gate already resolved
+is `shipped` and never reaches that code path at all (the pre-existing `unit.status !== "active"` guard
+returns first). `recheck` (a new `Verb`, plumbed through `board/serve.ts`'s allowed-verb list) re-runs
+the trial merge and rewrites the SAME artifact's `merge:` block in place via `gates.ts#upsertFrontmatterMap`
+— widened in this goal to accept string-ARRAY values (`conflicts`/`guardrail_violations`), the one shape
+`execution:`/`usage:` (fixed sets of scalar fields) never needed.
+
+**M3 — guardrails acquire their production call site.** `checkGuardrails` (dormant since phase 3,
+guardrails.ts) is now called from exactly one place: `board/gateops.ts#doApproveMerge`, at approval
+time, against a FRESHLY re-run trial merge — never the `merge:` block the gate opened with. This is
+deliberate, not incidental: the gate could have opened hours before approval, during which the work
+branch or `default_branch` could have moved, or a guardrail could have been edited — "the actual diff"
+(the PRD's own words) means the diff AS OF EXECUTION, not as of gate-open. A violation returns a 409
+naming the rule (`checkGuardrails`'s own `rule`/`detail` shape) and writes NOTHING — the artifact stays
+`in-review`, the unit stays whatever it was; approval was never spent. `mergeDiffEntries` builds the
+`DiffEntry[]` guardrails checks against: every changed file as a `path` entry (ruling C6: never matched
+against `protected_branches`), one `branch`+`action: "merge"` entry for the target (so
+`protected_branches` matches ONLY the target, never a file path), and a `branch`+`action: "push"` entry
+only when the project declares `remote:`.
+
+**M4 — merge shape.** `executeMerge` mirrors `trialMerge`'s scratch-worktree technique for the REAL
+merge: a second detached worktree at `default_branch`'s pre-merge SHA, `git merge --no-ff -m <message>
+<branch>` (never squash, never rebase — the work branch's own commit history, and its member authorship,
+rides along verbatim; a dedicated test asserts the merge commit's parents include the member's own commit
+SHA and that `git log --pretty=%an` still lists the member's own identity, not levare-runner's, for that
+commit), authored `levare-runner`. The worktree is torn down immediately after reading the merge commit's
+SHA (`git rev-parse HEAD`); `default_branch` itself is then fast-forwarded with `git update-ref
+refs/heads/<default_branch> <new> <old>` — a compare-and-swap ref write, not a checkout, so the project's
+own working tree is NEVER touched by execution (proven: a test asserts the checked-out files on disk
+still reflect the pre-merge commit even though `main`'s ref now points past it).
+
+**M5 — push in the same transaction, byte-perfect rollback.** Where `remote` is declared, the exact merge
+SHA is pushed by refspec (`git push <remote> <sha>:refs/heads/<default_branch>`) in the same
+`executeMerge` call. A push failure resets the ref with the IDENTICAL compare-and-swap `update-ref` call,
+old/new swapped — proven byte-perfect by a test that captures `default_branch`'s SHA before approval and
+asserts it is bit-for-bit identical after a simulated push failure (a nonexistent remote path), with a
+clean `git status --porcelain` on top (no dangling merge state). If the rollback's own `update-ref` were
+ever to fail (nothing else touches this ref between the two calls in practice, but "in practice" is not a
+guarantee), `executeMerge` throws loudly rather than silently leaving the ref pointed at an unpushed merge
+commit — a genuine "resolve by hand" state that must never be swallowed. On the studio side,
+`doApproveMerge` never writes anything at all when `executeMerge` fails at any stage (guardrail, merge, or
+push) — no `merge_result`, no status change, nothing committed — matching M5's "un-approves nothing"
+literally: a failed approval leaves the repo exactly as if it had never been attempted. Only on success
+does the studio commit land, and its OWN message embeds the project merge commit's SHA (goal: "the studio
+commit references the project merge SHA for the audit trail") — verified directly (`git log -1
+--pretty=%s` in the studio repo contains the project repo's merge SHA). Success also patches the unit to
+`status: shipped`, in the SAME transactional commit as the merge artifact's own approval.
+
+## Deliberately scoped out, recorded honestly (not discovered — decided)
+
+**Self-referential projects (`repo: .`) are excluded from the whole mechanism.** The golden fixture's own
+`studio` project points `repo:` at the studio root itself — the SAME repository every gate resolution in
+this entire app commits artifacts into via `conductorCommit`/`runnerCommit`. `resolveProjectRepoPath`
+excludes this case structurally (a `realpathSync` comparison against the studio root), not as an
+afterthought: branch-switching the studio's own working tree out from under the daemon's/board's own
+concurrent writers would be a correctness hazard this goal was never asked to solve, and testing it
+would have meant either mutating THIS repo's own git state during the test run (never acceptable) or
+building an elaborate double-fixture harness for a case the PRD's own examples don't actually call for.
+A project whose `repo:` doesn't resolve to a real local git checkout at all (fixtures/golden's own
+`storefront`, which declares `repo: git@github.com:acme/storefront.git` — never cloned locally in any
+fixture) gets the identical treatment: no work branch, no merge gate, flow completion behaves exactly as
+it did before this goal. Both cases are covered by tests (`resolveProjectRepoPath`'s own describe block
+in merge.test.ts; the "no-repo project is entirely unaffected" case in merge-gate.test.ts).
+
+**Member-side worktree wiring is real but single-working-tree, not per-member isolated** — the goal's own
+item 1 asked this to be investigated honestly rather than either skipped or oversold. What exists before
+this goal: `Agent.cwd` is a STATIC per-agent string; `{feature_repo}` (declared in the schema since
+before this goal, used by finch's/rook's own fixture definitions) substituted from `agent.cwd` itself — a
+no-op self-reference for every agent whose `cwd` literally held the string `"{feature_repo}"` (finch's own
+fixture cwd), since there was never a live project checkout path flowing into `InvokeRequest` at all. This
+goal closes that: `InvokeRequest` gains `projectRepoPath` (resolved once per dispatch via
+`resolveProjectRepoPath`, the SAME function the merge gate itself uses, so "does this project have a real
+local checkout" is answered identically everywhere), `{feature_repo}` resolves to it when present
+(`adapters.ts#resolveFeatureRepo`, exercised by `defaultCliCommand`, `cliInvocation`'s cwd derivation, and
+`nativeWorkerRequest`'s cwd), and `AdapterRunner#memberWorkingContext` checks out the unit's work branch
+(if one already exists — it always will by dispatch time, since `doStart` creates it before the first
+production) in the project's own working tree before every native/cli dispatch. What this does NOT do,
+by design, not oversight: it checks out the branch in the project's ONE shared working tree, never a
+per-member scratch worktree. Two members dispatched concurrently against the SAME repo-bearing project
+(a loop's two members in one round; two units on the same project advanced in the same daemon tick) race
+each other's checkout — whichever dispatch's checkout runs last wins, and a CLI member reading the
+filesystem mid-race could see either branch's content. Per-member worktree isolation (mirroring the
+scratch-worktree technique `merge.ts` already uses for trial-merge/execution) would close this
+completely, but is real, additional scope this goal's own acceptance criteria never asked for — the
+criteria's own item 1 says wire what the adapter layer supports and record what's deferred, not build
+full concurrent member-authoring isolation. Every fixture git repo this goal's own tests dispatch against
+sees at most one member at a time per project, so the race is real but untriggered by anything in this
+suite — named here, and in `docs/current-gaps.md`, precisely so it isn't rediscovered as a surprise.
+
+Every previously-standing gap this goal's own scope did not touch — remote/MCP members, the capability
+layer's still-open items, install-script distribution, the `loadRepo`-per-request position — is
+unchanged; `docs/current-gaps.md` reflects only the two entries above as new.
+
+## Retirements
+
+The REV1 "guardrails declared but not yet enforced" notice is retired from `levare doctor`
+(`formatDoctor`/`runDoctor` drop the `guardrailsTeams` parameter entirely — not merely silenced) and the
+registry's team card (`board/render/registry.ts`). `docs/current-gaps.md`'s merge-phase entry is rewritten
+from "the single largest missing feature" to "closed"; `docs/guide/05-reference/04-constitution.md` gains
+invariant 10 (its own numbering — the PRD's own invariant 6, cross-referenced explicitly since the two
+lists don't share numbering) stating the merge gate is in full force, plus an `M1–M5` ruling-table row
+naming `docs/prd-amendment-2.md` as the design record, per Amendment 2 §2's own "Standing text" clause.
+
+## Verification
+
+`bun test` — 1018 pass, 1 pre-existing skip, 0 fail, across 78 files (up from 76/978 — two new files:
+`tests/merge.test.ts`, 27 tests over `src/merge.ts` directly against real local git repos this file
+creates itself (`workBranchName`; `resolveProjectRepoPath`'s four cases including the studio-self-
+reference and the unfetched-URL case; `createWorkBranch`'s creation/idempotence/never-checks-out/missing-
+default_branch cases; `trialMerge`'s clean/conflicted/missing-branch cases, each asserting real branch
+state AND the worktree list are untouched; `executeMerge`'s clean/push-success/push-failure-rollback/
+missing-branch cases, asserting merge-commit parentage, authorship, `default_branch` advancement, and
+byte-perfect rollback; `ensureWorkBranchCheckedOut`; `checkGuardrailsForMerge`/`mergeDiffEntries`'s
+namespace-separation and multi-team-union cases; `formatMergeArtifact`'s schema-validity and round-trip
+through `repo.ts`'s real parser, clean and conflicted) and `tests/merge-gate.test.ts`, 13 tests over the
+LIVE path (`board/gateops.ts` + `dagwalk.ts`) against a minimal hand-built studio (one team/agent/type/
+project/unit) plus a real, separate project git repo — proving, in order: M1's branch creation at `start`
+and its absence for a no-repo project; M2's gate-opens-only-on-flow-completion and no-duplicate-on-a-
+second-advance; a planted conflict refusing approval (409, naming the file) and `recheck` clearing it
+after a by-hand resolution, plus `reject`/`request` both refused (409) against a merge gate; M3's
+protected-path AND protected-branch violations both failing execution post-approval, named, with nothing
+written and the unit left `active`; M4's merge-commit parentage/authorship/message and the unit
+transitioning to `shipped`, with the studio's own commit message embedding the project merge SHA; M5's
+push-in-transaction success (verified against a real second bare repo) and push-failure byte-perfect
+rollback (502, nothing written, unit stays `active`); and the member-dispatch branch-checkout wiring).
+`bun run typecheck` → exit 0. `bun run deps:check` → `deps ok`. `bun run src/cli.ts validate
+fixtures/golden` → `valid` (the new `merge`/`merge_result` schema fields are additive and optional; the
+golden fixture declares neither). `bun run src/cli.ts replay fixtures/golden --stubs` → oracle match,
+byte-for-byte (the phase-2 batch Runner, `runner.ts`, is untouched by this goal — the merge phase is
+live-path-only, wired into `dagwalk.ts`/`board/gateops.ts`, never `runner.ts#Runner`, so replay's own
+walk is provably unaffected by construction, not merely by absence of a failing assertion). `bun run
+docs:generate` regenerated `docs/guide/05-reference/cheatsheets/artifact.md` (the new `merge`/
+`merge_result` field rows); the drift test (`tests/cheatsheets.test.ts`) is green against the committed
+output. `bun run build` succeeds.
+
+Two pre-existing tests asserting the now-retired REV1 warning's exact text (`tests/doctor.test.ts`,
+`tests/board-render.test.ts`) were rewritten to assert the RETIREMENT instead (the warning is gone,
+`formatDoctor`'s signature dropped the parameter) — not deleted, since "the notice used to exist and is
+now gone" is itself worth a standing assertion, the same posture `tests/release-workflow.test.ts` already
+takes for README's own install-script-deferral claim.
+
+## Honest residual
+
+Beyond the two deliberately-scoped items above (self-referential projects; single-working-tree member
+checkout): the merge gate's board-side RENDERING (a dedicated card showing branch/commits-ahead/diffstat/
+clean-or-conflicted with Approve/Recheck buttons, mirroring `board/render/shell.ts#gateCardHtml`'s
+existing per-gate-type branches for `start`/`blocked`/`artifact-blocked`) was not built. The generic
+in-review-artifact gate card already renders a `kind: merge` artifact (verified: `derive.ts#openGates`
+handles any `status: in-review` artifact uniformly, `produced_by: levare-runner`'s team-less shape
+degrades safely through every loop-membership/companion check that assumes a real team) with Approve/
+Request/Reject buttons — Approve routes correctly to `doApproveMerge`, but Request/Reject route to the
+generic verb (refused with a 409 from `resolveGate`'s own new merge-kind guard, not silently mishandled)
+and there is no `recheck` button anywhere in the UI; the verb is reachable only via a direct API call
+today. This is real, visible UI incompleteness — a Conductor using the live board today can approve a
+clean merge gate but cannot see the trial-merge report's own fields (diffstat, conflict files) rendered,
+and cannot click "recheck" — recorded here rather than left for the next session to rediscover by reading
+`gateCardHtml` and finding no merge-shaped branch. The acceptance criteria this goal was given are entirely
+programmatic (`bun test`, typecheck, replay, build); none of them exercise the board's rendered HTML for a
+merge gate specifically, so this gap did not surface as a failing test — it is named here precisely
+because a green suite would otherwise let it go unnoticed.
