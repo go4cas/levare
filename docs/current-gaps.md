@@ -60,16 +60,28 @@ execution is honestly recorded `executed: skipped` rather than pretended. This c
 cannot tell a read from a write" gap named above and gives the member-drafts/Conductor-approves/
 levare-acts shape a real, gated write path for the first time.
 
+**Part B is built (NOTES CAP-B):** `tools:` is now a validated fixed vocabulary (`SDK_TOOL_NAMES`,
+sdk-transport.ts) rather than a free-form registry — an unknown name is a validation error naming the
+real one. For a `native` member the declared list forwards to the Claude Agent SDK's own boundary
+verbatim (a test proves the boundary receives exactly the declared list); a `cli` member's `tools:`
+cannot be enforced the same way — there is no SDK boundary in that spawn path for an allowlist to
+reach — so it's a validate/doctor warning instead (`CLI_TOOLS_NOT_ENFORCEABLE`), silenced only by
+removing the field. A connector also gains `home:` — dotpaths under `$HOME` a subscription-authenticated
+vendor CLI actually needs (`home: [".codex"]`); a member granted a connector that declares it gets a
+per-run scratch `HOME` symlinking only those paths (never a copy — the login is a live credential),
+created before the spawn and removed after. A subscription connector declaring no `home:` keeps the
+pre-CAP-B behaviour (the member's process sees the real, unscoped `HOME`) and gets a new
+`SUBSCRIPTION_NO_HOME` warning, the sibling to `SUBSCRIPTION_NO_ROLE` (NOTES C15). This narrows, but
+does not close, "Per-member subscription-credential scoping" below — see that entry for the residual
+`home:` itself cannot fix.
+
 **What remains, still not built:**
 
-- **Tool forwarding and a scoped `HOME` (part B).** A `native` member's SDK-level `tools:` allowlist is
-  enforced; a `cli` member's own filesystem/network reach is still whatever the wrapped binary itself
-  can do, and every member still shares one process `$HOME` (the C13 gap: a subscription-authenticated
-  CLI's disk-stored session is reachable by any member that can spawn the binary, granted or not — see
-  "Per-member subscription-credential scoping" below, unchanged by part A).
 - **OS-level sandboxing (v2).** Process isolation — a member-specific filesystem view, network
-  restriction — beyond environment/credential scoping. Part A governs WHAT a member can read/act
-  through; it still does not sit between a `cli` member and the operating system it runs on.
+  restriction — beyond the environment/credential/tool-allowlist/HOME scoping parts A and B now give.
+  Ratified as v2's own next-in-line item (R4). Parts A and B govern WHAT a member can read/act through
+  and, for `native`, which SDK tools it can reach; none of that sits between a `cli` member and the
+  operating system it runs on.
 
 ## Connector trust-tier taxonomy
 
@@ -86,14 +98,18 @@ work, not yet started.
 ## Per-member subscription-credential scoping
 
 A subscription-authenticated CLI (the motivating case: `codex login` writing a session to
-`~/.codex`) reads its credential off disk, outside any env var levare could withhold — so **any**
-member able to spawn that command can use the login, whether or not it was ever granted a
-`subscription` connector. NOTES C13 names this precisely and makes it visible everywhere a connector
-is reported (`levare doctor`, the registry card: *"levare cannot scope this credential... The grant
-is documentation, not enforcement"*) rather than pretending otherwise — but the fix (per-member
-process isolation, e.g. a member-specific `$HOME`/`CODEX_HOME`) is deferred to the capability-layer
-work above, "the same future phase that would let levare give each member its own filesystem view,
-not just its own env."
+`~/.codex`) reads its credential off disk, outside any env var levare could withhold. NOTES C13 named
+this precisely and NOTES CAP-B (the capability layer, part B, above) narrows it with a real filesystem
+boundary: a connector declaring `home: [".codex"]` gives a granted member's spawned process a per-run
+scratch `HOME` symlinking only that path — the operator's other dotfiles (`~/.ssh`, `~/.aws`, anything
+not named) are never visible to that member's process at all, and a decoy-file test proves it. What
+`home:` does **not** fix, and cannot: it scopes *what a granted member's process can see on disk*, never
+*who is allowed to hold the grant in the first place* — **any** member granted this SAME connector can
+still use the live login, symlink or not; only the real `codex login`/`codex logout` revokes it. `levare
+doctor` and the registry card both still say so plainly (now conditioned on whether `home:` is
+declared), rather than let a scoped grant read as a per-member-revocable one. A connector declaring no
+`home:` at all gets the pre-CAP-B behaviour unchanged — the member's process sees the operator's entire
+real `HOME` — and a new warning (`SUBSCRIPTION_NO_HOME`) names that gap explicitly.
 
 ## Install script and Homebrew formula
 

@@ -7701,3 +7701,196 @@ default to unchanged `effects: read` behavior). `bun run src/cli.ts validate fix
 still exactly the §9 table). `bun run docs:generate` regenerated `connector.md`/`artifact.md`; the
 drift test (`tests/cheatsheets.test.ts`) is green against the committed output. `bun run build`
 succeeds.
+
+# NOTES CAP-B — v1.1 capability layer, part B: the tools vocabulary and scoped HOME
+
+Conductor rulings R2 and R3 from the design session, final, encoded directly. The honesty rule that
+governs every item below: enforce for real where the boundary genuinely permits it (native
+`allowedTools`, a symlinked scratch `HOME`), and warn plainly, in the same warnings channel REV1
+established, where it does not (`cli` tool declarations, the residual subscription-login reality `home:`
+narrows but cannot close).
+
+## 1. The tools enum
+
+`tools:` was previously an unvalidated `str[]` — any string passed the schema, including the fixture
+studio's own long-standing placeholder names (`tools: [read, write]`, lowercase, never real SDK tool
+names — a pre-existing gap this goal's own achieved-when criteria named directly). `SDK_TOOL_NAMES`
+(`sdk-transport.ts`) is the fixed vocabulary now validated against — 40 names, derived HONESTLY from
+this installed SDK version's own `sdk-tools.d.ts` (`node_modules/@anthropic-ai/claude-agent-sdk/`): its
+`ToolInputSchemas` union names every tool input shape the SDK version ships (`AgentInput`, `BashInput`,
+`FileReadInput`, …); each entry in `SDK_TOOL_NAMES` is that union's own interface name with the `Input`
+suffix stripped, and `File` stripped from `FileRead`/`FileWrite`/`FileEdit` — confirmed, not guessed,
+against `sdk.d.ts`'s own two worked examples (`tools: ['Read', 'Grep', 'Glob', 'Bash']` and `['Bash',
+'Read', 'Edit']`) and independently cross-checked: `AgentInput`'s own field shape (`description`,
+`prompt`, `subagent_type`, `model`, `run_in_background`, `name`, `team_name`, `mode`, `isolation`)
+matches this very session's own `Agent` tool schema field-for-field — strong confirmation the strip-
+`Input`/strip-`File` mapping is exactly right, not a coincidence. Nothing in the list was hand-invented;
+a future SDK version adding or removing a tool schema is the only thing that should ever change it.
+
+`validate.ts#validateAgentTools` (new) checks every `tools:` entry against `SDK_TOOL_NAMES` — an unknown
+name is `UNKNOWN_TOOL`, naming the full vocabulary in the message so a studio author can fix a typo
+without reading `sdk-transport.ts` themselves. Every pre-existing `tools: [read, write]` declaration in
+this repo — the golden fixture's `wren.md`/`lyra.md`, `init.ts`'s scaffold template (the actual studio a
+fresh `levare init` produces), the workflow guide's own worked example, and every hand-built test
+fixture that asserted on the old placeholder strings — was renamed to the real vocabulary (`tools: [Read,
+Write]`); `levare init` then `levare validate` end to end (`tests/init.test.ts`) is what caught the
+scaffold template specifically, since nothing else exercises it against the real validator.
+
+## 2. Native forwarding — already real, confirmed and left unchanged
+
+Reading `adapters.ts`/`sdk-transport.ts`/`sdk-worker.ts` before writing anything (per this goal's own
+instruction) found item 2 substantially already built, from an earlier phase's "K5 pre-arm" (security-
+audit Surfaces 3/8, closed per NOTES's own phase-7 record): `guardrails.ts#allowedTools(agent)` already
+returns exactly `agent.tools ?? []`; `adapters.ts#nativeWorkerRequest` already forwards that as BOTH
+`tools` and `allowedTools` on the SDK worker request; `sdk-worker.ts#buildQueryOptions` already passes
+both straight to `query()`'s own options, unmodified. `tests/native-sdk-boundary.test.ts` and
+`tests/serve-native-e2e.test.ts` already asserted the boundary receives exactly the declared list AND
+that an agent declaring no `tools:` reaches the SDK with an empty allowlist on both fields — end to end,
+through a real `createBoard`/`AdapterRunner` path, not just a unit-level mock. That IS "the current
+default behaviour" this goal's own item 2 says must stay "unchanged, documented" — recorded here rather
+than re-implemented, since re-doing already-correct wiring would be exactly the kind of unnecessary
+churn this codebase's own conventions warn against. The only actual code path this item touched is
+indirect: renaming the fixture/test tool declarations to the real vocabulary (item 1) so the SAME
+already-passing assertions now exercise `Read`/`Write` instead of a placeholder string that happened to
+survive because nothing validated it. `tests/capability-cap-b.test.ts`'s own "item 2" describe block adds
+two more assertions on top of the pre-existing coverage, using `SDK_TOOL_NAMES` members explicitly
+(`Read`, `Grep`, `Glob`), to make the connection between the enum and the forwarding path explicit in one
+place rather than left implicit across two test files from two different goals.
+
+**Worth naming, not fixed (out of this goal's scope):** the SDK's own `Options.tools` field is
+documented as "the BASE SET of available built-in tools — `[]` disables ALL of them," a materially
+different semantic than `Options.allowedTools` ("auto-allowed without prompting" — irrelevant here since
+every native call already sets `permissionMode: "bypassPermissions"`). This codebase forwards the SAME
+list to both fields uniformly, which means "no `tools:` declared" already means "every built-in tool
+disabled" for a native member, not "SDK default." Whether that's the RIGHT default (as opposed to, say,
+the SDK's own `claude_code` preset) is a product decision this goal's own wording doesn't ask to revisit
+("gets the current default behaviour, unchanged") — flagging it here so a future goal doesn't
+rediscover it as a live bug when it's actually a already-shipped, already-tested, deliberate-by-inertia
+default.
+
+## 3. CLI honesty
+
+`validate.ts#validateAgentCliToolsWarning` (new): a `kind: cli` agent declaring a non-empty `tools:`
+gets `CLI_TOOLS_NOT_ENFORCEABLE`, a warning (never an error — the same "legal declaration, told plainly"
+posture `validateAgentRemoteNotice`/REV1 finding 3 already established) — there is no SDK boundary in
+the cli spawn path (`adapters.ts#runCli`/`runCliAsync`, `bunSpawn`/`asyncBunSpawn`) for an allowlist to
+reach; `req.tools` is read only by `nativeWorkerRequest`. The ONLY way to silence it is removing
+`tools:` (confirmed by test: `tools: []` also silences it — there is genuinely nothing to warn about
+once the field names no tools). `doctor.ts#formatDoctor`/`runDoctor` gained a `cliToolAgents` parameter,
+threaded from `cli.ts#runDoctorCmd` the same way `remoteAgents` already is, repeating the identical
+warning text so a Conductor who only ever runs `doctor` (never rereads `validate`'s own output) still
+sees it. The registry's agent card (`board/render/registry.ts`) gained the matching `callout("warning",
+…)`, styled identically to the existing remote-member warning.
+
+`kind: remote` stays unchanged (still mocked, already told — REV1 finding 3, untouched by this goal).
+
+## 4. Scoped HOME
+
+`Connector.home?: string[]` (types.ts) — dotpaths under `$HOME` a subscription-authenticated vendor CLI
+actually needs (`home: [".codex"]`). `repo.ts#toConnector`/`validate.ts`'s `CONNECTOR_SCHEMA` gained the
+field (a plain `str[]`, optional — absence is "no scoping declared," distinct from an explicit `home: []`
+which also no-ops but says so on purpose).
+
+`env.ts#scopeHome(repo, member, env, opts?)` (new) is where the actual isolation happens: resolves
+`member`'s granted `auth: subscription` connector (reusing the existing `subscriptionConnector` helper);
+if it declares a non-empty `home:` AND `env.HOME` is present, `mkdtempSync`s a fresh scratch directory,
+then for every declared dotpath creates a SYMLINK inside the scratch dir pointing at that dotpath under
+the REAL `env.HOME` (`mkdirSync(dirname(link), {recursive:true})` first, for a nested dotpath like
+`.config/foo`) — never a copy, per the goal's own "live credential" requirement: revoking the real login
+(`codex logout`, deleting `~/.codex`) revokes it through every symlink immediately, and a write through
+the scratch path lands in the real target (asserted directly in the test — a file written via the
+scratch symlink is read back from the real home path). Returns `{env: {...env, HOME: scratch},
+cleanup()}`; every no-op path (no subscription grant, `home:` absent/empty, `env.HOME` itself absent)
+returns `{env, cleanup(){}}` with the SAME `env` object reference — no scratch dir, no filesystem work at
+all, for the overwhelming majority of members that never touch this at all.
+
+**The decoy-file proof (this goal's own explicit ask — "the one that proves isolation rather than
+asserting it"):** `tests/capability-cap-b.test.ts` builds a fake real-`HOME` directory containing
+`.codex/auth.json` (the "live token") AND a sibling `.ssh-decoy` file sitting directly in the home root,
+outside any declared dotpath. After `scopeHome`, the scratch `HOME`'s own `readdirSync` shows EXACTLY
+`['.codex']` — the decoy is asserted absent by both `existsSync` and a full directory listing, not
+merely "not equal to something." `cleanup()` is proven to remove the scratch directory (`existsSync` false
+after) while leaving the real credential completely untouched (`existsSync`/`readFileSync` on the real
+path still succeed, same content) — the `recursive: true` `rmSync` call unlinks the symlink ENTRIES
+inside the scratch dir (standard `rm -rf` semantics: a directory removal never follows a symlink into
+its target), never the real directories they point at.
+
+**Wiring the per-spawn lifecycle (`adapters.ts`):** `AdapterRunner#produce`/`produceAsync` gained two
+private helpers, `withHomeScope`/`withHomeScopeAsync`, wrapping ONLY the `native` and `cli` invoke calls
+(never `remote` — a mocked boundary that never spawns a real process, so scoping a `HOME` that reaches no
+real spawn would only cost a wasted `mkdtemp`/`rm` pair). Each call `scopeHome`s immediately before the
+boundary/spawn call and `cleanup()`s in a `finally` immediately after — a scratch `HOME` is created fresh
+per spawn (never cached/shared across calls — proven by a dedicated test: two back-to-back `scopeHome`
+calls for the same member never share one scratch path) and is guaranteed gone by the time `produce`/
+`produceAsync` returns, success or thrown `AdapterError` alike. Two integration tests
+(`tests/capability-cap-b.test.ts`) prove the WIRING specifically, not just `env.ts`'s own isolated
+behaviour: a fake `NativeBoundary`/`AsyncCliSpawn` captures the `HOME` it was actually invoked with
+(asserting the decoy-absence/live-symlink properties FROM INSIDE the boundary call, while the scratch dir
+is guaranteed to still exist), and the test then asserts the captured path no longer exists once
+`produce`/`produceAsync` has returned.
+
+**The `SUBSCRIPTION_NO_HOME` warning** (`validate.ts`, mirroring `SUBSCRIPTION_NO_ROLE`'s exact shape —
+NOTES C15): fires only when a connector is `auth: subscription` AND `home` is genuinely absent (not even
+an empty list) — a subscription connector with no `home:` keeps the pre-CAP-B, fully-real-`HOME`
+behaviour, and this is how a studio author discovers the `home:` opt-in exists at all rather than
+assuming a bare `auth: subscription` grant is already scoped. `doctor.ts#diagnose`'s existing C13 warning
+(unconditional for every subscription connector since NOTES C13) now branches on `c.home`: WITH `home:`
+declared, it names the scoped path and states the residual plainly — *"this credential is scoped to
+`.codex`… but any member granted this connector can still use the login (the grant is not per-member
+revocable; only the real login is)"* — never overclaiming that a filesystem boundary makes the grant
+itself revocable per-member, which it does not and cannot; WITHOUT `home:`, the original "levare cannot
+scope this credential" text survives verbatim, with one sentence appended pointing at the fix
+(`Declare 'home:' to scope it…`). The registry connector card (`board/render/registry.ts`) mirrors the
+exact same branch, verbatim text. `init.ts`'s own scaffolded `codex` connector — the first subscription
+connector any new studio actually sees — was updated to declare `home: [".codex"]` and its body rewritten
+to explain what that buys and what it doesn't; this is also what caught `tests/init.test.ts`'s
+`levare init` → `levare validate` end-to-end test needing no change of its own (a `home`-less scaffold
+would have failed validate cleanly, since the warning is legal, but declaring it is the more honest
+default for the one connector every new studio starts with).
+
+## 5. Docs
+
+`docs/guide/06-operations.md`'s "What a member can see" section gained the scoped-HOME story under a
+rewritten "The one honest exception: subscription auth" subsection (both doctor message variants shown
+verbatim, the residual stated plainly either way — declaring `home:` narrows WHAT a granted member's
+process can see on disk, never WHO is allowed to hold the grant). "What levare does not constrain"
+gained a `tools:` enforcement table (native: enforced / cli: vendor flags, warned / remote: mocked) ahead
+of the existing OS-sandboxing paragraph, and that paragraph itself now names OS-level sandboxing as the
+sole remaining v2 item (ratified R4) rather than bundling tool-forwarding/scoped-HOME in with it, since
+those are what this goal just closed. `docs/current-gaps.md`'s "The capability layer" entry gained a
+"Part B is built (NOTES CAP-B)" paragraph mirroring Part A's own, and "What remains, still not built" now
+names only OS-level sandboxing. "Per-member subscription-credential scoping" — the entry CAP-B's own
+item 4 most directly narrows — was rewritten to state what `home:` fixes (a real, tested filesystem
+boundary) and what it explicitly does NOT (per-member revocability of the underlying login), rather than
+leaving the pre-CAP-B "the fix is deferred" sentence standing next to code that now contradicts it.
+
+## Verification
+
+`bun test` — 980 pass, 1 pre-existing skip, 0 fail, across 76 files (up from 75 — new coverage:
+`tests/capability-cap-b.test.ts`, 21 tests across five describe blocks matching this file's own items
+1–4 plus the `SUBSCRIPTION_NO_HOME` warning: the tools enum (valid names pass, an unknown name is
+`UNKNOWN_TOOL` naming the vocabulary, a mixed valid/invalid list still reports the invalid one,
+`SDK_TOOL_NAMES` itself sanity-checked); native forwarding (declared list reaches the boundary exactly,
+no-`tools:` stays the empty-allowlist default); CLI honesty (the warning fires for a cli+tools agent,
+is silenced by removing `tools:` OR by an explicit empty list, never fires for a native agent); scoped
+HOME (the full decoy-file/live-symlink/cleanup proof, three no-op cases — no `home:`, empty `home:`, no
+subscription grant at all — plus the two-scratch-dirs-never-share-one-path proof, and both the
+`produce`/`produceAsync` integration tests proving the wiring inside `adapters.ts` reaches the real
+boundary/spawn call and cleans up after); the `SUBSCRIPTION_NO_HOME`
+warning firing/silencing, and its `auth: env` non-applicability). `tests/doctor.test.ts` gained a new
+describe block for the home-scoped warning variant and another for the `cliToolAgents` doctor line,
+alongside updating the one pre-existing assertion whose exact warning string CAP-B's own sentence-append
+changed. `tests/init.test.ts`'s existing `levare init` → `levare validate` round-trip test caught the
+scaffold template's own stale `tools: [read, write]`/home-less `codex` connector without any test code
+change — the real validator, run against the real scaffold output, is what surfaced both. `bun run
+typecheck` → exit 0. `bun run deps:check` → `deps ok`. `bun run src/cli.ts validate fixtures/golden` →
+`valid` (the golden fixture declares no subscription connector and no cli agent declares `tools:`, so
+neither new warning fires against it — both are exercised only by the dedicated tests above). `bun run
+src/cli.ts replay fixtures/golden --stubs` → oracle match, byte-for-byte (replay's stub adapters never
+go through `AdapterRunner#produce`'s real native/cli branches, so the home-scoping wiring is inert for
+this path, correctly). `bun run docs:generate` regenerated `connector.md` (one new `home` row — `str[]` renders through the
+existing generic field-table code with no `generate-cheatsheets.ts` change needed, unlike CAP-A's
+`action-map`/`str-map` additions which needed new `humanType` cases); the drift test
+(`tests/cheatsheets.test.ts`) is green against the committed output. `bun run build` succeeds;
+`tests/orchestrator-compiled-smoke.test.ts` — 6 pass, 0 fail, unaffected (this goal touches no
+conversation-persistence or orchestrator-boundary code path).
