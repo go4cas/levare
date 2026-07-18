@@ -2,9 +2,10 @@ name: Deploy docs to GitHub Pages
 
 # Publishes ONLY docs/guide — not the rest of docs/ (the PRD, security audit findings, code-review
 # notes, and the orchestrator prompt stay in the repo, findable by anyone who goes looking, but are
-# deliberately not part of the published, linked site). See the "Deploy from a branch" source picker's
-# folder options (/ or /docs only) for why this can't be done with that simpler source instead — the
-# Actions source has no such restriction, since it just uploads whatever path we tell it to.
+# deliberately not part of the published, linked site). Jekyll processing (via the official
+# jekyll-build-pages action) converts the markdown to real HTML and turns README.md into index.html —
+# the raw upload-pages-artifact path serves files byte-for-byte with no such conversion, which is why
+# the first version of this workflow deployed successfully but 404'd (no index.html existed).
 
 on:
   push:
@@ -33,10 +34,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Upload docs/guide as the Pages artifact
+      - name: Build with Jekyll
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: docs/guide
+          destination: _site
+
+      - name: Upload the built site as the Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/guide
+          path: _site
 
       - name: Deploy to GitHub Pages
         id: deployment
