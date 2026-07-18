@@ -8355,3 +8355,63 @@ a fake one). `bun run typecheck` → exit 0. `bun run deps:check` → `deps ok`.
 fixtures/golden` → `valid`. `bun run src/cli.ts replay fixtures/golden --stubs` → oracle match, byte-for-byte
 (this goal never touches `dagwalk.ts`/`gateops.ts`/`merge.ts` — presentation-only, exactly as scoped — so
 replay's own walk is unaffected by construction). `bun run build` → succeeds.
+
+# NOTES SEC-V11 — v1.1 security audit remediation (two independent auditors, `docs/security-audit-v11.md`)
+
+Goal: fix the five findings two independent adversarial reviewers converged on against the four v1.1
+surfaces (CAP-A/CAP-B, MERGE-1, V11-CONV) — full writeup, per-finding detail, and the verification run in
+`docs/security-audit-v11.md`; this entry records the two implementation decisions worth a Conductor's
+attention plus the residuals. Fix-findings-first order (F1, F2, then F3, F4, F5), one commit per finding.
+The audit's central claim held under attack — proposal argv stays injection-safe, env withholding works,
+the three routes stay confined — so every fix here hardens an edge, none redesigns the surface.
+
+**F1 (home: traversal) — `isSafeHomeDotpath` lives in `validate.ts` and is imported into `env.ts`,** not
+duplicated. This is a new cross-module dependency (env.ts → validate.ts) that didn't exist before; checked
+it doesn't create a cycle (validate.ts imports nothing from env.ts, repo.ts, or adapters.ts) before adding
+it. The alternative — hand-copying the same lexical check into env.ts — was rejected on purpose: two
+independent implementations of "what counts as a safe dotpath" are exactly the kind of drift that reopens
+a closed hole the next time one of them is edited and the other isn't. `scopeHome`'s own runtime check
+(`isStrictlyUnder` on the actual joined paths) stays independent of `isSafeHomeDotpath` — layer 2 doesn't
+just re-run layer 1's lexical rule, it re-derives the guarantee from the joined result, which is what
+makes it real defense in depth rather than the same check called twice.
+
+**F2 (merge TOCTOU) — `executeMerge` now merges by SHA, not by branch name, unconditionally** (even when
+`expectedBranchSha` is omitted). This was the tighter of two options: resolving the branch's tip once for
+the staleness check and then merging by NAME again would leave a second, narrower TOCTOU window between
+the check and the `git merge` call itself. Merging by SHA closes that residual window structurally rather
+than shrinking it. `MergeExecutionResult`'s `stage` union gained `"stale"` (mapped to a 409 in
+`gateops.ts`, distinct from the existing 500/502 for a genuine merge/push failure) — a Conductor seeing a
+409 with "recheck required" now has an unambiguous action, not an opaque merge failure.
+
+**Residuals, recorded per the goal's "record uncertainty and continue" instruction, not fixed here:**
+
+- **F2's SHA-pinning window is closed within one `doApproveMerge` call, not across the whole approve
+  round-trip.** The Conductor's own click-to-server-received latency (network, not git) is not a race this
+  fix (or the finding) addresses — `trialMerge` and `executeMerge` are called back-to-back inside the same
+  server-side function invocation with no `await` between them, so the window this closes is "a foreign
+  write lands between those two synchronous git calls," which is the TOCTOU the finding actually
+  demonstrated. A theoretically tighter window (a write landing in the few milliseconds of `executeMerge`'s
+  OWN internal git calls, after its own staleness check resolves) is closed too, by the SHA-not-name merge.
+- **F4 is a heuristic, by design, and will both under- and over-warn.** A positional argument with no flag
+  before it (`["cp", "{src}", "{dst}"]`) is legal and common; this warning cannot tell it apart from the
+  risky case. Documented in `docs/security-audit-v11.md`; not tightened further, since a stricter heuristic
+  risks becoming an error-shaped nuisance against entirely safe, ordinary connector templates.
+- **F5 hardens a path with no demonstrated live exploit today.** Getting a traversal-shaped `name:` into a
+  real studio's `projects/` registry requires either the operator hand-authoring one (self-inflicted, out
+  of the threat model) or a future vendoring mechanism for projects that doesn't exist yet (unlike
+  connectors/teams/agents, which the brief's own threat model explicitly names as vendor-influenced
+  surfaces). Fixed anyway, at the cheap, single-choke-point cost of sanitizing in `conversationPath` itself
+  — cheap enough that "no demonstrated exploit yet" wasn't a reason to skip it.
+
+## Verification
+
+See `docs/security-audit-v11.md`'s own Verification section for the full run — `bun test`: 1058 pass (up
+from 1037 pre-goal), 1 pre-existing skip, 0 fail, across 82 files (one new: `tests/security-audit-v11.test.ts`,
+22 tests, one per finding's own repro — F1's decoy-outside-scratch proof runs `scopeHome` directly against a
+hand-built `Repo` that never touched `validate.ts`, per the goal's own "bypassing validate, calling the
+function directly" instruction; F2's proof runs against a real local git fixture repo, never a mock).
+`bun run typecheck` → exit 0. `bun run deps:check` → `deps ok`. `bun run docs:generate` re-run once (F2's
+additive `branch_sha` schema field changed `artifact.md`'s cheatsheet; the other 11 were untouched).
+`bun run build` → succeeds. `bun run src/cli.ts validate fixtures/golden` → `valid`. `bun run src/cli.ts
+replay fixtures/golden --stubs` → oracle match, byte-for-byte (none of these five fixes touch a code path
+a clean stub replay exercises differently).
