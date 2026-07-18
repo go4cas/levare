@@ -7,7 +7,7 @@
 // project. The approved-immutability rule is checked against git when the path is a git repo.
 
 import { readdirSync, readFileSync, statSync, existsSync, realpathSync } from "node:fs";
-import { join, relative, dirname, basename, sep, isAbsolute, resolve } from "node:path";
+import { join, relative, dirname, basename, sep, isAbsolute, resolve, normalize } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseFrontmatter, YamlError, type YamlValue } from "./yaml.ts";
 import { loadPricing, type Pricing } from "./pricing.ts";
@@ -575,6 +575,8 @@ function validateSingleFile(
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorAuth(data, file, errors);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorRoleWarning(data, file, warnings);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorHomeWarning(data, file, warnings);
+  if (kind.schema === CONNECTOR_SCHEMA) validateConnectorHomeSafety(data, file, errors);
+  if (kind.schema === CONNECTOR_SCHEMA) validateActionPlaceholderPosition(data, file, warnings);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorEffects(data, file, errors);
 }
 
@@ -1061,6 +1063,80 @@ function validateConnectorHomeWarning(data: Record<string, YamlValue>, file: str
     message: `connector '${name}' is subscription-authenticated but declares no 'home:' — the member receives your entire HOME; declare the vendor's config path (e.g. 'home: [".codex"]') to scope it`,
     file,
   });
+}
+
+// NOTES SEC-V11 F1 (HIGH): a `home:` dotpath is joined straight onto both the real HOME and the
+// scratch HOME (env.ts#scopeHome) with no validation before this fix — a connector declaring
+// `home: ["../../.ssh"]` would resolve its symlink TARGET above the real HOME (reading anything the
+// operator's own user can read) and place the LINK itself outside the scratch dir the caller believes
+// it owns and cleans up, so a traversal entry would leave a live, unrevoked symlink to an arbitrary
+// path behind forever. This is layer one of the two-layer fix (schema-time rejection); env.ts#scopeHome
+// carries the SAME check independently at runtime (defense in depth — a caller that ever bypasses
+// validate.ts, or a future refactor that drops this call, must not regain the hole). Exported so
+// env.ts can share the identical definition of "safe" rather than maintaining a second copy that could
+// drift out of agreement with this one.
+export function isSafeHomeDotpath(p: string): boolean {
+  if (typeof p !== "string" || p.length === 0) return false;
+  if (p.includes("\0")) return false;
+  if (isAbsolute(p)) return false;
+  if (p === "." || p === "..") return false;
+  // Reject a ".." segment anywhere, or an empty segment (a stray "//"), before even normalizing —
+  // belt-and-suspenders ahead of the normalize-based check below, which alone would already catch
+  // these, but a segment-level check reads its own intent without relying on `normalize`'s semantics.
+  const segments = p.split("/");
+  if (segments.some((s) => s === "..")) return false;
+  const normalized = normalize(p);
+  if (normalized === ".." || normalized === "." || normalized.startsWith("../") || isAbsolute(normalized)) return false;
+  return true;
+}
+
+function validateConnectorHomeSafety(data: Record<string, YamlValue>, file: string, errors: ValidationError[]): void {
+  if (!Array.isArray(data.home)) return; // shape (str[]) already enforced by the schema.
+  const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+  for (const entry of data.home) {
+    if (typeof entry !== "string") continue; // already BAD_TYPE from the schema.
+    if (!isSafeHomeDotpath(entry)) {
+      errors.push({
+        code: "UNSAFE_HOME_PATH",
+        message: `connector '${name}' declares home: entry '${entry}', which is not a safe relative dotpath under HOME — traversal ('..'), absolute paths, and empty segments are rejected`,
+        file,
+      });
+    }
+  }
+}
+
+// NOTES SEC-V11 F4 (LOW, hardening): a heuristic warning, never an error — a param value substituted
+// into an argv template is always injection-safe by construction (one template element → one argv
+// element, no shell — CAP-A's own closed claim, unaffected by this), but if the connector author places
+// a `{placeholder}` in argv-LEADING position (nothing flag-shaped immediately before it), the MEMBER's
+// chosen value lands where a flag would normally go — e.g. `["gh", "{args}"]` lets a proposal's own
+// `args` param supply `--upload-pack=...`-shaped content that `gh` then interprets as an option, not a
+// positional value. This is an author footgun in the connector's own template, not a member-injection
+// hole (the member still only ever supplies a value the author's own template slot accepts) — so it's a
+// WARNING naming the position, never a validation error; a template with a genuinely positional
+// argument (no flag before it) is a legal, common shape (e.g. `["cp", "{src}", "{dst}"]`) this heuristic
+// cannot distinguish from the risky case, which is why it stays advisory (documented limit, NOTES).
+function validateActionPlaceholderPosition(data: Record<string, YamlValue>, file: string, warnings: ValidationWarning[]): void {
+  const actions = data.actions;
+  if (actions === null || typeof actions !== "object" || Array.isArray(actions)) return;
+  const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+  const placeholderRe = /\{[A-Za-z_][A-Za-z0-9_]*\}/;
+  for (const [actionName, template] of Object.entries(actions as Record<string, YamlValue>)) {
+    if (!Array.isArray(template)) continue; // shape already caught elsewhere.
+    for (let i = 0; i < template.length; i++) {
+      const el = template[i];
+      if (typeof el !== "string" || !placeholderRe.test(el)) continue;
+      const prev = i > 0 ? template[i - 1] : undefined;
+      const precededByFlag = typeof prev === "string" && prev.startsWith("-");
+      if (!precededByFlag) {
+        warnings.push({
+          code: "PLACEHOLDER_NOT_IN_VALUE_POSITION",
+          message: `connector '${name}' action '${actionName}' places a placeholder at argv position ${i} ('${el}') with nothing flag-shaped immediately before it — a placeholder should sit in value position after its flag, or the value could be interpreted as an option`,
+          file,
+        });
+      }
+    }
+  }
 }
 
 // NOTES CAP-A: `gate` is only meaningful for an `effects: write` connector, and an `effects: write`
