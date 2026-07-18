@@ -8415,3 +8415,72 @@ additive `branch_sha` schema field changed `artifact.md`'s cheatsheet; the other
 `bun run build` → succeeds. `bun run src/cli.ts validate fixtures/golden` → `valid`. `bun run src/cli.ts
 replay fixtures/golden --stubs` → oracle match, byte-for-byte (none of these five fixes touch a code path
 a clean stub replay exercises differently).
+
+# NOTES SEC-V11-FOLLOWUP — SSE re-render test, the audit's one non-security loose end
+
+Goal: `docs/security-audit-v11.md`'s audit run hit an 8000ms test-level timeout on
+`tests/board-serve.test.ts`'s "a repo change under the watched root pushes a reload event to /events"
+under full-suite load. Correctly excluded from the audit itself (no security content — it's a client
+reload notification, not a trust boundary), but flagged as the same species of timing-fragility as the
+earlier port-based flakes (`main`/CAP-B-FIX above): a test whose pass depends on how busy the machine
+happens to be, not on the code being wrong.
+
+## What was actually checked before touching anything
+
+Read the watcher this test exercises (`src/board/serve.ts`'s `createBoard`, around its `notify`/`debounce`
+closure): one `fs.watch(root, { recursive: true }, ...)` per board, `notify()` clears and resets a single
+`setTimeout(() => ctx.broadcast("reload"), 80)` on every fs event — a fixed 80ms debounce, not a variable
+one. So the test's 5000ms inner race timeout already had roughly 60x headroom over the debounce itself in
+principle; the question was whether real-world OS event delivery plus process contention could eat that
+margin.
+
+Measured it rather than guessing. Instrumented the actual test with `performance.now()` markers (setup /
+connect / event-wait) and ran the **full 85-file, 1059-test suite** five consecutive times in this
+devcontainer (8 cores, 2.8GB RAM, swap already in use at idle per `free -h` — a genuinely
+resource-constrained box, not an idealized one). Every run: `event-wait` landed at 89–93ms, `total` at
+98–103ms — almost entirely the fixed 80ms debounce, with only 10–20ms of scheduling jitter even under real
+full-suite contention (git subprocess spawns, orchestrator SDK worker timeouts, daemon ticks all running
+concurrently). No run came remotely close to either the 5000ms inner race or the 8000ms outer test timeout.
+A separate probe run alongside a concurrently-running full suite (as a second process) showed the same
+~20ms floor — this environment doesn't reproduce multi-second stalls on demand.
+
+This means the fix cannot be "the debounce is secretly slow" (it isn't) or "this environment can't keep
+up" (it mostly can) — the actual defect was the **timeout structure itself**: a 5000ms inner
+`Promise.race` timeout left only 3000ms of slack under the 8000ms outer Bun test timeout. That 3000ms has
+to cover the ENTIRE observed 90-100ms case plus absorb any real outlier (a GC pause, a page fault under
+this box's own swap pressure, a scheduler hiccup from 84 other concurrently-running test files) — headroom
+sized for the typical case, not the tail. Two mismatched timeouts racing each other for a ~3000ms margin,
+against a debounce whose typical total cost is ~100ms, is the fragility — not the debounce, not fs.watch.
+
+## Fix
+
+`tests/board-serve.test.ts`: removed the redundant manual `Promise.race`/`setTimeout` wrapper — it raced
+its own wall clock against Bun's, for no benefit beyond a marginally friendlier error message — and let
+`reader.read()` run under Bun's own single per-test timeout, raised from 8000ms to 20000ms. This is not a
+blind 10x: it's ~150-200x the *observed* ceiling (90-100ms) in this constrained environment, sized to
+absorb outlier stalls (multi-hundred-ms to low-single-second) that a healthier margin should tolerate,
+while still failing fast enough (20s, not minutes) if the debounce or watcher genuinely breaks. A short
+comment at the test records the measurement and the reasoning so a future reader doesn't need to
+re-derive it.
+
+**Full determinism was not feasible and here is why**: this test's entire point is that a *real*
+`fs.watch` event, driven by the OS's own filesystem-change notification, reaches `/events`. There is no
+injectable clock or internal callback that observes "did the OS notice the file changed" without either
+(a) mocking `fs.watch` out of the test, which stops testing the thing the test exists to test, or (b)
+adding a test-only hook into `createBoard` that fires on `notify()`/debounce-scheduled rather than
+debounce-fired — which would still leave the OS-event-delivery leg of the wait unobserved, the actual
+first-order source of any real-world delay. The debounce's own 80ms `setTimeout` is already deterministic
+by construction (option (b) territory) — it is the *upstream* OS notification, inherently wall-clock and
+platform-scheduled, that a wall-clock bound is the only faithful way to test. So the honest fix is (a):
+generous, measurement-grounded headroom — not a fake determinism that would stop testing the real
+watcher-to-SSE path.
+
+## Verification
+
+`bun run typecheck` → exit 0. `bun run deps:check` → `deps ok`. `bun run src/cli.ts replay fixtures/golden
+--stubs` → oracle match, byte-for-byte (this test touches no `dagwalk.ts`/`runner.ts`/`replay.ts` path).
+`bun run build` → succeeds. Five consecutive full `bun test` runs after the fix: 1059/1059 pass, 0 skip
+beyond the one pre-existing, 0 fail, every run (23.26s–23.95s each) — same statistical bar as CAP-B-FIX
+above. Combined with the pre-fix five-run measurement pass (also 0 fail, used to ground the timeout choice
+rather than to prove the fix), ten consecutive full-suite runs total across this investigation, 0 failures
+observed.

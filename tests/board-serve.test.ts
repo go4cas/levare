@@ -632,6 +632,16 @@ describe("levare serve — POST /orchestrator/message", () => {
 });
 
 describe("levare serve — SSE re-render trigger", () => {
+  // This races a real fs.watch-driven debounce (80ms, see src/board/serve.ts's `notify`) against wall
+  // clock — there's no way to observe an OS filesystem event without a wall-clock bound, so full
+  // determinism isn't feasible here. What *is* fixable is margin: measured across 5 consecutive full
+  // `bun test` runs (85 files, this repo's whole suite, on an 8-core/2.8GB devcontainer that's already
+  // under swap pressure at idle), the setup+connect+event-wait path lands consistently around 90-100ms
+  // — almost entirely the fixed 80ms debounce itself, with only ~10-20ms of scheduling jitter even under
+  // full-suite contention. A single generous timeout (below) gives ~150-200x headroom over that observed
+  // ceiling, rather than the previous two mismatched timeouts (a 5000ms inner race with only 3000ms of
+  // slack under an 8000ms outer test timeout — too tight a gap to absorb a bad stall, e.g. a page fault
+  // under swap pressure) racing each other for no benefit.
   test("a repo change under the watched root pushes a reload event to /events", async () => {
     const root = seedScratchRepo();
     const board = createBoard(root);
@@ -644,15 +654,12 @@ describe("levare serve — SSE re-render trigger", () => {
 
       writeFileSync(join(root, "work/storefront/checkout-flow/unit.md"), readFileSync(join(root, "work/storefront/checkout-flow/unit.md"), "utf8") + "\n");
 
-      const { value } = await Promise.race([
-        reader.read(),
-        new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timed out waiting for SSE reload")), 5000)),
-      ]);
+      const { value } = await reader.read();
       const chunk = new TextDecoder().decode(value);
       expect(chunk).toContain("data: reload");
     } finally {
       board.close();
       rmSync(root, { recursive: true, force: true });
     }
-  }, 8000);
+  }, 20000);
 });
