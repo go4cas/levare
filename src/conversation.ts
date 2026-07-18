@@ -50,8 +50,15 @@ function monthKey(d: Date): string {
   return d.toISOString().slice(0, 7); // YYYY-MM
 }
 
+// NOTES SEC-V11 F5 (hardening): `sanitizeScope` here too — not only at the client-body boundary
+// (board/serve.ts's own call, ahead of `appendExchange`) — closes the READ path as well: a project's
+// own `name:` field (validate.ts places no filesystem-safety constraint on it) flows straight into
+// `orchestratorPanel`'s scope on every project/run/artifact page render, unsanitized before this fix.
+// Sanitizing at this single choke point — both `appendExchange` and `loadConversationTail` resolve
+// their path through it — means every caller, present or future, is confined, rather than relying on
+// each call site to remember its own guard.
 export function conversationPath(root: string, scope: string, when: Date): string {
-  return join(root, CONVERSATIONS_DIR, scope, `${monthKey(when)}.md`);
+  return join(root, CONVERSATIONS_DIR, sanitizeScope(scope), `${monthKey(when)}.md`);
 }
 
 function fileHeader(scope: string, when: Date): string {
