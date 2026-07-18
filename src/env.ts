@@ -6,10 +6,11 @@
 // Grants are the union of the member's agent-level `connectors:` and its team's `connectors:` (§5).
 
 import { mkdtempSync, mkdirSync, symlinkSync, rmSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, relative, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
 import type { Connector, Team } from "./types.ts";
 import type { Repo } from "./repo.ts";
+import { isSafeHomeDotpath } from "./validate.ts";
 
 // The only vars a member gets for free — enough to find its interpreter and home, nothing sensitive.
 // Documented in NOTES (phase-3 security posture): PATH so a wrapped CLI resolves, HOME so it can
@@ -124,6 +125,22 @@ export function describeMemberEnv(env: Record<string, string>): Array<{ name: st
 export interface ScopedHome {
   env: Record<string, string>;
   cleanup(): void;
+  /** NOTES SEC-V11 F1: dotpaths this call refused to symlink because the resolved link or target path
+   * escaped its own confinement (scratch dir / real HOME) — never populated by a validated studio
+   * (validate.ts's own UNSAFE_HOME_PATH already rejects these at the schema boundary), but this function
+   * fails closed independently of that check ever having run. Empty in the overwhelming common case. */
+  skipped: string[];
+}
+
+// NOTES SEC-V11 F1 (defense in depth): the SAME confinement `scopeHome` must hold, checked again here
+// with no dependency on validate.ts having run first — `child` must resolve to a path strictly BENEATH
+// `parent`, never equal to it and never escaping via `..`. Pure string/path math: `join()` above already
+// normalizes `..` segments out of `target`/`link` before this ever runs, so a traversal dotpath produces
+// a path this check can catch without touching the filesystem (the target need not exist — a dangling
+// vendor-config path is legal, per this function's own doc below).
+function isStrictlyUnder(child: string, parent: string): boolean {
+  const rel = relative(parent, child);
+  return rel !== "" && rel !== "." && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
 export interface ScopeHomeOptions {
@@ -146,17 +163,39 @@ export interface ScopeHomeOptions {
  *
  * Scratch dirs are created fresh on every call (never cached/shared across spawns) and MUST be removed
  * by the caller via the returned `cleanup()` once the spawn this env was built for is done.
+ *
+ * NOTES SEC-V11 F1: a traversal `home:` entry (e.g. `"../../.ssh"`) is rejected independently of
+ * validate.ts ever having run against the studio that declared it — this function fails CLOSED, never
+ * trusting that a caller validated first. Such an entry is skipped (never symlinked, no exception
+ * thrown) and named in the returned `skipped` list; every other declared dotpath still scopes normally.
  */
 export function scopeHome(repo: Repo, member: string, env: Record<string, string>, opts: ScopeHomeOptions = {}): ScopedHome {
   const sub = subscriptionConnector(repo, member);
   const dotpaths = sub?.home;
   const realHome = env.HOME;
-  if (!dotpaths || dotpaths.length === 0 || !realHome) return { env, cleanup() {} };
+  if (!dotpaths || dotpaths.length === 0 || !realHome) return { env, cleanup() {}, skipped: [] };
 
   const scratch = mkdtempSync(join(opts.tmpRoot ?? tmpdir(), "levare-home-"));
+  const skipped: string[] = [];
   for (const dotpath of dotpaths) {
+    // NOTES SEC-V11 F1: fails CLOSED regardless of whether validate.ts's own UNSAFE_HOME_PATH check
+    // ever ran against this studio — a traversal dotpath (e.g. "../../.ssh") must never resolve its
+    // symlink TARGET above `realHome`, and the LINK itself must never land outside `scratch` (both
+    // `join()` calls below already fold ".." into the resulting string, so a traversal entry is only
+    // detectable AFTER joining, not before — checking the joined result is the actual guarantee, not
+    // `isSafeHomeDotpath`'s own lexical check, which is kept too as the cheap, obviously-correct first
+    // gate). An entry failing either check is skipped — never symlinked, recorded in `skipped` — the
+    // rest of the declared dotpaths still scope normally.
+    if (!isSafeHomeDotpath(dotpath)) {
+      skipped.push(dotpath);
+      continue;
+    }
     const target = join(realHome, dotpath);
     const link = join(scratch, dotpath);
+    if (!isStrictlyUnder(link, scratch) || !isStrictlyUnder(target, realHome)) {
+      skipped.push(dotpath);
+      continue;
+    }
     mkdirSync(dirname(link), { recursive: true });
     try {
       // No `type` argument: POSIX symlinks don't need one, and this codebase runs on Linux/macOS
@@ -170,6 +209,7 @@ export function scopeHome(repo: Repo, member: string, env: Record<string, string
   }
   return {
     env: { ...env, HOME: scratch },
+    skipped,
     cleanup() {
       try {
         // `recursive: true` unlinks symlink ENTRIES inside `scratch`, never follows them into the
