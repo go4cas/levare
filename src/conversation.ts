@@ -60,17 +60,31 @@ function fileHeader(scope: string, when: Date): string {
 
 const TURN_HEADER = /^## (conductor|orchestrator) · (\S+)$/;
 
+// NOTES SEC-V11 F3: a body line that itself exactly matches the header grammar (an adversarial artifact
+// or member output quoted verbatim into a Conductor/Orchestrator message) would otherwise be misread on
+// the next parse as a NEW turn boundary — forging a turn out of attacker-controlled text. Escaped here,
+// on write, with a single leading backslash (the same convention Markdown itself uses to escape a line
+// that would otherwise be read as a heading) — `\## conductor · ...` is still perfectly readable by a
+// human `cat`ing the file, and `parseConversation` strips exactly this one prefix back off, so the
+// round-trip (append then parse) restores the ORIGINAL text byte-for-byte, never forging an extra turn.
+function escapeBodyLine(line: string): string {
+  return TURN_HEADER.test(line) ? `\\${line}` : line;
+}
+
 function formatTurn(turn: Turn): string {
-  return `## ${turn.speaker} · ${turn.at}\n\n${turn.text.trim()}\n\n`;
+  const body = turn.text.trim().split("\n").map(escapeBodyLine).join("\n");
+  return `## ${turn.speaker} · ${turn.at}\n\n${body}\n\n`;
 }
 
 /** Parse a conversation segment back into its turns — pleasant to `cat`/diff by design (goal's own
  * requirement), not a strict serialization: any line that isn't a recognized `## speaker · timestamp`
  * header folds into the CURRENT turn's running text, so a Conductor hand-annotating the file (or a
- * message body that happens to contain a blank line) never breaks the parse. The one accepted
- * imprecision: a message body line that itself exactly matches the header pattern would be misread as
- * a new turn boundary — deliberately not defended against (no escaping) to keep the format a plain,
- * human-editable log rather than a serialization; recorded in NOTES V11-CONV. */
+ * message body that happens to contain a blank line) never breaks the parse. A body line that itself
+ * exactly matches the header grammar is escaped at write time (`escapeBodyLine`, above) with a single
+ * leading backslash; this function strips exactly that escape back off (NOT a general backslash-escape
+ * grammar — only when what remains after removing one leading backslash matches the header pattern) so
+ * such a line stays part of the CURRENT turn's body, never mistaken for a new turn boundary — the
+ * round-trip (append then parse) yields exactly the turns written, byte-for-byte (NOTES SEC-V11 F3). */
 export function parseConversation(content: string): Turn[] {
   const lines = content.split("\n");
   const turns: Turn[] = [];
@@ -81,7 +95,8 @@ export function parseConversation(content: string): Turn[] {
       continue;
     }
     if (turns.length === 0) continue; // the title line, or stray content before the first turn
-    turns[turns.length - 1].text += (turns[turns.length - 1].text ? "\n" : "") + line;
+    const unescaped = line.startsWith("\\") && TURN_HEADER.test(line.slice(1)) ? line.slice(1) : line;
+    turns[turns.length - 1].text += (turns[turns.length - 1].text ? "\n" : "") + unescaped;
   }
   for (const t of turns) t.text = t.text.trim();
   return turns;
