@@ -1,0 +1,43 @@
+name: Deploy docs to GitHub Pages
+
+# Publishes ONLY docs/guide — not the rest of docs/ (the PRD, security audit findings, code-review
+# notes, and the orchestrator prompt stay in the repo, findable by anyone who goes looking, but are
+# deliberately not part of the published, linked site). See the "Deploy from a branch" source picker's
+# folder options (/ or /docs only) for why this can't be done with that simpler source instead — the
+# Actions source has no such restriction, since it just uploads whatever path we tell it to.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/guide/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Upload docs/guide as the Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/guide
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
