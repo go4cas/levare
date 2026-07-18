@@ -264,9 +264,17 @@ async function doApproveMerge(root: string, repo: Repo, unit: WorkUnit, file: st
   }
 
   const message = `merge ${branch} -> ${project.default_branch}: unit ${unit.unit} (gate ${id})`;
-  const exec = executeMerge(projectRepoPath, branch, project.default_branch, message, project.remote);
+  // NOTES SEC-V11 F2: pin execution to the EXACT work-branch commit this trial (and the guardrail check
+  // just above, against `trial.diffFiles`) evaluated — `executeMerge` re-resolves `branch` itself and
+  // refuses (stage "stale") if it no longer matches, so a work branch that advanced between the check
+  // above and this call (a foreign CLI member's commit landing mid-approval) can never carry unreviewed
+  // content past the gate. `trial.branchSha` is always set here (the conflict/error returns above already
+  // ruled out the only cases where `trialMerge` leaves it undefined).
+  const exec = executeMerge(projectRepoPath, branch, project.default_branch, message, project.remote, trial.branchSha);
   if (!exec.ok) {
-    return { ok: false, status: exec.stage === "push" ? 502 : 500, error: `merge gate '${id}' execution FAILED (${exec.stage}): ${exec.error}` };
+    const status = exec.stage === "push" ? 502 : exec.stage === "stale" ? 409 : 500;
+    const hint = exec.stage === "stale" ? " — resolve by re-running recheck" : "";
+    return { ok: false, status, error: `merge gate '${id}' execution FAILED (${exec.stage}): ${exec.error}${hint}` };
   }
 
   const src = readFileSync(file, "utf8");
@@ -315,6 +323,9 @@ function doRecheckMerge(root: string, repo: Repo, unit: WorkUnit, file: string, 
     conflicted: trial.conflicted,
     conflicts: trial.conflicts,
     guardrail_violations: violations.map((v) => `${v.rule}: ${v.detail}`),
+    // NOTES SEC-V11 F2: recheck recomputes the pinned SHA fresh, same as gate-open — the NEXT approve
+    // call pins to whatever this recheck just observed, never a round-trip-stale value.
+    branch_sha: trial.branchSha ?? null,
   });
   const errs = validateArtifactSource(patched, file, dirname(file), root);
   if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };

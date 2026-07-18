@@ -282,6 +282,10 @@ export interface MergeInfo {
   conflicted: boolean;
   conflicts: string[];
   guardrail_violations: string[];
+  // NOTES SEC-V11 F2: the exact work-branch SHA this trial evaluated — the pin `executeMerge` verifies
+  // the branch still points at before landing (merge.ts's own doc). Optional/nullable: a hand-built
+  // pre-F2 artifact, or a trial that errored before resolving the branch, carries none.
+  branch_sha?: string | null;
 }
 
 // NOTES MERGE-1 (M4/M5): the on-approval record of a merge gate's SUCCESSFUL execution — appended by

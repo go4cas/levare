@@ -133,6 +133,11 @@ export interface TrialMergeResult {
   diffFiles: string[];
   conflicted: boolean;
   conflicts: string[];
+  /** NOTES SEC-V11 F2: the exact commit SHA of `branch` this trial evaluated — the pin `executeMerge`
+   * checks the branch STILL points at before landing, closing the TOCTOU window between "guardrails
+   * were checked against this diff" and "this is what actually got merged" (see `executeMerge`'s own
+   * doc). Undefined only when the trial couldn't resolve the branch at all (the `error` case below). */
+  branchSha?: string;
   /** Set only when the trial merge itself could not be attempted at all (missing branch/target, a
    * `git worktree` failure) — distinct from `conflicted`, which means the attempt ran and found one. */
   error?: string;
@@ -173,7 +178,9 @@ export function trialMerge(repoPath: string, branch: string, defaultBranch: stri
     conflicts: [],
     error,
   });
-  if (!branchExists(repoPath, branch)) return empty(`work branch '${branch}' does not exist`);
+  const branchShaR = git(repoPath, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
+  if (branchShaR.status !== 0) return empty(`work branch '${branch}' does not exist`);
+  const branchSha = branchShaR.stdout.trim();
   const target = git(repoPath, ["rev-parse", "--verify", "--quiet", `refs/heads/${defaultBranch}`]);
   if (target.status !== 0) return empty(`default_branch '${defaultBranch}' does not resolve`);
 
@@ -196,7 +203,7 @@ export function trialMerge(repoPath: string, branch: string, defaultBranch: stri
     return { conflicted: true, conflicts };
   });
   if (!attempt.ok) return empty(attempt.error);
-  return { branch, target: defaultBranch, commitsAhead, diffstat, diffFiles, conflicted: attempt.value.conflicted, conflicts: attempt.value.conflicts };
+  return { branch, target: defaultBranch, commitsAhead, diffstat, diffFiles, conflicted: attempt.value.conflicted, conflicts: attempt.value.conflicts, branchSha };
 }
 
 // ---------------------------------------------------------------------------
@@ -228,7 +235,7 @@ export function checkGuardrailsForMerge(teams: Team[], diffFiles: string[], defa
 
 export type MergeExecutionResult =
   | { ok: true; mergeCommit: string; pushed: boolean | null }
-  | { ok: false; stage: "merge" | "push"; error: string };
+  | { ok: false; stage: "merge" | "push" | "stale"; error: string };
 
 /**
  * M4: produce a merge commit (`git merge --no-ff`, never squash/rebase — the work branch's own commit
@@ -238,12 +245,30 @@ export type MergeExecutionResult =
  * SHA is pushed to `remote`'s `default_branch` in the same call; a push failure resets the ref back to
  * its pre-merge value with the identical compare-and-swap update-ref call — byte-perfect rollback, and
  * the local repo ends the call in EXACTLY the state it was in before this function ran.
+ *
+ * NOTES SEC-V11 F2: `expectedBranchSha`, when given, is the exact commit a prior `trialMerge` evaluated
+ * (and a caller like `board/gateops.ts#doApproveMerge` already checked guardrails against). This
+ * function resolves `branch`'s CURRENT tip itself — never trusting the caller's own possibly-stale
+ * belief — and refuses (`stage: "stale"`) if it no longer matches, rather than silently merging whatever
+ * `branch` now points at. The merge itself is performed by SHA, not by ref name, closing even the
+ * residual window between this check and the `git merge` call below: a work branch advanced between
+ * the guardrail check and this call (a foreign CLI member's commit landing mid-approval, e.g.) can never
+ * carry unreviewed content past the gate — the caller gets a clear "recheck required" error instead.
  */
-export function executeMerge(repoPath: string, branch: string, defaultBranch: string, message: string, remote: string | null): MergeExecutionResult {
+export function executeMerge(repoPath: string, branch: string, defaultBranch: string, message: string, remote: string | null, expectedBranchSha?: string): MergeExecutionResult {
   const preRefR = git(repoPath, ["rev-parse", "--verify", "--quiet", `refs/heads/${defaultBranch}`]);
   if (preRefR.status !== 0) return { ok: false, stage: "merge", error: `default_branch '${defaultBranch}' does not resolve` };
   const preSha = preRefR.stdout.trim();
-  if (!branchExists(repoPath, branch)) return { ok: false, stage: "merge", error: `work branch '${branch}' does not exist` };
+  const branchShaR = git(repoPath, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
+  if (branchShaR.status !== 0) return { ok: false, stage: "merge", error: `work branch '${branch}' does not exist` };
+  const branchSha = branchShaR.stdout.trim();
+  if (expectedBranchSha !== undefined && branchSha !== expectedBranchSha) {
+    return {
+      ok: false,
+      stage: "stale",
+      error: `work branch '${branch}' advanced since check — recheck required (checked ${expectedBranchSha}, now at ${branchSha})`,
+    };
+  }
 
   const attempt = withScratchWorktree(repoPath, preSha, (scratch) => {
     const merge = git(scratch, [
@@ -259,7 +284,7 @@ export function executeMerge(repoPath: string, branch: string, defaultBranch: st
       "--no-ff",
       "-m",
       message,
-      branch,
+      branchSha,
     ]);
     if (merge.status !== 0) {
       git(scratch, ["merge", "--abort"]);
@@ -331,6 +356,7 @@ export function formatMergeArtifact(unit: string, project: string, id: string, c
     `  conflicted: ${trial.conflicted}`,
     `  conflicts: [${trial.conflicts.map(q).join(", ")}]`,
     `  guardrail_violations: [${guardrailViolations.map(q).join(", ")}]`,
+    ...(trial.branchSha ? [`  branch_sha: ${q(trial.branchSha)}`] : []),
     "---",
     "",
     `# merge — ${trial.error ? "ERROR" : trial.conflicted ? "CONFLICTED" : "clean"}`,

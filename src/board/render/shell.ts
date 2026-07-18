@@ -574,9 +574,12 @@ function mergeGateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: 
   // violation the SAME execution-time re-check (M3) would re-discover and fail on anyway.
   const canApprove = !conflicted && guardrailsPass;
 
+  // NOTES SEC-V11 F2: surfaces the exact commit `executeMerge` pins to (merge.ts's own TOCTOU-closing
+  // check) — small, honest, additive; omitted entirely for a pre-F2 artifact carrying no `branch_sha`.
+  const shaChip = merge.branch_sha ? tag(merge.branch_sha.slice(0, 7), "tag") : "";
   const statsHtml = `<div class="chiprow">${tag(merge.branch, "tag")}${tag(`${merge.commits_ahead} commit${merge.commits_ahead === 1 ? "" : "s"} ahead`, "tag")}${
     diffstatSummary(merge.diffstat) ? tag(diffstatSummary(merge.diffstat)!, "tag") : ""
-  }</div>`;
+  }${shaChip}</div>`;
 
   const trialBadge = conflicted ? statusBadge("failed", "CONFLICTED") : statusBadge("done", "CLEAN");
   // The instruction the server already words at every layer that names a conflict (merge.ts's own

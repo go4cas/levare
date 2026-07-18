@@ -163,6 +163,10 @@ export const ARTIFACT_SCHEMA: Schema = {
         conflicted: { type: "bool", required: true },
         conflicts: { type: "str[]", required: true },
         guardrail_violations: { type: "str[]", required: true },
+        // NOTES SEC-V11 F2: the exact work-branch SHA this trial evaluated — optional (a hand-built
+        // pre-F2 merge artifact, or a trial that errored before resolving the branch, carries none) so
+        // this stays additive, never a breaking schema change for existing on-disk artifacts.
+        branch_sha: { type: "str", required: false, nullable: true },
       },
     },
     // NOTES MERGE-1 (M4/M5): reserved for `kind: merge` — set by levare only once a merge gate's
