@@ -111,6 +111,6 @@ from another vendor, watched two models argue, and settled it yourself — for a
 
 **Where next:**
 
-- **[5 · Reference](../05-reference/)** — every field, every schema, every command.
+- **[5 · Reference](../05-reference/README.md)** — every field, every schema, every command.
 - **[6 · Operations](../06-operations.md)** — what to know before you run agents you don't control.
 - **[7 · Community](../07-community.md)** — run your own; share definitions, not runtime.

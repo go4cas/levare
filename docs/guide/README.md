@@ -32,7 +32,7 @@ A solo operator's console for directing teams of AI agents, from pitch to produc
 
 | | |
 |---|---|
-| **[5 · Reference](05-reference/)** | Schemas, the artifact contract, the CLI, the write surface. |
+| **[5 · Reference](05-reference/README.md)** | Schemas, the artifact contract, the CLI, the write surface. |
 | [5.1 The artifact contract](05-reference/01-artifact-contract.md) | Every field, every status, every rule. |
 | [5.2 Registry entities](05-reference/02-registry-entities.md) | Teams, agents, skills, knowledge, types, connectors, projects. |
 | [5.3 The CLI](05-reference/03-cli.md) | `init` · `serve` · `validate` · `doctor` · `context` · `replay` |
