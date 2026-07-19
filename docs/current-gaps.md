@@ -146,7 +146,7 @@ actually used is recorded on the produced artifact (`sandbox: full | fs-only | n
 omitted — though as of this ruling, `full` itself requires reading which `primitive` produced it to know
 which of the two non-equivalent guarantees actually applied.
 
-**Honestly, in four rounds.** The FIRST live run of this feature was on macOS — the only host in this
+**Honestly, in five rounds.** The FIRST live run of this feature was on macOS — the only host in this
 project's history where `sandbox-exec` actually engaged rather than reporting `none` — and it failed 20
 pre-existing tests plus the two new decoy/read-back tests, all real-spawn paths. Round 1 (NOTES
 R4-SANDBOX-FIX) fixed macOS path canonicalization (`sandbox-exec`'s path rules match the KERNEL-RESOLVED
@@ -163,15 +163,25 @@ THIRD live run — with the wrapper now composing and applying correctly, confir
 `LEVARE_SANDBOX_DEBUG` — found the process still dying, this time under `dyld`'s own
 `ignition_halt`/`abort_with_reason`, no sandbox denial logged for it; a 14-profile bisection on the live
 host proved no enumerated allow-list satisfies `dyld` on this OS, and a Conductor ruling (NOTES
-R4-SANDBOX-FIX-3) flipped the macOS model to deny-listing instead, described above. Throughout, a
+R4-SANDBOX-FIX-3) flipped the macOS model to deny-listing instead, described above. A FOURTH live run —
+against the new deny-list model — dropped the failure count from 20 to 9, and this time the
+`LEVARE_SANDBOX_DEBUG` capture convicted the generated profile TEXT directly: a security bug (the
+operator's real HOME was blanket re-allowed whenever a member had no genuinely scoped one — the exact
+common case the round-3 decoy test exercised, and why that test itself was failing), a crash (denying
+`/Users` without re-allowing the ancestor directory components between it and a re-allowed path breaks
+path traversal — recognizable by a NEW signature, `SIGTRAP` inside `std::__call_once`, bun/Zig panicking
+on an unexpected `EPERM`, never a logged sandbox denial), and a cosmetic duplicate-rule issue. Round 4
+(NOTES R4-SANDBOX-FIX-4) fixed all three: the HOME re-allow now requires the home to be genuinely
+DIFFERENT from the operator's real one; every re-allowed path gets ancestor-directory metadata access so
+traversal into it survives a denied ancestor; every generated line is deduplicated. Throughout, a
 `LEVARE_SANDBOX_DEBUG=1` env var prints the composed argv and raw spawn result for whichever run
 confirms it. What COULD be verified without a live macOS host (canonicalization logic, argv/profile
-construction, rule ORDER in the generated profile text, the composed-argv shape itself) was; what could
-only be proven by actually running there (bubblewrap's own Linux behaviour beyond this repo's own dev
-container, `unshare`'s fs-only fallback anywhere, and now whether the deny-list model — the shape 14
-hand-run profiles verified, not necessarily byte-identical to what this file's own generator produces for
-a real dispatch — actually clears the same 20 failures) still wasn't, and is named rather than assumed —
-see NOTES R4-SANDBOX-FIX-3's own "still requires a live host" list.
+construction, rule ORDER in the generated profile text, the deny-defeat/ancestor-metadata/dedup fixes all
+directly against the generator's own output) was; what could only be proven by actually running there
+(bubblewrap's own Linux behaviour beyond this repo's own dev container, `unshare`'s fs-only fallback
+anywhere, and now whether the round-4-corrected profile clears the remaining 9 failures on the same host
+that reported them) still wasn't, and is named rather than assumed — see NOTES R4-SANDBOX-FIX-4's own
+"still requires a live host" list.
 
 ## Connector trust-tier taxonomy
 

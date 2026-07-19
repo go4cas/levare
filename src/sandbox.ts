@@ -146,6 +146,49 @@
 // simply no longer true that literally everything outside a short allow-list is unreadable, because nothing
 // on this OS can make that claim survive contact with dyld.
 
+// NOTES R4-SANDBOX-FIX-4 (round 4 — live macOS gate: 9 failures remaining, down from 20, with
+// `LEVARE_SANDBOX_DEBUG` output convicting the generated profile directly): round 3's deny-list SHAPE was
+// right, but the generator had two real bugs and one cosmetic one, all visible in a captured profile:
+//
+// DEFECT 1 (security — the deny was defeated, and is why the round-3 decoy-file test itself failed): a
+// member with no genuinely SCOPED HOME has `req.env.HOME` resolve to the operator's own real HOME —
+// `buildMemberEnv` allowlists it through unconditionally regardless of scoping — and the round-3 generator
+// re-allowed `policy.home` unconditionally whenever present, which blanket re-allowed the operator's ENTIRE
+// real home, read AND write, in exactly the common (no subscription grant) case. Fixed: `home` is only
+// ever a genuine re-allow target when it's both present and, after canonicalization, DIFFERENT from
+// `operatorHome` — a member with no scoped HOME gets exactly three things re-allowed: its dispatch
+// worktree, `readOnlyPaths`, and `/dev`.
+//
+// DEFECT 2 (crash — a NEW, different signature than round 3's dyld abort): the profile denied `/Users`
+// broadly and never re-allowed the intermediate path COMPONENTS between it and a re-allowed path further
+// down (e.g. `/Users/cas/source/levare` needs `/Users` and `/Users/cas` to even be TRAVERSABLE before the
+// target's own `subpath` re-allow is ever consulted) — path resolution dies at the first denied ancestor.
+// The crash report's own signature is DIFFERENT from round 3's dyld abort and worth naming as its own
+// recognizable symptom: `SIGTRAP` inside `std::__call_once` — bun is written in Zig, and Zig panics trap
+// rather than raising a signal a Conductor would read as "the OS denied something"; it is bun itself
+// panicking on an unexpected `EPERM` during early init. Fixed: every re-allowed path gets
+// `(allow file-read-metadata (literal ...))` for each of its own ancestor directories, placed after the
+// denies (`ancestorsOf`) — existence/stat access only, never contents, and `literal` rather than `subpath`
+// so a sibling directory at the same level gains nothing from it.
+//
+// The design tension DEFECT 1 exposes, and its resolution: the dispatch worktree and `readOnlyPaths`
+// (interpreter tree, member command directory, studio root) themselves routinely live UNDER the operator's
+// real HOME on a real macOS dev machine (`/Users/cas/source/levare`, `/Users/cas/.bun`, …) — the exact
+// thing DEFECT 1's fix now denies by default. This is not a contradiction: DEFECT 2's fix (ancestor
+// metadata) is what makes DEFECT 1's fix VIABLE at all — without surgical per-path re-allows carved out
+// with their own ancestor traversal restored, denying the operator's home broadly would have taken the
+// worktree/readOnlyPaths down with it. Fixing the crash first is what makes fixing the security bug not
+// also break every ordinary dispatch.
+//
+// DEFECT 3 (cosmetic): `adapters.ts#sandboxWrap` can legitimately compute the SAME resolved path twice
+// (e.g. the running levare binary and the member's own resolved command are both `bun`) — every line the
+// generator emits is now deduplicated (`dedupe`), not just the inputs, so duplication can't survive
+// whichever upstream computation produced it.
+//
+// The decoy-file test's own meaning is UNCHANGED by this round: a file under the operator's `$HOME`
+// outside the granted set must be unreadable — round 4 is what makes that claim actually TRUE for the
+// common case again, having been silently false since round 3 shipped.
+
 import { existsSync, realpathSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -378,6 +421,30 @@ function canon(p: string): string {
   }
 }
 
+function dedupe<T>(arr: T[]): T[] {
+  return [...new Set(arr)];
+}
+
+// NOTES R4-SANDBOX-FIX-4 (round 4, live macOS gate — DEFECT 2): every re-allowed path needs its OWN
+// ancestor directories to be metadata-readable, or the kernel's own path resolution dies at the first
+// denied ancestor component before the re-allow rule for the target itself is ever consulted — a
+// `(subpath ...)` re-allow only ever covers the named path and what's NESTED inside it, never anything
+// ABOVE it. Returns every strict ancestor of `p` (excluding `/` itself, which is trivially always
+// resolvable, and excluding `p`, whose OWN re-allow already covers it) — deliberately EXHAUSTIVE (every
+// intermediate component, not only the ones between the nearest denied root and the target): over-
+// granting harmless metadata (existence/stat, never contents) is a far smaller risk than a second crash
+// from an under-covered ancestor the next level down.
+function ancestorsOf(p: string): string[] {
+  const parts = p.split("/").filter(Boolean);
+  const out: string[] = [];
+  let acc = "";
+  for (let i = 0; i < parts.length - 1; i++) {
+    acc += `/${parts[i]}`;
+    out.push(acc);
+  }
+  return out;
+}
+
 /**
  * NOTES R4-SANDBOX-FIX-3 (round 3, live macOS bisection — see this module's own header for the full
  * evidence): a DENY-LIST, not an allow-list. Fourteen hand-run profiles on a live host proved that an
@@ -386,49 +453,89 @@ function canon(p: string): string {
  * path that is not externally discoverable or expressible as a finite list. The only verified-working
  * shape grants broad OS reads by default and denies the operator's own user data instead.
  *
+ * NOTES R4-SANDBOX-FIX-4 (round 4, live macOS gate): round 3's own shape shipped with two further bugs,
+ * both visible directly in a live `LEVARE_SANDBOX_DEBUG` capture and both fixed here:
+ *
+ * DEFECT 1 (security — the deny was defeated). A member with no scoped HOME (`env.ts#scopeHome` never
+ * ran, or ran as a no-op) has `req.env.HOME` resolve to the operator's OWN real HOME — it's allowlisted
+ * through unconditionally by `buildMemberEnv` regardless of scoping. Blindly re-allowing `policy.home`
+ * therefore re-allowed the operator's ENTIRE real home, read AND write, defeating the whole deny-list
+ * model for the common (no subscription grant) case — this is what the round-4 decoy-file test caught.
+ * Fixed: `home` is only ever treated as a genuine re-allow target when it's both present AND DIFFERENT
+ * from `operatorHome` (a real scratch/scoped path, never the same directory under a different spelling —
+ * `canon()` on both sides is what makes "different" a filesystem fact, not a string comparison). A member
+ * with no scoped HOME gets exactly three things re-allowed: its dispatch worktree, `readOnlyPaths`, and
+ * `/dev` — nothing under the operator's home at all, read or write.
+ *
+ * DEFECT 2 (crash — see this function's own `ancestorsOf` doc). Fixed by emitting
+ * `(allow file-read-metadata (literal ...))` for every ancestor of every re-allowed path, placed AFTER
+ * the denies (rule order applies to these exactly as it does to the read/write re-allows below).
+ *
+ * DEFECT 3 (cosmetic — duplicate rule pairs). `adapters.ts#sandboxWrap` can legitimately compute the SAME
+ * path twice (e.g. the running levare binary and the member's own resolved command are both `bun`) —
+ * `dedupe()` on every generated line, not just the inputs, is what makes duplication impossible
+ * regardless of which upstream computation produced it.
+ *
  * RULE ORDER IS LOAD-BEARING. Seatbelt's `(allow ...)`/`(deny ...)` rules are evaluated with the LAST
  * matching rule winning for a given operation — never first-match, never "most specific wins" the way some
- * other policy languages work. Every `(deny file-read* ...)` line below MUST appear BEFORE the
- * `(allow file-read* ...)` re-allow lines that are meant to carve exceptions back out of it; reversing the
- * order would make the re-allows silently inert (the LATER deny would win instead) — this is exactly the
- * kind of bug this file's own comment exists to prevent a future edit from reintroducing.
+ * other policy languages work. Every `(deny file-read* ...)` line below MUST appear BEFORE the ancestor-
+ * metadata AND the `(allow file-read* ...)` re-allow lines that are meant to carve exceptions back out of
+ * it; reversing the order would make the re-allows silently inert (the LATER deny would win instead) —
+ * this is exactly the kind of bug this file's own comment exists to prevent a future edit from
+ * reintroducing.
  *
  * Exported for its own unit test — the profile TEXT is the thing worth asserting on, including rule
  * ORDER specifically. The actual enforcement (`sandbox-exec` denying what this profile says to deny) is
  * exercised only by construction in this repo's own Linux-only test suite, never live — recorded
- * honestly (NOTES R4-SANDBOX/R4-SANDBOX-FIX/R4-SANDBOX-FIX-3) rather than claimed as verified beyond what
- * the live-host bisection itself already confirmed (the shape below, not this exact generated text).
+ * honestly (NOTES R4-SANDBOX/R4-SANDBOX-FIX through -FIX-4) rather than claimed as verified beyond what
+ * the live-host gate itself already confirmed (the shape below, not this exact generated text).
  */
 export function buildSandboxExecProfile(policy: SandboxPolicy): string {
   const cwd = canon(policy.cwd);
-  const home = policy.home ? canon(policy.home) : undefined;
   const operatorHome = policy.operatorHome ? canon(policy.operatorHome) : undefined;
-  const reallowReads = [cwd, ...(home ? [home] : []), ...(policy.grantedHomeTargets ?? []).map(canon), ...(policy.readOnlyPaths ?? []).map(canon)];
-  const lines = [
-    "(version 1)",
-    "(deny default)",
-    "(allow process-fork)",
-    "(allow process-exec)",
-    // Broad OS read, same as an unsandboxed process would see — verified live: this is the only shape
-    // that lets dyld's own shared-cache lookup succeed on this platform (see this module's header).
-    '(allow file-read* (subpath "/"))',
-    // --- Denies below, re-allows after: order is load-bearing (see this function's own doc). ---
-    operatorHome ? `(deny file-read* (subpath ${sbxq(operatorHome)}))` : "",
-    '(deny file-read* (subpath "/Users"))',
-    '(deny file-read* (subpath "/Volumes"))',
-    // Re-allows: exactly what THIS dispatch needs, carved back out of the denies above. The dispatch
-    // worktree, the member's own (possibly scratch-scoped) HOME, any granted connector's OWN real home
-    // targets (env.ts#scopeHome may have symlinked to these — denying $HOME broadly would otherwise deny
-    // reading THROUGH those symlinks too), and readOnlyPaths (the studio root, the interpreter's install
-    // tree, the member command's own directory — see adapters.ts#sandboxWrap's own doc for exactly what
-    // populates this list).
-    ...reallowReads.map((p) => `(allow file-read* (subpath ${sbxq(p)}))`),
-    `(allow file-write* (subpath ${sbxq(cwd)}))`,
-    home ? `(allow file-write* (subpath ${sbxq(home)}))` : "",
-    '(allow file-read* (subpath "/dev"))',
-    '(allow file-write* (subpath "/dev"))',
-    policy.allowNetwork ? "(allow network*)" : "(deny network*)",
-  ].filter(Boolean);
+  // DEFECT 1: only a genuinely DIFFERENT, scoped HOME is ever a re-allow target — never the operator's
+  // own real home under whatever spelling it happened to arrive as.
+  const rawHome = policy.home ? canon(policy.home) : undefined;
+  const scopedHome = rawHome && rawHome !== operatorHome ? rawHome : undefined;
+  const grantedTargets = (policy.grantedHomeTargets ?? []).map(canon);
+  const readOnly = (policy.readOnlyPaths ?? []).map(canon);
+
+  const reallowReads = dedupe([cwd, ...(scopedHome ? [scopedHome] : []), ...grantedTargets, ...readOnly]);
+  const reallowWrites = dedupe([cwd, ...(scopedHome ? [scopedHome] : [])]);
+  // DEFECT 2: ancestor metadata for every read re-allow — write re-allows are a subset of reallowReads
+  // already, so their own ancestors are already covered here, not computed a second time.
+  const ancestorMetadata = dedupe(reallowReads.flatMap(ancestorsOf));
+
+  const lines = dedupe(
+    [
+      "(version 1)",
+      "(deny default)",
+      "(allow process-fork)",
+      "(allow process-exec)",
+      // Broad OS read, same as an unsandboxed process would see — verified live: this is the only shape
+      // that lets dyld's own shared-cache lookup succeed on this platform (see this module's header).
+      '(allow file-read* (subpath "/"))',
+      // --- Denies below, ancestor metadata + re-allows after: order is load-bearing (see this
+      // function's own doc). ---
+      operatorHome ? `(deny file-read* (subpath ${sbxq(operatorHome)}))` : "",
+      '(deny file-read* (subpath "/Users"))',
+      '(deny file-read* (subpath "/Volumes"))',
+      // Ancestor metadata (DEFECT 2): lets path resolution TRAVERSE into a re-allowed path that sits
+      // under a denied root, without granting anything about the ancestor's own contents.
+      ...ancestorMetadata.map((p) => `(allow file-read-metadata (literal ${sbxq(p)}))`),
+      // Re-allows: exactly what THIS dispatch needs, carved back out of the denies above. The dispatch
+      // worktree, the member's own genuinely-scoped HOME (never the operator's real one — DEFECT 1), any
+      // granted connector's OWN real home targets (env.ts#scopeHome may have symlinked to these — denying
+      // $HOME broadly would otherwise deny reading THROUGH those symlinks too), and readOnlyPaths (the
+      // studio root, the interpreter's install tree, the member command's own directory — see
+      // adapters.ts#sandboxWrap's own doc for exactly what populates this list).
+      ...reallowReads.map((p) => `(allow file-read* (subpath ${sbxq(p)}))`),
+      ...reallowWrites.map((p) => `(allow file-write* (subpath ${sbxq(p)}))`),
+      '(allow file-read* (subpath "/dev"))',
+      '(allow file-write* (subpath "/dev"))',
+      policy.allowNetwork ? "(allow network*)" : "(deny network*)",
+    ].filter(Boolean),
+  );
   return lines.join("\n");
 }
 

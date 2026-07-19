@@ -347,6 +347,95 @@ describe("buildSandboxExecProfile — deny-list model (NOTES R4-SANDBOX-FIX-3)",
     }
   });
 
+  // NOTES R4-SANDBOX-FIX-4 (round 4, live macOS gate) — DEFECT 1, security: a member with no genuinely
+  // scoped HOME has `req.env.HOME` resolve to the operator's OWN real home (buildMemberEnv allowlists
+  // HOME unconditionally); blindly re-allowing `policy.home` therefore re-allowed the operator's ENTIRE
+  // real home, read AND write, defeating the whole deny-list model. This is the bug the live decoy-file
+  // test caught directly.
+  describe("DEFECT 1 — the operator's real HOME is never blanket re-allowed", () => {
+    test("home === operatorHome (no genuine scoping) → no HOME re-allow at all, read or write", () => {
+      const profile = buildSandboxExecProfile({ cwd: "/a/b", home: "/Users/cas", operatorHome: "/Users/cas", allowNetwork: false });
+      expect(profile).not.toContain('(allow file-read* (subpath "/Users/cas"))');
+      expect(profile).not.toContain('(allow file-write* (subpath "/Users/cas"))');
+      // Only cwd + /dev are write-allowed — never the operator's home.
+      expect(profile.match(/allow file-write\*/g)?.length).toBe(2);
+    });
+
+    test("a genuinely DIFFERENT (scoped) home is still re-allowed, read and write", () => {
+      const profile = buildSandboxExecProfile({ cwd: "/a/b", home: "/private/var/folders/scratch-home", operatorHome: "/Users/cas", allowNetwork: false });
+      expect(profile).toContain('(allow file-read* (subpath "/private/var/folders/scratch-home"))');
+      expect(profile).toContain('(allow file-write* (subpath "/private/var/folders/scratch-home"))');
+    });
+
+    test("no operatorHome known at all → home is still re-allowed (nothing to defeat, nothing to compare against)", () => {
+      const profile = buildSandboxExecProfile({ cwd: "/a/b", home: "/c/d", allowNetwork: false });
+      expect(profile).toContain('(allow file-read* (subpath "/c/d"))');
+      expect(profile).toContain('(allow file-write* (subpath "/c/d"))');
+    });
+  });
+
+  // NOTES R4-SANDBOX-FIX-4 — DEFECT 2, crash: a `(subpath ...)` re-allow only ever covers the named path
+  // and what's nested inside it — path resolution INTO it still traverses every ancestor component, and
+  // an ancestor sitting under a denied root (e.g. `/Users`) dies there before the re-allow is ever
+  // consulted. The live crash signature: SIGTRAP inside `std::__call_once` — bun (Zig) panicking on an
+  // unexpected EPERM during early init — is the recognizable symptom of a traversal-denied profile,
+  // never a sandbox denial a Conductor would see logged as such.
+  describe("DEFECT 2 — ancestor metadata for every re-allowed path under a denied root", () => {
+    test("emits (allow file-read-metadata (literal ...)) for every ancestor between a denied root and the re-allowed path", () => {
+      const profile = buildSandboxExecProfile({ cwd: "/Users/cas/source/levare", operatorHome: "/Users/cas", allowNetwork: false });
+      expect(profile).toContain('(allow file-read-metadata (literal "/Users"))');
+      expect(profile).toContain('(allow file-read-metadata (literal "/Users/cas"))');
+      expect(profile).toContain('(allow file-read-metadata (literal "/Users/cas/source"))');
+      // The target itself is re-allowed via subpath, not metadata-literal — no redundant metadata line for it.
+      expect(profile).not.toContain('(allow file-read-metadata (literal "/Users/cas/source/levare"))');
+    });
+
+    test("ancestor metadata lines are placed AFTER the denies (rule order)", () => {
+      const profile = buildSandboxExecProfile({ cwd: "/Users/cas/source/levare", operatorHome: "/Users/cas", allowNetwork: false });
+      const lines = profile.split("\n");
+      const lastDenyIdx = Math.max(
+        lines.indexOf('(deny file-read* (subpath "/Users/cas"))'),
+        lines.indexOf('(deny file-read* (subpath "/Users"))'),
+        lines.indexOf('(deny file-read* (subpath "/Volumes"))'),
+      );
+      const metadataIdx = lines.indexOf('(allow file-read-metadata (literal "/Users/cas"))');
+      expect(metadataIdx).toBeGreaterThan(-1);
+      expect(metadataIdx).toBeGreaterThan(lastDenyIdx);
+    });
+
+    test("a re-allowed path NOT under any denied root gets no spurious ancestor-metadata noise beyond its own real ancestors", () => {
+      const profile = buildSandboxExecProfile({ cwd: "/opt/homebrew/bin", allowNetwork: false });
+      // /opt/homebrew/bin's own ancestors are still named (harmless — metadata only, and this path isn't
+      // under a deny anyway) — the key property is no crash-inducing GAP, over-granting is the safe side.
+      expect(profile).toContain('(allow file-read-metadata (literal "/opt"))');
+      expect(profile).toContain('(allow file-read-metadata (literal "/opt/homebrew"))');
+    });
+  });
+
+  // NOTES R4-SANDBOX-FIX-4 — DEFECT 3, cosmetic: adapters.ts#sandboxWrap can legitimately compute the
+  // same path twice (e.g. the running levare binary and the member's own resolved command are both `bun`).
+  describe("DEFECT 3 — no duplicate rules", () => {
+    test("the same path supplied twice (readOnlyPaths) produces exactly one re-allow line, not two", () => {
+      const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false, readOnlyPaths: ["/Users/cas/.bun/bin", "/Users/cas/.bun", "/Users/cas/.bun/bin", "/Users/cas/.bun"] });
+      const lines = profile.split("\n");
+      expect(lines.filter((l) => l === '(allow file-read* (subpath "/Users/cas/.bun/bin"))').length).toBe(1);
+      expect(lines.filter((l) => l === '(allow file-read* (subpath "/Users/cas/.bun"))').length).toBe(1);
+    });
+
+    test("no duplicate lines anywhere in the generated profile, full stop", () => {
+      const profile = buildSandboxExecProfile({
+        cwd: "/a/b",
+        home: "/a/b", // deliberately overlapping with cwd
+        operatorHome: "/Users/cas",
+        allowNetwork: false,
+        grantedHomeTargets: ["/Users/cas/.codex", "/Users/cas/.codex"],
+        readOnlyPaths: ["/a/b", "/studio/root"],
+      });
+      const lines = profile.split("\n").filter(Boolean);
+      expect(new Set(lines).size).toBe(lines.length);
+    });
+  });
+
   test("re-allows a granted connector's own real home target — reading THROUGH a scopeHome symlink to it", () => {
     const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false, operatorHome: "/Users/cas", grantedHomeTargets: ["/Users/cas/.codex"] });
     expect(profile).toContain('(allow file-read* (subpath "/Users/cas/.codex"))');

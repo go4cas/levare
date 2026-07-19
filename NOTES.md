@@ -9093,3 +9093,119 @@ the bisection's own minimal test commands) rather than a real, if survivable, fu
 round's own profile shape is evidence-derived from live execution, not deduced — but "the shape that
 passed 14 hand-run checks" and "the shape this file's own generated profile text produces for a real
 dispatch" are two different claims, and only a live re-run closes the gap between them.
+
+# NOTES R4-SANDBOX-FIX-4 — fourth live macOS gate: the deny-list shape was right, the generator had bugs
+
+Round 3's ruling (flip macOS to a deny-list model) held up: this run's own failure count dropped from 20
+to 9, and the live `LEVARE_SANDBOX_DEBUG` capture — kept exactly as built, per round 3's own instruction
+— was decisive again, this time by convicting the GENERATED PROFILE TEXT directly rather than requiring a
+crash-report autopsy. Three defects, all visible in one captured profile, none requiring further live
+bisection to diagnose.
+
+## DEFECT 1 — security: the deny was defeated
+
+The captured profile's own re-allow list contained `(allow file-read* (subpath "/Users/cas"))` AND
+`(allow file-write* (subpath "/Users/cas"))` — the operator's ENTIRE real home, blanket re-allowed. Root
+cause: `adapters.ts#sandboxWrap` passes `home: req.env.HOME` into the policy — and `req.env.HOME` is
+allowlisted through by `buildMemberEnv` UNCONDITIONALLY (`HOME` is in `ENV_BASELINE`), regardless of
+whether `env.ts#scopeHome` ever actually scoped it. For a member with NO subscription-connector grant (the
+common case, and the case this round's own decoy-file test exercises), `req.env.HOME` simply IS the
+operator's real home — and round 3's generator re-allowed `policy.home` whenever it was merely PRESENT,
+never checking whether it was actually a DIFFERENT, scoped path. This is exactly why the round-3 decoy
+test failed: the decoy was genuinely readable, because the fix that was supposed to deny it had a hole
+big enough to drive the entire operator home through.
+
+**Fix:** `buildSandboxExecProfile` now computes `scopedHome = rawHome && rawHome !== operatorHome ? rawHome
+: undefined` (both sides canonicalized first — a symlinked spelling of the same directory must not read as
+"different") and re-allows ONLY `scopedHome`, never the raw `policy.home` value. A member with no scoped
+HOME now gets exactly three things re-allowed: its dispatch worktree, `readOnlyPaths`, and `/dev` — nothing
+under the operator's home at all, in either direction.
+
+## DEFECT 2 — crash: a NEW signature, worth naming as its own recognizable symptom
+
+The profile denies `(subpath "/Users")` and never re-allows the intermediate path COMPONENTS between that
+deny and a re-allowed path further down (`/Users/cas/source/levare` needs `/Users` and `/Users/cas` to be
+TRAVERSABLE at all before the target's own `subpath` re-allow is ever consulted — a `subpath` rule only
+ever covers the named path and what's nested inside it, never anything above it). Path resolution dies at
+the first denied ancestor component.
+
+**The crash signature is genuinely different from round 3's, and is now a recognized pattern:** `SIGTRAP`
+inside `std::__call_once`. This is NOT a sandbox denial in the way round 3's `dyld4::CacheFinder` abort
+was — the report itself confirms this is bun (written in Zig) PANICKING on an unexpected `EPERM` during
+early init; Zig panics trap (`SIGTRAP`), they don't propagate as an ordinary error the caller can catch and
+report. **Recognize this signature for what it is going forward:** a `SIGTRAP`/`std::__call_once`
+crash under a sandboxed bun spawn on macOS means the profile has a path-TRAVERSAL gap, not a genuine
+"this access is correctly denied" case — chase the ancestor chain of whatever path the member needed, not
+the profile's own allow/deny list for the target path itself (which may already be correct).
+
+**Fix:** every re-allowed path now gets `(allow file-read-metadata (literal ...))` for each of its own
+ancestor directories (`sandbox.ts#ancestorsOf` — deliberately EXHAUSTIVE, every intermediate component
+between `/` and the target, not only the ones nominally "between a denied root and the target": over-
+granting harmless metadata is a far smaller risk than a second crash from an under-covered ancestor one
+level further down), placed AFTER the denies (rule order applies to metadata rules exactly as it does to
+the read/write re-allows — see round 3's own "rule order is load-bearing" doc, now covered by a dedicated
+test asserting metadata lines sit after every deny line index).
+
+## The design tension DEFECT 1 exposes, and why DEFECT 2's fix is what makes it viable
+
+DEFECT 1's fix (deny the operator's home unless genuinely scoped) creates an immediate problem on a REAL
+macOS dev machine: the dispatch worktree and every `readOnlyPaths` entry (the interpreter's install tree,
+the member command's own directory, the studio root) routinely live UNDER the operator's own home
+(`/Users/cas/source/levare`, `/Users/cas/.bun`, …) — exactly what DEFECT 1's fix now denies by default.
+This is not a contradiction to paper over; it is why DEFECT 2 had to be fixed FIRST, conceptually, even
+though both bugs were fixed in the same pass: without ancestor metadata restoring TRAVERSAL into each
+surgically re-allowed path, denying the operator's home broadly would have taken the worktree and every
+readOnlyPaths entry down with it the moment DEFECT 1's fix landed — a stricter security posture that
+would have broken literally every ordinary dispatch on a real host. DEFECT 2's fix is the load-bearing
+piece that makes DEFECT 1's fix survivable, not a separate, unrelated repair that happened to ship
+alongside it.
+
+## DEFECT 3 — cosmetic: duplicate rule pairs
+
+The captured profile repeated the same `~/.bun`/`~/.bun/bin` re-allow pair twice. Root cause:
+`adapters.ts#sandboxWrap` computes `readOnlyPaths` from BOTH the running levare binary's own
+`process.execPath` and the resolved member command (`resolveArgv0`) — when the member's own command is
+ALSO `bun` (this repo's own stub-script fixtures, replay's `--stubs` machinery), both resolve to the exact
+same path, producing identical `treeDirs()` pairs from two different computations. **Fix:** every line the
+generator emits is now deduplicated (`sandbox.ts#dedupe`, applied to the intermediate re-allow/ancestor-
+metadata arrays AND the final assembled line list) — not a special case in `adapters.ts` for "when are
+these two computations the same," which would need to anticipate every future way two inputs could
+collide; deduplicating the OUTPUT is what makes duplication structurally impossible regardless of cause.
+
+## The decoy-file test's meaning: unchanged, and now actually TRUE again for the common case
+
+Per the goal's own instruction, the decoy-file test's meaning stays exactly as it was stated in round 3: a
+file under the operator's `$HOME`, outside the granted set, must be unreadable. Round 4 does not change
+what the test asserts — it fixes the fact that the assertion was SILENTLY FALSE for the common
+(no-subscription-grant) case since the moment round 3 shipped, which is precisely why the live decoy test
+itself was one of the 9 remaining failures this round's own report opened with.
+
+## Regression proof added from inside this (Linux) container
+
+`tests/sandbox.test.ts` gained three new describe blocks, one per defect, all reproducing the exact bug
+against `buildSandboxExecProfile`'s own output before confirming the fix:
+- **DEFECT 1:** `home === operatorHome` → no HOME re-allow at all, read or write (only cwd + `/dev` write-
+  allowed); a genuinely different (scoped) home is still re-allowed correctly; no `operatorHome` known at
+  all → home is still re-allowed (nothing to defeat, nothing to compare against — the pre-round-4 behavior
+  was only ever WRONG when a real operatorHome existed to compare against and matched).
+- **DEFECT 2:** every ancestor between a denied root and a re-allowed path gets its own
+  `file-read-metadata literal` line, and NOT a redundant one for the target path itself (already covered by
+  its own `subpath` re-allow); ancestor-metadata lines sit strictly after every deny line index (rule
+  order); a path NOT under any denied root still gets its own ancestor metadata (harmless, over-inclusive
+  by design, never a gap).
+- **DEFECT 3:** the same path supplied twice via `readOnlyPaths` produces exactly one re-allow line; a
+  profile built from every field with deliberate overlaps (`home === cwd`, a duplicated
+  `grantedHomeTargets` entry, a `readOnlyPaths` entry also equal to `cwd`) asserts NO line in the entire
+  generated profile repeats, full stop.
+
+## What still, honestly, requires a live macOS host to prove
+
+Everything rounds 1 through 3's own lists already named remains true, narrowed only by this round's own
+fixes. This round adds: whether the corrected profile (deny-defeat closed, ancestor metadata restored,
+duplicates removed) clears the remaining 9 failures on the SAME host that reported them; whether
+`ancestorsOf`'s deliberately-exhaustive-rather-than-minimal ancestor list has any cost beyond profile-text
+size (unlikely, since `file-read-metadata` grants existence/stat only, never contents — but "unlikely"
+is not "verified"); and whether the `SIGTRAP`/`std::__call_once` signature, now named here as the
+recognized symptom of a traversal-denied profile, in fact stops recurring once ancestor metadata is
+universally present, or whether some OTHER traversal gap (a path this round's own test fixtures don't
+happen to exercise) still produces it.
