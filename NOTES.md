@@ -9570,3 +9570,181 @@ build` → succeeds. `bun run src/cli.ts validate fixtures/golden` → `valid` (
 `SANDBOX_UNAVAILABLE` warnings for `finch`/`rook` are unchanged — this container's own honest `none`
 reality, unaffected by a fix whose blast radius is the darwin probe path this container can never
 exercise live). `bun run src/cli.ts replay fixtures/golden --stubs` → oracle match, byte-for-byte.
+
+# NOTES R4-SANDBOX-FIX-7 — live macOS gate on FIX-6: the sandbox working correctly, colliding with test
+# scaffolding that assumed an unconfined member, plus one genuine product gap it exposed
+
+FIX-6 shipped and the branch went back to the live macOS gate. Three failures came back — the first
+proof this feature has ever had of a genuinely working sandbox denying something in THIS repo's own
+suite, not a repo-external live host anecdote. Kernel evidence, captured directly:
+
+    Sandbox: bash(16453) deny(1) file-write-create /private/var/folders/.../levare-real-cli-script-.../argv-capture.txt
+
+**Conductor ruling, stated once and applied throughout this round: tests conform to the sandbox, never
+the reverse.** An e2e that needs an unconfined member to pass no longer tests the shipped product — the
+fix for a test failing under a working sandbox is to move the member-side write inside the member's own
+granted set, never to widen the sandbox to accommodate the test. The one exception this round found
+(failure 2, below) is not an exception to that ruling — it is a case where the ruling's own premise
+("relocate the write") does not apply, because the write in question is not the test's own choice of
+scratch location; it is confirmed as a structural requirement of the feature the test is exercising.
+
+## Failure 1 — `tests/serve-real-cli-e2e.test.ts`: an argv-capture write outside every grant
+
+The real member script (`real-member.sh`) does `printf '%s' "$1" > "$2"`, capturing its own argv into
+`argv-capture.txt` inside `scriptDir` — a `mkdtempSync(tmpdir())` directory wholly separate from anything
+the dispatch's sandbox policy ever granted write access to. `wren`'s fixture agent declared no `cwd:` at
+all, so its dispatch's `policy.cwd` fell back to `process.cwd()` (adapters.ts#sandboxWrap's own `cwd ??
+process.cwd()`) — the `./levare serve` process's own ambient directory, never `scriptDir`. `scriptDir`
+DID get read access (`resolveArgv0`/`treeDirs` grants the resolved command's own directory for reads —
+which is why the script itself could be found and executed at all), but never write access. The
+container this repo's own suite runs in cannot reproduce a real sandbox denial directly (`bwrap`/`unshare`
+both fail here for an unrelated reason — this container's own outer seccomp policy), but the mechanism is
+not in doubt: `argv-capture.txt`'s directory was never in any read-write grant, full stop.
+
+**Fix:** `wren`'s fixture agent now declares `cwd: scriptDir` — the exact directory its own capture file
+lives in — mirroring how `finch`'s own fixture already declares `cwd: "{feature_repo}"`. A declared `cwd`
+is always read-write granted (`SandboxPolicy.cwd`, both platforms), so the member's own write now lands
+somewhere the sandbox was always going to allow, with no widening of the sandbox itself. This surfaced a
+second, smaller definition-time rule: an out-of-studio `cwd` requires `context_artifacts: inline`
+(ruling C9, `validate.ts#CWD_OUTSIDE_STUDIO_NO_INLINE`) — added to the fixture too, truthfully (wren
+consumes no artifacts in this test either way).
+
+## Failure 2 — a member's own commit inside its dispatch worktree: a DIFFERENT cause, confirmed by
+## reproduction before any fix was written
+
+Located by grepping the exact test title (it lives in `tests/adapters.test.ts`, describe block "NOTES
+R4-SANDBOX Ruling 1 — per-dispatch worktree isolation", not in `tests/merge.test.ts`). The initial
+hypothesis was "the same species as failure 1" — a member-side write to an ungranted scratch path. Per
+this round's own instruction (reproduce and confirm against the kernel-denial pattern before fixing;
+diagnose from evidence if the cause turns out to differ), that hypothesis was tested directly rather than
+assumed:
+
+    DIR=$(mktemp -d); git init -q -b main "$DIR"; ...seed a levare/<unit> branch with a marker file...
+    WT=$(mktemp -d); rmdir "$WT"; git worktree add -q "$WT" levare/<unit>
+    chmod -R a-w "$DIR/.git"
+    cd "$WT" && echo change >> marker.txt && git add -A
+    git -c user.name=member -c user.email=m@test -c commit.gpgsign=false commit -q -m "member commit"
+    → fatal: Unable to create '$DIR/.git/worktrees/<name>/index.lock': Permission denied
+
+This is NOT the same species as failure 1. `git worktree` shares its object store, refs, and the
+worktree's own administrative state (`HEAD`, `index`, `logs`) under the ORIGINAL repository's
+`.git/worktrees/<name>/` — never inside the per-dispatch worktree's own directory. A member's `git commit`
+inside its dispatch worktree, precisely the capability Ruling 1 exists to provide ("a member's own commit
+actually advances the work branch"), structurally requires write access to the original repo's `.git`
+directory. There is no scratch path to relocate this write to — it is not the test's choice of where to
+write; it is git's own on-disk design for what a worktree is. The sandbox's write-grant set (`cwd` +
+`home` only) was simply missing a grant this ALREADY-PROMISED production capability needs on every real
+host where the sandbox actually works — a genuine gap the sandbox itself had, not a test conforming
+incorrectly to a correct sandbox.
+
+**Fix, a real (non-test-only) widening of `SandboxPolicy`, threaded generically from production code, not
+from any test:**
+- `SandboxPolicy` gained `writablePaths?: string[]` (`src/sandbox.ts`) — read-write, alongside `cwd`/
+  `home`: `bubblewrapArgv` gives each a real `--bind` (never `--ro-bind-try`); `unshareArgv` gives each its
+  own `mount --bind`; `buildSandboxExecProfile` adds each to BOTH `reallowReads` and `reallowWrites` (and
+  therefore gets ancestor metadata for free, same as every other re-allow).
+- `InvokeRequest` gained `dispatchGitDir?: string` (`src/adapters.ts`) — set by `withDispatchWorktree`/
+  `withDispatchWorktreeAsync` to `join(dispatchRepo.repoPath, ".git")` ONLY when a real per-dispatch
+  worktree was actually created (the exact same condition that overrides `projectRepoPath` to the
+  worktree's own path) — undefined for every dispatch without one, exactly `projectRepoPath`'s own
+  no-worktree case.
+- `sandboxWrap` threads `req.dispatchGitDir` into `policy.writablePaths` when present.
+
+This is deliberately NOT the same kind of change as failure 1's fix. Failure 1 relocated a test's own
+arbitrary choice of scratch location into an existing grant; this widens what the sandbox grants, because
+the thing being granted (write access to git's own shared object store) is not something any test-side
+relocation could ever satisfy — the ruling's "relocate, don't widen" default holds for an arbitrary
+capture file; it does not hold for a structural requirement of the feature under test. Named honestly:
+this widening does give a member incidental write access to the git admin state of any OTHER worktree
+sharing the same original repo (e.g. a sibling dispatch's own `.git/worktrees/<other>/index`) — a narrow,
+low-severity residual (never the sibling's own working-tree FILES, which live in a wholly separate
+directory), recorded here rather than silently accepted.
+
+## Failure 3 — `tests/sandbox.test.ts`'s own FIX-6 test: the THIRD occurrence of a known test-defect class
+
+The FIX-6 regression ("the darwin probe threads its own scratch cwd to the actual spawn") asserted the
+generated profile's text contained the raw `seenCwd` (`mkdtempSync(tmpdir())`'s own return value)
+verbatim. `buildSandboxExecProfile` canonicalizes every path it writes (`sandbox.ts#canon`); on macOS,
+`os.tmpdir()` itself sits behind a symlink (`/var/folders/... -> /private/var/folders/...`), so the
+profile contains the REALPATH'd form while the raw, pre-canonicalization `seenCwd` does not match it. On
+this Linux container, `/tmp` is a plain directory, so raw and realpath coincide and the test passed for
+the wrong reason. **Fix:** `realpathSync(seenCwd)` — computed inside the injected `probe` callback, before
+`probeSandboxExec`'s own `finally` removes the scratch directory — is what the assertion now compares
+against.
+
+**General rule, stated once for every future test in this class (added to `tests/sandbox.test.ts`'s own
+header comment):** any test comparing a real filesystem path against generated `sandbox-exec` profile
+TEXT must realpath its expected value first. This has now bitten three separate times — FIX-2's own
+symlink-canonicalization fixture (caught and fixed AT THE TIME, item 6 of that round), FIX-4's decoy-file
+relocation context (the decoy's own directory needed realpathing against `$HOME`), and now FIX-6's cwd
+assertion — always for the identical reason: a raw path happens to already equal its own realpath on a
+Linux container (no symlinks in `/tmp`), which is exactly the condition that lets the defect ship
+unnoticed until the one platform where `/tmp`/`/var`/`/var/folders` genuinely are symlinks actually runs
+the test.
+
+## Audit of the remaining suite for the same failure-1-shaped pattern
+
+Every test file constructing an `AdapterRunner` with the REAL spawn boundary (no injected `spawn`/
+`asyncSpawn` — the only paths `sandboxWrap` ever wraps, per NOTES R4-SANDBOX's own guard) was checked for
+a `kind: cli` member whose command writes to a path outside its dispatch's own `cwd`/`home`/
+`dispatchGitDir` grant:
+
+- `tests/cli-context-artifacts.test.ts` (`command: ["cat"]`, `context_via: stdin`) — safe: `cat` with no
+  argv path never opens anything; the consumed-artifact PATH text only ever travels through stdin as a
+  string, never as a file `cat` itself tries to read.
+- `tests/diagnostics.test.ts` (lyra's real, deliberately-failing script) — safe: the script writes to
+  stderr and exits non-zero; it performs no filesystem writes at all.
+- `tests/serve-cli-nonblocking-e2e.test.ts` (`command: ["sleep", "N"]`) — safe: `sleep` performs no I/O;
+  the test's own assertions expect the member to fail (502, no artifact emitted) regardless of sandbox
+  state, since `sleep` never produces one.
+- `tests/capability-cap-b.test.ts` — the file-write assertions there (`written-through-scratch`) are made
+  directly BY THE TEST against `env.ts#scopeHome`'s own output, never through a spawned member process;
+  its one real `AdapterRunner.produceAsync` call injects a fake `asyncSpawn`, so `sandboxWrap` never runs
+  for it at all.
+- `tests/capability-cap-a.test.ts`'s `stubScript` (writes `captured.txt` via shell redirection) — out of
+  scope structurally, not merely by accident: it drives `execution.ts#executeProposal`, the connector-
+  action spawn path, which does not import `sandbox.ts` at all (Ruling 2 wraps only `adapters.ts`'s two
+  CLI member dispatch paths — a connector action's own spawn boundary is a separate, already-documented,
+  unsandboxed deferral, unrelated to this round).
+- `tests/binding.test.ts`, `tests/board-serve-e2e.test.ts`, `tests/board-serve-sse-leak.test.ts`,
+  `tests/serve-native-e2e.test.ts`, `tests/orchestrator-compiled-smoke.test.ts` — no real dispatch of a
+  `kind: cli` member reaches the real spawn boundary in any of these (native-only, or the stub member
+  runner, or capability-listing/binding checks that never call `produce`/`produceAsync`).
+- `fixtures/golden/agents/rook.md` (`cwd: "/tmp"`, `context_artifacts: inline`) — never actually spawned
+  for real anywhere in the suite (its own `command: [gemini, ...]` isn't installed on any test host); it
+  exists purely to prove the C9 out-of-studio-cwd validation rule, exactly as its own comment in
+  `binding.test.ts` already states.
+
+No other instance of the pattern found.
+
+## Regression proof added
+
+- `tests/sandbox.test.ts`: `writablePaths` gets its own describe block mirroring `readOnlyPaths`'s own
+  coverage — a real `--bind`/`mount --bind` for bubblewrap/unshare (never `--ro-bind-try`), both a read
+  AND a write re-allow in the darwin profile (unlike `readOnlyPaths`, read-only), its own ancestor
+  metadata, canonicalization through a real symlink, and the empty/absent no-op case.
+- `tests/adapters.test.ts`: a new test proves `dispatchGitDir` reaches the wrapped argv as a `--bind`
+  (never `--ro-bind-try`) pair via the same fake-bubblewrap-is-really-`/bin/echo` trick this file already
+  uses to observe wrapped argv without a real, working `bwrap`; a second new test proves NO git-dir grant
+  appears at all when the project has no real local checkout (no worktree, no `dispatchGitDir`).
+- `tests/serve-real-cli-e2e.test.ts` and the `adapters.test.ts` worktree-commit test both updated in
+  place (fixture `cwd`/`context_artifacts` addition; existing assertions unchanged) — the tests themselves
+  are the regression proof for failures 1 and 2 on the next live macOS run.
+
+## What this does NOT claim
+
+Failure 2's write-grant widening has not yet been re-verified live — this container's own `bwrap`/
+`unshare` cannot exercise the real enforcement path at all (the outer seccomp policy denies unprivileged
+namespaces regardless of this feature), so what's proven here is construction (the argv/profile correctly
+carries the new grant) and a direct, non-sandboxed filesystem-permission reproduction of the underlying
+git behaviour (the `chmod -a-w` experiment above) — never the live `sandbox-exec` enforcement itself. The
+next live macOS run is what confirms whether this closes failure 2 in full, or whether some further git
+operation this round's evidence didn't exercise (e.g. `git push`, `gc`, a hook) touches yet another path
+outside `writablePaths`' current single entry.
+
+## Verification
+
+`bun test` — full suite green (typecheck exit 0 too), including every new/updated test above.
+`bun run typecheck` → exit 0. `bun run deps:check` → `deps ok`. `bun run build` → succeeds. `bun run
+src/cli.ts validate fixtures/golden` → `valid`, the same two pre-existing `SANDBOX_UNAVAILABLE` warnings,
+unchanged. `bun run src/cli.ts replay fixtures/golden --stubs` → oracle match, byte-for-byte.
