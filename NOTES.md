@@ -9209,3 +9209,116 @@ is not "verified"); and whether the `SIGTRAP`/`std::__call_once` signature, now 
 recognized symptom of a traversal-denied profile, in fact stops recurring once ancestor metadata is
 universally present, or whether some OTHER traversal gap (a path this round's own test fixtures don't
 happen to exercise) still produces it.
+
+# NOTES R4-SANDBOX-FIX-5 — terminal live-host conviction: the member stub runs end-to-end, exit 0
+
+Round 4's fixes (deny-defeat closed, ancestor metadata restored, duplicates removed) held up on the
+generator-output level, but the crash persisted on the live host. This round's own live-host conviction
+closed it: **under the exact generated profile plus one added line — `(allow sysctl-read)` — the member
+stub runs end-to-end and prints its canned artifact, exit 0.** This is the first round in this goal's
+entire history where a REAL member dispatch, not just a trivial probe command, has run successfully
+under the darwin sandbox.
+
+## The evidence, and why every earlier round missed it
+
+Script-mode `bun` spawns a child process that reads a battery of sysctls at startup —
+`kern.osproductversion`, `kern.bootargs`, `security.mac.lockdown_mode_state`, `kern.osvariant_status`,
+`hw.pagesize_compat` — all captured as kernel `deny(1) sysctl-read` lines in the unified log during the
+trap. The `SIGTRAP` inside `std::__call_once` that round 4 named as "bun/Zig panicking on an unexpected
+`EPERM`" is now precisely explained: a cached OS-version initializer (the kind of `std::call_once`-guarded
+lazy static this pattern exists for) panics when the sysctl read backing it fails.
+
+**The weak-canary lesson, stated plainly because it is the actual root cause of THIS round's own
+discovery taking five rounds instead of one:** `bun --version` (this module's own probe shape since round
+1, and — separately — the shape used throughout the earlier profile-design bisections) NEVER TRIGGERS
+THIS PATH. `--version` is a fast-exit flag that returns before a script-mode child-spawn's own startup
+sequence runs at all. This is exactly why every earlier live-host bisection profile "passed" in isolation
+(a hand-run `--version` check, or this module's own detection probe) while every REAL dispatch — which
+always runs a member's own SCRIPT, never `--version` — died identically regardless of which allow/deny
+rules the profile under test that round actually contained. The bug was never fully in the profile
+content across rounds 3-4; it was partly in the FACT that nothing in this module's own test or detection
+machinery ever exercised the code path a real dispatch actually takes.
+
+## Fix 1 — `(allow sysctl-read)` in the fixed preamble
+
+Added directly after `process-fork`/`process-exec` in `buildSandboxExecProfile`'s own generated lines.
+Recorded in the profile's own code comment and here: `sysctl-read` is process-bootstrap plumbing on
+macOS — page size, OS version, boot flags — required by `bun`'s own script mode and plausibly by any
+modern runtime's early init, not by this specific vendor or command. It exposes KERNEL PARAMETERS, never
+user data, so allowing it unconditionally does not weaken the threat model this profile enforces: the
+operator's own data is still denied by default (DEFECT 1's fix, round 4), and network is still denied
+unless a connector grants it. This is the SAME reasoning `(allow file-read* (subpath "/"))` itself already
+established in round 3 (broad OS-level reach is not the threat model's concern; the operator's own data
+and network are) — `sysctl-read` is simply a narrower instance of the identical principle for a kernel
+interface `subpath`-style file rules don't cover at all.
+
+**`(allow file-ioctl)` was deliberately NOT added,** per this round's own live-host instruction: the
+tty/`dtracehelper` `file-ioctl` denials observed alongside the sysctl-read ones are cosmetic soft denials
+— survivable noise, already catalogued as such in NOTES R4-SANDBOX-FIX-3's own finding 5 — and live
+testing proved `sysctl-read` alone is sufficient for the member stub to run end-to-end. Adding a broader
+grant than the evidence actually calls for would be exactly the kind of unjustified widening this whole
+investigation has been careful never to do.
+
+## Fix 2 — the detection probe's own weakness, which this bug exposed
+
+`detectSandbox`'s darwin probe (`probeSandboxExec`) used `--version` from round 1 onward — the SAME weak
+canary that let every one of the past four rounds' own live-host bisections mislead themselves about
+whether a given profile actually worked. Fixed: the probe now writes a trivial SCRIPT FILE
+(`probe.js`) to its own scratch dir and runs it through the real interpreter (`Bun.which("bun")`,
+falling back to `process.execPath` only when `bun` genuinely isn't separately on `PATH` — a known,
+named limitation for a fully standalone compiled deployment, where the fallback binary is `levare`
+itself and an arbitrary script-path argument would be read as a CLI argument rather than "run this
+script"; not solved this round, since it cannot be distinguished generically without knowing the
+fallback binary's own argument-parsing contract), under a profile built by `buildSandboxExecProfile`
+ITSELF — the identical generator a real dispatch uses, with a policy shaped like a real one
+(`readOnlyPaths` naming the interpreter's own install tree, `operatorHome` set) — never a bespoke,
+weaker `(allow default)` profile that would prove nothing about what this module actually generates for
+a real dispatch. Script and profile share one scratch dir and one `cleanup()` lifecycle, mirroring
+`sandboxExecArgv`'s own pattern.
+
+**This closes a structural gap this whole investigation had, not just a symptom:** a "does the primitive
+work" probe that exercises a narrower code path than the thing it's meant to predict is not a probe, it's
+a canary that never sings — and every round from 1 through 4 had exactly this gap without naming it,
+because the bug it was hiding (the sysctl-read startup path) had never yet been identified as the actual
+differentiator between "trivial command succeeds" and "real dispatch dies."
+
+## Closing the live-host findings ledger (FIX-3 → FIX-5): what is now proven green on a real macOS host
+
+- **NOTES R4-SANDBOX-FIX-3's finding 4 profile shape** (deny-list, broad OS read, operator-home denial,
+  explicit re-allows) — proven correct in principle by the original 14-profile bisection; now additionally
+  requires `sysctl-read` and ancestor metadata to actually run a real workload, both closed.
+- **NOTES R4-SANDBOX-FIX-4's DEFECT 1** (deny-defeat via an unscoped `home`) — closed, and specifically
+  what made the round-4 decoy-file test meaningful again.
+- **NOTES R4-SANDBOX-FIX-4's DEFECT 2** (ancestor-metadata traversal) — closed; this round's own new
+  `SIGTRAP` conviction proves it was necessary but not, on its own, sufficient — sysctl-read was the
+  remaining gap.
+- **NOTES R4-SANDBOX-FIX-4's DEFECT 3** (duplicate rules) — closed, cosmetic, unaffected by this round.
+- **This round's own finding**: `sysctl-read` closes the LAST gap between "the profile is structurally
+  correct" and "a real member dispatch actually completes" — confirmed by the single piece of evidence
+  that matters most in this entire investigation: the member stub itself running end-to-end and printing
+  its canned artifact, exit 0, under the corrected profile on the live host.
+
+## Regression proof added from inside this (Linux) container
+
+`tests/sandbox.test.ts`: a new test asserting `buildSandboxExecProfile`'s own fixed preamble contains
+`(allow sysctl-read)` and does NOT contain `file-ioctl` (the deliberate non-fix, asserted as an absence —
+the same "record what was decided against, not just what was decided" posture this file's own header
+takes for `fs-only`'s weaker guarantee); a new test capturing the darwin probe's own composed argv and
+proving it invokes a real script file (never `--version`), that the script exists on disk at the moment
+the injected `probe` callback runs, and that the profile handed to `-f` is genuinely built by
+`buildSandboxExecProfile` itself (asserted by reading the file back and checking for `(deny default)`/
+`(allow sysctl-read)`) rather than a separate, weaker canary profile.
+
+## What still, honestly, requires a live macOS host to prove
+
+This round's own live-host report already confirmed the single most important thing this entire
+investigation exists to prove: the member stub runs end-to-end under the corrected profile, exit 0. What
+remains unconfirmed from this container: whether the SAME fix generalizes beyond the one member-stub
+workload actually exercised on the live host (a real wrapped vendor CLI — Codex, Gemini — may read
+further sysctls or touch further kernel interfaces this round's own evidence never surfaced, since it was
+gathered against this repo's own fixture stub, not a third-party binary); whether the `Bun.which("bun")`
+probe fallback to `process.execPath` behaves sanely for a fully standalone compiled `levare` deployment
+where `bun` genuinely isn't on `PATH` separately (named as a limitation above, not exercised by any test
+in this container, which always has a real `bun` on `PATH`); and whether the cosmetic soft denials
+(tty/`dtracehelper` `file-ioctl`) stay merely cosmetic under a longer-running or more I/O-heavy real
+member workload than the stub's own brief canned-artifact print.

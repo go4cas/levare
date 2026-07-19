@@ -146,7 +146,8 @@ actually used is recorded on the produced artifact (`sandbox: full | fs-only | n
 omitted — though as of this ruling, `full` itself requires reading which `primitive` produced it to know
 which of the two non-equivalent guarantees actually applied.
 
-**Honestly, in five rounds.** The FIRST live run of this feature was on macOS — the only host in this
+**Honestly, in six rounds — the sixth is where a real member dispatch finally ran end-to-end.** The FIRST
+live run of this feature was on macOS — the only host in this
 project's history where `sandbox-exec` actually engaged rather than reporting `none` — and it failed 20
 pre-existing tests plus the two new decoy/read-back tests, all real-spawn paths. Round 1 (NOTES
 R4-SANDBOX-FIX) fixed macOS path canonicalization (`sandbox-exec`'s path rules match the KERNEL-RESOLVED
@@ -173,15 +174,27 @@ path traversal — recognizable by a NEW signature, `SIGTRAP` inside `std::__cal
 on an unexpected `EPERM`, never a logged sandbox denial), and a cosmetic duplicate-rule issue. Round 4
 (NOTES R4-SANDBOX-FIX-4) fixed all three: the HOME re-allow now requires the home to be genuinely
 DIFFERENT from the operator's real one; every re-allowed path gets ancestor-directory metadata access so
-traversal into it survives a denied ancestor; every generated line is deduplicated. Throughout, a
-`LEVARE_SANDBOX_DEBUG=1` env var prints the composed argv and raw spawn result for whichever run
-confirms it. What COULD be verified without a live macOS host (canonicalization logic, argv/profile
-construction, rule ORDER in the generated profile text, the deny-defeat/ancestor-metadata/dedup fixes all
-directly against the generator's own output) was; what could only be proven by actually running there
-(bubblewrap's own Linux behaviour beyond this repo's own dev container, `unshare`'s fs-only fallback
-anywhere, and now whether the round-4-corrected profile clears the remaining 9 failures on the same host
-that reported them) still wasn't, and is named rather than assumed — see NOTES R4-SANDBOX-FIX-4's own
-"still requires a live host" list.
+traversal into it survives a denied ancestor; every generated line is deduplicated. A FIFTH live run —
+against the round-4-corrected profile — found the SAME crash signature persisting under a corrected
+profile, traced to a probe-design flaw rather than the profile itself: script-mode `bun` reads a battery
+of sysctls (`kern.osproductversion`, `kern.bootargs`, `security.mac.lockdown_mode_state`,
+`kern.osvariant_status`, `hw.pagesize_compat`) at child-spawn startup, and every profile-design bisection
+across every prior round had used `--version` to test candidate profiles — a fast-exit flag that never
+reaches that startup path at all, which is why every earlier "working" profile still killed every real
+dispatch. Round 5 (NOTES R4-SANDBOX-FIX-5) added `(allow sysctl-read)` to the fixed preamble (kernel
+parameters, not user data — the threat model is unaffected) and rewrote the detection probe itself to run
+a real script file through the real interpreter under a profile built by the SAME generator a real
+dispatch uses, never a bespoke weaker canary. **Under the corrected profile, the member stub ran
+end-to-end and printed its canned artifact, exit 0** — the first real member dispatch to succeed under
+the darwin sandbox in this goal's entire history. Throughout, a `LEVARE_SANDBOX_DEBUG=1` env var prints
+the composed argv and raw spawn result for whichever run confirms it. What COULD be verified without a
+live macOS host (canonicalization logic, argv/profile construction, rule ORDER, the deny-defeat/ancestor-
+metadata/dedup/sysctl-read/probe fixes all directly against the generator's own output) was; what could
+only be proven by actually running there (bubblewrap's own Linux behaviour beyond this repo's own dev
+container, `unshare`'s fs-only fallback anywhere, and now whether the fix generalizes beyond the one
+member-stub workload actually exercised — a real wrapped vendor CLI may touch further kernel interfaces
+this round's own evidence never surfaced) still wasn't, and is named rather than assumed — see NOTES
+R4-SANDBOX-FIX-5's own "still requires a live host" list.
 
 ## Connector trust-tier taxonomy
 

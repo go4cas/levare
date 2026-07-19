@@ -11,7 +11,7 @@
 import { test, expect, describe } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { detectSandbox, wrapForSandbox, buildSandboxExecProfile, type SandboxDetection } from "../src/sandbox.ts";
 import { validatePath } from "../src/validate.ts";
 import { formatDoctor } from "../src/doctor.ts";
@@ -78,6 +78,43 @@ describe("detectSandbox — never assumed from the platform alone", () => {
       probe: () => false,
     });
     expect(d).toEqual({ platform: "darwin", primitive: "none", level: "none" });
+  });
+
+  // NOTES R4-SANDBOX-FIX-5 (round 5, terminal live-host conviction — the weak-canary lesson): a probe
+  // that exercises a NARROWER code path than production isn't a probe at all. `--version` (rounds 1-4's
+  // own probe shape) skips a vendor binary's own child-spawn/sysctl-read startup path entirely — the
+  // exact path that killed every real dispatch while every earlier probe passed. The probe must now run
+  // a real script file through the real interpreter, under the SAME profile generator a real dispatch
+  // uses — never a bespoke, weaker canary.
+  test("darwin probe runs a real script file through the interpreter, under a generator-built profile — never --version", () => {
+    let seenArgv: string[] | undefined;
+    let scriptExistedAtProbeTime = false;
+    let profileTextAtProbeTime = "";
+    detectSandbox({
+      platform: "darwin",
+      which: (cmd) => (cmd === "sandbox-exec" ? "/usr/bin/sandbox-exec" : null),
+      probe: (argv) => {
+        seenArgv = argv;
+        scriptExistedAtProbeTime = existsSync(argv[4]);
+        profileTextAtProbeTime = readFileSync(argv[2], "utf8");
+        return true;
+      },
+    });
+    expect(seenArgv).toBeDefined();
+    const argv = seenArgv!;
+    expect(argv[0]).toBe("/usr/bin/sandbox-exec");
+    expect(argv[1]).toBe("-f");
+    expect(argv).not.toContain("--version");
+    // argv[3] is the interpreter, argv[4] the script it's told to run — a real script-mode invocation,
+    // not a flag that exits before script-mode's own startup path ever runs.
+    expect(argv[4]).toMatch(/probe\.js$/);
+    expect(scriptExistedAtProbeTime).toBe(true);
+    // The profile handed to sandbox-exec is built by THIS module's own generator (the deny-list shape),
+    // never a separate, weaker "(allow default)" canary profile.
+    expect(profileTextAtProbeTime).toContain("(deny default)");
+    expect(profileTextAtProbeTime).toContain("(allow sysctl-read)");
+    // Script and profile live in the same scratch dir — one lifecycle, one cleanup.
+    expect(dirname(argv[2])).toBe(dirname(argv[4]));
   });
 
   test("an unrecognized platform → none, never a guess", () => {
@@ -300,6 +337,18 @@ describe("buildSandboxExecProfile — deny-list model (NOTES R4-SANDBOX-FIX-3)",
     expect(profile).toContain('(allow file-write* (subpath "/a/b"))');
     expect(profile).toContain('(allow file-write* (subpath "/c/d"))');
     expect(profile).toContain("(deny network*)");
+  });
+
+  // NOTES R4-SANDBOX-FIX-5 (round 5, live-host conviction): script-mode `bun` reads a battery of sysctls
+  // at child-spawn startup — denying that path produced a bun/Zig panic (SIGTRAP inside
+  // std::__call_once), not a logged sandbox denial, and every real dispatch died on it while every
+  // profile unit test (none of which ever ran a real script-mode spawn) kept passing.
+  test("the fixed preamble allows sysctl-read — process-bootstrap plumbing, not user data", () => {
+    const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false });
+    expect(profile).toContain("(allow sysctl-read)");
+    // Deliberately NOT added: live testing proved sysctl-read alone suffices; the tty/dtracehelper
+    // file-ioctl denials are cosmetic soft denials (NOTES R4-SANDBOX-FIX-3 finding 5), not a second gap.
+    expect(profile).not.toContain("file-ioctl");
   });
 
   test("no home declared → no home write clause, cwd clause still present", () => {

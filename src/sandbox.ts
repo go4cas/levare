@@ -190,8 +190,8 @@
 // common case again, having been silently false since round 3 shipped.
 
 import { existsSync, realpathSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { tmpdir, homedir } from "node:os";
+import { join, dirname } from "node:path";
 
 export type SandboxLevel = "full" | "fs-only" | "none";
 export type SandboxPrimitive = "bubblewrap" | "unshare" | "sandbox-exec" | "none";
@@ -233,12 +233,38 @@ function realProbe(argv: string[]): boolean {
 // NOTES R4-SANDBOX-FIX (round 2): a real temp-file probe, matching `sandboxExecArgv`'s own `-f`/no-`--`
 // shape exactly — see `detectSandbox`'s own comment at its call site for why "probe what production
 // actually runs" matters here specifically.
+// NOTES R4-SANDBOX-FIX-5 (round 5, terminal live-host conviction — the weak-canary lesson): rounds 1-4's
+// own probe ran `sandbox-exec -f <profile> <bin> --version` — and `--version` was the bug. A vendor
+// binary's `--version` path exits before its own script-mode/child-spawn startup ever runs; a REAL
+// dispatch (bun executing a member's own script file) reads a battery of sysctls at that startup
+// (`kern.osproductversion`, `kern.bootargs`, `security.mac.lockdown_mode_state`, `kern.osvariant_status`,
+// `hw.pagesize_compat`) that `--version` alone never touches — which is exactly why every earlier probe
+// AND every earlier profile unit test passed while every real dispatch died. A probe that exercises a
+// narrower code path than production is not a probe at all; it's a canary that never sings.
+//
+// Fixed: the probe now runs a trivial SCRIPT FILE through the SAME interpreter a real dispatch uses
+// (`bun`, resolved via `Bun.which` — falling back to `process.execPath` only if bun genuinely isn't on
+// PATH separately from this process, e.g. a fully standalone compiled deployment; noted, not solved,
+// since that fallback can't distinguish "run this script" from "here are some CLI args" for the compiled
+// `levare` binary itself), under a profile built by `buildSandboxExecProfile` ITSELF — the identical
+// generator a real dispatch uses, with a policy shaped like a real one (`readOnlyPaths` naming the
+// interpreter's own install tree, `operatorHome` set) — never a bespoke, weaker `(allow default)` profile
+// that would prove nothing about what this module actually generates.
 function probeSandboxExec(bin: string, probe: (argv: string[]) => boolean): boolean {
   const scratchDir = mkdtempSync(join(tmpdir(), "levare-sandbox-probe-"));
   try {
+    const scriptPath = join(scratchDir, "probe.js");
+    writeFileSync(scriptPath, "// levare sandbox probe — a trivial script, run through the real interpreter\n");
+    const interpreter = Bun.which("bun") ?? process.execPath;
+    const profile = buildSandboxExecProfile({
+      cwd: scratchDir,
+      allowNetwork: false,
+      operatorHome: homedir(),
+      readOnlyPaths: [dirname(interpreter), dirname(dirname(interpreter))],
+    });
     const profilePath = join(scratchDir, "probe.sb");
-    writeFileSync(profilePath, "(version 1)(allow default)");
-    return probe([bin, "-f", profilePath, "true"]);
+    writeFileSync(profilePath, profile);
+    return probe([bin, "-f", profilePath, interpreter, scriptPath]);
   } finally {
     try {
       rmSync(scratchDir, { recursive: true, force: true });
@@ -512,6 +538,18 @@ export function buildSandboxExecProfile(policy: SandboxPolicy): string {
       "(deny default)",
       "(allow process-fork)",
       "(allow process-exec)",
+      // NOTES R4-SANDBOX-FIX-5 (round 5, live-host conviction): process-bootstrap plumbing, not user
+      // data — script-mode `bun` (and plausibly any modern runtime) reads a battery of sysctls at child-
+      // spawn startup (`kern.osproductversion`, `kern.bootargs`, `security.mac.lockdown_mode_state`,
+      // `kern.osvariant_status`, `hw.pagesize_compat`), and a denied sysctl-read there is what produced
+      // the `SIGTRAP` inside `std::__call_once` — a cached OS-version initializer panicking on the
+      // failed read, not a sandbox violation in the sense this profile's own denies are meant to express.
+      // Exposes kernel PARAMETERS (OS version, page size, boot flags), never user data — allowing it does
+      // not weaken the threat model this profile enforces (operator data still denied, network still
+      // denied by default). `(allow file-ioctl)` was deliberately NOT added alongside it: live testing
+      // proved `sysctl-read` alone is sufficient, and the tty/`dtracehelper` `file-ioctl` denials observed
+      // are cosmetic soft denials (NOTES R4-SANDBOX-FIX-3's own finding 5), not a second gap to chase.
+      "(allow sysctl-read)",
       // Broad OS read, same as an unsandboxed process would see — verified live: this is the only shape
       // that lets dyld's own shared-cache lookup succeed on this platform (see this module's header).
       '(allow file-read* (subpath "/"))',
