@@ -9,7 +9,7 @@
 // this file only proves detection/construction logic, which is host-independent by design.
 
 import { test, expect, describe } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { detectSandbox, wrapForSandbox, buildSandboxExecProfile, type SandboxDetection } from "../src/sandbox.ts";
@@ -163,36 +163,128 @@ describe("wrapForSandbox — pure argv construction, no OS sandbox required to v
     expect(wrapped.argv.slice(-2)).toEqual(["codex", "run"]);
   });
 
-  test("sandbox-exec: builds a profile denying network and scoping writes to cwd/home", () => {
+  // NOTES R4-SANDBOX-FIX (round 2): the profile is written to a temp file and passed via `-f <path>` —
+  // the exact form verified working by hand on a live macOS host — never `-p <string>` (this module's
+  // pre-round-2 shape, never independently verified). No `--` before the command either: `man
+  // sandbox-exec`'s own documented forms never show one, and the live host's manual check didn't use one.
+  test("sandbox-exec: -f <tempfile>, never -p, never a -- separator before the command", () => {
     const detection: SandboxDetection = { platform: "darwin", primitive: "sandbox-exec", level: "full", bin: "/usr/bin/sandbox-exec" };
     const wrapped = wrapForSandbox(["codex", "run"], policy, detection);
-    expect(wrapped.level).toBe("full");
-    expect(wrapped.argv[0]).toBe("/usr/bin/sandbox-exec");
-    expect(wrapped.argv[1]).toBe("-p");
-    const profile = wrapped.argv[2];
-    expect(profile).toContain("(deny network*)");
-    expect(profile).toContain('(allow file-write* (subpath "/work/scratch-wt"))');
-    expect(profile).toContain('(allow file-write* (subpath "/work/scratch-home"))');
-    expect(wrapped.argv.slice(-2)).toEqual(["codex", "run"]);
+    try {
+      expect(wrapped.level).toBe("full");
+      expect(wrapped.argv[0]).toBe("/usr/bin/sandbox-exec");
+      expect(wrapped.argv[1]).toBe("-f");
+      const profilePath = wrapped.argv[2];
+      expect(profilePath).not.toContain("(version 1)"); // argv[2] is a PATH, not the profile text itself
+      const profile = readFileSync(profilePath, "utf8");
+      expect(profile).toContain("(deny network*)");
+      expect(profile).toContain('(allow file-write* (subpath "/work/scratch-wt"))');
+      expect(profile).toContain('(allow file-write* (subpath "/work/scratch-home"))');
+      // The command follows the profile path directly — no "--" in between.
+      expect(wrapped.argv.slice(3)).toEqual(["codex", "run"]);
+    } finally {
+      wrapped.cleanup?.();
+    }
   });
 
   test("sandbox-exec: allows network when the member holds a granted connector", () => {
     const detection: SandboxDetection = { platform: "darwin", primitive: "sandbox-exec", level: "full", bin: "/usr/bin/sandbox-exec" };
     const wrapped = wrapForSandbox(["codex"], { ...policy, allowNetwork: true }, detection);
-    expect(wrapped.argv[2]).toContain("(allow network*)");
-    expect(wrapped.argv[2]).not.toContain("(deny network*)");
+    try {
+      const profile = readFileSync(wrapped.argv[2], "utf8");
+      expect(profile).toContain("(allow network*)");
+      expect(profile).not.toContain("(deny network*)");
+    } finally {
+      wrapped.cleanup?.();
+    }
   });
 
   test("sandbox-exec: extra readOnlyPaths (studio root, interpreter dir) are opened for reads too", () => {
     const detection: SandboxDetection = { platform: "darwin", primitive: "sandbox-exec", level: "full", bin: "/usr/bin/sandbox-exec" };
     const wrapped = wrapForSandbox(["codex"], { ...policy, readOnlyPaths: ["/studio/root"] }, detection);
-    expect(wrapped.argv[2]).toContain('(allow file-read* (subpath "/studio/root"))');
+    try {
+      const profile = readFileSync(wrapped.argv[2], "utf8");
+      expect(profile).toContain('(allow file-read* (subpath "/studio/root"))');
+    } finally {
+      wrapped.cleanup?.();
+    }
+  });
+
+  test("sandbox-exec: cleanup() removes the scratch profile file, and is idempotent", () => {
+    const detection: SandboxDetection = { platform: "darwin", primitive: "sandbox-exec", level: "full", bin: "/usr/bin/sandbox-exec" };
+    const wrapped = wrapForSandbox(["codex"], policy, detection);
+    const profilePath = wrapped.argv[2];
+    expect(existsSync(profilePath)).toBe(true);
+    wrapped.cleanup?.();
+    expect(existsSync(profilePath)).toBe(false);
+    expect(() => wrapped.cleanup?.()).not.toThrow(); // calling it twice is safe
   });
 
   test("none: argv passes through completely unchanged — never a thrown error for an unsandboxed platform", () => {
     const detection: SandboxDetection = { platform: "linux", primitive: "none", level: "none" };
     const wrapped = wrapForSandbox(["codex", "run", "--flag"], policy, detection);
     expect(wrapped).toEqual({ argv: ["codex", "run", "--flag"], level: "none" });
+  });
+});
+
+// NOTES R4-SANDBOX-FIX (round 2): LEVARE_SANDBOX_DEBUG=1 is the diagnostic tool the live-host
+// investigation asked for — proven here to actually print the composed argv (never silent, never only
+// wired), and proven OFF by default so an ordinary run stays quiet.
+describe("LEVARE_SANDBOX_DEBUG — diagnostic argv/profile dump", () => {
+  function withEnv(value: string | undefined, fn: () => void): string[] {
+    const prior = process.env.LEVARE_SANDBOX_DEBUG;
+    const lines: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => {
+      lines.push(args.map(String).join(" "));
+    };
+    try {
+      if (value === undefined) delete process.env.LEVARE_SANDBOX_DEBUG;
+      else process.env.LEVARE_SANDBOX_DEBUG = value;
+      fn();
+    } finally {
+      console.error = origError;
+      if (prior === undefined) delete process.env.LEVARE_SANDBOX_DEBUG;
+      else process.env.LEVARE_SANDBOX_DEBUG = prior;
+    }
+    return lines;
+  }
+
+  const policy = { cwd: "/work/scratch-wt", home: "/work/scratch-home", allowNetwork: false };
+
+  test("prints nothing when unset", () => {
+    const detection: SandboxDetection = { platform: "linux", primitive: "bubblewrap", level: "full", bin: "/usr/bin/bwrap" };
+    const lines = withEnv(undefined, () => wrapForSandbox(["codex", "run"], policy, detection));
+    expect(lines).toEqual([]);
+  });
+
+  test("prints the composed argv, one element per line, when set to 1", () => {
+    const detection: SandboxDetection = { platform: "linux", primitive: "bubblewrap", level: "full", bin: "/usr/bin/bwrap" };
+    const lines = withEnv("1", () => wrapForSandbox(["codex", "run"], policy, detection));
+    expect(lines.some((l) => l.includes("level: full"))).toBe(true);
+    expect(lines.some((l) => l.includes('"codex"'))).toBe(true);
+    expect(lines.some((l) => l.includes('"run"'))).toBe(true);
+    expect(lines.some((l) => l.includes("cwd: /work/scratch-wt"))).toBe(true);
+  });
+
+  test("prints even for level: none — 'the wrapper decided not to wrap this' is itself diagnostic", () => {
+    const detection: SandboxDetection = { platform: "linux", primitive: "none", level: "none" };
+    const lines = withEnv("1", () => wrapForSandbox(["codex", "run"], policy, detection));
+    expect(lines.some((l) => l.includes("level: none"))).toBe(true);
+  });
+
+  test("darwin: also names the profile file path and dumps its full text", () => {
+    const detection: SandboxDetection = { platform: "darwin", primitive: "sandbox-exec", level: "full", bin: "/usr/bin/sandbox-exec" };
+    let wrapped: ReturnType<typeof wrapForSandbox> | undefined;
+    const lines = withEnv("1", () => {
+      wrapped = wrapForSandbox(["codex"], policy, detection);
+    });
+    try {
+      expect(lines.some((l) => l.includes("profile written to:"))).toBe(true);
+      expect(lines.some((l) => l.includes("(deny default)"))).toBe(true);
+    } finally {
+      wrapped?.cleanup?.();
+    }
   });
 });
 
@@ -235,11 +327,16 @@ describe("buildSandboxExecProfile — text worth asserting on directly (never li
       mkdirSync(cwd, { recursive: true });
       mkdirSync(home, { recursive: true });
       const profile = buildSandboxExecProfile({ cwd, home, allowNetwork: false, readOnlyPaths: [link] });
+      // NOTES R4-SANDBOX-FIX (item 6): `real` itself must be canonicalized before comparison — on macOS
+      // `os.tmpdir()` ALSO sits behind a symlink (`/var/folders/... -> /private/var/folders/...`), so the
+      // value `mkdtempSync` returns is not yet the fully-resolved path either; comparing against it
+      // directly would fail on exactly the host this fix targets.
+      const realCanonical = realpathSync(real);
       // The SYMLINKED path never appears as its own subpath clause — only the resolved, real path does.
       expect(profile).not.toContain(`(subpath ${JSON.stringify(cwd)})`);
-      expect(profile).toContain(`(allow file-write* (subpath ${JSON.stringify(join(real, "worktree"))}))`);
-      expect(profile).toContain(`(allow file-write* (subpath ${JSON.stringify(join(real, "home"))}))`);
-      expect(profile).toContain(`(allow file-read* (subpath ${JSON.stringify(real)}))`);
+      expect(profile).toContain(`(allow file-write* (subpath ${JSON.stringify(join(realCanonical, "worktree"))}))`);
+      expect(profile).toContain(`(allow file-write* (subpath ${JSON.stringify(join(realCanonical, "home"))}))`);
+      expect(profile).toContain(`(allow file-read* (subpath ${JSON.stringify(realCanonical)}))`);
     } finally {
       rmSync(real, { recursive: true, force: true });
       rmSync(parent, { recursive: true, force: true });

@@ -127,20 +127,26 @@ spawn failure — plus a new `SANDBOX_UNAVAILABLE` doctor/validate/registry warn
 `CLI_TOOLS_NOT_ENFORCEABLE` above. The enforcement level actually used is recorded on the produced artifact
 (`sandbox: full | fs-only | none`), per run, never omitted.
 
-**Honestly, in two parts.** The FIRST live run of this feature was on macOS — the only host in this
+**Honestly, in three rounds.** The FIRST live run of this feature was on macOS — the only host in this
 project's history where `sandbox-exec` actually engaged rather than reporting `none` — and it failed 20
-pre-existing tests plus the two new decoy/read-back tests, all real-spawn paths. Root causes, both fixed
-(NOTES R4-SANDBOX-FIX): macOS's `/tmp`/`/var/folders` are symlinks into `/private`, and `sandbox-exec`'s
-own path rules match the KERNEL-RESOLVED form — every path written into the generated profile is now
-`realpathSync`-canonicalized first; and the original design excluded the studio root and the interpreter's
-own install location entirely, which broke nearly every real CLI fixture this repo's own suite spawns
-(stub scripts and `bun` itself, both living outside the original enumerated allowlist) — both are now
-explicitly included, per dispatch. What COULD be verified without a live macOS host (canonicalization
-logic, argv/profile construction, the enumerated-allowlist shape) was; what could only be proven by
-actually running there (bubblewrap's own Linux behaviour beyond this repo's own dev container, `unshare`'s
-fs-only fallback anywhere, and now sandbox-exec's ACTUAL enforcement of the corrected profile) still
-wasn't, and is named rather than assumed — see NOTES R4-SANDBOX-FIX's own "still requires a live host"
-list.
+pre-existing tests plus the two new decoy/read-back tests, all real-spawn paths. Round 1 (NOTES
+R4-SANDBOX-FIX) fixed macOS path canonicalization (`sandbox-exec`'s path rules match the KERNEL-RESOLVED
+form, and `/tmp`/`/var/folders` are symlinks into `/private`) and widened the read-only allowlist to
+include the studio root and the interpreter's own install location, which had broken nearly every real
+CLI fixture this repo's own suite spawns. A SECOND live run, with the kernel's own unified log checked
+directly for sandbox denials, found ZERO — proving the member process was dying before the sandbox ever
+judged anything, an entirely different class of bug than round 1 fixed. Round 2 (NOTES
+R4-SANDBOX-FIX-2) found the actual composition defect: the profile was passed inline (`-p <string>`,
+never independently verified on this host) rather than via a temp file (`-f <path>`, the exact form a
+manual check proved works), plus an unverified `--` separator neither `man sandbox-exec` nor that same
+manual check ever showed. Both are now aligned with the one invocation shape actually proven to work, and
+a `LEVARE_SANDBOX_DEBUG=1` env var prints the composed argv and raw spawn result for whichever run
+confirms it. What COULD be verified without a live macOS host (canonicalization logic, argv/profile
+construction, the enumerated-allowlist shape, the composed-argv shape itself) was; what could only be
+proven by actually running there (bubblewrap's own Linux behaviour beyond this repo's own dev container,
+`unshare`'s fs-only fallback anywhere, and now whether the round-2 composition fix actually clears the
+same 20 failures) still wasn't, and is named rather than assumed — see NOTES R4-SANDBOX-FIX-2's own
+"still requires a live host" list.
 
 ## Connector trust-tier taxonomy
 

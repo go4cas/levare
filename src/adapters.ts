@@ -34,7 +34,7 @@ import { assembleContext, unitArtifactPaths } from "./context.ts";
 import { asyncSdkTransport, bunSdkTransport, resolveNativeBinary, type AsyncSdkTransport, type SdkTransport } from "./sdk-transport.ts";
 import { repoCapabilities } from "./repo.ts";
 import { resolveProjectRepoPath, workBranchName, branchExists, createDispatchWorktree } from "./merge.ts";
-import { detectSandbox, wrapForSandbox, type SandboxDetection, type SandboxLevel, type SandboxPolicy } from "./sandbox.ts";
+import { detectSandbox, wrapForSandbox, type SandboxDetection, type SandboxLevel, type SandboxPolicy, type WrappedSpawn } from "./sandbox.ts";
 import type { Pricing } from "./pricing.ts";
 import type { Repo } from "./repo.ts";
 import type { MemberRunner } from "./runner.ts";
@@ -201,6 +201,17 @@ export interface SpawnResult {
    * process wrote to fd 2, nothing levare adds to it.
    */
   stderr?: string;
+  /**
+   * NOTES R4-SANDBOX-FIX: Bun's own signal name when the process was killed by a signal rather than
+   * exiting normally (`exitCode` is `null` in that case, and this file's own `?? -1` fallback is what a
+   * bare "exited -1" in an error message actually means — a process that never ran `exit()` at all).
+   * Optional, mirroring `stderr?`'s own "predates this field" allowance for a test-double `CliSpawn`;
+   * always populated by the real `bunSpawn`/`asyncBunSpawn` below. The single most useful piece of
+   * information the macOS host-verification round 2 investigation was missing: "exited -1" alone cannot
+   * distinguish a normal (if unusual) exit code from a signal-killed process, and the two point at
+   * completely different classes of bug.
+   */
+  signalCode?: string | null;
 }
 
 export interface CliSpawnOptions {
@@ -250,6 +261,7 @@ export const bunSpawn: CliSpawn = {
       // 0 on its own) is never misread as timed out, and a plain non-zero exit stays a non-zero exit.
       timedOut: proc.exitedDueToTimeout === true,
       stderr: proc.stderr ? new TextDecoder().decode(proc.stderr) : "",
+      signalCode: proc.signalCode ?? null,
     };
   },
 };
@@ -295,6 +307,7 @@ export const asyncBunSpawn: AsyncCliSpawn = {
         exitCode: proc.exitCode ?? -1,
         timedOut,
         stderr,
+        signalCode: proc.signalCode ?? null,
       };
     } finally {
       clearTimeout(timer);
@@ -814,13 +827,19 @@ export class AdapterRunner implements MemberRunner {
   // stdout reports (see `extractCliUsageTrailer`) and returns it alongside the (trailer-stripped) doc
   // content — `tokensUsed` is null, not zero, when nothing parseable was found.
   private cliResultToDoc(member: string, agent: Agent, argv: string[], result: SpawnResult): { content: string; tokensUsed: number | null } {
+    // NOTES R4-SANDBOX-FIX: an `exitCode` of -1 (this file's own `?? -1` fallback for both spawn
+    // boundaries) means `proc.exitCode` was `null` — the process was killed by a SIGNAL, not a normal
+    // `exit()`, a completely different class of failure than an ordinary nonzero exit and one "exited -1"
+    // alone cannot distinguish. Named explicitly whenever known, since this was the single most useful
+    // piece of information missing from the macOS host-verification round 2 investigation.
+    const signal = result.signalCode ? ` (killed by signal ${result.signalCode})` : "";
     if (result.timedOut) {
       throw new AdapterError(
-        `cli member '${member}' timed out after ${agent.timeout ?? 600}s: ${diagnoseCliFailure(result)} (argv: ${summarizeArgv(argv)})`,
+        `cli member '${member}' timed out after ${agent.timeout ?? 600}s${signal}: ${diagnoseCliFailure(result)} (argv: ${summarizeArgv(argv)})`,
       );
     }
     if (result.exitCode !== 0) {
-      throw new AdapterError(`cli member '${member}' exited ${result.exitCode}: ${diagnoseCliFailure(result)} (argv: ${summarizeArgv(argv)})`);
+      throw new AdapterError(`cli member '${member}' exited ${result.exitCode}${signal}: ${diagnoseCliFailure(result)} (argv: ${summarizeArgv(argv)})`);
     }
     return extractCliUsageTrailer(result.stdout);
   }
@@ -843,12 +862,25 @@ export class AdapterRunner implements MemberRunner {
   // (`process.execPath` — many of this repo's own fixtures spawn `bun` itself), and wherever THIS
   // dispatch's own argv[0] resolves to (`resolveArgv0` — a Homebrew/user-local install, `~/.bun`,
   // anything the platform's static allowlist doesn't already cover).
-  private sandboxWrap(argv: string[], cwd: string | undefined, req: InvokeRequest): { argv: string[]; level: SandboxLevel } {
+  private sandboxWrap(argv: string[], cwd: string | undefined, req: InvokeRequest): WrappedSpawn {
     const detection = this.opts.sandboxDetection ?? detectSandbox();
     const resolvedBin = argv[0] ? resolveArgv0(argv[0], cwd, req.env.PATH) : undefined;
     const readOnlyPaths = [this.repo.root, dirname(process.execPath), ...(resolvedBin ? [dirname(resolvedBin)] : [])];
     const policy: SandboxPolicy = { cwd: cwd ?? process.cwd(), home: req.env.HOME, allowNetwork: memberNetworkAllowed(this.repo, req.member), readOnlyPaths };
     return wrapForSandbox(argv, policy, detection);
+  }
+
+  // NOTES R4-SANDBOX-FIX: prints the raw spawn result AFTER it returns — exitCode, signalCode, and
+  // stdout/stderr byte counts plus stderr's own text — gated on the SAME `LEVARE_SANDBOX_DEBUG=1` env
+  // var `sandbox.ts#wrapForSandbox` already gates its OWN (before-the-spawn) argv/profile dump behind.
+  // Only ever called for the real spawn boundary, alongside `sandboxWrap` itself.
+  private static logSpawnDebug(result: SpawnResult): void {
+    if (process.env.LEVARE_SANDBOX_DEBUG !== "1") return;
+    const stderr = result.stderr ?? "";
+    console.error(
+      `[levare:sandbox-debug] spawn result: exitCode=${result.exitCode} signalCode=${result.signalCode ?? "null"} timedOut=${result.timedOut} stdoutBytes=${result.stdout.length} stderrBytes=${stderr.length}`,
+    );
+    if (stderr) console.error(`[levare:sandbox-debug] stderr:\n${stderr}`);
   }
 
   private runCli(agent: Agent, req: InvokeRequest): { content: string; tokensUsed: number | null; sandbox?: SandboxLevel } {
@@ -860,9 +892,17 @@ export class AdapterRunner implements MemberRunner {
     // failure mode this guards against.
     const real = this.spawn === bunSpawn;
     if (real) preflightCli(req.member, argv, cwd, req.env.PATH);
-    const wrapped = real ? this.sandboxWrap(argv, cwd, req) : { argv, level: undefined as SandboxLevel | undefined };
-    const result = this.spawn.run(wrapped.argv, { env: req.env, cwd, timeoutMs, stdin });
-    return { ...this.cliResultToDoc(req.member, agent, argv, result), sandbox: wrapped.level };
+    const wrapped: { argv: string[]; level?: SandboxLevel; cleanup?: () => void } = real ? this.sandboxWrap(argv, cwd, req) : { argv };
+    try {
+      const result = this.spawn.run(wrapped.argv, { env: req.env, cwd, timeoutMs, stdin });
+      if (real) AdapterRunner.logSpawnDebug(result);
+      // NOTES R4-SANDBOX-FIX: the WRAPPED argv, never the pre-wrap member argv — a failed spawn used to
+      // report what the member would have been invoked with had sandboxing never run, which made "did
+      // the wrapper even engage" impossible to tell from the error text alone.
+      return { ...this.cliResultToDoc(req.member, agent, wrapped.argv, result), sandbox: wrapped.level };
+    } finally {
+      wrapped.cleanup?.();
+    }
   }
 
   // NOTES F5: the async counterpart to `runCli` — same argv/preflight/error handling, but the spawn
@@ -871,9 +911,14 @@ export class AdapterRunner implements MemberRunner {
     const { argv, cwd, timeoutMs, stdin } = this.cliInvocation(agent, req);
     const real = this.asyncSpawn === asyncBunSpawn;
     if (real) preflightCli(req.member, argv, cwd, req.env.PATH);
-    const wrapped = real ? this.sandboxWrap(argv, cwd, req) : { argv, level: undefined as SandboxLevel | undefined };
-    const result = await this.asyncSpawn.run(wrapped.argv, { env: req.env, cwd, timeoutMs, stdin });
-    return { ...this.cliResultToDoc(req.member, agent, argv, result), sandbox: wrapped.level };
+    const wrapped: { argv: string[]; level?: SandboxLevel; cleanup?: () => void } = real ? this.sandboxWrap(argv, cwd, req) : { argv };
+    try {
+      const result = await this.asyncSpawn.run(wrapped.argv, { env: req.env, cwd, timeoutMs, stdin });
+      if (real) AdapterRunner.logSpawnDebug(result);
+      return { ...this.cliResultToDoc(req.member, agent, wrapped.argv, result), sandbox: wrapped.level };
+    } finally {
+      wrapped.cleanup?.();
+    }
   }
 
   // Assemble the §6 context. An empty consumed set ("no consumable produced yet") is a normal, silent

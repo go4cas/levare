@@ -1201,6 +1201,62 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
     }
   });
 
+  // NOTES R4-SANDBOX-FIX (round 2): a failed sandboxed spawn's error message must name what ACTUALLY ran
+  // (the wrapped argv), never the pre-wrap member command — the exact honesty gap the live macOS report
+  // named ("Note the reported argv: it is the RAW member argv... either the error path reports pre-wrap
+  // argv, or the wrapper never composed at all").
+  test("a failed sandboxed spawn's error message reports the WRAPPED argv, never the raw member argv", async () => {
+    const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+    try {
+      const repo = repoWithRealStorefrontRepo(projectRepo);
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        cliCommand: (req) => ["cat", join(req.projectRepoPath!, "marker.txt")],
+        // A fake "bubblewrap" whose bin is really /usr/bin/false — always exits 1, ignoring every arg —
+        // so the failure is guaranteed and the wrapped argv (bwrap-shaped flags) is what must appear in
+        // the thrown error, not the plain "cat marker.txt" the member itself would have run.
+        sandboxDetection: { platform: "linux", primitive: "bubblewrap", level: "full", bin: "/usr/bin/false" },
+      });
+      await expect(runner.produceAsync("finch", "review", "checkout-flow", "storefront")).rejects.toThrow(/--tmpfs/);
+    } finally {
+      rmSync(projectRepo, { recursive: true, force: true });
+    }
+  });
+
+  // NOTES R4-SANDBOX-FIX (round 2): the post-spawn debug line (exitCode/signalCode/byte counts) this
+  // module's own header promises — proven to actually fire on a real spawn, not just wired.
+  test("LEVARE_SANDBOX_DEBUG=1 prints the raw spawn result after a real dispatch", async () => {
+    const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+    const prior = process.env.LEVARE_SANDBOX_DEBUG;
+    const origError = console.error;
+    const lines: string[] = [];
+    console.error = (...args: unknown[]) => {
+      lines.push(args.map(String).join(" "));
+    };
+    try {
+      process.env.LEVARE_SANDBOX_DEBUG = "1";
+      const repo = repoWithRealStorefrontRepo(projectRepo);
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        cliCommand: (req) => ["cat", join(req.projectRepoPath!, "marker.txt")],
+        sandboxDetection: { platform: "linux", primitive: "none", level: "none" },
+      });
+      await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+      expect(lines.some((l) => l.includes("spawn result: exitCode=0"))).toBe(true);
+    } finally {
+      console.error = origError;
+      if (prior === undefined) delete process.env.LEVARE_SANDBOX_DEBUG;
+      else process.env.LEVARE_SANDBOX_DEBUG = prior;
+      rmSync(projectRepo, { recursive: true, force: true });
+    }
+  });
+
   test("native/remote members never carry a sandbox level — Ruling 2 wraps only the two cli spawn paths", () => {
     const repo = loadRepo(ROOT);
     const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native: nativeMock, remote: remoteMock });

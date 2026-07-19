@@ -66,7 +66,35 @@
 // case, and this repo's own verified dev-container reality) is unnecessary, unverified-on-a-symlinked-Linux-
 // host risk this fix does not take on.
 
-import { existsSync, realpathSync } from "node:fs";
+// NOTES R4-SANDBOX-FIX (round 2 — live macOS host verification, second run): the FIRST macOS run (round 1,
+// above) fixed path canonicalization and the read-only allowlist, but a second live run — this time with
+// the kernel's own unified log checked directly for sandbox denials — proved the member process was dying
+// BEFORE the sandbox ever judged anything: zero denial entries for bun/the member stub/any levare path,
+// while a hand-run `sandbox-exec -f /tmp/allow.sb ~/.bun/bin/bun --version` on the SAME host succeeded
+// cleanly. The defect is in how this module composes the wrapped argv/profile for `sandbox-exec`, not in
+// what the profile allows. Two changes follow directly from that evidence:
+//
+// - The profile is now written to a TEMP FILE and passed via `-f <path>` (the exact form verified working
+//   by hand on the live host) rather than inlined via `-p <string>` (never independently verified — the
+//   live host's own manual check used `-f`, not `-p`, and this module had no evidence either way that a
+//   long, multi-line profile string survives `-p` intact).
+// - `LEVARE_SANDBOX_DEBUG=1` prints the fully composed argv (one element per line, unambiguous even with
+//   embedded whitespace/newlines), the profile file's path and text, and the cwd — BEFORE the spawn even
+//   runs — plus (adapters.ts) the raw spawn result (exitCode, signalCode, stdout/stderr byte counts, and
+//   stderr's own text) after it returns. `adapters.ts#cliResultToDoc` also now receives the WRAPPED argv
+//   for its own error message, never the pre-wrap member argv — a failed spawn used to report what the
+//   MEMBER would have been invoked with had sandboxing never run, which is not what actually executed and
+//   made "is the wrapper even engaging" impossible to tell from the error text alone.
+//
+// What this does NOT claim: the root cause is not yet conclusively isolated to `-p` vs. `-f` specifically —
+// only that `-f` is the one form directly verified on the live host, and the debug output above is what a
+// third live run needs to confirm or refute it precisely, rather than guessing again from a Linux-only
+// vantage point. See NOTES R4-SANDBOX-FIX's own "still requires a live host" section for the full list of
+// what remains unconfirmed.
+
+import { existsSync, realpathSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 export type SandboxLevel = "full" | "fs-only" | "none";
 export type SandboxPrimitive = "bubblewrap" | "unshare" | "sandbox-exec" | "none";
@@ -105,6 +133,24 @@ function realProbe(argv: string[]): boolean {
   }
 }
 
+// NOTES R4-SANDBOX-FIX (round 2): a real temp-file probe, matching `sandboxExecArgv`'s own `-f`/no-`--`
+// shape exactly — see `detectSandbox`'s own comment at its call site for why "probe what production
+// actually runs" matters here specifically.
+function probeSandboxExec(bin: string, probe: (argv: string[]) => boolean): boolean {
+  const scratchDir = mkdtempSync(join(tmpdir(), "levare-sandbox-probe-"));
+  try {
+    const profilePath = join(scratchDir, "probe.sb");
+    writeFileSync(profilePath, "(version 1)(allow default)");
+    return probe([bin, "-f", profilePath, "true"]);
+  } finally {
+    try {
+      rmSync(scratchDir, { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+  }
+}
+
 /**
  * Detect which OS sandbox primitive, if any, actually works on this host RIGHT NOW — never inferred
  * from `platform` alone (the goal's own instruction: "never assume one exists because the platform
@@ -131,7 +177,12 @@ export function detectSandbox(opts: SandboxDetectOptions = {}): SandboxDetection
   }
   if (platform === "darwin") {
     const sbx = which("sandbox-exec") ?? (existsSync("/usr/bin/sandbox-exec") ? "/usr/bin/sandbox-exec" : null);
-    if (sbx && probe([sbx, "-p", "(version 1)(allow default)", "--", "true"])) {
+    // NOTES R4-SANDBOX-FIX (round 2): probes the EXACT invocation shape the real wrap now uses (`-f
+    // <file>`, no `--`) — never a different shape than what a real spawn will actually run. Round 1's
+    // probe used `-p <string> -- true`, which could report "functional" while the real, file-based,
+    // `--`-less form (or vice versa) behaved differently; a probe that doesn't match production is a
+    // probe that can't be trusted to mean what it says.
+    if (sbx && probeSandboxExec(sbx, probe)) {
       return { platform, primitive: "sandbox-exec", level: "full", bin: sbx };
     }
     return { platform, primitive: "none", level: "none" };
@@ -161,6 +212,25 @@ export interface SandboxPolicy {
 export interface WrappedSpawn {
   argv: string[];
   level: SandboxLevel;
+  /** Cleanup for any scratch resource this wrap created — currently only `sandbox-exec`'s own temp
+   * profile file (see `sandboxExecArgv`). A no-op (or absent) for every other tier: bwrap/unshare/none
+   * write nothing to disk. The caller (`adapters.ts`) MUST call this after the spawn completes, success
+   * or thrown error alike — the same create-immediately-before/clean-up-immediately-after shape
+   * `merge.ts#createDispatchWorktree`/`env.ts#scopeHome` already establish for their own scratch
+   * resources. */
+  cleanup?: () => void;
+}
+
+// NOTES R4-SANDBOX-FIX (round 2): gated on an env var, never on-by-default — this is diagnostic-only
+// output for a live host investigation, not a feature a Conductor would ever want printed on an ordinary
+// run. Checked fresh every call (not cached at module load) so a test can flip it mid-run without a
+// process restart.
+function sandboxDebugEnabled(): boolean {
+  return process.env.LEVARE_SANDBOX_DEBUG === "1";
+}
+
+function debugLine(line: string): void {
+  console.error(`[levare:sandbox-debug] ${line}`);
 }
 
 function shq(s: string): string {
@@ -266,22 +336,71 @@ export function buildSandboxExecProfile(policy: SandboxPolicy): string {
   return lines.join("\n");
 }
 
-function sandboxExecArgv(bin: string, argv: string[], policy: SandboxPolicy): string[] {
-  return [bin, "-p", buildSandboxExecProfile(policy), "--", ...argv];
+// NOTES R4-SANDBOX-FIX (round 2): `-f <file>` — the exact invocation form verified working by hand on a
+// live macOS host (`sandbox-exec -f /tmp/allow.sb ~/.bun/bin/bun --version`) — never `-p <string>`, which
+// this module used before round 2 and which no live run ever independently confirmed. The temp file is
+// written fresh per spawn (mirroring `merge.ts#createDispatchWorktree`/`env.ts#scopeHome`'s own per-spawn
+// scratch resources) and removed by the returned `cleanup()`, which the caller MUST invoke after the spawn
+// completes. No `--` before the command: `man sandbox-exec`'s own documented forms
+// (`sandbox-exec -f file command [args...]`) never show one, and the live host's own manual verification
+// didn't use one either — inserting an unverified separator between the profile and the command is exactly
+// the kind of composition difference this round's own investigation exists to eliminate, not add another of.
+function sandboxExecArgv(bin: string, argv: string[], policy: SandboxPolicy): { argv: string[]; cleanup: () => void } {
+  const profile = buildSandboxExecProfile(policy);
+  const scratchDir = mkdtempSync(join(tmpdir(), "levare-sandbox-profile-"));
+  const profilePath = join(scratchDir, "profile.sb");
+  writeFileSync(profilePath, profile);
+  if (sandboxDebugEnabled()) {
+    debugLine(`darwin sandbox-exec profile written to: ${profilePath}`);
+    debugLine(`darwin sandbox-exec profile text:\n${profile}`);
+  }
+  let cleaned = false;
+  return {
+    argv: [bin, "-f", profilePath, ...argv],
+    cleanup() {
+      if (cleaned) return;
+      cleaned = true;
+      try {
+        rmSync(scratchDir, { recursive: true, force: true });
+      } catch {
+        /* best-effort — a leftover scratch profile file is not worth failing the run over */
+      }
+    },
+  };
 }
 
 /**
- * Wrap `argv` for the primitive `detection` reports. Side-effect-free and directly unit-testable without
- * ever invoking a real sandbox (`detection` is an ordinary value, not a live probe) — the `sandbox-exec`
- * path does read the filesystem (`realpathSync`, to canonicalize a path before writing it into the
- * profile — see `buildSandboxExecProfile`'s own doc), never writes anything, and never throws (a path
- * that doesn't exist yet just resolves to itself). `detection.primitive === "none"` returns `argv`
- * unchanged, `level: "none"` — the honest unsandboxed-spawn case, never a thrown error (the goal's own
- * ruling: best-effort per OS, an unsandboxed platform is never escalated to a spawn failure).
+ * Wrap `argv` for the primitive `detection` reports. `bubblewrap`/`unshare`/`none` are side-effect-free
+ * and directly unit-testable without ever invoking a real sandbox; the `sandbox-exec` path additionally
+ * reads the filesystem (`realpathSync`, to canonicalize a path before writing it into the profile — see
+ * `buildSandboxExecProfile`'s own doc) and WRITES the generated profile to a scratch temp file (never
+ * throws either way — a path that doesn't exist yet just resolves to itself, and the write target is
+ * always a fresh directory this function itself just created). `detection.primitive === "none"` returns
+ * `argv` unchanged, `level: "none"` — the honest unsandboxed-spawn case, never a thrown error (the goal's
+ * own ruling: best-effort per OS, an unsandboxed platform is never escalated to a spawn failure).
+ *
+ * `LEVARE_SANDBOX_DEBUG=1` prints the fully composed argv (one element per line) and the cwd/home this
+ * wrap targeted, for every tier including `none` — a live host investigation needs to see "the wrapper
+ * decided not to wrap this" exactly as clearly as "here is what it wrapped it into".
  */
 export function wrapForSandbox(argv: string[], policy: SandboxPolicy, detection: SandboxDetection): WrappedSpawn {
-  if (detection.primitive === "bubblewrap" && detection.bin) return { argv: bubblewrapArgv(detection.bin, argv, policy), level: "full" };
-  if (detection.primitive === "unshare" && detection.bin) return { argv: unshareArgv(detection.bin, argv, policy), level: "fs-only" };
-  if (detection.primitive === "sandbox-exec" && detection.bin) return { argv: sandboxExecArgv(detection.bin, argv, policy), level: "full" };
-  return { argv, level: "none" };
+  let result: WrappedSpawn;
+  if (detection.primitive === "bubblewrap" && detection.bin) {
+    result = { argv: bubblewrapArgv(detection.bin, argv, policy), level: "full" };
+  } else if (detection.primitive === "unshare" && detection.bin) {
+    result = { argv: unshareArgv(detection.bin, argv, policy), level: "fs-only" };
+  } else if (detection.primitive === "sandbox-exec" && detection.bin) {
+    const wrapped = sandboxExecArgv(detection.bin, argv, policy);
+    result = { argv: wrapped.argv, level: "full", cleanup: wrapped.cleanup };
+  } else {
+    result = { argv, level: "none" };
+  }
+  if (sandboxDebugEnabled()) {
+    debugLine(`level: ${result.level} (primitive: ${detection.primitive})`);
+    debugLine(`cwd: ${policy.cwd}`);
+    if (policy.home) debugLine(`home: ${policy.home}`);
+    debugLine("composed argv:");
+    result.argv.forEach((a, i) => debugLine(`  [${i}] ${JSON.stringify(a)}`));
+  }
+  return result;
 }

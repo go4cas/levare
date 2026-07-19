@@ -8826,3 +8826,124 @@ on macOS, or whether some vendor CLI needs a further, not-yet-discovered path; a
 fallback's own real behaviour on ANY host (this container's own `unshare --user --map-root-user --mount`
 fails for the identical reason `bwrap` does, so it has never once actually run for real, on any platform,
 in this project's history). Each of these is named here rather than assumed fixed by construction alone.
+
+# NOTES R4-SANDBOX-FIX-2 — second live macOS verification run: the wrapper composition bug
+
+Round 1 (above) fixed path canonicalization and the read-only allowlist and predicted the corrected
+profile would pass a re-run. It didn't. A SECOND live macOS report came back — 20 failures, 1 error,
+identical to round 1's own list — but this time with kernel-log evidence that reframes the bug entirely:
+FACT 2 (checked directly in the unified log immediately after a failing run) showed ZERO sandbox denial
+entries for `bun`, the member stub, or any levare path — only unrelated system daemons. FACT 1 confirmed
+`sandbox-exec` itself is healthy on the host (`sandbox-exec -f /tmp/allow.sb ~/.bun/bin/bun --version`
+runs cleanly). FACT 3 was the one that actually located the bug: the thrown error's own `argv:` field
+showed the RAW, pre-wrap member command — no `sandbox-exec`, no `-f`, no profile path anywhere in it.
+
+**Conclusion, stated precisely by the report and confirmed by code inspection: the member process was
+dying before the sandbox ever judged anything.** The defect was in how this module composed the wrapped
+invocation for `sandbox-exec`, not in what the profile allowed — round 1's own fix (the allowlist, the
+canonicalization) was real and necessary but insufficient, because the wrapped command was never
+reaching a state where the profile's contents mattered.
+
+## What was actually wrong
+
+Two concrete composition bugs, both in `sandbox.ts`'s `sandboxExecArgv` (and, for the first, in
+`detectSandbox`'s own darwin probe, which shared the same shape and was therefore never going to catch
+this by disagreeing with production):
+
+1. **`-p <string>` was never independently verified.** The live host's own manual check (FACT 1) used
+   `-f <file>`; this module used `-p <profile-text-inline>` throughout round 1 and never once confirmed
+   that form actually works for a real, long, multi-line profile on this platform. `-f` is now the only
+   form used — the profile is written to a fresh scratch temp file (`mkdtempSync` + `writeFileSync`,
+   mirroring `merge.ts#createDispatchWorktree`/`env.ts#scopeHome`'s own per-spawn scratch-resource
+   lifecycle) and passed by path. `WrappedSpawn` gained an optional `cleanup()` for exactly this — the
+   first resource sandbox.ts has ever needed to CREATE rather than just describe — and `adapters.ts`'s
+   `runCli`/`runCliAsync` now call it in a `finally`, success or thrown error alike.
+2. **A `--` separator before the command that `man sandbox-exec`'s own documented forms never show, and
+   the live host's manual check never used.** Removed. (Whether this alone was ever actually the
+   trigger, versus round 2's real fix being purely the `-p`→`-f` change, is one of the things this round's
+   own diagnostic tooling — below — exists to let a third run settle conclusively; both are now aligned
+   with the one invocation shape actually PROVEN to work, which is the more important fact than which of
+   the two differences was load-bearing.)
+
+`detectSandbox`'s own darwin probe was rewritten to the identical `-f <tempfile>`, no-`--` shape
+(`probeSandboxExec`) — a probe that doesn't match what production actually runs is a probe that can't be
+trusted to mean what it says, and round 1's probe (still `-p ... --`) could have been reporting "this
+works" about an invocation shape that was never what a real dispatch used.
+
+## Diagnostic tooling added, per the report's own explicit ask
+
+- **`LEVARE_SANDBOX_DEBUG=1`** — `sandbox.ts#wrapForSandbox` prints the composed argv (one element per
+  line, so embedded whitespace/newlines in a long profile string or path are unambiguous), the cwd/home
+  targeted, and — for `sandbox-exec` specifically — the profile file's path and full text, ALL before the
+  spawn runs, for every tier including `none` (a live investigation needs "the wrapper decided not to
+  wrap this" to be exactly as visible as "here is what it wrapped it into"). `adapters.ts`'s `runCli`/
+  `runCliAsync` print the raw spawn result immediately after — `exitCode`, `signalCode`, stdout/stderr
+  byte counts, and stderr's own text — gated on the identical env var. Proven to actually fire, not just
+  wired: `tests/sandbox.test.ts`'s own describe block captures `console.error` and asserts the lines
+  appear (and that nothing prints when the flag is unset); `tests/adapters.test.ts` proves the post-spawn
+  line fires on a real dispatch.
+- **`SpawnResult` gained `signalCode`** (`bunSpawn`/`asyncBunSpawn` both populate it from
+  `proc.signalCode`). This is, in hindsight, the single most useful piece of information round 1's own
+  error message was missing: `exitCode: -1` is this file's own fallback for `proc.exitCode === null`,
+  which means the process was killed by a SIGNAL, not that it ran and returned an unusual exit status —
+  two completely different classes of bug that "exited -1" alone cannot distinguish. Every
+  `AdapterError` for a cli member failure now names the signal when Bun reports one
+  (`cli member 'x' exited -1 (killed by signal SIGABRT): ...`).
+- **Honest argv in every failure message.** `cliResultToDoc` now receives the WRAPPED argv (whatever
+  `this.spawn.run` actually executed), never the pre-wrap member argv — round 1's own deliberate choice
+  (avoid "leaking bwrap internals" into a Conductor-facing card) was exactly backwards for a HOST
+  INVESTIGATION, where "is the wrapper even engaging" needs to be readable from the error text alone, and
+  is exactly what FACT 3 in this round's own report had to reverse-engineer by hand. `summarizeArgv`'s
+  existing per-element truncation (200 chars) keeps a long profile-file path or bwrap flag list from
+  making the message unreadable — no new truncation logic needed.
+
+## Item 6 — the canonicalization test that failed on macOS specifically
+
+`tests/sandbox.test.ts`'s own symlink-canonicalization test asserted the profile named `join(real,
+"worktree")` where `real` was `mkdtempSync(tmpdir())`'s own raw return value — on Linux, `tmpdir()` isn't
+itself behind a symlink, so this happened to be already-canonical and the test passed there without
+ever exercising the actual bug. On macOS, `os.tmpdir()` ALSO sits behind a symlink
+(`/var/folders/... -> /private/var/folders/...`), so `real` itself needed canonicalizing before the
+comparison — fixed by wrapping the expected-value construction in `realpathSync(real)` too, per the
+report's own explicit instruction. This is a real example of a test that passed on the WRONG host for
+the wrong reason — worth naming since it's exactly the kind of gap a Linux-only CI/dev-container can
+never catch on its own.
+
+## The "1 error" — still not independently isolated
+
+Same conclusion as round 1: no distinct stack trace was provided for it in either report, and it remains
+a plausible symptom of the same root cause (an async spawn failing outside a test's own direct await
+chain) rather than a separately diagnosed defect. If it persists after this round's fix, the debug flag
+above should make it directly traceable on the next run, unlike round 1.
+
+## What round 1 got right, and what it didn't
+
+Round 1's allowlist widening (studio root, interpreter directory, Homebrew prefixes) and path
+canonicalization were real, defensible fixes for real problems — nothing in round 2's own evidence
+contradicts either. What round 1 got wrong was ASSUMING the fix was complete without a way to verify the
+wrapper was even composing correctly, because no diagnostic existed to show what actually ran versus what
+was intended to run. That gap — not the allowlist, per the report's own explicit instruction not to touch
+it again — is what this round closes.
+
+## Regression proof added from inside this (Linux) container
+
+- `tests/sandbox.test.ts`: the `-f`/no-`--` argv shape for every `sandbox-exec` case (network on/off,
+  `readOnlyPaths`, the base case), reading the profile back from the temp file rather than asserting on
+  an inline string; `cleanup()` removing the scratch file and being idempotent; the `LEVARE_SANDBOX_DEBUG`
+  describe block (prints when set, silent when unset, prints even for `level: none`, darwin's own extra
+  profile-path/text lines); the symlink-canonicalization test's own `real` value now canonicalized before
+  comparison (item 6).
+- `tests/adapters.test.ts`: a new test forces `sandboxDetection.bin` to `/usr/bin/false` (a real binary
+  that always exits 1, ignoring every argument) so the sandboxed spawn is GUARANTEED to fail, then asserts
+  the thrown error's own message contains `--tmpfs` — a bwrap-shaped flag that could only appear if the
+  WRAPPED argv, not the raw member command, is what got reported; a second new test proves the post-spawn
+  `LEVARE_SANDBOX_DEBUG` line fires on a real, successful dispatch.
+
+## What still, honestly, requires a live macOS host to prove
+
+Everything round 1's own "still requires a live host" list already named remains true. This round adds
+one item and narrows none: whether `-f` (vs. the pre-round-2 `-p`) — or the removed `--` separator, or
+both together — was the actual trigger for the wrapper dying before the sandbox judged anything is not
+independently isolated; the fix aligns the implementation with the ONE invocation shape directly proven
+to work by hand on the live host, and `LEVARE_SANDBOX_DEBUG=1` is what a third run should use to confirm
+the composed argv now matches that shape exactly, rather than trusting construction alone a second time.
