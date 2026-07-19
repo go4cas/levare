@@ -10107,3 +10107,129 @@ two pre-existing `SANDBOX_UNAVAILABLE` warnings, unchanged. `bun run src/cli.ts 
 --stubs` → oracle match, byte-for-byte. `bun run scripts/repro-r4-sandbox-fix10-hang.ts` → exits cleanly on
 this container's own platform guard (darwin-only), sanity-checked separately with a stand-in primitive to
 prove the harness itself (worktree/profile/argv construction, per-step timeout) runs without error.
+
+# NOTES R4-SANDBOX-FIX-11 — the FIX-10 ladder CONVICTS on the live host: not a hang, a slow FATAL failure
+
+The extended ladder from FIX-10 ran on the live macOS gate and produced two convictions and confirms the
+FIX-10 acquittal held. Read in full before this entry: the ladder's own output named the exact mach
+service, the exact failure code, and the exact timing that adds up to the reported "5000ms hang."
+
+## Conviction 1 (the actual root cause) — `com.apple.bsd.dirhelper`, fatal for git, cosmetic for bun
+
+Every git-invoking link in the chain (`git add`, `git commit`, the full chain) failed FATALLY, `exit
+128`, in 2–3 seconds each — never a hang. Apple's own `/usr/bin/git` is an `xcrun` shim (confirmed:
+`xcodebuild` appears in the captured stderr). The chain: `git` calls `confstr(_CS_DARWIN_USER_TEMP_DIR,
+...)` at startup; that call is backed by the mach service `com.apple.bsd.dirhelper`, denied under the
+darwin profile; `confstr` fails with code 5; xcrun falls back to `/tmp`; the resulting
+`file-write-create /private/tmp/xcrun_db-*` is ALSO denied (no grant covers `/tmp` broadly, by design);
+git exits 128 after the xcodebuild/DVT machinery underneath the shim finishes stalling. The test's own
+"5000ms hang, killed 1 dangling process" was `git add` (~3.3s) + `git commit` (~2.2s) ≈ 5.5s of SLOW
+FAILURE exceeding the test's own bun:test default timeout — reclassified accordingly. Had FIX-10's own
+process-group instrumentation fired on this exact failure, it would have shown `xcodebuild`/`xcrun`
+machinery still alive at kill time, not `git` itself and certainly not a genuine deadlock — consistent
+with, not contradicting, that round's own design.
+
+`com.apple.bsd.dirhelper` was catalogued as a COSMETIC soft denial in FIX-9 (observed during `bun`'s own
+startup, which tolerates it) and left uncorrected through FIX-10. This round's own evidence proves that
+conclusion was right for `bun` and WRONG for git — the identical denial is noise for one binary and fatal
+for another, exactly the per-denial-context distinction now recorded directly in `sandbox.ts`'s own
+catalogue comment rather than left as a blanket "cosmetic" label.
+
+**Fix:** `com.apple.bsd.dirhelper`'s mach-lookup is now allowed UNCONDITIONALLY in
+`buildSandboxExecProfile`'s own fixed preamble (`sandbox.ts`), mirroring `sysctl-read`'s own precedent —
+process-bootstrap plumbing (resolves per-user SYSTEM DIRECTORY PATHS, kernel/system information, never
+user data), needed by more than just git, not policy-gated since every darwin dispatch needs it equally.
+A new `sandbox.ts#resolveDarwinUserTempDir` resolves the REAL per-user temp directory via `getconf`, run
+by the UNSANDBOXED PARENT process (never re-derived from inside the sandbox, where the identical
+mach-lookup denial would convict the resolution too; never assumed to be `/tmp` or `/var/folders`
+broadly) — threaded by `adapters.ts#sandboxWrap` into `SandboxPolicy.writablePaths` alongside the git-dir
+grants, and by `sandbox.ts#probeSandboxExec` into its own policy too, for the structural parity this
+whole investigation has repeatedly tested for (the probe's trivial script never itself invokes an
+xcrun-shimmed tool, so this is a harmless, unused grant there — included for shape consistency, not
+because the probe needs it).
+
+**Why this does not weaken the threat model:** the per-user temp directory IS the sandbox's own scratch
+territory already — every scratch worktree (`merge.ts#createDispatchWorktree`), every scoped HOME
+(`env.ts#scopeHome`), every sandbox-exec profile file this module itself writes (`sandboxExecArgv`,
+`probeSandboxExec`) already lives under exactly this directory (`os.tmpdir()` resolves here on macOS).
+Granting write access to it is not a new category of exposure; it is naming, explicitly, territory this
+module was already trusting implicitly.
+
+**Fix-variant confirmation, extended into the SAME ladder script rather than a new one** (per the goal's
+own "the established method — the Conductor runs it once" instruction): three variants run the full chain
+after step 6 — (A) the profile grant only (mach-lookup, always on, plus the resolved temp-dir write
+grant) — this round's SHIPPED fix; (B) env-only (`XCRUN_DISABLE_CACHE=1`, no write grant) — tests whether
+the write grant is droppable in favor of an even narrower env-only redirect, matching FIX-9's own
+precedent of preferring environmental fixes over sandbox widening wherever one suffices; (C) both
+together, as a belt-and-suspenders baseline. Variant A is shipped because it is the variant with the
+HIGHEST mechanistic confidence given the evidence already in hand (it directly countermands the exact
+observed failure chain); B is included because — if the live run's own ONE confirmation pass shows it
+alone suffices — a future round could simplify to an env-only redirect and drop the write grant entirely,
+the same kind of narrowing FIX-8 already did once for the git-dir grant itself. Sanity-checked in this
+container with a stand-in `/bin/echo` primitive (proving the harness — profile variants, env layering,
+per-variant worktree reset — runs without error); the actual outcome of A vs. B vs. C can only be read
+from the live host.
+
+## Conviction 2 (non-fatal, catalogued rather than fixed) — `getcwd` EPERM on the ancestor chain
+
+`sh` and `git` both emit `getcwd: cannot access parent directories: Operation not permitted`. `getcwd()`'s
+own POSIX algorithm reads each ancestor directory's ENTRIES (a listing/data-read operation) to resolve its
+own name at every level walking up the tree — a fundamentally different operation than the
+`file-read-metadata` (existence/stat only) grants `ancestorsOf` already emits for every re-allowed path.
+This is the EPERM-where-ENOENT-expected class again (the `.gitconfig` read in FIX-9, the operator-home
+read in earlier rounds) — but it is NON-FATAL here: the live ladder proved every step in the observed
+chain (bare `cd`, the echo redirect, `git add`, `git commit`) tolerates the warning and completes
+regardless, falling back to the path string it was already given rather than a kernel-resolved one.
+
+**Chosen response: catalogue, do not fix — recorded with the reasoning, not silently accepted.** Adding a
+data-read grant on the ancestor chain would be a REAL widening (directory listings reveal sibling
+file/directory NAMES — a materially larger read surface than the metadata-only ancestor grants this
+module deliberately limits itself to) for a warning that has not been shown to block any real operation in
+the fully-supported chain. The evidence argues against granting it, not for it; recorded directly in
+`sandbox.ts`'s own comment alongside `ancestorsOf` for any future round revisiting this decision.
+
+## Acquittal reconfirmed — opendirectoryd
+
+FIX-10's own acquittal of the `opendirectoryd.membership`/`.libinfo` mach-lookup denials stands unaffected
+— those are DIFFERENT mach services than `com.apple.bsd.dirhelper`, and nothing in this round's own
+evidence implicates them. Not re-litigated.
+
+## Regression proof added
+
+- `tests/sandbox.test.ts`: `resolveDarwinUserTempDir` gets its own describe block (off-darwin never calls
+  `getconf` at all; a resolving `getconf` returns its value verbatim; a failing/unavailable `getconf`
+  returns `undefined`, never throws; the real, un-injected function confirmed `undefined` on this
+  container). `buildSandboxExecProfile`'s own fixed-preamble test extended to assert the `dirhelper`
+  mach-lookup line unconditionally. The probe/dispatch structural-equivalence test's own fixed-line list
+  extended to include it too.
+- `tests/adapters.test.ts`: the worktree-commit test gained an elapsed-time assertion (generous headroom,
+  well under the test's own 5000ms ceiling, never a raised ceiling) — the regression guard per the goal's
+  own instruction: a future regression back toward the multi-second xcrun-shim slow-failure path now fails
+  on TIMING, not merely by eventually hitting the outer test timeout with no signal about why.
+- `scripts/repro-r4-sandbox-fix10-hang.ts`: extended in place (not a new file — the goal's own "extend the
+  repro ladder" instruction) with the three fix-variant steps; its own header comment now records both
+  the original FIX-10 ladder's purpose and FIX-11's own conviction/fix.
+
+## What this does NOT claim
+
+The fix-variant confirmation (A/B/C) has NOT yet been run on a live host — this round ships variant A
+(the mechanistically-justified profile grant) as the default, with B and C available for the SAME ladder
+run the Conductor already uses to confirm the fix, per the goal's own "hand back for one live confirmation
+run before the final gate" instruction. Whether variant B (env-only) would have sufficed on its own,
+letting a future round simplify by dropping the write grant, is an open question this round explicitly
+defers to that run's own evidence — not decided here without it. The `getcwd` catalogue decision is
+believed correct from the evidence already in hand (every step in the observed chain tolerated it) but,
+like every other darwin-only conclusion in this investigation, is only fully confirmed by a live host
+directly, not by reasoning about POSIX semantics alone.
+
+## Verification
+
+`bun test` — full suite green, including the new `resolveDarwinUserTempDir` tests, the extended
+structural-equivalence test, and the worktree-commit test's new timing assertion (passes trivially in this
+container's own unsandboxed baseline — single-digit milliseconds). `bun run typecheck` → exit 0. `bun run
+deps:check` → `deps ok`. `bun run build` → succeeds. `bun run src/cli.ts validate fixtures/golden` →
+`valid`, the same two pre-existing `SANDBOX_UNAVAILABLE` warnings, unchanged. `bun run src/cli.ts replay
+fixtures/golden --stubs` → oracle match, byte-for-byte. `bun run scripts/repro-r4-sandbox-fix10-hang.ts` →
+exits cleanly on this container's own platform guard; the extended fix-variant section sanity-checked
+separately with a stand-in primitive (`/bin/echo`) to prove the harness itself — profile-variant
+construction, env layering, per-variant worktree reset — runs without error.
