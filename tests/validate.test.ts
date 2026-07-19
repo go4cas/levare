@@ -23,10 +23,18 @@ describe("golden fixture", () => {
 });
 
 describe("levare validate CLI", () => {
+  // NOTES R4-SANDBOX: the real `./levare validate` subprocess now probes this host's OWN OS sandbox
+  // primitives (never assumed from the platform) — fixtures/golden declares real `kind: cli` agents
+  // (finch, rook), so on a host with no working bubblewrap/unshare (this container's own reality — see
+  // sandbox.ts's header) it prints `SANDBOX_UNAVAILABLE` warnings after the "valid" line, exactly the
+  // same "warnings never flip ok, print after valid" shape `REMOTE_NOT_IMPLEMENTED` already established
+  // (see "the real CLI's `levare validate` prints the warning and still exits 0" below) — this asserts
+  // the FIRST line and exit code, not exact whole-output equality, since a host WITH a working primitive
+  // legitimately prints no warning at all here.
   test("`levare validate fixtures/golden` prints 'valid' and exits 0", () => {
     const p = Bun.spawnSync(["./levare", "validate", "fixtures/golden"]);
     expect(p.exitCode).toBe(0);
-    expect(p.stdout.toString().trim()).toBe("valid");
+    expect(p.stdout.toString().split("\n")[0]).toBe("valid");
   });
 
   test("a rejection fixture exits 1 and reports the error code", () => {

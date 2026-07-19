@@ -28,12 +28,13 @@
 import { existsSync, statSync, accessSync, constants as fsConstants } from "node:fs";
 import { isAbsolute, join as pathJoin } from "node:path";
 import { normalizeReceipt } from "./receipts.ts";
-import { buildMemberEnv, teamOf, subscriptionConnector, scopeHome } from "./env.ts";
+import { buildMemberEnv, teamOf, subscriptionConnector, scopeHome, memberNetworkAllowed } from "./env.ts";
 import { allowedTools } from "./guardrails.ts";
 import { assembleContext, unitArtifactPaths } from "./context.ts";
 import { asyncSdkTransport, bunSdkTransport, resolveNativeBinary, type AsyncSdkTransport, type SdkTransport } from "./sdk-transport.ts";
 import { repoCapabilities } from "./repo.ts";
-import { resolveProjectRepoPath, workBranchName, branchExists, ensureWorkBranchCheckedOut } from "./merge.ts";
+import { resolveProjectRepoPath, workBranchName, branchExists, createDispatchWorktree } from "./merge.ts";
+import { detectSandbox, wrapForSandbox, type SandboxDetection, type SandboxLevel, type SandboxPolicy } from "./sandbox.ts";
 import type { Pricing } from "./pricing.ts";
 import type { Repo } from "./repo.ts";
 import type { MemberRunner } from "./runner.ts";
@@ -53,12 +54,16 @@ export interface InvokeRequest {
   context: string;
   env: Record<string, string>;
   tools: string[];
-  /** NOTES MERGE-1 (goal item 1): the unit's project repo, resolved to a real local checkout — only
-   * when `resolveProjectRepoPath` finds one (a project with no `repo:`, or one that doesn't resolve
-   * locally, or the studio's own root, leaves this undefined; see that function's own doc). This is
-   * what `{feature_repo}` substitutes to (adapters.ts#defaultCliCommand) — undefined leaves the
-   * placeholder unresolved, exactly the pre-existing (inert) behaviour for every project that isn't a
-   * real local checkout, e.g. the golden fixture's own `storefront`. */
+  /** NOTES MERGE-1 (goal item 1) / NOTES R4-SANDBOX (Ruling 1): the unit's project repo checkout this
+   * dispatch actually runs against — only set when `resolveProjectRepoPath` finds a real local checkout
+   * (a project with no `repo:`, or one that doesn't resolve locally, or the studio's own root, leaves
+   * this undefined; see that function's own doc). Once the unit's work branch exists, this is a
+   * PER-DISPATCH scratch worktree of that branch (`merge.ts#createDispatchWorktree`), never the
+   * project's own shared working tree — each dispatch gets its own isolated checkout, created before
+   * the invoke call and removed after (`AdapterRunner#withDispatchWorktree`). This is what
+   * `{feature_repo}` substitutes to (adapters.ts#defaultCliCommand) — undefined leaves the placeholder
+   * unresolved, exactly the pre-existing (inert) behaviour for every project that isn't a real local
+   * checkout, e.g. the golden fixture's own `storefront`. */
   projectRepoPath?: string;
 }
 
@@ -328,6 +333,12 @@ export interface AdapterRunnerOptions {
   /** Injectable clock for the artifact's `created` date (ruling C12) — default real today; tests
    * inject a fixed date for deterministic assertions. */
   now?: () => string;
+  /** NOTES R4-SANDBOX: test-only override of the OS sandbox primitive detection — default a real,
+   * freshly-probed `detectSandbox()` on every cli spawn (never cached across a run, and never assumed
+   * from the platform alone — see sandbox.ts's own header). Production call sites (`replay.ts`,
+   * `board/serve.ts`) never set this, so a live spawn always reflects the host's actual, current
+   * capability. */
+  sandboxDetection?: SandboxDetection;
 }
 
 // Substitute the agent.command argv template. {task} = the FULL §6-assembled context (NOTES F7) —
@@ -504,29 +515,33 @@ export class AdapterRunner implements MemberRunner {
    * serve` request path (invariant 10's native/remote deferral; the CLI kind's real, live spawn goes
    * through `produceAsync` instead — see NOTES F5). */
   produce(member: string, kind: string, unit: string, project: string, extraConsumes: string[] = []): { doc: string; receipt: Receipt } {
-    const { agent, req } = this.prepare(member, kind, unit, project, extraConsumes);
-    let raw: string;
-    let receipt: Receipt | undefined;
-    switch (agent.kind) {
-      case "native": {
-        const res = this.withHomeScope(member, req, (r) => this.opts.native.invoke(r));
-        raw = res.doc;
-        receipt = res.receipt;
-        break;
+    const { agent, req, dispatchRepo } = this.prepare(member, kind, unit, project, extraConsumes);
+    return this.withDispatchWorktree(member, dispatchRepo, req, (req2) => {
+      let raw: string;
+      let receipt: Receipt | undefined;
+      let sandbox: SandboxLevel | undefined;
+      switch (agent.kind) {
+        case "native": {
+          const res = this.withHomeScope(member, req2, (r) => this.opts.native.invoke(r));
+          raw = res.doc;
+          receipt = res.receipt;
+          break;
+        }
+        case "remote":
+          raw = this.opts.remote.call(req2).doc;
+          break;
+        case "cli": {
+          const out = this.withHomeScope(member, req2, (r) => this.runCli(agent, r));
+          raw = out.content;
+          receipt = this.cliReceipt(agent, out.tokensUsed);
+          sandbox = out.sandbox;
+          break;
+        }
+        default:
+          throw new AdapterError(`unknown agent kind '${(agent as Agent).kind}' for '${member}'`);
       }
-      case "remote":
-        raw = this.opts.remote.call(req).doc;
-        break;
-      case "cli": {
-        const { content, tokensUsed } = this.withHomeScope(member, req, (r) => this.runCli(agent, r));
-        raw = content;
-        receipt = this.cliReceipt(agent, tokensUsed);
-        break;
-      }
-      default:
-        throw new AdapterError(`unknown agent kind '${(agent as Agent).kind}' for '${member}'`);
-    }
-    return this.author(req, raw, receipt, extraConsumes);
+      return this.author(req2, raw, receipt, extraConsumes, sandbox);
+    });
   }
 
   /**
@@ -538,29 +553,33 @@ export class AdapterRunner implements MemberRunner {
    * mocked boundaries, not live — invariant 10) but are still awaited here uniformly.
    */
   async produceAsync(member: string, kind: string, unit: string, project: string, extraConsumes: string[] = []): Promise<{ doc: string; receipt: Receipt }> {
-    const { agent, req } = this.prepare(member, kind, unit, project, extraConsumes);
-    let raw: string;
-    let receipt: Receipt | undefined;
-    switch (agent.kind) {
-      case "native": {
-        const res = await this.withHomeScopeAsync(member, req, async (r) => (this.opts.asyncNative ? await this.opts.asyncNative.invoke(r) : this.opts.native.invoke(r)));
-        raw = res.doc;
-        receipt = res.receipt;
-        break;
+    const { agent, req, dispatchRepo } = this.prepare(member, kind, unit, project, extraConsumes);
+    return this.withDispatchWorktreeAsync(member, dispatchRepo, req, async (req2) => {
+      let raw: string;
+      let receipt: Receipt | undefined;
+      let sandbox: SandboxLevel | undefined;
+      switch (agent.kind) {
+        case "native": {
+          const res = await this.withHomeScopeAsync(member, req2, async (r) => (this.opts.asyncNative ? await this.opts.asyncNative.invoke(r) : this.opts.native.invoke(r)));
+          raw = res.doc;
+          receipt = res.receipt;
+          break;
+        }
+        case "remote":
+          raw = this.opts.remote.call(req2).doc;
+          break;
+        case "cli": {
+          const out = await this.withHomeScopeAsync(member, req2, (r) => this.runCliAsync(agent, r));
+          raw = out.content;
+          receipt = this.cliReceipt(agent, out.tokensUsed);
+          sandbox = out.sandbox;
+          break;
+        }
+        default:
+          throw new AdapterError(`unknown agent kind '${(agent as Agent).kind}' for '${member}'`);
       }
-      case "remote":
-        raw = this.opts.remote.call(req).doc;
-        break;
-      case "cli": {
-        const { content, tokensUsed } = await this.withHomeScopeAsync(member, req, (r) => this.runCliAsync(agent, r));
-        raw = content;
-        receipt = this.cliReceipt(agent, tokensUsed);
-        break;
-      }
-      default:
-        throw new AdapterError(`unknown agent kind '${(agent as Agent).kind}' for '${member}'`);
-    }
-    return this.author(req, raw, receipt, extraConsumes);
+      return this.author(req2, raw, receipt, extraConsumes, sandbox);
+    });
   }
 
   // NOTES CAP-B (part B, item 4): wraps a native/cli invocation with a per-spawn scoped HOME
@@ -589,46 +608,77 @@ export class AdapterRunner implements MemberRunner {
   }
 
   // Shared setup for both produce/produceAsync: resolve the agent, assemble its §6 context, scope its
-  // env, and build the InvokeRequest every adapter kind reads from.
-  private prepare(member: string, kind: string, unit: string, project: string, extraConsumes: string[] = []): { agent: Agent; req: InvokeRequest } {
+  // env, and build the InvokeRequest every adapter kind reads from. `dispatchRepo`, when set, is
+  // resolved here but not yet turned into a worktree — `withDispatchWorktree`/`withDispatchWorktreeAsync`
+  // do that around the actual invoke call, since the worktree's lifetime must span exactly one dispatch.
+  private prepare(member: string, kind: string, unit: string, project: string, extraConsumes: string[] = []): {
+    agent: Agent;
+    req: InvokeRequest;
+    dispatchRepo?: { repoPath: string; branch?: string };
+  } {
     const agent = this.repo.agents.get(member);
     if (!agent) throw new AdapterError(`no agent definition for member '${member}'`);
     const context = this.assemble(member, unit, project, extraConsumes);
     const env = buildMemberEnv(this.repo, member, this.opts.baseEnv);
-    const projectRepoPath = this.memberWorkingContext(member, unit, project);
-    const req: InvokeRequest = { agent, member, kind, unit, project, context, env, tools: allowedTools(agent), projectRepoPath };
-    return { agent, req };
+    const dispatchRepo = this.resolveDispatchRepo(project, unit);
+    const req: InvokeRequest = { agent, member, kind, unit, project, context, env, tools: allowedTools(agent), projectRepoPath: dispatchRepo?.repoPath };
+    return { agent, req, dispatchRepo };
   }
 
-  // NOTES MERGE-1 (goal item 1 — "wire what the adapter layer supports"): a member dispatched for a
-  // unit on a repo-bearing project gets the work branch checked out in its working context, when that
-  // context is real (resolveProjectRepoPath finds a local checkout) and the branch actually exists
-  // (board/gateops.ts#doStart creates it at unit-open, before any member for this unit is ever
-  // dispatched — see M1). A no-op for every project that isn't a real local checkout (unchanged from
-  // before this goal) and for a unit whose branch hasn't been created yet (shouldn't happen given the
-  // ordering above, but never assumed).
-  //
-  // What this deliberately does NOT do — recorded here, not just in NOTES.md, because it is the one
-  // limit a caller of this function needs to know: it checks out the branch in the project's ONE
-  // shared working tree, not a per-member scratch copy. Two members dispatched concurrently against
-  // the SAME repo-bearing project (a loop's two members in the same round, or two units on the same
-  // project advanced in the same daemon tick) race each other's checkout — whichever runs last wins,
-  // and a CLI member that reads the filesystem mid-race could see either branch's content. Per-member
-  // worktree isolation (`git worktree add` per dispatch, mirroring the trial-merge/execution scratch
-  // worktrees in merge.ts) would close this, but is real, separate scope beyond what this goal's
-  // acceptance criteria ask for (the merge MACHINERY, not full member-authoring concurrency) — deferred
-  // honestly rather than half-built. Every fixture-git-repo test this goal adds dispatches at most one
-  // member at a time per project, so the race is real but untriggered by anything in this test suite.
-  private memberWorkingContext(member: string, unit: string, project: string): string | undefined {
+  // NOTES MERGE-1 (goal item 1) / NOTES R4-SANDBOX (Ruling 1): a repo-bearing project whose unit
+  // already has a work branch (board/gateops.ts#doStart creates it at unit-open, before any member for
+  // this unit is ever dispatched — see M1) gets a per-dispatch worktree of that branch. `branch`
+  // undefined means either the project isn't a real local checkout (resolveProjectRepoPath already
+  // excludes self-referential `repo: .` projects and unresolvable `repo:` values structurally) or the
+  // branch genuinely doesn't exist yet (shouldn't happen given the ordering above, but never assumed) —
+  // both cases fall through to the plain `repoPath` with no worktree, exactly the pre-existing no-op
+  // behaviour for a project without a real checkout.
+  private resolveDispatchRepo(project: string, unit: string): { repoPath: string; branch?: string } | undefined {
     const proj = this.repo.projects.get(project);
     if (!proj) return undefined;
     const repoPath = resolveProjectRepoPath(this.repo.root, proj);
     if (!repoPath) return undefined;
     const branch = workBranchName(unit);
-    if (!branchExists(repoPath, branch)) return repoPath;
-    const co = ensureWorkBranchCheckedOut(repoPath, branch);
-    if (!co.ok) throw new AdapterError(`member '${member}': could not check out work branch '${branch}' in '${repoPath}': ${co.error}`);
-    return repoPath;
+    return { repoPath, branch: branchExists(repoPath, branch) ? branch : undefined };
+  }
+
+  // NOTES R4-SANDBOX (Ruling 1): wraps a native/cli invocation with a per-dispatch scratch worktree of
+  // the unit's own work branch (merge.ts#createDispatchWorktree) — the shared-single-working-tree
+  // checkout this goal retires (adapters.ts's own former `memberWorkingContext`, docs/current-gaps.md's
+  // now-closed race). A no-op when `dispatchRepo` has no `branch` (no real local checkout, or no branch
+  // yet). `req.projectRepoPath` is overridden to the worktree's own path for the duration of the call —
+  // every downstream {feature_repo}/cwd resolution (nativeWorkerRequest, defaultCliCommand, cliInvocation)
+  // reads it from there — and the worktree is torn down in `finally`, success or thrown AdapterError
+  // alike, mirroring `withHomeScope`'s own create-immediately-before/clean-up-immediately-after shape.
+  private withDispatchWorktree<T>(member: string, dispatchRepo: { repoPath: string; branch?: string } | undefined, req: InvokeRequest, fn: (req: InvokeRequest) => T): T {
+    if (!dispatchRepo?.branch) return fn(req);
+    const created = createDispatchWorktree(dispatchRepo.repoPath, dispatchRepo.branch);
+    if (!created.ok) {
+      throw new AdapterError(`member '${member}': could not create dispatch worktree for work branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}': ${created.error}`);
+    }
+    try {
+      return fn({ ...req, projectRepoPath: created.worktree.path });
+    } finally {
+      created.worktree.cleanup();
+    }
+  }
+
+  private async withDispatchWorktreeAsync<T>(
+    member: string,
+    dispatchRepo: { repoPath: string; branch?: string } | undefined,
+    req: InvokeRequest,
+    fn: (req: InvokeRequest) => Promise<T>,
+  ): Promise<T> {
+    if (!dispatchRepo?.branch) return fn(req);
+    const created = createDispatchWorktree(dispatchRepo.repoPath, dispatchRepo.branch);
+    if (!created.ok) {
+      throw new AdapterError(`member '${member}': could not create dispatch worktree for work branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}': ${created.error}`);
+    }
+    try {
+      return await fn({ ...req, projectRepoPath: created.worktree.path });
+    } finally {
+      created.worktree.cleanup();
+    }
   }
 
   // NOTES F17: build a Receipt from a CLI's own parsed token trailer (extractCliUsageTrailer), when it
@@ -649,7 +699,7 @@ export class AdapterRunner implements MemberRunner {
   // response) — used verbatim. Absent (every non-native adapter, and a mocked/stub native boundary
   // that doesn't report one) records `unreported`, honestly — never re-derived by parsing whatever
   // usage figures the member's own output happened to claim.
-  private author(req: InvokeRequest, raw: string, receipt?: Receipt, extraConsumes: string[] = []): { doc: string; receipt: Receipt } {
+  private author(req: InvokeRequest, raw: string, receipt?: Receipt, extraConsumes: string[] = [], sandbox?: SandboxLevel): { doc: string; receipt: Receipt } {
     const content = stripFrontmatter(raw);
     if (!content) throw new AdapterError(`member '${req.member}' produced no usable content`);
     let finalReceipt = receipt ?? normalizeReceipt(null, this.opts.pricing);
@@ -717,6 +767,11 @@ export class AdapterRunner implements MemberRunner {
       );
       if (finalReceipt.plan) lines.push(`  plan: ${finalReceipt.plan}`);
     }
+    // NOTES R4-SANDBOX: the OS-sandbox enforcement level a cli member's spawn actually ran under — a
+    // fact about THIS run, independent of `usage`/`unreported` (a member reporting no usage at all still
+    // carries a real sandbox level; never omitted just because nothing else was reported). Native/remote
+    // never carry one — Ruling 2 wraps only the two cli spawn paths.
+    if (req.agent.kind === "cli" && sandbox) lines.push(`sandbox: ${sandbox}`);
     lines.push("---", "");
     return { doc: lines.join("\n") + content + "\n", receipt: finalReceipt };
   }
@@ -756,25 +811,44 @@ export class AdapterRunner implements MemberRunner {
     return extractCliUsageTrailer(result.stdout);
   }
 
-  private runCli(agent: Agent, req: InvokeRequest): { content: string; tokensUsed: number | null } {
+  // NOTES R4-SANDBOX (Ruling 2): wraps `argv` for the OS sandbox primitive detected on THIS spawn (never
+  // cached — see sandbox.ts's own header) — filesystem confinement to the resolved `cwd` + the spawn's
+  // own `HOME` (already scratch-scoped by `withHomeScope` when applicable) is the hard condition; network
+  // is best-effort, denied unless the member holds at least one granted connector
+  // (env.ts#memberNetworkAllowed). Only ever called for the REAL spawn boundary (see both call sites
+  // below) — a test-injected `CliSpawn` double is a stand-in for arbitrary behaviour, never a real OS
+  // process, so wrapping its argv would assert something about bwrap/unshare rather than about the
+  // adapter's own logic (the identical reasoning `preflightCli`'s own `this.spawn === bunSpawn` guard
+  // already applies, immediately below).
+  private sandboxWrap(argv: string[], cwd: string | undefined, req: InvokeRequest): { argv: string[]; level: SandboxLevel } {
+    const detection = this.opts.sandboxDetection ?? detectSandbox();
+    const policy: SandboxPolicy = { cwd: cwd ?? process.cwd(), home: req.env.HOME, allowNetwork: memberNetworkAllowed(this.repo, req.member) };
+    return wrapForSandbox(argv, policy, detection);
+  }
+
+  private runCli(agent: Agent, req: InvokeRequest): { content: string; tokensUsed: number | null; sandbox?: SandboxLevel } {
     const { argv, cwd, timeoutMs, stdin } = this.cliInvocation(agent, req);
     // NOTES F3: pre-flight ONLY guards the real `bunSpawn` boundary — the one that actually hands argv
     // to the OS and can fail with an opaque, contextless nonzero exit. A test-injected `CliSpawn` is a
     // stand-in for arbitrary behaviour (including deliberately-fake argv[0]s like "codex" that this
     // sandbox never installs) and never touches the filesystem or PATH, so it is never subject to the
     // failure mode this guards against.
-    if (this.spawn === bunSpawn) preflightCli(req.member, argv, cwd, req.env.PATH);
-    const result = this.spawn.run(argv, { env: req.env, cwd, timeoutMs, stdin });
-    return this.cliResultToDoc(req.member, agent, argv, result);
+    const real = this.spawn === bunSpawn;
+    if (real) preflightCli(req.member, argv, cwd, req.env.PATH);
+    const wrapped = real ? this.sandboxWrap(argv, cwd, req) : { argv, level: undefined as SandboxLevel | undefined };
+    const result = this.spawn.run(wrapped.argv, { env: req.env, cwd, timeoutMs, stdin });
+    return { ...this.cliResultToDoc(req.member, agent, argv, result), sandbox: wrapped.level };
   }
 
   // NOTES F5: the async counterpart to `runCli` — same argv/preflight/error handling, but the spawn
   // itself never blocks the caller's event loop (see asyncBunSpawn).
-  private async runCliAsync(agent: Agent, req: InvokeRequest): Promise<{ content: string; tokensUsed: number | null }> {
+  private async runCliAsync(agent: Agent, req: InvokeRequest): Promise<{ content: string; tokensUsed: number | null; sandbox?: SandboxLevel }> {
     const { argv, cwd, timeoutMs, stdin } = this.cliInvocation(agent, req);
-    if (this.asyncSpawn === asyncBunSpawn) preflightCli(req.member, argv, cwd, req.env.PATH);
-    const result = await this.asyncSpawn.run(argv, { env: req.env, cwd, timeoutMs, stdin });
-    return this.cliResultToDoc(req.member, agent, argv, result);
+    const real = this.asyncSpawn === asyncBunSpawn;
+    if (real) preflightCli(req.member, argv, cwd, req.env.PATH);
+    const wrapped = real ? this.sandboxWrap(argv, cwd, req) : { argv, level: undefined as SandboxLevel | undefined };
+    const result = await this.asyncSpawn.run(wrapped.argv, { env: req.env, cwd, timeoutMs, stdin });
+    return { ...this.cliResultToDoc(req.member, agent, argv, result), sandbox: wrapped.level };
   }
 
   // Assemble the §6 context. An empty consumed set ("no consumable produced yet") is a normal, silent

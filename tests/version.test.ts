@@ -84,6 +84,9 @@ describe("the real `./levare` shim (source run)", () => {
   test("every other command still runs unchanged (the shim adds a build path, it doesn't replace this one)", () => {
     const p = Bun.spawnSync(["./levare", "validate", "fixtures/golden"]);
     expect(p.exitCode).toBe(0);
-    expect(p.stdout.toString().trim()).toBe("valid");
+    // NOTES R4-SANDBOX: on a host with no working sandbox primitive, fixtures/golden's real `kind: cli`
+    // agents (finch, rook) now print SANDBOX_UNAVAILABLE warnings after "valid" — asserting the first
+    // line, not exact whole-output equality (see tests/validate.test.ts's identical fix for the reasoning).
+    expect(p.stdout.toString().trim().split("\n")[0]).toBe("valid");
   });
 });

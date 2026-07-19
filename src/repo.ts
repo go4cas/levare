@@ -305,6 +305,7 @@ function toArtifact(d: Record<string, YamlValue>, body: string): Artifact {
     execution: (d.execution as Artifact["execution"]) ?? null,
     merge: (d.merge as Artifact["merge"]) ?? null,
     merge_result: (d.merge_result as Artifact["merge_result"]) ?? null,
+    sandbox: (d.sandbox as Artifact["sandbox"]) ?? null,
   };
 }
 

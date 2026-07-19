@@ -365,7 +365,7 @@ describe("doctor: remote-member-not-implemented telling (NOTES REV1 finding 3)",
 describe("doctor: cli-tools-not-enforceable telling (NOTES CAP-B)", () => {
   test("formatDoctor prints the warning, naming every cli agent that declares tools:, when cliToolAgents is non-empty", () => {
     const out = formatDoctor(diagnose(connectors, env, noGh), undefined, undefined, undefined, undefined, ["finch"]);
-    expect(out).toContain("⚠ tools: on a cli member is not enforceable by levare — encode the constraint in the connector/command via the vendor's own flags: finch");
+    expect(out).toContain("⚠ tools: on a cli member is not enforceable by levare at the per-tool level — even a working OS sandbox (Ruling 2) narrows the member's overall reach without distinguishing individual named tools — encode the constraint in the connector/command via the vendor's own flags: finch");
   });
 
   test("with no cli agent declaring tools:, no such line appears", () => {

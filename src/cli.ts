@@ -6,6 +6,7 @@ import { formatReport, runReplay } from "./replay.ts";
 import { loadRepo, repoCapabilities } from "./repo.ts";
 import { assembleContext } from "./context.ts";
 import { runDoctor, type PromptCheck } from "./doctor.ts";
+import { detectSandbox } from "./sandbox.ts";
 import { serve } from "./board/serve.ts";
 import { initStudio, GIT_IDENTITY_NOTE } from "./init.ts";
 import { applyStudioEnv } from "./dotenv.ts";
@@ -37,7 +38,10 @@ function formatResult(result: ValidationResult): string {
 }
 
 export function runValidate(path: string): number {
-  const result = validatePath(path);
+  // NOTES R4-SANDBOX: a fresh, real probe every run (never assumed from the platform alone) — see
+  // sandbox.ts's own header and validate.ts#validateAgentSandboxWarning, the sibling to
+  // CLI_TOOLS_NOT_ENFORCEABLE this threads into.
+  const result = validatePath(path, undefined, detectSandbox());
   if (result.ok) {
     console.log("valid");
     // NOTES REV1 finding 3: a warning never flips `ok` — the declaration (e.g. kind: remote) is legal
@@ -120,6 +124,10 @@ export function runDoctorCmd(rest: string[]): number {
     // NOTES CAP-B: every `kind: cli` agent that also declares `tools:` — legal, but not enforceable by
     // levare (see validate.ts#validateAgentCliToolsWarning, the same warning repeated here).
     const cliToolAgents = [...repo.agents.values()].filter((a) => a.kind === "cli" && (a.tools?.length ?? 0) > 0).map((a) => a.name);
+    // NOTES R4-SANDBOX: every `kind: cli` agent in the studio — named in the sandbox-unavailable
+    // warning below when no working primitive was found on this host, mirroring cliToolAgents' own
+    // per-agent naming.
+    const cliAgents = [...repo.agents.values()].filter((a) => a.kind === "cli").map((a) => a.name);
     process.stdout.write(
       runDoctor(
         [...repo.connectors.values()],
@@ -131,6 +139,8 @@ export function runDoctorCmd(rest: string[]): number {
         checkOrchestratorPrompt(),
         remoteAgents,
         cliToolAgents,
+        detectSandbox(),
+        cliAgents,
       ),
     );
     return 0;

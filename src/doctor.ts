@@ -12,6 +12,7 @@ import type { Connector } from "./types.ts";
 import type { EnvProvenance } from "./dotenv.ts";
 import type { OrchestratorStatus } from "./orchestrator-status.ts";
 import type { VersionInfo } from "./version.ts";
+import type { SandboxDetection } from "./sandbox.ts";
 
 /** Whether `docs/orchestrator-prompt.md` was actually readable at doctor-run time, and from where —
  * NOTES DIST4/DIST5: independent of `orchestrator`'s on/off state above, which (since DIST5) reflects
@@ -106,8 +107,17 @@ export function diagnose(connectors: Connector[], env: EnvProbe, probe: CliProbe
  * (or reread) `validate`'s own output.
  *
  * `cliToolAgents`, when given (NOTES CAP-B, part B item 3): the names of every `kind: cli` agent that
- * also declares `tools:` — legal, but levare cannot enforce it (there is no SDK boundary in the cli
- * spawn path for an allowlist to reach); doctor repeats `validateAgentCliToolsWarning`'s own telling. */
+ * also declares `tools:` — legal, but levare cannot enforce it at the per-tool level (there is no SDK
+ * boundary in the cli spawn path for a named-tool allowlist to reach — even a working OS sandbox, see
+ * `sandbox` below, is a coarser boundary than `tools:` describes); doctor repeats
+ * `validateAgentCliToolsWarning`'s own telling.
+ *
+ * `sandbox`, when given (NOTES R4-SANDBOX, v2 Ruling 2): the OS-level sandbox primitive actually
+ * detected on THIS host, right now — printed alongside `orchestrator`/`versionInfo` since it's the same
+ * kind of "what does this machine actually offer" fact. A `level: "none"` result also gets the sibling
+ * warning to `CLI_TOOLS_NOT_ENFORCEABLE`/`remoteAgents` above, once per `kind: cli` agent in the studio
+ * (`cliAgents`) — a studio with no cli agents at all has nothing this warning is FOR, so it stays quiet
+ * even on a host with no working primitive. */
 export function formatDoctor(
   health: ConnectorHealth[],
   orchestrator?: OrchestratorStatus,
@@ -115,6 +125,8 @@ export function formatDoctor(
   promptCheck?: PromptCheck,
   remoteAgents?: string[],
   cliToolAgents?: string[],
+  sandbox?: SandboxDetection,
+  cliAgents?: string[],
 ): string {
   const out: string[] = [];
   if (versionInfo) {
@@ -129,13 +141,22 @@ export function formatDoctor(
     out.push(promptCheck.ok ? `orchestrator prompt: readable (${promptCheck.bytes} bytes) at ${promptCheck.path}` : `orchestrator prompt: ERROR — ${promptCheck.error} (${promptCheck.path})`);
     out.push("");
   }
+  if (sandbox) {
+    out.push(`sandbox: ${sandbox.level === "none" ? "none — unconfined cli spawns" : `${sandbox.level} (${sandbox.primitive})`}`);
+    if (sandbox.level === "none" && cliAgents && cliAgents.length > 0) {
+      out.push(
+        `⚠ no working OS-level sandbox primitive found on this host (tried: ${sandbox.platform === "linux" ? "bubblewrap, unshare" : sandbox.platform === "darwin" ? "sandbox-exec" : "none available for this platform"}) — these cli members run unconfined beyond env/HOME scoping: ${cliAgents.join(", ")}`,
+      );
+    }
+    out.push("");
+  }
   if (remoteAgents && remoteAgents.length > 0) {
     out.push(`⚠ remote members are not yet implemented — these will not produce real work: ${remoteAgents.join(", ")}`);
     out.push("");
   }
   if (cliToolAgents && cliToolAgents.length > 0) {
     out.push(
-      `⚠ tools: on a cli member is not enforceable by levare — encode the constraint in the connector/command via the vendor's own flags: ${cliToolAgents.join(", ")}`,
+      `⚠ tools: on a cli member is not enforceable by levare at the per-tool level — even a working OS sandbox (Ruling 2) narrows the member's overall reach without distinguishing individual named tools — encode the constraint in the connector/command via the vendor's own flags: ${cliToolAgents.join(", ")}`,
     );
     out.push("");
   }
@@ -176,6 +197,8 @@ export function runDoctor(
   promptCheck?: PromptCheck,
   remoteAgents?: string[],
   cliToolAgents?: string[],
+  sandbox?: SandboxDetection,
+  cliAgents?: string[],
 ): string {
-  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo, promptCheck, remoteAgents, cliToolAgents);
+  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo, promptCheck, remoteAgents, cliToolAgents, sandbox, cliAgents);
 }

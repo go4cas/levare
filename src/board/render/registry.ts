@@ -9,6 +9,7 @@ import { esc, captionTime } from "../../derive.ts";
 import { loadExtras } from "../../extra.ts";
 import { STUDIO_SCOPE } from "../../conversation.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
+import { detectSandbox, type SandboxDetection } from "../../sandbox.ts";
 import { tag, editorOverlay, orchTurn, callout, card } from "../components.ts";
 import {
   shell,
@@ -86,7 +87,15 @@ function entityBlock(kind: RegistryKind, title: string, kindLabel: string, inner
 // behavior without a new detail-page screen. Resolved here (not left to the client) into the exact
 // `id` `entityBlock` already gives that card, so app.js only has to look one element up, never
 // re-derive the id itself from the URL.
-export function renderRegistry(repo: Repo, root: string, activeEntity?: string, status: OrchestratorStatus = resolveOrchestratorStatus(), highlightName?: string, now: Date = new Date()): string {
+export function renderRegistry(
+  repo: Repo,
+  root: string,
+  activeEntity?: string,
+  status: OrchestratorStatus = resolveOrchestratorStatus(),
+  highlightName?: string,
+  now: Date = new Date(),
+  sandbox: SandboxDetection = detectSandbox(),
+): string {
   const extras = loadExtras(root);
   const active: RegistryKind = REGISTRY_KINDS.includes(activeEntity as RegistryKind) ? (activeEntity as RegistryKind) : "teams";
   const highlightId = highlightName ? `${active}-${highlightName}` : undefined;
@@ -130,17 +139,28 @@ export function renderRegistry(repo: Repo, root: string, activeEntity?: string, 
       // the schema alone, so the card says so via the same canonical warning callout the guardrails
       // finding above uses.
       const remoteWarning = a.kind === "remote" ? callout("warning", "remote members are not yet implemented — this member will not produce real work.") : "";
-      // NOTES CAP-B (part B item 3): a cli member's tools: is a legal declaration levare cannot
-      // enforce — there is no SDK boundary in the cli spawn path for an allowlist to reach. Same
-      // callout treatment as the remote-members warning above.
+      // NOTES CAP-B (part B item 3) / NOTES R4-SANDBOX (v2, Ruling 2): a cli member's tools: is a
+      // legal declaration levare cannot enforce at the per-tool level — even a working OS sandbox is a
+      // coarser boundary than tools: describes. Same callout treatment as the remote-members warning
+      // above.
       const cliToolsWarning =
         a.kind === "cli" && (a.tools?.length ?? 0) > 0
-          ? callout("warning", "tools: on a cli member is not enforceable by levare — encode the constraint in the connector/command via the vendor's own flags.")
+          ? callout(
+              "warning",
+              "tools: on a cli member is not enforceable by levare at the per-tool level — the OS sandbox (when available) narrows the member's overall reach but does not distinguish between individual named tools — encode the constraint in the connector/command via the vendor's own flags.",
+            )
+          : "";
+      // NOTES R4-SANDBOX (v2, Ruling 2): sibling to the tools: warning above — when no working OS
+      // sandbox primitive exists on the host serving this board, a cli member's spawn runs unconfined
+      // beyond env/HOME scoping, told plainly rather than left implied by the sandbox's own absence.
+      const sandboxWarning =
+        a.kind === "cli" && sandbox.level === "none"
+          ? callout("warning", "no working OS-level sandbox primitive was found on this host — this member's process runs unconfined beyond env/HOME scoping; see 'levare doctor' for what was tried.")
           : "";
       const inner = `<div class="card__h">Context recipe</div><div class="recipe">${recipe || '<span style="color:var(--fg-mute)">none declared</span>'}</div>
       <div class="card__h">Definition</div>
       <div class="prow"><span class="k">kind</span><span class="v">${agentKindBadge(a.kind)}${a.model ? ` <span class="mono">&middot; ${esc(a.model)}</span>` : ""}</span></div>
-      <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>${remoteWarning}${cliToolsWarning}`;
+      <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>${remoteWarning}${cliToolsWarning}${sandboxWarning}`;
       // UI7: no "agent" kind tag (RULE A) — the kind is already the page/URL this card lives on.
       return entityBlock("agents", `${avatar(a.style.avatar || a.name.slice(0, 2), team?.style.color, { size: "lg" })} ${esc(a.name)}`, "agent", inner, `agents/${a.name}.md`, rawFor(root, "agents", a.name), a.name, active === "agents", { showKindTag: false });
     })

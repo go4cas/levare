@@ -48,6 +48,19 @@ export function subscriptionConnector(repo: Repo, member: string): Connector | u
   return grantedConnectors(repo, member).find((c) => c.auth === "subscription");
 }
 
+/**
+ * NOTES R4-SANDBOX (v2, Ruling 2): whether a `kind: cli` member's sandboxed spawn is allowed network
+ * reach — best-effort, per the goal's own ruling. Every connector this codebase has IS levare's own
+ * declared way of naming an external reach (an mcp server's `server:`, a wrapped tool's remote backend,
+ * a subscription model's own API) — there is no connector shape that names a purely-local capability —
+ * so "holds at least one granted connector" is exactly "holds a connector declaring a remote endpoint"
+ * (the goal's own phrasing) without inventing a second, parallel field for the same fact. A member
+ * granted nothing has nothing to reach for; network is denied by default in that case.
+ */
+export function memberNetworkAllowed(repo: Repo, member: string): boolean {
+  return grantedConnectors(repo, member).length > 0;
+}
+
 function allowlist(names: readonly string[], base: Record<string, string | undefined>, env: Record<string, string>): void {
   for (const name of names) {
     const v = base[name];

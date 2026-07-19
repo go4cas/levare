@@ -18,7 +18,7 @@ import {
   mergeDiffEntries,
   checkGuardrailsForMerge,
   formatMergeArtifact,
-  ensureWorkBranchCheckedOut,
+  createDispatchWorktree,
 } from "../src/merge.ts";
 import { parseArtifactDoc } from "../src/repo.ts";
 import { validateArtifactSource } from "../src/validate.ts";
@@ -337,26 +337,81 @@ describe("executeMerge (M4/M5)", () => {
   });
 });
 
-describe("ensureWorkBranchCheckedOut", () => {
-  test("checks out the branch in the project's own working tree", () => {
+describe("createDispatchWorktree (NOTES R4-SANDBOX, Ruling 1)", () => {
+  test("checks out the branch (never detached) in a fresh scratch worktree, distinct from the project's own working tree", () => {
     const repo = makeProjectRepo();
     try {
       git(repo, ["branch", "levare/unit-a", "main"]);
-      const r = ensureWorkBranchCheckedOut(repo, "levare/unit-a");
-      expect(r).toEqual({ ok: true });
-      expect(git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]).trim()).toBe("levare/unit-a");
+      const mainHead = git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]).trim();
+      const created = createDispatchWorktree(repo, "levare/unit-a");
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+      expect(created.worktree.path).not.toBe(repo);
+      expect(git(created.worktree.path, ["rev-parse", "--abbrev-ref", "HEAD"]).trim()).toBe("levare/unit-a");
+      // The project's own working tree is completely untouched by the dispatch worktree's checkout.
+      expect(git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]).trim()).toBe(mainHead);
+      created.worktree.cleanup();
+      expect(existsSync(created.worktree.path)).toBe(false);
+      const wt = git(repo, ["worktree", "list", "--porcelain"]);
+      expect(wt.trim().split("\n\n").filter(Boolean).length).toBe(1);
     } finally {
       rmrf(repo);
     }
   });
 
-  test("a no-op when already checked out", () => {
+  test("a member's commit inside the worktree actually advances the work branch", () => {
     const repo = makeProjectRepo();
     try {
       git(repo, ["branch", "levare/unit-a", "main"]);
-      git(repo, ["checkout", "-q", "levare/unit-a"]);
-      const r = ensureWorkBranchCheckedOut(repo, "levare/unit-a");
-      expect(r).toEqual({ ok: true });
+      const beforeSha = rev(repo, "levare/unit-a");
+      const created = createDispatchWorktree(repo, "levare/unit-a");
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+      try {
+        writeFileSync(join(created.worktree.path, "member-work.txt"), "hello\n");
+        spawnSync("git", ["-C", created.worktree.path, "-c", "user.name=member", "-c", "user.email=member@levare.test", "add", "-A"], { env: HERMETIC_ENV });
+        spawnSync("git", ["-C", created.worktree.path, "-c", "user.name=member", "-c", "user.email=member@levare.test", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "member commit"], {
+          env: HERMETIC_ENV,
+        });
+      } finally {
+        created.worktree.cleanup();
+      }
+      expect(rev(repo, "levare/unit-a")).not.toBe(beforeSha);
+      expect(existsSync(join(repo, "member-work.txt"))).toBe(false); // the project's own working tree never saw it
+    } finally {
+      rmrf(repo);
+    }
+  });
+
+  test("two units on the same project get two independent worktrees of two different branches at once", () => {
+    const repo = makeProjectRepo();
+    try {
+      git(repo, ["branch", "levare/unit-a", "main"]);
+      git(repo, ["branch", "levare/unit-b", "main"]);
+      const a = createDispatchWorktree(repo, "levare/unit-a");
+      const b = createDispatchWorktree(repo, "levare/unit-b");
+      expect(a.ok).toBe(true);
+      expect(b.ok).toBe(true);
+      if (!a.ok || !b.ok) return;
+      expect(a.worktree.path).not.toBe(b.worktree.path);
+      expect(git(a.worktree.path, ["rev-parse", "--abbrev-ref", "HEAD"]).trim()).toBe("levare/unit-a");
+      expect(git(b.worktree.path, ["rev-parse", "--abbrev-ref", "HEAD"]).trim()).toBe("levare/unit-b");
+      a.worktree.cleanup();
+      b.worktree.cleanup();
+      const wt = git(repo, ["worktree", "list", "--porcelain"]);
+      expect(wt.trim().split("\n\n").filter(Boolean).length).toBe(1);
+    } finally {
+      rmrf(repo);
+    }
+  });
+
+  test("fails loudly (never silently) when the branch does not exist", () => {
+    const repo = makeProjectRepo();
+    try {
+      const created = createDispatchWorktree(repo, "levare/ghost");
+      expect(created.ok).toBe(false);
+      if (created.ok) return;
+      expect(created.error).toContain("ghost");
     } finally {
       rmrf(repo);
     }

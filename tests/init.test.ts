@@ -309,7 +309,11 @@ describe("D10/D11: a fresh `levare init` passes the real `levare validate` comma
     expect(init.status).toBe(0);
 
     const validate = spawnSync("./levare", ["validate", root], { cwd: REPO_ROOT, encoding: "utf8" });
-    expect(validate.stdout.trim()).toBe("valid");
+    // NOTES R4-SANDBOX: the scaffold declares real `kind: cli` agents — on a host with no working
+    // sandbox primitive (this container's own reality, never assumed), the real subprocess prints
+    // SANDBOX_UNAVAILABLE warnings after "valid", same "warnings never flip ok" shape every other
+    // validate warning takes; asserting the first line + exit code, not exact whole-output equality.
+    expect(validate.stdout.trim().split("\n")[0]).toBe("valid");
     expect(validate.status).toBe(0);
   });
 

@@ -104,21 +104,55 @@ export function createWorkBranch(repoPath: string, branch: string, defaultBranch
   return { ok: true, created: true };
 }
 
-export type CheckoutResult = { ok: true } | { ok: false; error: string };
+// ---------------------------------------------------------------------------
+// NOTES R4-SANDBOX (Ruling 1) — worktree per dispatch: a per-member-invocation scratch worktree of the
+// unit's own work branch, extending the trial-merge/execution scratch-worktree TECHNIQUE above to a
+// third, structurally distinct caller. Unlike `withScratchWorktree` (a callback-scoped helper: create,
+// run a synchronous git command inside, tear down, all within one function call), a dispatch worktree
+// must stay alive across an entire member invocation (context assembly already happened; the spawn/SDK
+// call is what actually reads and writes inside it) — so this returns a plain create/cleanup pair, the
+// same shape `env.ts#scopeHome` already uses for its own per-spawn scratch resource.
+//
+// Checked out NORMALLY (never `--detach`, unlike the trial-merge/execution worktrees above): a member's
+// own commits must actually advance `levare/<unit>`, which only happens if the worktree has that branch
+// checked out for real. Two DIFFERENT units on the same project repo get two independent worktrees of
+// two different branches — git worktree has no exclusivity conflict there, which is exactly the
+// concurrent-dispatch case this ruling closes (the old shared-single-working-tree checkout raced
+// whichever dispatch's `git checkout` ran last). Two dispatches against the SAME unit's SAME branch at
+// once is not a case this — or the pre-existing flow model — ever produces (a loop's own two members
+// alternate sequentially; see NOTES R4-SANDBOX for the full reasoning): git itself would refuse a second
+// `worktree add` of a branch already checked out elsewhere, which is a loud, honest failure, never a
+// silent race, if that assumption is ever wrong.
+// ---------------------------------------------------------------------------
 
-/**
- * Best-effort member-side wiring (goal item 1): check out `branch` in the project's OWN working tree
- * (never a per-member scratch copy — see NOTES MERGE-1 for exactly what that means is deferred: every
- * member dispatched against the same project shares one working tree and thus one checked-out branch
- * at a time, so two members concurrently dispatched against the SAME repo-bearing project race each
- * other's checkout). A no-op (returns ok immediately) when `branch` is already checked out.
- */
-export function ensureWorkBranchCheckedOut(repoPath: string, branch: string): CheckoutResult {
-  const current = git(repoPath, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  if (current.status === 0 && current.stdout.trim() === branch) return { ok: true };
-  const co = git(repoPath, ["checkout", "-q", branch]);
-  if (co.status !== 0) return { ok: false, error: `git checkout ${branch} failed: ${co.stderr.trim()}` };
-  return { ok: true };
+export interface DispatchWorktree {
+  path: string;
+  cleanup(): void;
+}
+
+export type CreateDispatchWorktreeResult = { ok: true; worktree: DispatchWorktree } | { ok: false; error: string };
+
+export function createDispatchWorktree(repoPath: string, branch: string): CreateDispatchWorktreeResult {
+  const scratch = mkdtempSync(join(tmpdir(), "levare-dispatchwt-"));
+  const wt = git(repoPath, ["worktree", "add", "-q", scratch, branch]);
+  if (wt.status !== 0) {
+    rmSync(scratch, { recursive: true, force: true });
+    return { ok: false, error: `git worktree add failed: ${wt.stderr.trim()}` };
+  }
+  let cleaned = false;
+  return {
+    ok: true,
+    worktree: {
+      path: scratch,
+      cleanup() {
+        if (cleaned) return;
+        cleaned = true;
+        git(repoPath, ["worktree", "remove", "--force", scratch]);
+        git(repoPath, ["worktree", "prune"]);
+        rmSync(scratch, { recursive: true, force: true });
+      },
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

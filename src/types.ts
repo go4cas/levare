@@ -330,6 +330,15 @@ export interface Artifact {
   merge?: MergeInfo | null;
   /** NOTES MERGE-1: reserved for `kind: merge` — set by levare only on a successful `approve`. */
   merge_result?: MergeResultRecord | null;
+  /** NOTES R4-SANDBOX (v2, Ruling 2): the OS-level sandbox enforcement a `kind: cli` member's spawn
+   * actually ran under, when this artifact was produced by one — "full" (filesystem AND network
+   * confined), "fs-only" (a filesystem-only fallback — no working bubblewrap, but the kernel still
+   * permits an unshare-based mount-namespace confinement), or "none" (no working primitive found on
+   * this host — the spawn ran unconfined; see sandbox.ts). Independent of `usage`/`unreported` — a cli
+   * member that reported no usage at all still carries its real sandbox level, never omitted just
+   * because nothing else was reported. Absent for native/remote and every pre-this-ruling artifact
+   * (Ruling 2 wraps only the two cli spawn paths). */
+  sandbox?: "full" | "fs-only" | "none" | null;
 }
 
 export interface Usage {

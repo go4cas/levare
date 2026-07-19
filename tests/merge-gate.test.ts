@@ -442,17 +442,19 @@ describe("M4/M5: a clean approval merges, preserves history, and closes the unit
 });
 
 describe("member-side wiring (goal item 1): a dispatched member's working context", () => {
-  test("a member dispatched after the work branch exists gets it checked out in the project repo", async () => {
+  test("a member dispatched after the work branch exists gets a per-dispatch worktree of it (NOTES R4-SANDBOX)", async () => {
     dirs = buildStudio();
     // `start` (M1) creates the branch, then dispatches `worker` for `task` — the dispatch itself is
-    // what exercises adapters.ts's memberWorkingContext checkout wiring.
+    // what exercises adapters.ts#withDispatchWorktree's per-dispatch worktree wiring.
     const started = await resolveGate(dirs.root, "acme", "widget-1", "start", { memberRunner, today: TODAY });
     expect(started.ok).toBe(true);
     // The stub memberRunner never actually spawns anything real (it's a plain function), so this proves
-    // ONLY that doStart's branch creation ran and is checkout-able — the checkout itself is proven at
-    // the adapters.ts unit-test layer (adapters.test.ts) and merge.test.ts's `ensureWorkBranchCheckedOut`
+    // ONLY that doStart's branch creation ran and is worktree-able — the worktree wiring itself is proven
+    // at the adapters.ts unit-test layer (adapters.test.ts) and merge.test.ts's `createDispatchWorktree`
     // coverage; wiring the two together is what this integration test's OWN setup already exercises
-    // (buildStudio's project repo + doStart's branch creation, both real git).
+    // (buildStudio's project repo + doStart's branch creation, both real git). The project repo's own
+    // working tree is never checked out onto the work branch by dispatch anymore — only a scratch
+    // worktree is — so this test no longer asserts anything about the project repo's own HEAD.
     expect(existsSync(join(dirs.projectRepo, ".git", "refs", "heads", "levare", "widget-1"))).toBe(true);
   });
 });

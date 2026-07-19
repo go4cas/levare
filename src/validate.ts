@@ -14,6 +14,7 @@ import { loadPricing, type Pricing } from "./pricing.ts";
 import { readOverlaid, type OverlayFile } from "./overlay.ts";
 import { kindMatches } from "./flow.ts";
 import { SDK_TOOL_NAMES } from "./sdk-transport.ts";
+import type { SandboxDetection } from "./sandbox.ts";
 export type { OverlayFile } from "./overlay.ts";
 
 export interface ValidationError {
@@ -181,6 +182,11 @@ export const ARTIFACT_SCHEMA: Schema = {
         pushed: { type: "bool", required: true, nullable: true },
       },
     },
+    // NOTES R4-SANDBOX (v2, Ruling 2): the OS-sandbox enforcement level a `kind: cli` member's spawn
+    // actually ran under, when it produced this artifact — independent of `usage`/`unreported` (see
+    // adapters.ts#author). Absent for native/remote (never wrapped) and for any artifact predating this
+    // ruling.
+    sandbox: { type: "enum", required: false, nullable: true, enum: ["full", "fs-only", "none"] },
   },
 };
 
@@ -423,7 +429,7 @@ export function validateArtifactSource(src: string, file = "<member-output>", di
  * `overlay.path` must name a file that already exists on disk; validating a not-yet-created entity is
  * not a case the registry editor needs (it only ever opens on an existing entity).
  */
-export function validatePath(target: string, overlay?: OverlayFile): ValidationResult {
+export function validatePath(target: string, overlay?: OverlayFile, sandbox?: SandboxDetection): ValidationResult {
   const errors: ValidationError[] = [];
   const warnings: ValidationWarning[] = [];
   let fileCount = 0;
@@ -443,13 +449,13 @@ export function validatePath(target: string, overlay?: OverlayFile): ValidationR
   if (st.isFile()) {
     fileCount = 1;
     // No studio root to cross-check a proposal artifact's connector against — fail-open (NOTES CAP-A).
-    validateSingleFile(target, classify(target), errors, artifacts, overlay, warnings);
+    validateSingleFile(target, classify(target), errors, artifacts, overlay, warnings, undefined, sandbox);
   } else {
     // Directory tree: walk registry folders + work/. `target` IS the studio root here.
     const mdFiles = walkMarkdown(target);
     fileCount = mdFiles.length;
     for (const f of mdFiles) {
-      validateSingleFile(f, classify(relative(target, f)), errors, artifacts, overlay, warnings, target);
+      validateSingleFile(f, classify(relative(target, f)), errors, artifacts, overlay, warnings, target, sandbox);
     }
     // Folder-artifact discovery + index-count check on work/ subdirectories.
     discoverFolderArtifacts(target, errors, artifacts);
@@ -554,6 +560,7 @@ function validateSingleFile(
   overlay?: OverlayFile,
   warnings: ValidationWarning[] = [],
   root?: string,
+  sandbox?: SandboxDetection,
 ): void {
   if (!kind.schema) return; // unknown location or non-schema file (e.g. README) — skip.
   let data: Record<string, YamlValue>;
@@ -576,6 +583,7 @@ function validateSingleFile(
   if (kind.schema === AGENT_SCHEMA) validateAgentRemoteNotice(data, file, warnings);
   if (kind.schema === AGENT_SCHEMA) validateAgentTools(data, file, errors);
   if (kind.schema === AGENT_SCHEMA) validateAgentCliToolsWarning(data, file, warnings);
+  if (kind.schema === AGENT_SCHEMA) validateAgentSandboxWarning(data, file, warnings, sandbox);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorAuth(data, file, errors);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorRoleWarning(data, file, warnings);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorHomeWarning(data, file, warnings);
@@ -992,23 +1000,51 @@ function validateAgentTools(data: Record<string, YamlValue>, file: string, error
   }
 }
 
-// NOTES CAP-B (part B, item 3): a `kind: cli` member's `tools:` cannot be enforced by levare at all —
-// there is no SDK boundary in the cli path for an allowlist to reach (adapters.ts's `runCli`/
-// `runCliAsync` spawn the vendor binary directly; `req.tools` is read only by the native worker
-// request, never threaded into a cli spawn's argv/env). Declaring `tools:` on a cli agent is legal —
-// it is never rejected — but it is silently misleading otherwise: the studio author reasonably expects
-// the same enforcement a native member gets. Warned here (never an error, the same "legal declaration,
-// told plainly" posture as `validateAgentRemoteNotice` above), and doctor.ts repeats it; the ONLY way
-// to silence it is to remove `tools:` — declare the constraint in the connector/command instead, via
-// the vendor's own flags (`codex --sandbox read-only` is this repo's own in-tree precedent).
+// NOTES CAP-B (part B, item 3) / NOTES R4-SANDBOX (v2, Ruling 2): a `kind: cli` member's `tools:` still
+// cannot be enforced at the PER-TOOL level — there is no SDK boundary in the cli path for a named-tool
+// allowlist to reach (adapters.ts's `runCli`/`runCliAsync` spawn the vendor binary directly; `req.tools`
+// is read only by the native worker request). Ruling 2's OS-level sandbox narrows the gap around it — a
+// sandboxed cli spawn's overall filesystem/network REACH is confined — but it cannot distinguish "may
+// use Read" from "may use Write" the way a real tool allowlist would: the sandbox is a coarser boundary
+// than `tools:` itself describes, so this warning is narrowed, never silenced, by a working sandbox.
+// Warned here (never an error, the same "legal declaration, told plainly" posture as
+// `validateAgentRemoteNotice` above), and doctor.ts repeats it; the ONLY way to silence it is to remove
+// `tools:` — declare the constraint in the connector/command instead, via the vendor's own flags
+// (`codex --sandbox read-only` is this repo's own in-tree precedent).
 function validateAgentCliToolsWarning(data: Record<string, YamlValue>, file: string, warnings: ValidationWarning[]): void {
   if (data.kind !== "cli" || !Array.isArray(data.tools) || data.tools.length === 0) return;
   const name = typeof data.name === "string" ? data.name : basename(file, ".md");
   warnings.push({
     code: "CLI_TOOLS_NOT_ENFORCEABLE",
-    message: `agent '${name}' declares kind: cli and 'tools:' — tools: on a cli member is not enforceable by levare — encode the constraint in the connector/command via the vendor's own flags`,
+    message: `agent '${name}' declares kind: cli and 'tools:' — tools: on a cli member is not enforceable by levare at the per-tool level, even under a working OS sandbox (Ruling 2 narrows the member's overall reach, but does not distinguish between individual named tools) — encode the constraint in the connector/command via the vendor's own flags`,
     file,
   });
+}
+
+// NOTES R4-SANDBOX (v2, Ruling 2): sibling to CLI_TOOLS_NOT_ENFORCEABLE above — a `kind: cli` agent
+// runs through Ruling 2's OS-level sandbox whenever a working primitive exists on the host running it;
+// when none does, the spawn proceeds unconfined (a Conductor ruling: best-effort, never escalated to a
+// spawn failure — see sandbox.ts's own header) and this warning is how a studio author is told plainly,
+// the same "legal, but tell them" posture every warning in this file takes. `sandbox` is undefined for
+// every call site that hasn't opted into reporting host capability (validateArtifactSource's
+// single-document boundary, most existing tests) — the warning is simply skipped, never assumed, since
+// a caller with no detection result has nothing honest to say about this host. Fires per `kind: cli`
+// agent (mirroring CLI_TOOLS_NOT_ENFORCEABLE's own per-file scope), not once per studio — a studio with
+// several cli agents sees the gap named against each one, exactly as it would for tools:.
+function validateAgentSandboxWarning(data: Record<string, YamlValue>, file: string, warnings: ValidationWarning[], sandbox?: SandboxDetection): void {
+  if (data.kind !== "cli" || !sandbox || sandbox.level !== "none") return;
+  const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+  warnings.push({
+    code: "SANDBOX_UNAVAILABLE",
+    message: `agent '${name}' declares kind: cli but no working OS-level sandbox primitive was found on this host (tried: ${sandboxPrimitivesTried(sandbox)}) — its process runs unconfined beyond env/HOME scoping; see 'levare doctor' for what was tried`,
+    file,
+  });
+}
+
+function sandboxPrimitivesTried(sandbox: SandboxDetection): string {
+  if (sandbox.platform === "linux") return "bubblewrap, unshare";
+  if (sandbox.platform === "darwin") return "sandbox-exec";
+  return "none available for this platform";
 }
 
 // NOTES C13: a connector's `auth:` and `env:` must agree. `auth: env` (default) is levare's

@@ -1,5 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRepo } from "../src/repo.ts";
@@ -7,6 +8,7 @@ import { assembleContext } from "../src/context.ts";
 import { loadPricing } from "../src/pricing.ts";
 import { AdapterRunner, AdapterError, type CliSpawn, type InvokeRequest, type NativeBoundary, type RemoteBoundary, type SpawnResult } from "../src/adapters.ts";
 import { render } from "../fixtures/stubs/member-stub.ts";
+import { detectSandbox } from "../src/sandbox.ts";
 
 // The three adapters dispatch by agent kind. CLI is tested against the fixture stub (real spawn path
 // via an injected CliSpawn); native against a mocked SDK boundary; remote against a mocked MCP call.
@@ -1032,5 +1034,214 @@ describe("levare authors the artifact frontmatter, never the member (ruling C12)
     expect(doc).toContain("produced_by: kestrel/finch");
     expect(doc).toContain("Approved with one note");
     expect(receipt.unreported).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NOTES R4-SANDBOX (v2) — Ruling 1 (per-dispatch worktree) and Ruling 2 (OS sandbox), against the REAL
+// spawn boundary (bunSpawn/asyncBunSpawn — never an injected CliSpawn double, which is why `finch`'s own
+// broken `command:` template (a `codex` binary this box doesn't have) is always overridden below via
+// `cliCommand`, the same injection seam replay.ts's --stubs mode already uses). `fixtures/golden`'s own
+// `storefront` project declares a non-local `repo:` on purpose (merge.test.ts's own
+// `resolveProjectRepoPath` coverage) — these tests substitute a REAL local git repo for it directly on
+// the loaded Repo's own `projects` map, reusing golden's real team/agent/unit definitions unchanged.
+// ---------------------------------------------------------------------------
+
+const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
+
+function git(repoRoot: string, args: string[]): string {
+  const r = spawnSync("git", ["-C", repoRoot, "-c", "user.name=seed", "-c", "user.email=seed@levare.test", "-c", "commit.gpgsign=false", ...args], {
+    encoding: "utf8",
+    env: GIT_ENV,
+  });
+  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+  return r.stdout;
+}
+
+/** A real local project repo, `main` as default branch, with `levare/<unit>` branches planted for the
+ * given units, each carrying a `marker.txt` naming which branch it is — the distinguishing signal both
+ * tests below read back to prove (or disprove) cross-dispatch isolation. */
+function makeProjectRepoWithBranches(units: string[]): string {
+  const dir = mkdtempSync(join(tmpdir(), "levare-r4-proj-"));
+  git(dir, ["-c", "init.defaultBranch=main", "init", "-q"]);
+  writeFileSync(join(dir, "README.md"), "hello\n");
+  git(dir, ["add", "-A"]);
+  git(dir, ["commit", "-q", "-m", "initial"]);
+  for (const unit of units) {
+    const branch = `levare/${unit}`;
+    git(dir, ["checkout", "-q", "-b", branch]);
+    writeFileSync(join(dir, "marker.txt"), `MARKER-${unit}\n`);
+    git(dir, ["add", "-A"]);
+    git(dir, ["commit", "-q", "-m", `seed ${branch}`]);
+    git(dir, ["checkout", "-q", "main"]);
+  }
+  return dir;
+}
+
+/** Loads the real golden fixture repo, then swaps `storefront`'s `repo:` for a real local checkout —
+ * every team/agent/unit definition stays golden's own, unmodified. */
+function repoWithRealStorefrontRepo(projectRepoPath: string) {
+  const repo = loadRepo(ROOT);
+  const proj = repo.projects.get("storefront")!;
+  repo.projects.set("storefront", { ...proj, repo: projectRepoPath });
+  return repo;
+}
+
+describe("NOTES R4-SANDBOX Ruling 1 — per-dispatch worktree isolation", () => {
+  test("two units on the same project get isolated per-dispatch checkouts, even dispatched concurrently", async () => {
+    const projectRepo = makeProjectRepoWithBranches(["checkout-flow", "cart-icon-fix"]);
+    try {
+      const repo = repoWithRealStorefrontRepo(projectRepo);
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        // finch's own `command:` invokes a `codex` binary this box doesn't have — overridden here to a
+        // real, always-present binary that proves the per-dispatch worktree wiring instead. Real
+        // `spawn`/`asyncSpawn` are left at their defaults (bunSpawn/asyncBunSpawn) — this override is
+        // orthogonal, matching replay.ts's own --stubs seam.
+        cliCommand: (req) => ["cat", join(req.projectRepoPath!, "marker.txt")],
+      });
+
+      const [a, b] = await Promise.all([
+        runner.produceAsync("finch", "review", "checkout-flow", "storefront"),
+        runner.produceAsync("finch", "review", "cart-icon-fix", "storefront"),
+      ]);
+
+      expect(a.doc).toContain("MARKER-checkout-flow");
+      expect(a.doc).not.toContain("MARKER-cart-icon-fix");
+      expect(b.doc).toContain("MARKER-cart-icon-fix");
+      expect(b.doc).not.toContain("MARKER-checkout-flow");
+
+      // The project's own working tree was never checked out onto either work branch — the
+      // shared-single-working-tree race this ruling retires (adapters.ts's former memberWorkingContext).
+      expect(git(projectRepo, ["rev-parse", "--abbrev-ref", "HEAD"]).trim()).toBe("main");
+      // Both scratch worktrees were cleaned up — only the main entry remains.
+      const wt = git(projectRepo, ["worktree", "list", "--porcelain"]);
+      expect(wt.trim().split("\n\n").filter(Boolean).length).toBe(1);
+    } finally {
+      rmSync(projectRepo, { recursive: true, force: true });
+    }
+  });
+
+  test("a member's own commit inside its dispatch worktree actually advances the work branch, never the shared tree", async () => {
+    const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+    try {
+      const beforeSha = git(projectRepo, ["rev-parse", "levare/checkout-flow"]).trim();
+      const repo = repoWithRealStorefrontRepo(projectRepo);
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        cliCommand: (req) => [
+          "sh",
+          "-c",
+          `cd "$1" && echo written > member-output.txt && git -c user.name=member -c user.email=member@levare.test -c commit.gpgsign=false add -A && git -c user.name=member -c user.email=member@levare.test -c commit.gpgsign=false commit -q -m "member commit" && echo "committed member work"`,
+          "sh",
+          req.projectRepoPath!,
+        ],
+      });
+      await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+      expect(git(projectRepo, ["rev-parse", "levare/checkout-flow"]).trim()).not.toBe(beforeSha);
+      // Never landed in the project's own working tree.
+      expect(existsSync(join(projectRepo, "member-output.txt"))).toBe(false);
+    } finally {
+      rmSync(projectRepo, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spawn boundary", () => {
+  test("records the actually-detected enforcement level on the produced artifact, deterministically, via the injectable override", async () => {
+    const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+    try {
+      const repo = repoWithRealStorefrontRepo(projectRepo);
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        cliCommand: (req) => ["cat", join(req.projectRepoPath!, "marker.txt")],
+        // Deterministic across any host: "none" never wraps argv at all (see wrapForSandbox), so this
+        // is safe to force everywhere, including a host that genuinely has a working primitive.
+        sandboxDetection: { platform: "linux", primitive: "none", level: "none" },
+      });
+      const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+      expect(doc).toContain("sandbox: none");
+      expect(doc).toContain("MARKER-checkout-flow"); // the real, unwrapped spawn still ran and succeeded.
+    } finally {
+      rmSync(projectRepo, { recursive: true, force: true });
+    }
+  });
+
+  test("native/remote members never carry a sandbox level — Ruling 2 wraps only the two cli spawn paths", () => {
+    const repo = loadRepo(ROOT);
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native: nativeMock, remote: remoteMock });
+    const { doc } = runner.produce("lyra", "spec", "checkout-flow", "storefront");
+    expect(doc).not.toContain("sandbox:");
+  });
+
+  test("an injected (test-double) CliSpawn never gets its argv wrapped — sandboxing only ever touches the real spawn boundary", () => {
+    const repo = loadRepo(ROOT);
+    let seenArgv: string[] = [];
+    const spawn: CliSpawn = {
+      run(argv, opts) {
+        seenArgv = argv;
+        return { stdout: "fine", exitCode: 0, timedOut: false };
+      },
+    };
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "finch", kind: "review" }], native: nativeMock, remote: remoteMock, spawn, cliCommand: stubCliCommand });
+    const { doc } = runner.produce("finch", "review", "checkout-flow", "storefront");
+    expect(seenArgv[0]).toBe("bun"); // stubCliCommand's own first element — never a bwrap/unshare prefix
+    expect(doc).not.toContain("sandbox:"); // no real spawn boundary → no detection ever ran
+  });
+
+  // Gated on THIS host genuinely having a working OS sandbox primitive — skipped in this dev container
+  // (bwrap/unshare are both on PATH but user namespaces are disabled by the outer container's own
+  // seccomp policy, confirmed directly in sandbox.test.ts's own "this actual host" test) and expected to
+  // RUN for real wherever bubblewrap actually works (a normal Linux host, most CI runners).
+  const hostSandbox = detectSandbox();
+  test.skipIf(hostSandbox.level !== "full")(
+    "decoy-file proof: a file outside the sandbox root is genuinely unreadable from inside a sandboxed run",
+    async () => {
+      const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+      const decoyDir = mkdtempSync(join(tmpdir(), "levare-r4-decoy-"));
+      try {
+        writeFileSync(join(decoyDir, "secret.txt"), "SECRET\n");
+        const repo = repoWithRealStorefrontRepo(projectRepo);
+        const runner = new AdapterRunner(repo, {
+          pricing,
+          capabilities: [{ member: "finch", kind: "review" }],
+          native: nativeMock,
+          remote: remoteMock,
+          cliCommand: () => ["cat", join(decoyDir, "secret.txt")],
+        });
+        await expect(runner.produceAsync("finch", "review", "checkout-flow", "storefront")).rejects.toThrow(AdapterError);
+      } finally {
+        rmSync(projectRepo, { recursive: true, force: true });
+        rmSync(decoyDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.skipIf(hostSandbox.level !== "full")("the same dispatch can still read its own worktree/marker file under a working sandbox", async () => {
+    const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+    try {
+      const repo = repoWithRealStorefrontRepo(projectRepo);
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        cliCommand: (req) => ["cat", join(req.projectRepoPath!, "marker.txt")],
+      });
+      const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+      expect(doc).toContain("MARKER-checkout-flow");
+      expect(doc).toContain("sandbox: full");
+    } finally {
+      rmSync(projectRepo, { recursive: true, force: true });
+    }
   });
 });
