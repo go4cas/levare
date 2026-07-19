@@ -297,18 +297,20 @@ function probeSandboxExec(bin: string, probe: (argv: string[], opts?: { cwd?: st
     const scriptPath = join(scratchDir, "probe.js");
     writeFileSync(scriptPath, "// levare sandbox probe — a trivial script, run through the real interpreter\n");
     const interpreter = Bun.which("bun") ?? process.execPath;
-    // NOTES R4-SANDBOX-FIX-11: threaded for STRUCTURAL PARITY with a real dispatch's own policy (the
-    // probe's trivial script never itself invokes an xcrun-shimmed tool, so this is a harmless, unused
-    // grant here) — the probe and a real dispatch must keep computing their enforcement level through
-    // the identical generator with equivalent profile shape, the same property every prior round's own
-    // structural-equivalence tests already assert.
+    // NOTES R4-SANDBOX-FIX-11/FIX-12: threaded for STRUCTURAL PARITY with a real dispatch's own policy
+    // (the probe's trivial script never itself invokes an xcrun-shimmed tool, so this is a harmless,
+    // unused grant here) — the probe and a real dispatch must keep computing their enforcement level
+    // through the identical generator with equivalent profile shape, the same property every prior
+    // round's own structural-equivalence tests already assert. Threaded into the dedicated
+    // `darwinXcrunTempDir` field (narrowed to a regex grant), never a flat `writablePaths` entry — see
+    // that field's own doc for why FIX-11's original flat shape was proven unsafe.
     const darwinTempDir = resolveDarwinUserTempDir();
     const profile = buildSandboxExecProfile({
       cwd: scratchDir,
       allowNetwork: false,
       operatorHome: homedir(),
       readOnlyPaths: [dirname(interpreter), dirname(dirname(interpreter))],
-      writablePaths: darwinTempDir ? [darwinTempDir] : [],
+      darwinXcrunTempDir: darwinTempDir,
     });
     const profilePath = join(scratchDir, "probe.sb");
     writeFileSync(profilePath, profile);
@@ -455,30 +457,53 @@ export interface SandboxPolicy {
    */
   grantedHomeTargets?: string[];
   /**
-   * NOTES R4-SANDBOX-FIX-7 (live macOS gate: a member's own commit inside its dispatch worktree, exactly
-   * what Ruling 1 promises, denied by a working sandbox) / FIX-8 (security narrowing, once shipped).
-   * Read-write. Extra paths a dispatch needs WRITE access to beyond `cwd`/`home` — currently the EXACT
-   * `.git` subpaths a worktree commit reads/writes, confirmed by direct reproduction, never the whole
-   * `.git` directory: `.git/objects` (new blobs/trees/commits), `.git/refs` (the branch ref's own content
-   * update), `.git/logs` (the branch ref's reflog append), and this dispatch's OWN
-   * `.git/worktrees/<name>` admin directory (`HEAD`, `index`, `logs/HEAD`, `COMMIT_EDITMSG` — git's own
-   * worktree design keeps these OUTSIDE the per-dispatch worktree's own directory, shared with every
-   * other worktree of the same repo) — threaded here by `adapters.ts#InvokeRequest.dispatchGitWritePaths`
-   * only when the dispatch is running inside a `merge.ts#createDispatchWorktree` worktree.
+   * Read-write. Extra paths beyond `cwd`/`home` that need BOTH read and write access, with no special
+   * ordering/sealing treatment — consumed by bubblewrap/unshare (their own allow-list/empty-root model
+   * has no "a broader grant swallows a narrower seal" risk, so a flat list is always sufficient there)
+   * and, on darwin, by anything that doesn't need FIX-12's own deny-then-reallow sealing below. Absent/
+   * empty is a legal no-op.
    *
-   * Deliberately NEVER `.git` itself, NEVER `.git/hooks`, NEVER `.git/config` (FIX-7's original shape
-   * granted the whole directory, including both) — `.git/hooks/*` are executable scripts and
-   * `.git/config` can redirect execution via `core.hooksPath`/`core.fsmonitor`; either is a
-   * code-execution vector that would run UNCONFINED the next time ANY git operation touches this repo
-   * OUTSIDE the sandbox (the Conductor's own shell, levare's own gate-resolution commits, the daemon) —
-   * and no deterministic guardrail catches either, since neither is part of any diff a merge gate
-   * inspects. Confirmed directly (not assumed) that a plain commit never touches either path (byte-
-   * identical before/after) and that denying write on ANY of the four granted subpaths reproduces the
-   * identical failure (`Unable to create '.../index.lock': Permission denied`) a sandboxed spawn's own
-   * denial produces. Absent/empty is a legal no-op (no worktree this dispatch, or the read-only default
-   * `context_artifacts: paths` case, where no commit is expected).
+   * NOTES R4-SANDBOX-FIX-7/FIX-8 originally used this field for a dispatch worktree's own git-write
+   * grant; FIX-12 moved that specific use to the dedicated `gitWriteGrant` field below after a flat
+   * `writablePaths` entry for the darwin temp directory was proven live to swallow the git seal (see
+   * that field's own doc) — a flat list has no way to express "deny this broader region first, THEN
+   * re-allow these specific subpaths," which is what the reseal actually requires.
    */
   writablePaths?: string[];
+  /**
+   * NOTES R4-SANDBOX-FIX-12 (darwin-only — bubblewrap's own allow-list model never reads this field, and
+   * has no equivalent risk to reseal against). Write access for a dispatch worktree's shared git plumbing
+   * — `root` (the ORIGINAL project repo's own `.git` directory) is explicitly DENIED, then each of
+   * `subpaths` (`.git/objects`, `.git/refs`, `.git/logs`, this dispatch's own `.git/worktrees/<name>`
+   * admin directory — see NOTES R4-SANDBOX-FIX-7/FIX-8 for why these four and no others) is re-allowed —
+   * in THAT order, emitted as the LAST write-affecting rules in the generated profile, so the reseal wins
+   * over ANY broader grant emitted earlier for an unrelated reason, regardless of that grant's own shape.
+   * This is what FIX-7/FIX-8 used to express as a plain `writablePaths` entry; a flat list has no way to
+   * express "deny this broader region first" — a live run proved that gap real: `darwinXcrunTempDir`
+   * below (added by FIX-11 as a flat `writablePaths` entry, before this field existed) swallowed the
+   * FIX-8 seal on its very first live execution, because the scratch project repo in the failing test
+   * lives DIRECTLY under the exact directory that grant covered. Threaded by
+   * `adapters.ts#InvokeRequest.dispatchGitWritePaths` only when the dispatch is running inside a
+   * `merge.ts#createDispatchWorktree` worktree; absent otherwise (no worktree this dispatch, or the
+   * read-only default `context_artifacts: paths` case, where no commit is expected).
+   */
+  gitWriteGrant?: { root: string; subpaths: string[] };
+  /**
+   * NOTES R4-SANDBOX-FIX-11 (introduced) / FIX-12 (narrowed — darwin-only). The resolved
+   * `DARWIN_USER_TEMP_DIR` an xcrun-shimmed tool (git) needs SOME write access under
+   * (`sandbox.ts#resolveDarwinUserTempDir`, run by the unsandboxed parent) — granted via a seatbelt
+   * `(regex ...)` rule matching ONLY direct children of this directory named `xcrun_db-*` (xcrun's own
+   * cache-file naming), never a recursive `(subpath ...)` grant covering the entire directory. FIX-11's
+   * own `(subpath tempDir)` shape was proven live, on its first execution, to (a) swallow the FIX-8
+   * git-write seal — the scratch project repo in the failing test lives DIRECTLY under this exact
+   * directory, so a broad grant here recursively covers `.git/hooks` too — and (b) break cross-dispatch
+   * write isolation, since every CONCURRENT dispatch's own worktree also lives under this same directory.
+   * A regex anchored to the literal `xcrun_db-` prefix matches neither: it never reaches a nested `.git`
+   * anywhere, and it never reaches a sibling worktree directory (named `levare-dispatchwt-*`, not
+   * `xcrun_db-*`). Read AND write are both narrowed identically, least-privilege — reads were never the
+   * proven issue, but there is no reason to grant more than xcrun itself needs.
+   */
+  darwinXcrunTempDir?: string;
 }
 
 export interface WrappedSpawn {
@@ -557,6 +582,22 @@ function unshareArgv(bin: string, argv: string[], policy: SandboxPolicy): string
 
 function sbxq(s: string): string {
   return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+// NOTES R4-SANDBOX-FIX-12: escapes regex metacharacters in a literal filesystem path before it becomes
+// part of a seatbelt `(regex #"...")` pattern — a resolved temp directory is never itself a regex, and
+// any metacharacter it happens to contain (unlikely in practice, but never assumed) must match itself
+// literally, not be interpreted as a regex operator.
+function escapeSeatbeltRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// NOTES R4-SANDBOX-FIX-12: `(regex #"pattern")` — the `#"..."` form is the SAME quoted-string syntax
+// `sbxq` already produces (backslash/quote escaping included), merely prefixed with `#` — reused rather
+// than a second escaping implementation, so a pattern already containing `escapeSeatbeltRegex`'s own
+// backslash-escapes round-trips correctly through the profile's own string-literal parsing.
+function sbxRegex(pattern: string): string {
+  return `#${sbxq(pattern)}`;
 }
 
 /**
@@ -673,16 +714,25 @@ export function buildSandboxExecProfile(policy: SandboxPolicy): string {
   const scopedHome = rawHome && rawHome !== operatorHome ? rawHome : undefined;
   const grantedTargets = (policy.grantedHomeTargets ?? []).map(canon);
   const readOnly = (policy.readOnlyPaths ?? []).map(canon);
-  // NOTES R4-SANDBOX-FIX-7: read-write, same as `cwd`/`scopedHome` — a member committing inside its
-  // dispatch worktree needs to both read (existing objects/refs) and write (new objects/refs, the
-  // worktree's own admin state) the ORIGINAL project repo's shared `.git` directory.
   const writable = (policy.writablePaths ?? []).map(canon);
+  // NOTES R4-SANDBOX-FIX-12: the git-write grant's own root/subpaths, kept SEPARATE from `writable` above
+  // — they get a dedicated deny-then-reallow treatment below, never a flat reallow, which is exactly the
+  // gap that let FIX-11's own darwin-temp-dir grant swallow this seal (a flat list has no way to express
+  // "deny this broader region first").
+  const gitRoot = policy.gitWriteGrant ? canon(policy.gitWriteGrant.root) : undefined;
+  const gitSubpaths = (policy.gitWriteGrant?.subpaths ?? []).map(canon);
+  // NOTES R4-SANDBOX-FIX-12: narrowed to a regex matching ONLY xcrun's own cache-file naming — never a
+  // `(subpath ...)` grant covering the whole directory (see `SandboxPolicy.darwinXcrunTempDir`'s own doc
+  // for why that shape was proven live to be unsafe).
+  const xcrunTempDir = policy.darwinXcrunTempDir ? canon(policy.darwinXcrunTempDir) : undefined;
+  const xcrunRegexPattern = xcrunTempDir ? `^${escapeSeatbeltRegex(xcrunTempDir)}/xcrun_db-[^/]+$` : undefined;
 
-  const reallowReads = dedupe([cwd, ...(scopedHome ? [scopedHome] : []), ...grantedTargets, ...readOnly, ...writable]);
+  const reallowReads = dedupe([cwd, ...(scopedHome ? [scopedHome] : []), ...grantedTargets, ...readOnly, ...writable, ...gitSubpaths]);
   const reallowWrites = dedupe([cwd, ...(scopedHome ? [scopedHome] : []), ...writable]);
-  // DEFECT 2: ancestor metadata for every read re-allow — write re-allows are a subset of reallowReads
-  // already, so their own ancestors are already covered here, not computed a second time.
-  const ancestorMetadata = dedupe(reallowReads.flatMap(ancestorsOf));
+  // DEFECT 2: ancestor metadata for every read re-allow (now including the git-write subpaths, which are
+  // read-reallowed above but write-reallowed separately below) plus `gitRoot` itself, so traversal INTO
+  // the reseal's own re-allowed subpaths survives the reseal's own deny of their shared parent.
+  const ancestorMetadata = dedupe([...reallowReads, ...(gitRoot ? [gitRoot] : [])].flatMap(ancestorsOf));
 
   const lines = dedupe(
     [
@@ -724,9 +774,11 @@ export function buildSandboxExecProfile(policy: SandboxPolicy): string {
       // ruling" — granted below. This does not weaken the threat model: `dirhelper` resolves per-user
       // SYSTEM DIRECTORY PATHS (kernel/system plumbing, the same category `sysctl-read` above already
       // covers), never user data, and the resolved directory itself is exactly the sandbox's own scratch
-      // territory (`sandbox.ts#resolveDarwinUserTempDir`, threaded into `SandboxPolicy.writablePaths` by
-      // the caller) — the same kind of place this module's own profiles/probe-scripts/worktrees already
-      // live, not a new category of exposure.
+      // territory (`sandbox.ts#resolveDarwinUserTempDir`, threaded into `SandboxPolicy.darwinXcrunTempDir`
+      // by the caller — narrowed to a `(regex ...)` grant by FIX-12 below, after FIX-11's own original
+      // `(subpath ...)` shape was proven live to swallow the FIX-8 git-write seal) — the same kind of
+      // place this module's own profiles/probe-scripts/worktrees already live, not a new category of
+      // exposure.
       "(allow sysctl-read)",
       "(allow mach-lookup (global-name \"com.apple.bsd.dirhelper\"))",
       // Broad OS read, same as an unsandboxed process would see — verified live: this is the only shape
@@ -748,6 +800,20 @@ export function buildSandboxExecProfile(policy: SandboxPolicy): string {
       // adapters.ts#sandboxWrap's own doc for exactly what populates this list).
       ...reallowReads.map((p) => `(allow file-read* (subpath ${sbxq(p)}))`),
       ...reallowWrites.map((p) => `(allow file-write* (subpath ${sbxq(p)}))`),
+      // NOTES R4-SANDBOX-FIX-12: xcrun's own cache-write need, narrowed to a regex matching ONLY its own
+      // `xcrun_db-*` naming under the resolved per-user temp dir — never the whole directory.
+      xcrunRegexPattern ? `(allow file-read* (regex ${sbxRegex(xcrunRegexPattern)}))` : "",
+      xcrunRegexPattern ? `(allow file-write* (regex ${sbxRegex(xcrunRegexPattern)}))` : "",
+      // NOTES R4-SANDBOX-FIX-12: the git-write RESEAL — deliberately the LAST write-affecting block in
+      // the entire profile, so it wins (Seatbelt: last-matching-rule-wins) over ANY broader grant emitted
+      // earlier that might otherwise also cover `gitRoot`'s own subtree (the xcrun grant above, when the
+      // scratch project repo lives under the SAME resolved temp dir, as every `mkdtempSync(tmpdir())`-
+      // based fixture in this codebase's own test suite already does — proven live to happen on FIX-11's
+      // very first execution). Deny the whole original repo `.git` root, then re-allow ONLY the four
+      // specific subpaths a worktree commit needs — `.git/hooks`/`.git/config` are never re-allowed here,
+      // restoring FIX-8's own seal regardless of what any earlier rule granted.
+      gitRoot ? `(deny file-write* (subpath ${sbxq(gitRoot)}))` : "",
+      ...gitSubpaths.map((p) => `(allow file-write* (subpath ${sbxq(p)}))`),
       '(allow file-read* (subpath "/dev"))',
       '(allow file-write* (subpath "/dev"))',
       policy.allowNetwork ? "(allow network*)" : "(deny network*)",

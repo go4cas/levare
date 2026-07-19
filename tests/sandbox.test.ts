@@ -787,6 +787,12 @@ describe("buildSandboxExecProfile — deny-list model (NOTES R4-SANDBOX-FIX-3)",
     // dir), the generated profile re-allows precisely those four subpaths and NEVER the `.git` root, and
     // NEVER `hooks`/`config` — proven both here (construction) and in adapters.test.ts (wiring, plus a
     // real skipIf-gated denial on a host with a working primitive).
+    // NOTES R4-SANDBOX-FIX-12: these tests exercise the GENERIC `writablePaths` mechanism directly — still
+    // valid as pure-mechanism proofs (bubblewrap's own git-write path still works exactly this way), but
+    // this is no longer how PRODUCTION grants darwin's own git-write access: a live run proved a flat
+    // `writablePaths` entry cannot be resealed against a broader, unrelated grant emitted earlier
+    // (FIX-11's own xcrun temp-dir grant swallowed it) — see the `gitWriteGrant` describe block below for
+    // the dedicated field that replaced it on darwin specifically.
     describe("FIX-8 — narrowed to exact git subpaths, never hooks/config/the .git root", () => {
       const gitCommonDir = "/proj/repo/.git";
       const worktreeAdminDir = `${gitCommonDir}/worktrees/levare-dispatchwt-abc123`;
@@ -815,6 +821,133 @@ describe("buildSandboxExecProfile — deny-list model (NOTES R4-SANDBOX-FIX-3)",
         expect(wrapped.argv).not.toContain(gitCommonDir);
         expect(wrapped.argv).not.toContain(`${gitCommonDir}/hooks`);
         expect(wrapped.argv).not.toContain(`${gitCommonDir}/config`);
+      });
+    });
+
+    // NOTES R4-SANDBOX-FIX-12 (live macOS gate — a real security regression, caught by the FIX-8 decoy on
+    // its own first live execution): FIX-11's darwin temp-dir grant was a flat `writablePaths` entry —
+    // when the scratch project repo lived DIRECTLY under that same directory (as every `mkdtempSync
+    // (tmpdir())`-based fixture in this codebase's own test suite does), the broad grant recursively
+    // covered `.git/hooks` too, since a flat allow has no way to express "deny this broader region first."
+    // `gitWriteGrant` is the dedicated field that closes this: `root` is explicitly DENIED, then each of
+    // `subpaths` is re-allowed — emitted as the LAST write-affecting rules in the whole profile, so the
+    // reseal wins (Seatbelt: last-matching-rule-wins) over ANY broader grant, regardless of that grant's
+    // own shape or where in the profile it was emitted.
+    describe("gitWriteGrant — deny-root-then-reallow-subpaths reseal (NOTES R4-SANDBOX-FIX-12)", () => {
+      const root = "/proj/repo/.git";
+      const worktreeAdminDir = `${root}/worktrees/levare-dispatchwt-abc123`;
+      const subpaths = [`${root}/objects`, `${root}/refs`, `${root}/logs`, worktreeAdminDir];
+
+      test("denies the root, then re-allows exactly the four subpaths, read and write", () => {
+        const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false, gitWriteGrant: { root, subpaths } });
+        expect(profile).toContain(`(deny file-write* (subpath ${JSON.stringify(root)}))`);
+        for (const p of subpaths) {
+          expect(profile).toContain(`(allow file-write* (subpath ${JSON.stringify(p)}))`);
+          expect(profile).toContain(`(allow file-read* (subpath ${JSON.stringify(p)}))`);
+        }
+        expect(profile).not.toContain(`${root}/hooks`);
+        expect(profile).not.toContain(`${root}/config`);
+      });
+
+      test("the root deny is the LAST deny in the profile, and every subpath re-allow comes after it", () => {
+        const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false, gitWriteGrant: { root, subpaths } });
+        const lines = profile.split("\n");
+        const rootDenyIdx = lines.indexOf(`(deny file-write* (subpath ${JSON.stringify(root)}))`);
+        expect(rootDenyIdx).toBeGreaterThan(-1);
+        for (const p of subpaths) {
+          const reallowIdx = lines.indexOf(`(allow file-write* (subpath ${JSON.stringify(p)}))`);
+          expect(reallowIdx).toBeGreaterThan(rootDenyIdx);
+        }
+        // Nothing else in the whole profile denies file-write* AFTER the root deny — it really is last.
+        const laterDenies = lines.slice(rootDenyIdx + 1).filter((l) => l.startsWith("(deny file-write*"));
+        expect(laterDenies).toEqual([]);
+      });
+
+      // THE regression proof: a broader, EARLIER write grant covering the exact same root (standing in
+      // for FIX-11's own xcrun temp-dir grant, or anything else that might one day grant something
+      // overlapping) must NOT re-expose hooks/config — the reseal, being emitted LAST, wins regardless.
+      test("a broader EARLIER grant covering the same root does not defeat the reseal — hooks/config stay denied", () => {
+        const profile = buildSandboxExecProfile({
+          cwd: "/a/b",
+          allowNetwork: false,
+          // Stands in for FIX-11's own darwin-temp-dir grant (or any other broad grant) that happens to
+          // cover the SAME root a git-write grant's own subpaths live under.
+          writablePaths: [root],
+          gitWriteGrant: { root, subpaths },
+        });
+        // The broad, earlier grant DOES appear (writablePaths is still a real, valid mechanism)...
+        expect(profile).toContain(`(allow file-write* (subpath ${JSON.stringify(root)}))`);
+        // ...but the LATER reseal (deny root, then re-allow only the four subpaths) wins for anything
+        // under root that isn't one of them — hooks/config are never mentioned, and the ONLY way they
+        // could become writable is if some rule appeared AFTER the reseal's own subpath re-allows, which
+        // this profile never emits for them.
+        expect(profile).not.toContain(`${root}/hooks`);
+        expect(profile).not.toContain(`${root}/config`);
+        const lines = profile.split("\n");
+        const rootDenyIdx = lines.indexOf(`(deny file-write* (subpath ${JSON.stringify(root)}))`);
+        const broadAllowIdx = lines.indexOf(`(allow file-write* (subpath ${JSON.stringify(root)}))`);
+        expect(rootDenyIdx).toBeGreaterThan(broadAllowIdx); // the reseal's own deny comes AFTER the broad grant
+      });
+
+      test("absent gitWriteGrant is a legal no-op — no root deny, no subpath re-allows", () => {
+        const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false });
+        expect(profile).not.toContain("(deny file-write* (subpath");
+      });
+
+      test("canonicalized through a symlink, same as every other path this generator handles", () => {
+        const real = mkdtempSync(join(tmpdir(), "levare-sandbox-gitgrant-real-"));
+        const parent = mkdtempSync(join(tmpdir(), "levare-sandbox-gitgrant-link-"));
+        const link = join(parent, "repo-symlink");
+        symlinkSync(real, link);
+        try {
+          const linkedRoot = join(link, ".git");
+          const linkedSubpath = join(linkedRoot, "objects");
+          mkdirSync(linkedSubpath, { recursive: true });
+          const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false, gitWriteGrant: { root: linkedRoot, subpaths: [linkedSubpath] } });
+          const realCanonical = realpathSync(real);
+          expect(profile).not.toContain(`(subpath ${JSON.stringify(linkedRoot)})`);
+          expect(profile).toContain(`(deny file-write* (subpath ${JSON.stringify(join(realCanonical, ".git"))}))`);
+          expect(profile).toContain(`(allow file-write* (subpath ${JSON.stringify(join(realCanonical, ".git", "objects"))}))`);
+        } finally {
+          rmSync(real, { recursive: true, force: true });
+          rmSync(parent, { recursive: true, force: true });
+        }
+      });
+    });
+
+    // NOTES R4-SANDBOX-FIX-12 (narrowing FIX-11's own `(subpath tempDir)` shape, proven live to swallow
+    // the FIX-8 seal and to break cross-dispatch write isolation — every concurrent dispatch's own
+    // worktree lives under the SAME resolved directory). A regex anchored to the literal `xcrun_db-`
+    // prefix reaches neither: it never nests into a `.git` several levels down, and it never reaches a
+    // sibling worktree directory (named `levare-dispatchwt-*`, not `xcrun_db-*`).
+    describe("darwinXcrunTempDir — narrowed to a regex matching only xcrun's own cache-file naming (NOTES R4-SANDBOX-FIX-12)", () => {
+      test("emits a regex grant for both read and write, never a subpath grant covering the whole directory", () => {
+        const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false, darwinXcrunTempDir: "/private/var/folders/xx/yyyyy/T" });
+        expect(profile).toContain('(allow file-write* (regex #"^/private/var/folders/xx/yyyyy/T/xcrun_db-[^/]+$"))');
+        expect(profile).toContain('(allow file-read* (regex #"^/private/var/folders/xx/yyyyy/T/xcrun_db-[^/]+$"))');
+        expect(profile).not.toContain('(allow file-write* (subpath "/private/var/folders/xx/yyyyy/T"))');
+        expect(profile).not.toContain('(allow file-read* (subpath "/private/var/folders/xx/yyyyy/T"))');
+      });
+
+      test("absent is a legal no-op — no regex line at all", () => {
+        const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false });
+        expect(profile).not.toContain("file-write* (regex");
+        expect(profile).not.toContain("file-read* (regex");
+      });
+
+      test("escapes regex metacharacters in the resolved path before embedding it in the pattern", () => {
+        const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false, darwinXcrunTempDir: "/tmp/te.st+dir" });
+        // The escaped form is what appears in the profile's own regex — never the raw, unescaped
+        // metacharacters, which would let ANY character match instead of a literal `.`/`+`. Each regex
+        // escape (`\.`, `\+`) is itself embedded in a quoted string, so `sbxq`'s own backslash-doubling
+        // means the profile's raw text carries TWO literal backslashes before each — written here via
+        // `String.raw` to keep the JS source's own escaping legible.
+        expect(profile).toContain(String.raw`(regex #"^/tmp/te\\.st\\+dir/xcrun_db-[^/]+$")`);
+      });
+
+      test("never grants a sibling dispatch's own worktree (named levare-dispatchwt-*, not xcrun_db-*)", () => {
+        const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false, darwinXcrunTempDir: "/private/var/folders/xx/yyyyy/T" });
+        expect(profile).not.toContain("/private/var/folders/xx/yyyyy/T/levare-dispatchwt-");
       });
     });
   });

@@ -68,24 +68,28 @@ export interface InvokeRequest {
   projectRepoPath?: string;
   /**
    * NOTES R4-SANDBOX-FIX-7/FIX-8 (live macOS gate: a member's own commit inside its dispatch worktree,
-   * denied by a working sandbox — then narrowed for security once shipped). Set alongside
+   * denied by a working sandbox — then narrowed for security once shipped) / FIX-12 (root threaded
+   * explicitly, for the deny-then-reallow reseal `sandboxWrap` now applies). Set alongside
    * `projectRepoPath` ONLY when a real per-dispatch worktree was created
-   * (`withDispatchWorktree`/`withDispatchWorktreeAsync`) — the EXACT subpaths of the ORIGINAL project
-   * repo's `.git` directory a worktree commit actually reads/writes, confirmed by direct reproduction
-   * (not assumed): `.git/objects` (new blobs/trees/commits), `.git/refs` (the branch ref's own content
-   * update), `.git/logs` (the branch ref's reflog append), and this dispatch's OWN
-   * `.git/worktrees/<name>` admin directory (`HEAD`, `index`, `COMMIT_EDITMSG`, its own `logs/HEAD`) —
-   * never any sibling worktree's own admin directory, and never `.git` itself, `.git/hooks`, or
-   * `.git/config`. FIX-7 originally granted the whole `.git` directory; FIX-8 narrowed it after a
-   * security review named `.git/hooks/*` and `.git/config` (`core.hooksPath`/`core.fsmonitor`) as
-   * code-execution vectors that would otherwise run UNCONFINED the next time any git operation touches
-   * this repo outside the sandbox (the Conductor's own shell, levare's own gate-resolution commits, the
-   * daemon) — confirmed by direct reproduction that a plain commit never touches either path, so
-   * excluding them costs the feature nothing. `sandboxWrap` threads this straight into
-   * `SandboxPolicy.writablePaths`. Undefined for every dispatch without a worktree (self-referential/
-   * unresolvable `repo:`, or no work branch yet) — exactly `projectRepoPath`'s own no-worktree case.
+   * (`withDispatchWorktree`/`withDispatchWorktreeAsync`). `root` is the ORIGINAL project repo's own
+   * `.git` directory; `subpaths` are the EXACT paths under it a worktree commit actually reads/writes,
+   * confirmed by direct reproduction (not assumed): `.git/objects` (new blobs/trees/commits), `.git/refs`
+   * (the branch ref's own content update), `.git/logs` (the branch ref's reflog append), and this
+   * dispatch's OWN `.git/worktrees/<name>` admin directory (`HEAD`, `index`, `COMMIT_EDITMSG`, its own
+   * `logs/HEAD`) — never any sibling worktree's own admin directory, and never `root` itself,
+   * `.git/hooks`, or `.git/config`. FIX-7 originally granted the whole `.git` directory as a flat
+   * writable list; FIX-8 narrowed the SET of paths after a security review named `.git/hooks/*` and
+   * `.git/config` (`core.hooksPath`/`core.fsmonitor`) as code-execution vectors that would otherwise run
+   * UNCONFINED the next time any git operation touches this repo outside the sandbox (the Conductor's
+   * own shell, levare's own gate-resolution commits, the daemon); FIX-12 discovered that a flat list
+   * cannot express the reseal a BROADER, unrelated grant might later need carved back out of (FIX-11's
+   * own darwin temp-dir grant swallowed FIX-8's seal on its first live execution) and moved this to
+   * `sandboxWrap`'s dedicated `SandboxPolicy.gitWriteGrant` field, whose OWN deny-root-then-reallow-
+   * subpaths ordering is what actually restores the seal regardless of what else the profile grants.
+   * Undefined for every dispatch without a worktree (self-referential/unresolvable `repo:`, or no work
+   * branch yet) — exactly `projectRepoPath`'s own no-worktree case.
    */
-  dispatchGitWritePaths?: string[];
+  dispatchGitWriteGrant?: { root: string; subpaths: string[] };
 }
 
 /** The native SDK boundary — synchronous, used by the phase-2 batch `Runner` (`levare replay`) and by
@@ -195,11 +199,14 @@ function gitConfigRedirectEnv(env: Record<string, string>): Record<string, strin
   return { ...env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
 }
 
-function dispatchGitWritePaths(worktreeGitDir: string): string[] {
+// NOTES R4-SANDBOX-FIX-12: returns `root` alongside `subpaths` now (previously a flat array) — `sandboxWrap`
+// needs `root` to build the deny-then-reallow reseal (`SandboxPolicy.gitWriteGrant`), which a flat list of
+// subpaths alone cannot express.
+function dispatchGitWriteGrant(worktreeGitDir: string): { root: string; subpaths: string[] } {
   const gitCommonDir = dirname(dirname(worktreeGitDir));
   const logs = pathJoin(gitCommonDir, "logs");
   if (!existsSync(logs)) mkdirSync(logs, { recursive: true });
-  return [pathJoin(gitCommonDir, "objects"), pathJoin(gitCommonDir, "refs"), logs, worktreeGitDir];
+  return { root: gitCommonDir, subpaths: [pathJoin(gitCommonDir, "objects"), pathJoin(gitCommonDir, "refs"), logs, worktreeGitDir] };
 }
 
 function nativeWorkerRequest(req: InvokeRequest, pathToClaudeCodeExecutable: string | undefined) {
@@ -810,7 +817,7 @@ export class AdapterRunner implements MemberRunner {
       throw new AdapterError(`member '${member}': could not create dispatch worktree for work branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}': ${created.error}`);
     }
     try {
-      return fn({ ...req, projectRepoPath: created.worktree.path, dispatchGitWritePaths: dispatchGitWritePaths(created.worktree.gitDir) });
+      return fn({ ...req, projectRepoPath: created.worktree.path, dispatchGitWriteGrant: dispatchGitWriteGrant(created.worktree.gitDir) });
     } finally {
       created.worktree.cleanup();
     }
@@ -828,7 +835,7 @@ export class AdapterRunner implements MemberRunner {
       throw new AdapterError(`member '${member}': could not create dispatch worktree for work branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}': ${created.error}`);
     }
     try {
-      return await fn({ ...req, projectRepoPath: created.worktree.path, dispatchGitWritePaths: dispatchGitWritePaths(created.worktree.gitDir) });
+      return await fn({ ...req, projectRepoPath: created.worktree.path, dispatchGitWriteGrant: dispatchGitWriteGrant(created.worktree.gitDir) });
     } finally {
       created.worktree.cleanup();
     }
@@ -1013,10 +1020,13 @@ export class AdapterRunner implements MemberRunner {
     const operatorHome = this.opts.baseEnv?.HOME ?? process.env.HOME;
     const sub = subscriptionConnector(this.repo, req.member);
     const grantedHomeTargets = operatorHome ? (sub?.home ?? []).filter(isSafeHomeDotpath).map((dotpath) => pathJoin(operatorHome, dotpath)) : [];
-    // NOTES R4-SANDBOX-FIX-11: the per-user DARWIN_USER_TEMP_DIR (resolved by the unsandboxed parent —
-    // `undefined` off-darwin or if unresolvable) — an xcrun-shimmed tool (git) needs write access here or
-    // its own confstr-then-write-fallback chain convicts it with exit 128 (see `resolveDarwinUserTempDir`'s
-    // own doc). A no-op everywhere else, exactly like every other optional grant in this policy.
+    // NOTES R4-SANDBOX-FIX-11/FIX-12: the per-user DARWIN_USER_TEMP_DIR (resolved by the unsandboxed
+    // parent — `undefined` off-darwin or if unresolvable) — an xcrun-shimmed tool (git) needs write access
+    // under it or its own confstr-then-write-fallback chain convicts it with exit 128 (see
+    // `resolveDarwinUserTempDir`'s own doc). Threaded into the DEDICATED `darwinXcrunTempDir` field
+    // (narrowed to a regex grant by `buildSandboxExecProfile` itself), never into the flat `writablePaths`
+    // — FIX-11 originally did that, and a live run proved a flat, broad grant here swallows the FIX-8
+    // git-write seal below (see `SandboxPolicy.darwinXcrunTempDir`'s own doc for the full account).
     const darwinTempDir = resolveDarwinUserTempDir();
     const policy: SandboxPolicy = {
       cwd: cwd ?? process.cwd(),
@@ -1025,12 +1035,14 @@ export class AdapterRunner implements MemberRunner {
       readOnlyPaths,
       operatorHome,
       grantedHomeTargets,
-      // NOTES R4-SANDBOX-FIX-7/FIX-8: read-write access to the EXACT `.git` subpaths (objects/refs/logs/
-      // this worktree's own admin dir) a worktree commit needs — never the whole `.git` directory, never
-      // `hooks`/`config` (see `InvokeRequest.dispatchGitWritePaths`'s own doc for the exec-escape this
-      // narrowing closes). NOTES R4-SANDBOX-FIX-11 adds the resolved darwin user-temp-dir alongside it,
-      // when present.
-      writablePaths: [...(req.dispatchGitWritePaths ?? []), ...(darwinTempDir ? [darwinTempDir] : [])],
+      // NOTES R4-SANDBOX-FIX-7/FIX-8/FIX-12: `writablePaths` still feeds bubblewrap/unshare (their own
+      // allow-list model has no swallow risk, so a flat list is always sufficient there); `gitWriteGrant`
+      // is the DEDICATED darwin field (`buildSandboxExecProfile`'s own deny-root-then-reallow-subpaths
+      // reseal) that actually restores the FIX-8 seal on the platform where a broader, unrelated grant
+      // (the xcrun temp dir above) could otherwise swallow it.
+      writablePaths: req.dispatchGitWriteGrant?.subpaths ?? [],
+      gitWriteGrant: req.dispatchGitWriteGrant,
+      darwinXcrunTempDir: darwinTempDir,
     };
     return wrapForSandbox(argv, policy, detection);
   }

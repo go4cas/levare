@@ -9,6 +9,7 @@ import { loadPricing } from "../src/pricing.ts";
 import { AdapterRunner, AdapterError, type CliSpawn, type InvokeRequest, type NativeBoundary, type RemoteBoundary, type SpawnResult } from "../src/adapters.ts";
 import { render } from "../fixtures/stubs/member-stub.ts";
 import { detectSandbox } from "../src/sandbox.ts";
+import { createDispatchWorktree } from "../src/merge.ts";
 
 // The three adapters dispatch by agent kind. CLI is tested against the fixture stub (real spawn path
 // via an injected CliSpawn); native against a mocked SDK boundary; remote against a mocked MCP call.
@@ -1623,6 +1624,41 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
         await expect(runner.produceAsync("finch", "review", "checkout-flow", "storefront")).rejects.toThrow(AdapterError);
         expect(existsSync(hookPath)).toBe(false);
       } finally {
+        rmSync(projectRepo, { recursive: true, force: true });
+      }
+    },
+  );
+
+  // NOTES R4-SANDBOX-FIX-12 (live macOS gate: FIX-11's own darwin temp-dir grant broke cross-dispatch
+  // write isolation too — every concurrent dispatch's own worktree lives under the SAME resolved
+  // DARWIN_USER_TEMP_DIR, so a flat, broad grant there let one member write into ANOTHER dispatch's own
+  // checkout). This decoy's sibling: a SECOND dispatch's own worktree is created directly (simulating a
+  // concurrent dispatch already in flight, at a real scratch path, exactly as a real sibling dispatch
+  // would have), and the member under test attempts to write into it. The narrowed
+  // `darwinXcrunTempDir` regex (matching only `xcrun_db-*`, never a sibling worktree's own name) is what
+  // this proves live; structurally, this container's own `sandbox: none` means the write simply succeeds
+  // here (no isolation at all without a working primitive) — this test is gated the same as every other
+  // real-sandbox-only proof in this file.
+  test.skipIf(hostSandbox.level !== "full")(
+    "a sandboxed member cannot write into a second, sibling dispatch's own worktree",
+    async () => {
+      const projectRepo = makeProjectRepoWithBranches(["unit-a", "unit-b"]);
+      const sibling = createDispatchWorktree(projectRepo, "levare/unit-b");
+      if (!sibling.ok) throw new Error(`could not create sibling worktree: ${sibling.error}`);
+      try {
+        const repo = repoWithRealStorefrontRepo(projectRepo);
+        const hijackPath = join(sibling.worktree.path, "hijacked.txt");
+        const runner = new AdapterRunner(repo, {
+          pricing,
+          capabilities: [{ member: "finch", kind: "review" }],
+          native: nativeMock,
+          remote: remoteMock,
+          cliCommand: () => ["sh", "-c", `echo hijacked > "$1"`, "sh", hijackPath],
+        });
+        await expect(runner.produceAsync("finch", "review", "unit-a", "storefront")).rejects.toThrow(AdapterError);
+        expect(existsSync(hijackPath)).toBe(false);
+      } finally {
+        sibling.worktree.cleanup();
         rmSync(projectRepo, { recursive: true, force: true });
       }
     },

@@ -220,6 +220,27 @@ prior round's own honest framing of what a Linux-only dev container can and cann
 fix removes the structural divergence rather than diagnosing a captured crash report, and the newly-wired
 debug output is what the next live report should use to confirm (or refute) the mechanism precisely.
 
+**Rounds R4-SANDBOX-FIX-7 through FIX-12 (full account in NOTES.md) closed a member's own commit inside
+its dispatch worktree, an xcrun-shimmed git tool's `confstr`/temp-dir failure, and a real security
+regression the second of those introduced.** Ruling 1's own promise ("a member's commit advances the work
+branch") required write access to the ORIGINAL project repo's shared `.git` state (objects/refs/logs/this
+dispatch's own worktree admin directory — never `.git/hooks`/`.git/config`, both code-execution vectors).
+On darwin, this grant is now a DEDICATED field (`SandboxPolicy.gitWriteGrant`) whose own deny-the-root-
+then-reallow-the-four-subpaths ordering reseals hooks/config regardless of what else the profile grants —
+this replaced a flat write-list after FIX-11's own xcrun-cache fix (`DARWIN_USER_TEMP_DIR`, needed because
+Apple's `/usr/bin/git` is an xcrun shim whose startup `confstr` call was denied) proved, on its first live
+execution, that a broad grant on the whole per-user temp directory both swallowed the hooks/config seal
+(every scratch repo in this codebase's own fixtures lives directly under that same directory) and broke
+cross-dispatch write isolation (every concurrent dispatch's own worktree lives there too). FIX-12 narrows
+the xcrun grant itself to a `(regex ...)` matching only `xcrun_db-*` cache-file names, which independently
+closes the cross-dispatch leak (a sibling worktree's own name never matches that pattern). **Honest
+residual:** cross-dispatch write isolation under this model rests on that regex narrowing continuing to
+hold — the `gitWriteGrant` reseal protects the git-write seal specifically regardless of what else is
+granted, but it does not, and cannot, deny writes to an arbitrary OTHER dispatch's scratch directory by
+name (those paths aren't known at profile-build time). If a future round ever needs to widen the xcrun
+grant back toward a broader shape, cross-dispatch write isolation must be independently re-examined at
+that point, not assumed to still hold by extension of the git-write reseal.
+
 ## Connector trust-tier taxonomy
 
 A connector now declares `role: model | tool` (NOTES C15) — what FUNCTION it serves — and, since NOTES
