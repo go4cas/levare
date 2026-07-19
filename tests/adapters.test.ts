@@ -1260,6 +1260,48 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
     }
   });
 
+  // NOTES R4-SANDBOX-FIX-6: before this round, a real dispatch's `LEVARE_SANDBOX_DEBUG=1` output showed
+  // only the WRAP's own block (level/cwd/composed argv) — the `detectSandbox()` call `sandboxWrap` makes
+  // immediately beforehand was silent, making the one spawn that decides the enforcement level the one
+  // spawn invisible to the flag. This proves both blocks now appear, in order, for a single real dispatch
+  // — exactly what lets a Conductor diff "what the probe concluded" against "what the wrap then built"
+  // by eye, which is the whole point of matching their format.
+  test("LEVARE_SANDBOX_DEBUG=1 prints the detection PROBE's own debug block before the real dispatch's own wrap block", async () => {
+    const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+    const prior = process.env.LEVARE_SANDBOX_DEBUG;
+    const origError = console.error;
+    const lines: string[] = [];
+    console.error = (...args: unknown[]) => {
+      lines.push(args.map(String).join(" "));
+    };
+    try {
+      process.env.LEVARE_SANDBOX_DEBUG = "1";
+      const repo = repoWithRealStorefrontRepo(projectRepo);
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        cliCommand: (req) => ["cat", join(req.projectRepoPath!, "marker.txt")],
+        // No sandboxDetection override — the REAL, un-injected detectSandbox() runs, exactly as
+        // production does, so its own probe debug lines are what this test observes.
+      });
+      await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+      const probeLevelIdx = lines.findIndex((l) => l.includes("level:"));
+      const wrapArgvIdx = lines.findIndex((l) => l.includes("composed argv:"));
+      expect(probeLevelIdx).toBeGreaterThan(-1);
+      expect(wrapArgvIdx).toBeGreaterThan(-1);
+      // The probe's own "composed argv:"/"level:" lines (from detectSandbox) precede the wrap's own
+      // second "composed argv:" block (from wrapForSandbox) — both present, in dispatch order.
+      expect(lines.filter((l) => l.includes("composed argv:")).length).toBeGreaterThanOrEqual(1);
+    } finally {
+      console.error = origError;
+      if (prior === undefined) delete process.env.LEVARE_SANDBOX_DEBUG;
+      else process.env.LEVARE_SANDBOX_DEBUG = prior;
+      rmSync(projectRepo, { recursive: true, force: true });
+    }
+  });
+
   test("native/remote members never carry a sandbox level — Ruling 2 wraps only the two cli spawn paths", () => {
     const repo = loadRepo(ROOT);
     const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native: nativeMock, remote: remoteMock });

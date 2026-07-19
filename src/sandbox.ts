@@ -213,17 +213,45 @@ export interface SandboxDetectOptions {
   which?: (cmd: string) => string | null;
   /** Test-only override for "does this primitive actually work" — default a real, silent spawnSync
    * checking exit 0. Never assumed from presence alone (a binary can be on PATH and still fail every
-   * invocation — see this module's own header comment). */
-  probe?: (argv: string[]) => boolean;
+   * invocation — see this module's own header comment). `opts.cwd`, when given (the darwin
+   * `sandbox-exec` probe only — see `probeSandboxExec`), is the directory the profile under test was
+   * actually built to allow; a real, un-injected probe MUST launch the child there, not wherever the
+   * calling process's own ambient cwd happens to be — see NOTES R4-SANDBOX-FIX-6 for why this
+   * mattered. */
+  probe?: (argv: string[], opts?: { cwd?: string }) => boolean;
 }
 
 function realWhich(cmd: string): string | null {
   return Bun.which(cmd) ?? null;
 }
 
-function realProbe(argv: string[]): boolean {
+// Pre-spawn instrumentation shared by every `detectSandbox` probe (bwrap/unshare/sandbox-exec) — the
+// SAME "level: X (primitive: Y)" + "composed argv:" lines `wrapForSandbox` already prints for a real
+// dispatch's own wrap, so the probe's own spawn is no longer the one invisible to `LEVARE_SANDBOX_DEBUG`.
+function debugProbeArgv(level: SandboxLevel, primitive: SandboxPrimitive, argv: string[]): void {
+  if (!sandboxDebugEnabled()) return;
+  debugLine(`level: ${level} (primitive: ${primitive})`);
+  debugLine("composed argv:");
+  argv.forEach((a, i) => debugLine(`  [${i}] ${JSON.stringify(a)}`));
+}
+
+// NOTES R4-SANDBOX-FIX-6: the ONE spawn every dispatch's enforcement level is decided by, given the
+// SAME instrumentation and the SAME `cwd` discipline every real dispatch spawn (`adapters.ts#bunSpawn`)
+// already gets — `opts.cwd`, when supplied, is threaded straight into `Bun.spawnSync`, never dropped.
+// Piping (rather than ignoring) stdout/stderr costs a little for a probe that's expected to print
+// nothing, but is what makes "raw result including signalCode" actually visible under
+// `LEVARE_SANDBOX_DEBUG`, mirroring `adapters.ts#AdapterRunner.logSpawnDebug`'s own post-spawn dump
+// field for field (`timedOut` is hardcoded `false` here — a probe spawn never carries a timeout — named
+// so a Conductor diffing the two blocks by eye sees an explicit "not applicable", never a silently
+// missing field).
+function realProbe(argv: string[], opts: { cwd?: string } = {}): boolean {
   try {
-    const r = Bun.spawnSync(argv, { stdout: "ignore", stderr: "ignore", stdin: "ignore" });
+    const r = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe", stdin: "ignore", cwd: opts.cwd });
+    if (sandboxDebugEnabled()) {
+      const stderr = r.stderr ? new TextDecoder().decode(r.stderr) : "";
+      debugLine(`spawn result: exitCode=${r.exitCode} signalCode=${r.signalCode ?? "null"} timedOut=false stdoutBytes=${r.stdout?.length ?? 0} stderrBytes=${stderr.length}`);
+      if (stderr) debugLine(`stderr:\n${stderr}`);
+    }
     return r.exitCode === 0;
   } catch {
     return false;
@@ -250,7 +278,20 @@ function realProbe(argv: string[]): boolean {
 // generator a real dispatch uses, with a policy shaped like a real one (`readOnlyPaths` naming the
 // interpreter's own install tree, `operatorHome` set) — never a bespoke, weaker `(allow default)` profile
 // that would prove nothing about what this module actually generates.
-function probeSandboxExec(bin: string, probe: (argv: string[]) => boolean): boolean {
+// NOTES R4-SANDBOX-FIX-6 (the probe/dispatch divergence proven live on the macOS gate — doctor reporting
+// `none` on a host where real dispatches sandbox successfully): this function builds a profile that
+// allows exactly `scratchDir` — but through round 5, the actual child process was never TOLD to run
+// there. `probe` (production: `realProbe`) received only `argv`; the resulting `Bun.spawnSync` inherited
+// whatever ambient cwd the CALLING process happened to have (wherever a Conductor typed `./levare
+// doctor` from — often the studio root, itself under the operator's real `$HOME` and therefore denied by
+// this same profile's own deny-list, with none of `readOnlyPaths`/`operatorHome`'s re-allows naming it).
+// A real dispatch never has this gap: `adapters.ts#bunSpawn.run` always passes `cwd: opts.cwd` matching
+// the exact `policy.cwd` `sandboxWrap` built the profile for — the probe is now brought into line with
+// that same discipline rather than being the one spawn in this whole module that skips it. This is
+// precisely the "weak canary" failure mode FIX-5 named for `--version`, recurring one layer deeper: a
+// probe whose profile claims one cwd while its process actually runs in another is testing a shape no
+// real dispatch ever takes.
+function probeSandboxExec(bin: string, probe: (argv: string[], opts?: { cwd?: string }) => boolean): boolean {
   const scratchDir = mkdtempSync(join(tmpdir(), "levare-sandbox-probe-"));
   try {
     const scriptPath = join(scratchDir, "probe.js");
@@ -264,7 +305,19 @@ function probeSandboxExec(bin: string, probe: (argv: string[]) => boolean): bool
     });
     const profilePath = join(scratchDir, "probe.sb");
     writeFileSync(profilePath, profile);
-    return probe([bin, "-f", profilePath, interpreter, scriptPath]);
+    const argv = [bin, "-f", profilePath, interpreter, scriptPath];
+    // Pre-spawn instrumentation, in the SAME order and wording `sandboxExecArgv`/`wrapForSandbox` already
+    // use for a real dispatch's own wrap (profile written-to/text, then level/cwd/composed argv) — a
+    // Conductor comparing this block against the one a real member spawn prints moments later (both
+    // gated on the identical env var) is exactly how this divergence gets caught the NEXT time one opens,
+    // rather than only being visible as a downstream "sandbox: none" mystery.
+    if (sandboxDebugEnabled()) {
+      debugLine(`darwin sandbox-exec profile written to: ${profilePath}`);
+      debugLine(`darwin sandbox-exec profile text:\n${profile}`);
+      debugLine(`cwd: ${scratchDir}`);
+    }
+    debugProbeArgv("full", "sandbox-exec", argv);
+    return probe(argv, { cwd: scratchDir });
   } finally {
     try {
       rmSync(scratchDir, { recursive: true, force: true });
@@ -289,12 +342,16 @@ export function detectSandbox(opts: SandboxDetectOptions = {}): SandboxDetection
 
   if (platform === "linux") {
     const bwrap = which("bwrap");
-    if (bwrap && probe([bwrap, "--ro-bind", "/", "/", "--dev", "/dev", "--unshare-net", "--die-with-parent", "--", "true"])) {
-      return { platform, primitive: "bubblewrap", level: "full", bin: bwrap };
+    if (bwrap) {
+      const argv = [bwrap, "--ro-bind", "/", "/", "--dev", "/dev", "--unshare-net", "--die-with-parent", "--", "true"];
+      debugProbeArgv("full", "bubblewrap", argv);
+      if (probe(argv)) return { platform, primitive: "bubblewrap", level: "full", bin: bwrap };
     }
     const unshareBin = which("unshare");
-    if (unshareBin && probe([unshareBin, "--user", "--map-root-user", "--mount", "--", "true"])) {
-      return { platform, primitive: "unshare", level: "fs-only", bin: unshareBin };
+    if (unshareBin) {
+      const argv = [unshareBin, "--user", "--map-root-user", "--mount", "--", "true"];
+      debugProbeArgv("fs-only", "unshare", argv);
+      if (probe(argv)) return { platform, primitive: "unshare", level: "fs-only", bin: unshareBin };
     }
     return { platform, primitive: "none", level: "none" };
   }

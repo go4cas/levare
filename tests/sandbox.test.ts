@@ -117,6 +117,129 @@ describe("detectSandbox — never assumed from the platform alone", () => {
     expect(dirname(argv[2])).toBe(dirname(argv[4]));
   });
 
+  // NOTES R4-SANDBOX-FIX-6 (the probe/dispatch divergence proven live on the macOS gate: doctor reported
+  // `none` on a host where real dispatches sandboxed successfully). Root cause: `probeSandboxExec` built
+  // a profile that allows exactly its own scratch dir, but the actual spawned process was never told to
+  // run there — it inherited the CALLING process's ambient cwd instead (wherever a Conductor happened to
+  // invoke `./levare doctor` from), which the profile's deny-list has no reason to have re-allowed. A real
+  // dispatch never has this gap (`adapters.ts#bunSpawn.run` always passes `cwd: opts.cwd` matching the
+  // exact policy the profile was built for) — this proves the probe now gets the same discipline.
+  test("the darwin probe threads its own scratch cwd to the actual spawn — a profile allowing scratchDir is worthless if the process never runs there (NOTES R4-SANDBOX-FIX-6)", () => {
+    let seenArgv: string[] | undefined;
+    let seenCwd: string | undefined;
+    let profileText = "";
+    detectSandbox({
+      platform: "darwin",
+      which: (cmd) => (cmd === "sandbox-exec" ? "/usr/bin/sandbox-exec" : null),
+      probe: (argv, opts) => {
+        seenArgv = argv;
+        seenCwd = opts?.cwd;
+        // Read the profile HERE, before probeSandboxExec's own `finally` cleans up the scratch dir.
+        profileText = readFileSync(argv[2], "utf8");
+        return true;
+      },
+    });
+    expect(seenCwd).toBeDefined();
+    // argv[4] is the probe script, written into the same scratch dir the profile allows — the spawn's
+    // OWN cwd (opts.cwd) must be that identical directory, never left undefined/ambient.
+    expect(dirname(seenArgv![4]!)).toBe(seenCwd!);
+    // The profile handed to `-f` is built FOR that same cwd — the fix's whole point is that the profile's
+    // own claim and the process's own reality now agree.
+    expect(profileText).toContain(`(allow file-write* (subpath ${JSON.stringify(seenCwd)}))`);
+  });
+
+  // NOTES R4-SANDBOX-FIX-6: the second proven defect — the probe's own spawn (the ONE spawn that decides
+  // every dispatch's enforcement level) was invisible to LEVARE_SANDBOX_DEBUG, unlike every real dispatch
+  // spawn (sandboxExecArgv/wrapForSandbox/adapters.ts#logSpawnDebug all already printed under the flag).
+  describe("LEVARE_SANDBOX_DEBUG now instruments the probe's OWN spawn, matching a real dispatch's own format", () => {
+    function withEnv(fn: () => void): string[] {
+      const prior = process.env.LEVARE_SANDBOX_DEBUG;
+      const lines: string[] = [];
+      const origError = console.error;
+      console.error = (...args: unknown[]) => {
+        lines.push(args.map(String).join(" "));
+      };
+      try {
+        process.env.LEVARE_SANDBOX_DEBUG = "1";
+        fn();
+      } finally {
+        console.error = origError;
+        if (prior === undefined) delete process.env.LEVARE_SANDBOX_DEBUG;
+        else process.env.LEVARE_SANDBOX_DEBUG = prior;
+      }
+      return lines;
+    }
+
+    test("darwin: prints profile written-to/text, cwd, level, and composed argv BEFORE the spawn — the identical block wrapForSandbox already prints for a real dispatch", () => {
+      const lines = withEnv(() =>
+        detectSandbox({
+          platform: "darwin",
+          which: (cmd) => (cmd === "sandbox-exec" ? "/usr/bin/sandbox-exec" : null),
+          probe: () => true,
+        }),
+      );
+      expect(lines.some((l) => l.includes("profile written to:"))).toBe(true);
+      expect(lines.some((l) => l.includes("(deny default)"))).toBe(true);
+      expect(lines.some((l) => l.includes("cwd:"))).toBe(true);
+      expect(lines.some((l) => l.includes("level: full (primitive: sandbox-exec)"))).toBe(true);
+      expect(lines.some((l) => l.includes("composed argv:"))).toBe(true);
+    });
+
+    // Proven with the REAL (un-injected) probe on THIS host — bwrap/unshare are on PATH but genuinely
+    // fail here (this container's own seccomp policy), which is exactly what makes the post-spawn line a
+    // real, non-trivial assertion: it must fire for a FAILING probe result too, not only a successful one.
+    test("linux: the real, un-injected probe prints 'spawn result: exitCode=... signalCode=...' after each attempt — the exact field-for-field shape adapters.ts#logSpawnDebug already uses for a real dispatch", () => {
+      const lines = withEnv(() => detectSandbox());
+      if (process.platform !== "linux") return;
+      const resultLines = lines.filter((l) => l.includes("spawn result: exitCode="));
+      expect(resultLines.length).toBeGreaterThan(0);
+      for (const l of resultLines) {
+        expect(l).toMatch(/exitCode=-?\d+ signalCode=\S+ timedOut=false stdoutBytes=\d+ stderrBytes=\d+/);
+      }
+    });
+
+    test("prints level/composed argv for bwrap/unshare probes too, before the real spawn — not only sandbox-exec's own block", () => {
+      const lines = withEnv(() =>
+        detectSandbox({
+          platform: "linux",
+          which: (cmd) => (cmd === "bwrap" ? "/usr/bin/bwrap" : null),
+          probe: () => false,
+        }),
+      );
+      expect(lines.some((l) => l.includes("level: full (primitive: bubblewrap)"))).toBe(true);
+      expect(lines.some((l) => l.includes("composed argv:"))).toBe(true);
+    });
+  });
+
+  // NOTES R4-SANDBOX-FIX-6 (regression item 3): the probe and a real dispatch must compute their
+  // enforcement level through the literal SAME generator (`buildSandboxExecProfile`), never a bespoke
+  // profile shape of its own — structurally assertable in-container without a live macOS host, since the
+  // generator's own output is pure and host-independent (only Seatbelt's actual enforcement needs one).
+  test("the probe's generated profile and a dispatch-shaped profile share the identical fixed preamble — same code path, not a parallel one", () => {
+    let probeProfileText = "";
+    detectSandbox({
+      platform: "darwin",
+      which: (cmd) => (cmd === "sandbox-exec" ? "/usr/bin/sandbox-exec" : null),
+      probe: (argv) => {
+        probeProfileText = readFileSync(argv[2], "utf8");
+        return true;
+      },
+    });
+    // A profile shaped like a REAL dispatch's own sandboxWrap call (a worktree cwd, a scoped operator
+    // home, readOnlyPaths naming the studio root and an interpreter tree) — built directly via the same
+    // exported generator, never through detectSandbox at all.
+    const dispatchProfileText = buildSandboxExecProfile({
+      cwd: "/Users/cas/.levare-worktrees/unit-1",
+      allowNetwork: false,
+      operatorHome: "/Users/cas",
+      readOnlyPaths: ["/Users/cas/source/levare", "/Users/cas/.bun/bin", "/Users/cas/.bun"],
+    });
+    for (const fixedLine of ["(deny default)", "(allow sysctl-read)", '(allow file-read* (subpath "/"))', '(deny file-read* (subpath "/Users"))', '(deny file-read* (subpath "/Volumes"))']) {
+      expect(probeProfileText).toContain(fixedLine);
+      expect(dispatchProfileText).toContain(fixedLine);
+    }
+  });
+
   test("an unrecognized platform → none, never a guess", () => {
     const d = detectSandbox({ platform: "win32", which: () => "C:\\whatever.exe", probe: () => true });
     expect(d).toEqual({ platform: "win32", primitive: "none", level: "none" });
