@@ -10498,3 +10498,93 @@ warnings, unchanged. `bun run src/cli.ts replay fixtures/golden --stubs` → ora
 rebuilt ladder (now calling `buildDispatchSandboxPolicy` throughout, plus the new parity-check section)
 sanity-checked separately with the stand-in `/bin/echo` primitive to prove the harness itself runs without
 error end to end, including the parity check's own real `AdapterRunner` dispatch.
+
+# NOTES R4-SANDBOX-FIX-14 — the parity check's own false positive: comparing a repo-bearing profile
+# against a repo-less one and calling the difference a "regression"
+
+FIX-13's own parity check shipped and, on its first live confirmation run, printed `>>> REGRESSION: the
+ladder's own profile and a REAL production dispatch's own profile DIFFER in structure <<<` — on a run
+where the full suite passed 1180/0 and both live security properties (FIX-12's hooks decoy denial, the
+worktree commit itself) held simultaneously. A regression check firing red while everything it's supposed
+to be guarding actually held is the same class of harness bug FIX-13 itself was built to close: **a canary
+that disagrees with a green production run is not evidence production is wrong — it's evidence the canary
+is comparing the wrong things.**
+
+## Root cause
+
+The parity check's PRODUCTION side dispatches `finch/review` against the `fixtures/golden` project it
+tries to make repo-bearing by pointing `storefront`'s own `repo:` field at a fresh scratch checkout
+(`parityProjectRepo`) with a `levare/parity-unit` branch. That branch, however, was created with
+`git branch levare/parity-unit main` — a name **hard-coded** to `main`. On a host whose git initializes a
+fresh repo on a differently-named default branch, that command fails (`fatal: not a valid object name:
+'main'`) — silently, since the ladder's own `git()` helper never checks the returned status here. No
+branch means `merge.ts#branchExists` returns false, which means `adapters.ts#resolveDispatchRepo` returns
+`branch: undefined`, which means `withDispatchWorktreeAsync` short-circuits to `return fn(req)` with **no
+per-dispatch worktree and no `dispatchGitWriteGrant`** — precisely the shape of the golden fixture's own
+genuinely repo-less `storefront` project (`repo:` there is a deliberate placeholder SSH URL, per NOTES
+MERGE-1), even though the intent was to compare against a repo-bearing one. The LADDER's own profile
+(step 4, built from `createDispatchWorktree` directly, never through this fragile branch-name path) always
+carries the git-write section. **The generators never disagreed — the comparison's own INPUTS silently
+drifted apart**, one side repo-bearing, one side accidentally repo-less, and the equality assertion
+(honestly reporting a real structural difference) had nothing wrong to report on except its own setup.
+
+Confirmed directly: reproducing the exact `git branch <name> main` call against a repo initialized on a
+non-`main` default branch fails with `fatal: not a valid object name: 'main'` while the MAIN ladder's own
+technique for its own `projectRepo` (`git checkout -q -b <branch>` — cut from whatever HEAD already is,
+never a hard-coded starting-point name) succeeds unconditionally. The parity section was the only place in
+this whole file that assumed a specific default-branch name.
+
+## Fix
+
+`scripts/repro-r4-sandbox-fix10-hang.ts`'s parity section now:
+
+1. Captures this host's own actual initial branch name (`git rev-parse --abbrev-ref HEAD`) instead of
+   assuming `main`, cuts `levare/parity-unit` from HEAD with `checkout -q -b` (the same technique the main
+   ladder's own `projectRepo` already uses), then checks back out to the captured default branch —
+   required because `createDispatchWorktree`'s own `git worktree add` refuses to check out a branch
+   that's still checked out in the primary worktree, exactly what `checkout -q -b` alone would leave
+   behind.
+2. Verifies the branch actually exists (`rev-parse --verify --quiet`) and throws loudly if not, rather
+   than silently degrading back into the exact false positive this fix closes.
+3. The structural EQUALITY assertion itself is unchanged — it was never the bug. Now that both sides are
+   honestly repo-bearing, a real structural difference is exactly what it should mean: production and the
+   ladder have diverged.
+4. A SECOND, explicitly-labeled INFORMATIONAL check was added: a fresh dispatch against the golden
+   fixture's own `storefront` project, UNTOUCHED (genuinely repo-less, on purpose) — pinning the EXPECTED
+   shape difference (the ladder's own profile carries the git-write reseal; this repo-less dispatch's own
+   profile correctly carries none) via a unique structural marker line (`(deny file-write* (subpath
+   <PATH>))`, which only the git-write reseal ever emits), rather than leaving that shape untested. This
+   check is never a "REGRESSION" — printed distinctly as "UNEXPECTED SHAPE" so it can never be confused
+   with the primary equality gate above, per the goal's own instruction to keep the two clearly separate.
+   The golden fixture itself is never touched by either check.
+
+The two checks' capture logic (drive a real `AdapterRunner.produceAsync()`, capture the printed
+`LEVARE_SANDBOX_DEBUG=1` profile text, skeletonize it) was extracted into one shared local helper,
+`captureProductionSkeleton`, since the primary and informational checks now differ only in which
+`repo`/`project` they dispatch against — never duplicated by hand a second time.
+
+## What this does NOT claim
+
+This round's evidence is construction-level (the branch-name reproduction proven directly against a
+non-`main`-default repo; the fixed harness sanity-checked end to end in this container with the stand-in
+`/bin/echo` primitive, both the primary and informational checks reporting their expected verdicts) plus
+the full regression suite staying green. Whether the ORIGINAL live host's own git actually defaults to a
+non-`main` branch name is not directly confirmed from this container (no live macOS access here) — but the
+fragility itself (a hard-coded branch name with an unchecked git exit status, in the one place in this file
+that assumed one) is real and independently reproduced regardless of what the live host's own git version
+turns out to default to; the fix removes the assumption rather than patching around one specific value.
+
+## Verification
+
+`bun test` — full suite green (1175 pass, unchanged — this fix touches only a diagnostic script, no
+production code, no new automated tests). `bun run typecheck` → exit 0. `bun run deps:check` → `deps ok`.
+`bun run build` → succeeds. `bun run src/cli.ts validate fixtures/golden` → `valid`, the same two
+pre-existing `SANDBOX_UNAVAILABLE` warnings, unchanged. `bun run src/cli.ts replay fixtures/golden --stubs`
+→ oracle match, byte-for-byte. `bun run scripts/repro-r4-sandbox-fix10-hang.ts` → exits cleanly on this
+container's own platform guard (unchanged); a temporary, non-committed copy with the platform/primitive
+guards bypassed and `/bin/echo` standing in for `sandbox-exec` (the same trick used throughout this
+investigation) ran the parity section end to end in this container and printed `>>> PASS: the ladder's own
+profile and a REAL, repo-bearing production dispatch's own profile are structurally identical <<<` followed
+by `>>> PASS (expected shape difference): the ladder's own repo-bearing profile carries the git-write
+reseal; the repo-less dispatch's own profile correctly carries none <<<` — parity reported, not the false
+regression.
