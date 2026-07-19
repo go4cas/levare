@@ -645,6 +645,53 @@ function extractCliUsageTrailer(raw: string): { content: string; tokensUsed: num
 }
 
 /**
+ * NOTES R4-SANDBOX-FIX-13 (live macOS gate: a ladder that could disagree with production — FIX-5's own
+ * weak-canary lesson wearing a new coat). Extracted from `AdapterRunner#sandboxWrap` into its own,
+ * EXPORTED, pure-ish function so a diagnostic script (`scripts/repro-r4-sandbox-fix10-hang.ts`) can build
+ * the EXACT policy a real dispatch would, by calling the SAME code, rather than hand-mirroring the
+ * fields and risking exactly the kind of silent drift that let FIX-12's own dedupe-ordering bug ship: the
+ * ladder's own hand-rolled policy never reproduced the real `writablePaths`/`gitWriteGrant` duplication
+ * `sandboxWrap` actually sends, so it never exercised the bug it was supposedly built to catch.
+ *
+ * `readOnlyPaths` always includes the studio root (`repo.root` — a command checked into the studio, or a
+ * `context_artifacts: paths` member's own consumed-artifact reads, both need it), the running levare
+ * binary's own directory, and wherever THIS dispatch's own argv[0] resolves to (`resolveArgv0` — a
+ * Homebrew/user-local install, `~/.bun`, anything the platform's static allowlist doesn't already cover) —
+ * both the running binary's own install and the resolved member command's own install include one level
+ * ABOVE their immediate directory (NOTES R4-SANDBOX-FIX-3: "dyld reads beyond bin/"). The operator's REAL,
+ * unscoped HOME and any granted subscription connector's OWN real home targets are threaded for the
+ * darwin deny-list model specifically (ignored entirely by bubblewrap). `writablePaths`/`gitWriteGrant`/
+ * `darwinXcrunTempDir` are FIX-7 through FIX-12's own accumulated grants — see `SandboxPolicy`'s own
+ * per-field docs in `sandbox.ts` for what each does and why.
+ */
+export function buildDispatchSandboxPolicy(
+  repo: Repo,
+  req: InvokeRequest,
+  cwd: string | undefined,
+  argv0: string | undefined,
+  baseEnv?: Record<string, string | undefined>,
+): SandboxPolicy {
+  const resolvedBin = argv0 ? resolveArgv0(argv0, cwd, req.env.PATH) : undefined;
+  const treeDirs = (p: string) => [dirname(p), dirname(dirname(p))];
+  const readOnlyPaths = [repo.root, ...treeDirs(process.execPath), ...(resolvedBin ? treeDirs(resolvedBin) : [])];
+  const operatorHome = baseEnv?.HOME ?? process.env.HOME;
+  const sub = subscriptionConnector(repo, req.member);
+  const grantedHomeTargets = operatorHome ? (sub?.home ?? []).filter(isSafeHomeDotpath).map((dotpath) => pathJoin(operatorHome, dotpath)) : [];
+  const darwinTempDir = resolveDarwinUserTempDir();
+  return {
+    cwd: cwd ?? process.cwd(),
+    home: req.env.HOME,
+    allowNetwork: memberNetworkAllowed(repo, req.member),
+    readOnlyPaths,
+    operatorHome,
+    grantedHomeTargets,
+    writablePaths: req.dispatchGitWriteGrant?.subpaths ?? [],
+    gitWriteGrant: req.dispatchGitWriteGrant,
+    darwinXcrunTempDir: darwinTempDir,
+  };
+}
+
+/**
  * The phase-3 MemberRunner: resolves each member to its adapter, assembles context, scopes env, runs
  * it, and normalizes the receipt. Returns { doc, receipt } — the Runner validates the doc and records
  * the receipt on the produce event.
@@ -997,53 +1044,7 @@ export class AdapterRunner implements MemberRunner {
   // anything the platform's static allowlist doesn't already cover).
   private sandboxWrap(argv: string[], cwd: string | undefined, req: InvokeRequest): WrappedSpawn {
     const detection = this.opts.sandboxDetection ?? detectSandbox();
-    const resolvedBin = argv[0] ? resolveArgv0(argv[0], cwd, req.env.PATH) : undefined;
-    // NOTES R4-SANDBOX-FIX-3: the live bisection's own finding — "the interpreter's install TREE (e.g.
-    // ~/.bun, not just ~/.bun/bin — dyld reads beyond bin/)" — so both the running levare binary's own
-    // install and the resolved member command's own install include one level ABOVE their immediate
-    // directory (dirname(dirname(...))), not just the immediate one. For `~/.bun/bin/bun`, that's
-    // `~/.bun/bin` (the command's own directory) AND `~/.bun` (the install tree) — both named explicitly,
-    // matching the ruling's own wording rather than leaving the tree implicit.
-    const treeDirs = (p: string) => [dirname(p), dirname(dirname(p))];
-    const readOnlyPaths = [this.repo.root, ...treeDirs(process.execPath), ...(resolvedBin ? treeDirs(resolvedBin) : [])];
-    // NOTES R4-SANDBOX-FIX-3 (macOS deny-list model only — see sandbox.ts's own header; ignored entirely
-    // by bubblewrap's allow-list model on Linux): the operator's REAL, unscoped HOME — denied broadly —
-    // and the resolved real target(s) a granted subscription connector's OWN `home:` dotpaths point at,
-    // re-allowed explicitly. `env.ts#scopeHome` may have symlinked `req.env.HOME` (already possibly
-    // scratch-scoped by the time this runs) to these same real targets; denying the operator's HOME
-    // broadly would otherwise deny reading THROUGH those symlinks to their real destinations too.
-    // `isSafeHomeDotpath` mirrors `env.ts#scopeHome`'s own defense-in-depth (NOTES SEC-V11 F1): this
-    // function only ever WIDENS what's readable, so a traversal dotpath sneaking through here would
-    // re-expose exactly what the deny was supposed to keep out — filtered independently of whether
-    // validate.ts ever ran against this studio, the same "fails closed regardless" posture scopeHome
-    // itself takes.
-    const operatorHome = this.opts.baseEnv?.HOME ?? process.env.HOME;
-    const sub = subscriptionConnector(this.repo, req.member);
-    const grantedHomeTargets = operatorHome ? (sub?.home ?? []).filter(isSafeHomeDotpath).map((dotpath) => pathJoin(operatorHome, dotpath)) : [];
-    // NOTES R4-SANDBOX-FIX-11/FIX-12: the per-user DARWIN_USER_TEMP_DIR (resolved by the unsandboxed
-    // parent — `undefined` off-darwin or if unresolvable) — an xcrun-shimmed tool (git) needs write access
-    // under it or its own confstr-then-write-fallback chain convicts it with exit 128 (see
-    // `resolveDarwinUserTempDir`'s own doc). Threaded into the DEDICATED `darwinXcrunTempDir` field
-    // (narrowed to a regex grant by `buildSandboxExecProfile` itself), never into the flat `writablePaths`
-    // — FIX-11 originally did that, and a live run proved a flat, broad grant here swallows the FIX-8
-    // git-write seal below (see `SandboxPolicy.darwinXcrunTempDir`'s own doc for the full account).
-    const darwinTempDir = resolveDarwinUserTempDir();
-    const policy: SandboxPolicy = {
-      cwd: cwd ?? process.cwd(),
-      home: req.env.HOME,
-      allowNetwork: memberNetworkAllowed(this.repo, req.member),
-      readOnlyPaths,
-      operatorHome,
-      grantedHomeTargets,
-      // NOTES R4-SANDBOX-FIX-7/FIX-8/FIX-12: `writablePaths` still feeds bubblewrap/unshare (their own
-      // allow-list model has no swallow risk, so a flat list is always sufficient there); `gitWriteGrant`
-      // is the DEDICATED darwin field (`buildSandboxExecProfile`'s own deny-root-then-reallow-subpaths
-      // reseal) that actually restores the FIX-8 seal on the platform where a broader, unrelated grant
-      // (the xcrun temp dir above) could otherwise swallow it.
-      writablePaths: req.dispatchGitWriteGrant?.subpaths ?? [],
-      gitWriteGrant: req.dispatchGitWriteGrant,
-      darwinXcrunTempDir: darwinTempDir,
-    };
+    const policy = buildDispatchSandboxPolicy(this.repo, req, cwd, argv[0], this.opts.baseEnv);
     return wrapForSandbox(argv, policy, detection);
   }
 

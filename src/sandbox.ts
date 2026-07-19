@@ -714,13 +714,27 @@ export function buildSandboxExecProfile(policy: SandboxPolicy): string {
   const scopedHome = rawHome && rawHome !== operatorHome ? rawHome : undefined;
   const grantedTargets = (policy.grantedHomeTargets ?? []).map(canon);
   const readOnly = (policy.readOnlyPaths ?? []).map(canon);
-  const writable = (policy.writablePaths ?? []).map(canon);
-  // NOTES R4-SANDBOX-FIX-12: the git-write grant's own root/subpaths, kept SEPARATE from `writable` above
+  // NOTES R4-SANDBOX-FIX-12: the git-write grant's own root/subpaths, kept SEPARATE from `writable` below
   // — they get a dedicated deny-then-reallow treatment below, never a flat reallow, which is exactly the
   // gap that let FIX-11's own darwin-temp-dir grant swallow this seal (a flat list has no way to express
   // "deny this broader region first").
   const gitRoot = policy.gitWriteGrant ? canon(policy.gitWriteGrant.root) : undefined;
   const gitSubpaths = (policy.gitWriteGrant?.subpaths ?? []).map(canon);
+  // NOTES R4-SANDBOX-FIX-13 (live macOS gate: the exact inversion this comment now guards against). A
+  // caller (`adapters.ts#sandboxWrap`) legitimately populates `policy.writablePaths` with these SAME
+  // subpaths too — bubblewrap reads ONLY `writablePaths` (it has no `gitWriteGrant` concept at all), so
+  // the caller must keep feeding it there. But `dedupe()` on the FINAL line array keeps the FIRST
+  // occurrence of a repeated line and drops the rest — if the generic `writable` reallow below were
+  // allowed to also contain these subpaths, its EARLY occurrence (emitted here, well before the reseal
+  // block) would be the one that survives deduplication, and the reseal's own LATER, correctly-ordered
+  // occurrence would be silently dropped as "just a duplicate" — leaving the reseal's `(deny
+  // file-write* gitRoot)` as the truly last-emitted rule for these paths with NO re-allow surviving after
+  // it. That is exactly what shipped: a member's own commit died creating
+  // `.git/worktrees/<name>/index.lock`, `exit 128`, "Operation not permitted" — the deny had swallowed
+  // its own re-allows. Filtered out here so these subpaths are emitted EXACTLY ONCE, by the reseal block
+  // alone, wherever `buildSandboxExecProfile` positions it.
+  const gitSubpathSet = new Set(gitSubpaths);
+  const writable = (policy.writablePaths ?? []).map(canon).filter((p) => !gitSubpathSet.has(p));
   // NOTES R4-SANDBOX-FIX-12: narrowed to a regex matching ONLY xcrun's own cache-file naming — never a
   // `(subpath ...)` grant covering the whole directory (see `SandboxPolicy.darwinXcrunTempDir`'s own doc
   // for why that shape was proven live to be unsafe).

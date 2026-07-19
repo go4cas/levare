@@ -894,6 +894,38 @@ describe("buildSandboxExecProfile — deny-list model (NOTES R4-SANDBOX-FIX-3)",
         expect(profile).not.toContain("(deny file-write* (subpath");
       });
 
+      // NOTES R4-SANDBOX-FIX-13 (live macOS gate: the EXACT bug that shipped, not a hypothetical). This
+      // is the REAL production input shape — `adapters.ts#sandboxWrap` feeds `writablePaths` with the
+      // IDENTICAL subpaths `gitWriteGrant.subpaths` also carries (bubblewrap reads ONLY `writablePaths`
+      // and has no `gitWriteGrant` concept, so the caller must keep populating it there too). `dedupe()`
+      // on the FINAL line array keeps the FIRST occurrence of a repeated line and drops the rest — the
+      // generic `reallowWrites` block emits these subpaths' own `(allow file-write* ...)` lines EARLY
+      // (well before the reseal), so without the exclusion this test proves, the reseal's own LATER,
+      // correctly-ordered occurrence gets silently dropped as "just a duplicate," leaving the reseal's
+      // `(deny file-write* root)` as the ACTUAL last-emitted rule for these paths — exactly what shipped
+      // live: a member's own commit died creating `.git/worktrees/<name>/index.lock`, exit 128,
+      // "Operation not permitted", because the deny had swallowed its own re-allows.
+      test("writablePaths containing the SAME subpaths as gitWriteGrant (the real production shape) does not let the deny swallow its own re-allows", () => {
+        const profile = buildSandboxExecProfile({
+          cwd: "/a/b",
+          allowNetwork: false,
+          // The real shape: bwrap's own flat list, populated with the IDENTICAL subpaths.
+          writablePaths: subpaths,
+          gitWriteGrant: { root, subpaths },
+        });
+        const lines = profile.split("\n");
+        const rootDenyIdx = lines.indexOf(`(deny file-write* (subpath ${JSON.stringify(root)}))`);
+        expect(rootDenyIdx).toBeGreaterThan(-1);
+        // Each subpath's own re-allow line appears EXACTLY ONCE, and it is AFTER the root deny — never
+        // silently absorbed as a duplicate of an earlier occurrence.
+        for (const p of subpaths) {
+          const line = `(allow file-write* (subpath ${JSON.stringify(p)}))`;
+          const occurrences = lines.filter((l) => l === line);
+          expect(occurrences.length).toBe(1);
+          expect(lines.indexOf(line)).toBeGreaterThan(rootDenyIdx);
+        }
+      });
+
       test("canonicalized through a symlink, same as every other path this generator handles", () => {
         const real = mkdtempSync(join(tmpdir(), "levare-sandbox-gitgrant-real-"));
         const parent = mkdtempSync(join(tmpdir(), "levare-sandbox-gitgrant-link-"));
@@ -911,6 +943,32 @@ describe("buildSandboxExecProfile — deny-list model (NOTES R4-SANDBOX-FIX-3)",
         } finally {
           rmSync(real, { recursive: true, force: true });
           rmSync(parent, { recursive: true, force: true });
+        }
+      });
+
+      // NOTES R4-SANDBOX-FIX-13: THE structural invariant the goal's own required work names explicitly —
+      // index(xcrun grant) < index(deny root) < index(each subpath re-allow) — asserted against the FULL
+      // real production shape (xcrun regex grant present, `writablePaths` duplicating `gitWriteGrant`'s
+      // own subpaths, exactly as `adapters.ts#sandboxWrap` sends it) so this is a genuine end-to-end
+      // ordering proof, not just the isolated reseal tested above. This makes the inversion
+      // UNREPRESENTABLE by this generator, not merely currently absent from its output.
+      test("index invariant: xcrun grant < deny root < every subpath re-allow, under the full real production shape", () => {
+        const xcrunDir = "/private/var/folders/xx/yyyyy/T";
+        const profile = buildSandboxExecProfile({
+          cwd: "/a/b",
+          allowNetwork: false,
+          writablePaths: subpaths, // the real duplication bwrap's own consumption requires
+          gitWriteGrant: { root, subpaths },
+          darwinXcrunTempDir: xcrunDir,
+        });
+        const lines = profile.split("\n");
+        const xcrunWriteIdx = lines.indexOf(`(allow file-write* (regex ${`#${JSON.stringify(`^${xcrunDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/xcrun_db-[^/]+$`)}`}))`);
+        const rootDenyIdx = lines.indexOf(`(deny file-write* (subpath ${JSON.stringify(root)}))`);
+        expect(xcrunWriteIdx).toBeGreaterThan(-1);
+        expect(rootDenyIdx).toBeGreaterThan(xcrunWriteIdx);
+        for (const p of subpaths) {
+          const reallowIdx = lines.indexOf(`(allow file-write* (subpath ${JSON.stringify(p)}))`);
+          expect(reallowIdx).toBeGreaterThan(rootDenyIdx);
         }
       });
     });

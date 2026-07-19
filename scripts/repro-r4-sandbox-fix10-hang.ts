@@ -65,10 +65,13 @@
 // elapsed time and captured stderr, distinguishable from a genuine HANG at a glance.
 
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir, homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { buildSandboxExecProfile, resolveDarwinUserTempDir, type SandboxPolicy } from "../src/sandbox.ts";
+import { buildSandboxExecProfile, resolveDarwinUserTempDir } from "../src/sandbox.ts";
 import { createDispatchWorktree } from "../src/merge.ts";
+import { AdapterRunner, buildDispatchSandboxPolicy, type InvokeRequest, type NativeBoundary, type RemoteBoundary } from "../src/adapters.ts";
+import { loadRepo } from "../src/repo.ts";
+import { loadPricing } from "../src/pricing.ts";
 
 const STEP_TIMEOUT_MS = 5_000;
 
@@ -193,26 +196,31 @@ async function main() {
   if (!existsSync(logs)) mkdirSync(logs, { recursive: true });
   const gitSubpaths = [join(gitCommonDir, "objects"), join(gitCommonDir, "refs"), logs, worktree.gitDir];
 
-  // 4. The real policy shape a plain (no subscription-connector, no scoped-home) dispatch gets —
-  // `home: req.env.HOME` is always the OPERATOR's own real HOME in this common case (buildMemberEnv
-  // allowlists HOME through unconditionally, scopeHome is a no-op with no grant) — matching the
-  // `.gitconfig` EPERM FIX-9 already found and fixed via GIT_CONFIG_GLOBAL/SYSTEM redirection (applied
-  // via `GIT_ENV_FIX` on every git-invoking step below, per this file's own "ENV PARITY" header note).
-  const readOnlyPaths = [dirname(process.execPath), dirname(dirname(process.execPath))];
+  // 4. NOTES R4-SANDBOX-FIX-13 (live macOS gate: THE parity gap this round exposed). The policy is now
+  // built by calling `adapters.ts#buildDispatchSandboxPolicy` — the EXACT function `AdapterRunner#
+  // sandboxWrap` calls internally — rather than hand-rolling the fields here. This is the fix for the
+  // actual failure this round found: the ladder's own PREVIOUS hand-rolled policy never reproduced the
+  // real `writablePaths`/`gitWriteGrant` duplication production actually sends (bubblewrap needs the
+  // subpaths in `writablePaths` too; `sandboxWrap` populates BOTH fields from the same
+  // `dispatchGitWriteGrant`), so the ladder never exercised the dedupe-ordering bug that shipped live —
+  // it PASSED while production FAILED. Calling the identical, shared function makes that class of
+  // divergence structurally impossible, not just currently absent.
+  const studioRepo = loadRepo("fixtures/golden");
+  const finchAgent = studioRepo.agents.get("finch")!;
+  const dummyReq: InvokeRequest = {
+    agent: finchAgent,
+    member: "finch",
+    kind: "review",
+    unit: "repro",
+    project: "storefront",
+    context: "",
+    env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
+    tools: [],
+    dispatchGitWriteGrant: { root: gitCommonDir, subpaths: gitSubpaths },
+  };
+  const policy = buildDispatchSandboxPolicy(studioRepo, dummyReq, worktree.path, "sh", process.env);
   const darwinTempDir = resolveDarwinUserTempDir();
   console.log(`resolved DARWIN_USER_TEMP_DIR: ${darwinTempDir ?? "(unresolved — the xcrun grant will be empty)"}`);
-
-  // NOTES R4-SANDBOX-FIX-12: this IS the shipped fix's own shape — `gitWriteGrant` (deny root, reallow
-  // subpaths) and `darwinXcrunTempDir` (narrow regex), never a flat `writablePaths` entry for either.
-  const policy: SandboxPolicy = {
-    cwd: worktree.path,
-    home: process.env.HOME,
-    allowNetwork: false,
-    readOnlyPaths,
-    operatorHome: homedir(),
-    gitWriteGrant: { root: gitCommonDir, subpaths: gitSubpaths },
-    darwinXcrunTempDir: darwinTempDir,
-  };
   const profile = buildSandboxExecProfile(policy);
   const profileScratchDir = mkdtempSync(join(tmpdir(), "levare-fix10-repro-profile-"));
   const profilePath = join(profileScratchDir, "profile.sb");
@@ -321,17 +329,11 @@ async function main() {
 
   function buildVariantProfile(name: string, includeXcrunGrant: boolean): string {
     const p = join(profileScratchDir, `${name}.sb`);
-    const variantProfile = buildSandboxExecProfile({
-      cwd: worktree.path,
-      home: process.env.HOME,
-      allowNetwork: false,
-      operatorHome: homedir(),
-      readOnlyPaths,
-      // The reseal is NEVER conditional — every variant carries it, per the goal's own "regardless of
-      // which shape wins" instruction.
-      gitWriteGrant: { root: gitCommonDir, subpaths: gitSubpaths },
-      darwinXcrunTempDir: includeXcrunGrant ? darwinTempDir : undefined,
-    });
+    // NOTES R4-SANDBOX-FIX-13: same shared `buildDispatchSandboxPolicy` call as the main policy above —
+    // the reseal is NEVER conditional (every variant carries it, per the goal's own "regardless of
+    // which shape wins" instruction); only `darwinXcrunTempDir` toggles between variants.
+    const variantPolicy = { ...buildDispatchSandboxPolicy(studioRepo, dummyReq, worktree.path, "sh", process.env), darwinXcrunTempDir: includeXcrunGrant ? darwinTempDir : undefined };
+    const variantProfile = buildSandboxExecProfile(variantPolicy);
     writeFileSync(p, variantProfile);
     return p;
   }
@@ -388,6 +390,87 @@ async function main() {
   console.log("cleaning up the scratch repo/worktree...");
   worktree.cleanup();
   rmSync(projectRepo, { recursive: true, force: true });
+
+  // --- Ladder/production parity check (NOTES R4-SANDBOX-FIX-13) ---
+  //
+  // Everything above already calls `buildDispatchSandboxPolicy` — the SAME function `AdapterRunner#
+  // sandboxWrap` calls internally — so the ladder's own policy construction can no longer silently drift
+  // from production's. This section goes one step further: it drives a REAL, full `AdapterRunner.
+  // produceAsync()` dispatch (the ENTIRE production call chain — prepare, withDispatchWorktreeAsync,
+  // sandboxWrap, wrapForSandbox, buildSandboxExecProfile — never a partial simulation), captures the
+  // profile it actually generates via `LEVARE_SANDBOX_DEBUG=1`, and diffs its STRUCTURE (fixed lines,
+  // rule types, and relative ORDER — specific paths necessarily differ, since this dispatch creates its
+  // OWN separate scratch worktree) against the ladder's own profile from step 4 above. Any structural
+  // difference means the ladder and production have diverged again — the exact "weak canary" failure
+  // mode FIX-5 first named, now caught here rather than assumed closed.
+  console.log("");
+  console.log("=== Ladder/production parity check (NOTES R4-SANDBOX-FIX-13) ===");
+
+  function profileSkeleton(text: string): string {
+    // Regex literals first (they also match the quoted-string pattern below) — both collapse every
+    // path-specific literal to a single placeholder, leaving only the RULE STRUCTURE to compare.
+    return text.replace(/#"(?:[^"\\]|\\.)*"/g, "#<PATH>").replace(/"(?:[^"\\]|\\.)*"/g, "<PATH>");
+  }
+
+  const parityProjectRepo = mkdtempSync(join(tmpdir(), "levare-fix13-parity-proj-"));
+  git(parityProjectRepo, ["init", "-q"]);
+  writeFileSync(join(parityProjectRepo, "README.md"), "hello\n");
+  git(parityProjectRepo, ["add", "-A"]);
+  git(parityProjectRepo, ["commit", "-q", "-m", "initial"]);
+  git(parityProjectRepo, ["branch", "levare/parity-unit", "main"]);
+
+  const parityRepo = loadRepo("fixtures/golden");
+  const storefront = parityRepo.projects.get("storefront")!;
+  parityRepo.projects.set("storefront", { ...storefront, repo: parityProjectRepo });
+
+  const nativeMock: NativeBoundary = { invoke: () => ({ doc: "unused" }) };
+  const remoteMock: RemoteBoundary = { call: () => ({ doc: "unused" }) };
+  const pricing = loadPricing("fixtures/golden");
+
+  const capturedLines: string[] = [];
+  const origConsoleError = console.error;
+  console.error = (...args: unknown[]) => {
+    capturedLines.push(args.map(String).join(" "));
+  };
+  const priorDebug = process.env.LEVARE_SANDBOX_DEBUG;
+  process.env.LEVARE_SANDBOX_DEBUG = "1";
+  try {
+    const parityRunner = new AdapterRunner(parityRepo, {
+      pricing,
+      capabilities: [{ member: "finch", kind: "review" }],
+      native: nativeMock,
+      remote: remoteMock,
+      cliCommand: () => ["cat", "/dev/null"],
+    });
+    await parityRunner.produceAsync("finch", "review", "parity-unit", "storefront");
+  } catch (e) {
+    // A failed dispatch still prints its own pre-spawn debug lines (profile text included) BEFORE the
+    // spawn itself runs — the dispatch's own success/failure is irrelevant to this structural check.
+    console.log(`(parity dispatch itself reported: ${e instanceof Error ? e.message : String(e)} — expected/irrelevant, only its own printed profile text matters here)`);
+  } finally {
+    console.error = origConsoleError;
+    if (priorDebug === undefined) delete process.env.LEVARE_SANDBOX_DEBUG;
+    else process.env.LEVARE_SANDBOX_DEBUG = priorDebug;
+    rmSync(parityProjectRepo, { recursive: true, force: true });
+  }
+
+  const profileTextLine = capturedLines.find((l) => l.startsWith("[levare:sandbox-debug] darwin sandbox-exec profile text:"));
+  if (!profileTextLine) {
+    console.log("PARITY CHECK SKIPPED — no 'darwin sandbox-exec profile text:' line captured (this host's own detected primitive may not be sandbox-exec, or the dispatch never reached the real spawn boundary).");
+  } else {
+    const productionProfile = profileTextLine.slice(profileTextLine.indexOf("\n") + 1);
+    const ladderSkeleton = profileSkeleton(profile);
+    const productionSkeleton = profileSkeleton(productionProfile);
+    if (ladderSkeleton === productionSkeleton) {
+      console.log(">>> PASS: the ladder's own profile and a REAL production dispatch's own profile are structurally identical <<<");
+    } else {
+      console.log(">>> REGRESSION: the ladder's own profile and a REAL production dispatch's own profile DIFFER in structure <<<");
+      console.log("--- ladder skeleton ---");
+      console.log(ladderSkeleton);
+      console.log("--- production skeleton ---");
+      console.log(productionSkeleton);
+    }
+  }
 }
 
 await main();
