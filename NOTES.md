@@ -9428,3 +9428,145 @@ release-workflow test. `bun run typecheck` → exit 0. `bun run deps:check` → 
 script and its tests add no runtime dependency — `sh`/`curl`/`sha256sum` are not `package.json`
 dependencies). `bun run build` → succeeds, unaffected by this goal (no source files under `src/`
 touched). `shellcheck -s sh scripts/install.sh` → exit 0.
+
+# NOTES R4-SANDBOX-FIX-6 — the probe's own spawn was the one thing invisible to LEVARE_SANDBOX_DEBUG,
+# and it was also the one spawn diverging from every real dispatch
+
+Live macOS gate report, on the same host FIX-5 last closed (the member stub running end-to-end, exit 0,
+under the corrected profile): the full suite passes there with real sandboxed spawns — a genuinely
+working `sandbox-exec` primitive, exercised for real by every `kind: cli` dispatch — yet `./levare
+doctor` on that identical host reports `sandbox: none — unconfined cli spawns`, with `SANDBOX_UNAVAILABLE`
+warnings following on `levare validate`. The detection probe under-reports a working sandbox that every
+real dispatch on the SAME host, in the SAME process, already proves works. Second, related finding:
+`LEVARE_SANDBOX_DEBUG=1 ./levare doctor` printed zero `[levare:sandbox-debug]` lines at all — the probe's
+own spawn, the one spawn `detectSandbox()` runs to decide every dispatch's enforcement level, was
+invisible to the exact diagnostic flag FIX-2 built for precisely this kind of investigation.
+
+## Root cause, named explicitly
+
+`sandbox.ts#probeSandboxExec` builds a `SandboxPolicy` with `cwd: scratchDir` (a fresh `mkdtemp`) and
+generates a `sandbox-exec` profile via `buildSandboxExecProfile` that allows reads/writes under exactly
+that directory. But the actual probe spawn — `probe([bin, "-f", profilePath, interpreter, scriptPath])`,
+production's `realProbe` calling `Bun.spawnSync(argv, {...})` — never told the child process to run
+there. `Bun.spawnSync` was called with no `cwd` option at all, so the sandboxed child inherited whatever
+ambient working directory the CALLING process (`./levare doctor`, or `levare validate`) happened to have
+— typically the studio root, itself a real path under the operator's own `$HOME` on a real macOS dev
+machine. The profile's deny-list denies exactly that (`$HOME`/`/Users`/`/Volumes`, per FIX-3/FIX-4), and
+nothing in the probe's own re-allow set (`readOnlyPaths` names only the interpreter's install tree —
+`probeSandboxExec` has no dispatch worktree, no `repo.root`, nothing naming wherever the calling process
+was launched from) carves an exception back out for it. The probe's own PROFILE claimed one cwd; the
+probe's own PROCESS ran in a completely different, denied one. This is the second time this investigation
+has found a probe testing a shape no real dispatch ever takes — FIX-5 named the first (`--version` skips
+script-mode startup entirely); this one is one layer deeper: the profile under test and the process being
+tested were never actually the same policy, because half of what makes a policy "the same" — where the
+process runs — was silently dropped between building the profile and invoking the spawn that's supposed
+to be governed by it.
+
+A real dispatch never has this gap. `adapters.ts#bunSpawn.run` always passes `cwd: opts.cwd` — the exact
+`policy.cwd` `sandboxWrap` built the wrapped argv's own profile for (`this.cliInvocation`'s resolved
+`cwd`, threaded through unchanged). The probe is the ONE spawn in this entire module that built a policy
+and then ran its child somewhere else. That is why the full suite's real dispatches sandbox successfully
+(their profile and their process agree) while `detectSandbox()` — called completely independently,
+immediately before every dispatch AND at `doctor`/`validate` time, per NOTES R4-SANDBOX's own "no
+process-lifetime caching" design — reports `none`: on a host where the calling process's own cwd sits
+under a denied path, the probe's sandboxed child fails to even start cleanly (a script-mode `bun` failing
+to resolve its own cwd for module resolution under a denied ancestor is a very plausible way for `bun
+scriptPath` to exit non-zero, though the exact failure mode was never independently isolated on this
+container — the fix removes the divergence regardless of the precise mechanism, the same posture FIX-2's
+own "-p vs --" resolution took).
+
+## Why this escaped FIX-5's unification
+
+FIX-5 closed the gap between "the probe's PROFILE is built by the same generator a real dispatch uses"
+and "the probe's INTERPRETER/SCRIPT MODE matches a real dispatch's own startup path" — genuinely
+unifying the profile construction and the invocation SHAPE (script file, not `--version`). It did not
+audit whether the probe's actual OS-level spawn OPTIONS (specifically `cwd`) matched what a real
+dispatch's spawn boundary always supplies. The two code paths were unified in what argv/profile they
+build, but never in how the resulting argv was actually handed to `Bun.spawnSync` — `bunSpawn.run` (a
+real dispatch) and `realProbe` (detection) are two entirely separate functions that each call
+`Bun.spawnSync` themselves, and only one of them was ever audited against the other's own option set.
+This is also exactly why the debug flag never caught it standing alone: `LEVARE_SANDBOX_DEBUG` was wired
+into `wrapForSandbox`/`sandboxExecArgv` (the real-dispatch composition path) and `adapters.ts#logSpawnDebug`
+(the real-dispatch post-spawn path) from FIX-2 onward, but `detectSandbox`/`probeSandboxExec`/`realProbe`
+— the detection path — were never brought into that same instrumentation. A gap in coverage of the
+diagnostic tool is what let a gap in the underlying logic go unnoticed for an entire round.
+
+## Fix, two parts
+
+1. **`cwd` is now threaded through the probe seam.** `SandboxDetectOptions.probe` gained an optional
+   second parameter, `opts?: { cwd?: string }`; `realProbe` passes it straight to `Bun.spawnSync`'s own
+   `cwd` option. `probeSandboxExec` calls `probe(argv, { cwd: scratchDir })` — the exact `scratchDir` its
+   own profile was built to allow. The injected-seam type change is additive only (existing test closures
+   of the old `(argv) => boolean` shape keep compiling and passing unchanged — JS ignores an unused second
+   parameter).
+2. **The probe's own spawn is now instrumented under `LEVARE_SANDBOX_DEBUG`, field-for-field matching a
+   real dispatch's own blocks.** `probeSandboxExec` prints the identical pre-spawn sequence
+   `sandboxExecArgv`/`wrapForSandbox` already print for a real dispatch (profile written-to, profile text,
+   cwd, level, composed argv) — a new shared `debugProbeArgv` helper gives the linux `bwrap`/`unshare`
+   probes the same "level: X (primitive: Y)" + "composed argv:" treatment, previously silent entirely.
+   `realProbe` prints the post-spawn line in the SAME shape `adapters.ts#AdapterRunner.logSpawnDebug`
+   already uses for a real dispatch (`spawn result: exitCode=... signalCode=... timedOut=... stdoutBytes=...
+   stderrBytes=...`, plus stderr text when non-empty) — `timedOut` is hardcoded `false` (a probe carries no
+   timeout) rather than omitted, so a Conductor diffing the two blocks by eye sees an explicit "not
+   applicable" instead of a field that's silently just missing. Piping (rather than ignoring) the probe's
+   stdout/stderr is what makes this possible — a small, one-shot cost, paid once per `detectSandbox()` call
+   exactly as the probe spawn itself already was.
+
+With both in place, a single real `kind: cli` dispatch's debug log now shows the probe's own block
+FIRST (from the `detectSandbox()` call `sandboxWrap` makes immediately before wrapping), followed by the
+wrap's own block for the actual member spawn — two structurally identical blocks, back to back, that a
+Conductor investigating a future divergence can diff by eye directly, rather than only ever seeing one
+side of the comparison.
+
+## Regression proof
+
+`tests/sandbox.test.ts`:
+- **The core regression** — `detectSandbox({platform: "darwin", ...})` with an injected `probe` capturing
+  `opts?.cwd` asserts it equals `dirname(seenArgv[4])` (the probe script's own directory) — the profile
+  written to `argv[2]` is asserted to contain an explicit `(allow file-write* (subpath "<that same
+  cwd>"))` clause, proving the profile's own claim and the threaded `cwd` now name the identical
+  directory (a regression that fails immediately if a future edit drops the `opts` argument again).
+- **Instrumentation** — a new describe block proves: the darwin probe's debug output contains
+  `profile written to:`, `(deny default)`, `cwd:`, `level: full (primitive: sandbox-exec)`, and
+  `composed argv:` (the exact pre-spawn block a real dispatch already gets); the REAL, un-injected probe
+  on THIS Linux container (bwrap/unshare, both genuinely non-functional here) prints
+  `spawn result: exitCode=... signalCode=... timedOut=false stdoutBytes=... stderrBytes=...` for each
+  attempted primitive, proven via a regex on the exact field shape; the linux bwrap/unshare probes also
+  get their own `level:`/`composed argv:` block, not only sandbox-exec's.
+- **Structural equivalence** — a profile captured from the probe (via an injected `probe` reading
+  `argv[2]`) and a profile built directly via `buildSandboxExecProfile` with a dispatch-shaped policy
+  (a worktree-like cwd, a real `operatorHome`, `readOnlyPaths` naming a studio root and an interpreter
+  tree) are asserted to share the identical fixed preamble (`(deny default)`, `(allow sysctl-read)`, the
+  broad `/` read, the `/Users`/`/Volumes` denies) — structurally provable in-container, since the
+  generator itself is pure and host-independent; only Seatbelt's actual enforcement of it needs a live
+  macOS host, unchanged from every prior round's own honest framing.
+
+`tests/adapters.test.ts`: a new test drives a real dispatch with NO `sandboxDetection` override (the real,
+un-injected `detectSandbox()` runs, exactly as production does) under `LEVARE_SANDBOX_DEBUG=1`, and asserts
+both a `level:` line and a `composed argv:` line appear — proving the probe's own block now actually fires
+during a real dispatch, not only when `detectSandbox()` is called standalone.
+
+## What this does NOT claim
+
+The exact OS-level failure mode the mismatched `cwd` produces on the live macOS host (a `bun`
+module-resolution read denied somewhere under the ambient cwd's ancestor chain; a different Seatbelt
+denial entirely; something else specific to that host's own directory layout) was never independently
+isolated by a live re-run inside this container — this fix removes the STRUCTURAL divergence (the probe's
+profile and its process now always agree on where the process runs, matching every real dispatch's own
+discipline) rather than a diagnosed-from-a-crash-report repair the way FIX-2/FIX-4's own defects were.
+Whether this is the ENTIRE explanation for the live host's `sandbox: none` report, or one of two
+compounding causes, remains to be confirmed by a live re-run with `LEVARE_SANDBOX_DEBUG=1` now actually
+producing output for the probe itself — which is precisely what part 2 of this fix was for: the next
+live report will show the probe's own composed argv/cwd and raw spawn result directly, rather than
+requiring another round of blind bisection to even see what the probe attempted.
+
+## Verification
+
+`bun test` — 1144 pass (up from 1092 at FIX-5; NOTES R4-SANDBOX-FIX-5's own count predates several
+unrelated goals — DIST6 among them — landing in between), 3 skip (this container's own honest `none`
+detection, unchanged), 0 fail, across 87 files. `bun run typecheck` → exit 0. `bun run deps:check` →
+`deps ok` (no dependency changes — this fix touches only `src/sandbox.ts` and its own tests). `bun run
+build` → succeeds. `bun run src/cli.ts validate fixtures/golden` → `valid` (the two pre-existing
+`SANDBOX_UNAVAILABLE` warnings for `finch`/`rook` are unchanged — this container's own honest `none`
+reality, unaffected by a fix whose blast radius is the darwin probe path this container can never
+exercise live). `bun run src/cli.ts replay fixtures/golden --stubs` → oracle match, byte-for-byte.

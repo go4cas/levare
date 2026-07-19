@@ -196,6 +196,30 @@ member-stub workload actually exercised — a real wrapped vendor CLI may touch 
 this round's own evidence never surfaced) still wasn't, and is named rather than assumed — see NOTES
 R4-SANDBOX-FIX-5's own "still requires a live host" list.
 
+**A SIXTH live report (NOTES R4-SANDBOX-FIX-6) found the detection PROBE itself under-reporting a
+sandbox that was, on the exact same host, already working for every real dispatch** — `./levare doctor`
+printed `sandbox: none` (with `SANDBOX_UNAVAILABLE` warnings following on `validate`) on a host where the
+full suite's own real `kind: cli` spawns sandboxed successfully, and `LEVARE_SANDBOX_DEBUG=1 ./levare
+doctor` printed nothing at all: the one spawn that decides every dispatch's enforcement level was the one
+spawn the debug flag never reached. Root cause: `probeSandboxExec` built a `sandbox-exec` profile scoped
+to its own scratch directory, but the actual `Bun.spawnSync` call was never told to `cwd` there — the
+probed process ran wherever the CALLING process's own ambient directory happened to be (typically the
+studio root, under the operator's real `$HOME`, denied by the profile with nothing re-allowing it), while
+every real dispatch's own spawn boundary (`adapters.ts#bunSpawn.run`) always passes a `cwd` matching the
+exact policy its own profile was built for. **Fixed, two parts:** the probe/detection seam now threads
+`cwd` through to the real spawn (`SandboxDetectOptions.probe` gained an optional `{cwd}` second
+parameter), and the probe's own spawn — pre- and post- — is now instrumented under
+`LEVARE_SANDBOX_DEBUG` in the identical shape a real dispatch's own wrap already used, closing the second
+finding directly. This was the second time a probe was found testing a shape no real dispatch takes (the
+first, FIX-5's `--version`, skipped script-mode startup entirely; this one skipped matching the process's
+own working directory to the policy governing it) — worth naming as a recurring failure class for this
+module specifically: a detection probe's fidelity to production is not proven by "it calls the same
+generator," it also requires "it hands the result to the OS the same way." The exact OS-level failure
+mode the mismatched `cwd` produced on the live host was not independently isolated (unchanged from every
+prior round's own honest framing of what a Linux-only dev container can and cannot directly observe); the
+fix removes the structural divergence rather than diagnosing a captured crash report, and the newly-wired
+debug output is what the next live report should use to confirm (or refute) the mechanism precisely.
+
 ## Connector trust-tier taxonomy
 
 A connector now declares `role: model | tool` (NOTES C15) — what FUNCTION it serves — and, since NOTES
