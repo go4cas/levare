@@ -9836,3 +9836,145 @@ plain worktree commit needs one more specific path this round's reproduction did
 transient lock file at the `.git` root itself, under some git version or configuration this container's
 own git didn't exercise), the fix is to add that EXACT literal path, evidence-first, named here — never to
 re-widen back to granting the directory.
+
+# NOTES R4-SANDBOX-FIX-9 — live macOS gate on FIX-8: two failures, neither is the four-subpath narrowing
+# being wrong
+
+FIX-8's narrowed grant went back to the live gate. Two failures came back, both with kernel-log/stderr
+evidence attached, and both diagnosed before any fix was written — per this whole investigation's own
+established method.
+
+## Failure 1 — git's own global config read, denied, is FATAL rather than tolerated
+
+The member's `git commit` died on `fatal: unable to access '/Users/cas/.gitconfig': Operation not
+permitted`. Root cause, stated precisely by the report: a "full"-tier sandbox denies the operator's own
+real `$HOME` — an empty root on Linux (bubblewrap), an explicit deny-list entry on macOS (sandbox-exec) —
+which turns a read of `$HOME/.gitconfig` into **EPERM**. Git treats an EPERM there as **FATAL**; an
+**ENOENT** ("this file simply doesn't exist") would have been tolerated silently as "no global config".
+The sandbox's own deny converts "no config" into "forbidden config", and git has no way to tell the two
+apart from its own side.
+
+**Fix, environmental, never a sandbox widening (widening would defeat the whole point of denying the
+operator's real home):** a dispatch running under a `"full"`-tier sandbox now gets `GIT_CONFIG_GLOBAL`/
+`GIT_CONFIG_SYSTEM` redirected to `/dev/null` in its own spawn env (`adapters.ts#gitConfigRedirectEnv`,
+applied in `runCli`/`runCliAsync` immediately after `sandboxWrap` reports `wrapped.level`). Git degrades
+to "no global/system config" cleanly rather than ever hitting the denial. Neither env var touches
+per-repo config (`.git/config`, read from the repo itself regardless) or `-c` flags a member's own command
+template already passes — a member needing git identity keeps working exactly as before, proven by a new
+test using real `git config --get user.name` with `-c` flags under a forced `"full"` detection.
+
+**General rule, recorded once:** the sandbox turns an unreadable-but-PRESENT file into EPERM, not ENOENT
+— any tool that treats "I was denied" and "it doesn't exist" as different failure classes (git is one;
+there may be others) needs ENV-LEVEL redirection to the "doesn't exist" shape it already tolerates, not a
+read grant that would defeat the deny it's routing around.
+
+### Secondary observation — catalogued, not fixed (evidence doesn't call for it yet)
+
+Apple's own `/usr/bin/git` is an `xcrun` shim: it `confstr`-asks for `DARWIN_USER_TEMP_DIR` (denied under
+the sandbox) and falls back to writing an `xcrun_db-*` cache file under it (also denied). Both are
+WARNINGS in the kernel log — git proceeded past them; the `.gitconfig` EPERM above was the only FATAL one.
+Per the goal's own instruction, this is named and left alone: if a future live run shows the commit still
+failing on this path even after the env fix, the evidence-first remedy is granting write on the specific,
+literal per-user `confstr` temp directory (`/var/folders/<hash>/T`, named exactly — never `/tmp` broadly).
+Mach-lookup denials for `com.apple.diagnosticd`/`bsd.dirhelper`/`opendirectoryd` observed alongside are
+catalogued with the existing cosmetic soft-denial class (NOTES R4-SANDBOX-FIX-3's own finding 5, the tty/
+`dtracehelper` `file-ioctl` denials) — `sandbox.ts`'s own generator comment now names all of these
+together, so a future reader sees the whole catalogue in one place.
+
+## Failure 2 — a genuine bug the test's own failure happened to surface, not a sandbox-shape mismatch
+
+The report's own framing: "the wiring test asserts bubblewrap's `--bind` unconditionally, but on darwin
+the wrapped doc is a sandbox-exec profile... the received snippet ('d /private') shows the
+canonicalization issue too." Investigated rather than patched blind, because the FIX-8 wiring test in
+question (`tests/adapters.test.ts`) **forces** `sandboxDetection` to `{platform: "linux", primitive:
+"bubblewrap", bin: "/bin/echo"}` — deterministic, host-independent by construction, so it should never
+have produced a seatbelt profile regardless of which OS actually ran it. That framing pointed at the REAL
+bug instead: the received snippet's own `/private` fragment is the signature of a canonicalization
+mismatch, and it was real, just not the one the report's own first-guess description named.
+
+**Root cause, confirmed by direct reproduction, not assumed:** `git worktree add` canonicalizes the
+`gitdir:` path it records in a new worktree's own `.git` pointer file — proven by creating a repo and its
+worktree entirely through a SYMLINKED path and reading back a fully realpath'd pointer regardless. This
+was already known and used correctly for `merge.ts#DispatchWorktree.gitDir` (FIX-8's own read-back of that
+pointer). What FIX-8 got wrong: `adapters.ts#dispatchGitWritePaths` computed `objects`/`refs`/`logs` by
+rejoining `.git` onto the CALLER's own `repoPath` — never canonicalized — while `worktreeGitDir` (the
+fourth grant) was ALWAYS already canonical, git's own doing. On a host where the project repo's path sits
+behind a symlink (macOS's `/var/folders` → `/private/var/folders`, exactly what a `mkdtempSync(tmpdir())`
+scratch project repo produces there), the four granted paths were computed on TWO DIFFERENT literal
+spellings of "the same" directory tree. This is harmless for `buildSandboxExecProfile` (which
+canonicalizes every `writablePaths` entry itself, unifying both spellings) but a REAL functional gap for
+bubblewrap, which deliberately canonicalizes nothing (a design choice from the very first live macOS
+round, for DEST-safety reasons named in this module's own header): git's own internal `commondir`
+resolution (a relative path from the worktree's own admin dir back to the shared `.git`) always resolves
+relative to whichever canonical path git itself recorded — meaning on a symlinked host, a real bwrap
+sandbox binding the RAW (non-canonical) spelling for `objects`/`refs`/`logs` would bind a path git's own
+commit never actually tries to reach, leaving the CANONICAL spelling — the one git actually uses —
+ungranted inside bwrap's own empty root.
+
+**Fix:** `dispatchGitWritePaths` now takes ONLY `worktreeGitDir` and derives `gitCommonDir` via
+`dirname(dirname(worktreeGitDir))` — undoing exactly the `/worktrees/<name>` suffix
+`createDispatchWorktree` appended — so all four granted paths are computed on the IDENTICAL canonical
+basis, always. Verified directly: a throwaway script reproducing the exact old vs. new computation against
+a real symlinked repo+worktree confirmed the OLD code would have produced a different literal string than
+git's own recorded `gitdir:`, and the NEW code does not.
+
+**The test itself, once the real bug was understood, needed two changes — both now made:**
+1. Its own expected paths are now built from `realpathSync(projectRepo)`, not the raw `mkdtempSync`
+   return value — the fourth occurrence of the recorded path-comparison rule (FIX-2/FIX-4/FIX-6), this
+   time via a SECOND canonicalization source (`git worktree add` itself, not `sandbox.ts#canon`).
+2. A NEW, separate test was added that does NOT force `sandboxDetection` at all — it uses the real host's
+   own `detectSandbox()` and branches its own assertion on `hostSandbox.primitive` (bwrap `--bind` pairs
+   vs. seatbelt `(allow file-write* (subpath ...))` rules) — `test.skipIf`-gated on a working primitive,
+   mirroring every other real-host proof in this file. This is the literal, general fix the report asked
+   for: a wiring test inspecting the REAL wrapped output must branch on the generator it is actually
+   inspecting, never assume one shape unconditionally. The original forced-bwrap test is kept alongside it
+   (host-independent construction proof) — the two are complementary, not redundant: one always runs and
+   proves bwrap's OWN shape deterministically; the other only runs on a host with a working primitive and
+   proves whichever shape THAT host's own dispatch actually produces.
+
+**General rule, extended (both `tests/sandbox.test.ts`'s own header and here):** a wiring test that
+inspects the wrapped argv/profile — not merely a path comparison within it — must branch on the generator
+it is actually inspecting. A test that forces `sandboxDetection` to a specific primitive is exempt (it
+deterministically gets that primitive's own shape everywhere); a test exercising the REAL, un-forced
+`detectSandbox()` result must check `hostSandbox.primitive` before asserting bwrap-shaped flags versus
+seatbelt-shaped rules. A bwrap-shaped assertion run against a real seatbelt profile tests nothing.
+
+## Regression proof added
+
+- `tests/adapters.test.ts`: a new describe block proves the git-config redirect fires under a genuinely
+  executing fake "primitive" (`fakeWorkingPrimitive` — unlike the existing `/bin/echo` trick, which merely
+  echoes composed argv as text, this one actually `exec`s the wrapped inner command, so the real env a
+  spawned process sees is what's observed): both vars are `/dev/null` under `level: "full"`; neither is
+  set under `level: "none"`; a member's own `-c` flags/repo-local config are unaffected. The `"fs-only"`
+  case was attempted and deliberately dropped — `unshareArgv`'s own wrapped command runs REAL
+  `mount --bind`/`mount -o remount` calls that fail with "must be superuser" in this container regardless
+  of what binary is named, the identical real-privilege gap this whole investigation has documented since
+  NOTES R4-SANDBOX itself; the `wrapped.level === "full"` conditional gating the redirect is a one-line
+  ternary, provable by inspection instead.
+- `tests/adapters.test.ts`: the FIX-8 wiring test's own expected paths are now realpath'd; a new
+  `test.skipIf`-gated test proves the narrowed grant reaches the REAL host's own wrapped output in
+  whichever shape its actual primitive produces.
+- `tests/sandbox.test.ts`: header comment extended to record the fourth occurrence of the path-comparison
+  rule and the new "branch on the generator" rule, for every future test in this class.
+- `src/sandbox.ts`: the fixed-preamble comment block now catalogues the xcrun/`DARWIN_USER_TEMP_DIR` and
+  mach-lookup soft denials alongside the existing tty/`dtracehelper` entry, in one place.
+
+## What this does NOT claim
+
+The git-config redirect is proven end-to-end in this container via a genuinely-executing fake primitive,
+but the ACTUAL darwin `sandbox-exec` enforcement of the underlying deny (operator-home EPERM) is still
+only provable live — this round's fix removes the failure mode by construction (git never reaches the
+denial at all once redirected), which is a stronger claim than "the enforcement works," not a weaker one,
+but the next live run is what confirms the fix in full. The xcrun/`DARWIN_USER_TEMP_DIR` path remains an
+open question pending further live evidence, named rather than guessed at. The canonicalization fix for
+`dispatchGitWritePaths` is proven directly (a real symlinked repo+worktree reproduction, in-container) but
+its DOWNSTREAM effect — whether a real bwrap, on a real symlinked-path Linux host, now successfully
+commits where it previously wouldn't have — remains unverified live, since this container's own bwrap has
+never worked at all, on any profile, in this project's history.
+
+## Verification
+
+`bun test` — full suite green. `bun run typecheck` → exit 0. `bun run deps:check` → `deps ok`. `bun run
+build` → succeeds. `bun run src/cli.ts validate fixtures/golden` → `valid`, the same two pre-existing
+`SANDBOX_UNAVAILABLE` warnings, unchanged. `bun run src/cli.ts replay fixtures/golden --stubs` → oracle
+match, byte-for-byte.
