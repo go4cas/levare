@@ -25,7 +25,7 @@
 // "blocked artifact" surfacing every existing caller (dagwalk.ts, board/gateops.ts) already gives an
 // AdapterError.
 
-import { existsSync, statSync, accessSync, constants as fsConstants } from "node:fs";
+import { existsSync, statSync, accessSync, mkdirSync, constants as fsConstants } from "node:fs";
 import { isAbsolute, dirname, join as pathJoin } from "node:path";
 import { normalizeReceipt } from "./receipts.ts";
 import { buildMemberEnv, teamOf, subscriptionConnector, scopeHome, memberNetworkAllowed } from "./env.ts";
@@ -67,18 +67,25 @@ export interface InvokeRequest {
    * checkout, e.g. the golden fixture's own `storefront`. */
   projectRepoPath?: string;
   /**
-   * NOTES R4-SANDBOX-FIX-7 (live macOS gate: a member's own commit inside its dispatch worktree, denied
-   * by a working sandbox). Set alongside `projectRepoPath` ONLY when a real per-dispatch worktree was
-   * created (`withDispatchWorktree`/`withDispatchWorktreeAsync`) — the ORIGINAL project repo's own
-   * `.git` directory, which git's worktree design shares across every worktree of that repo (the object
-   * store, refs, and this worktree's own admin state under `.git/worktrees/<name>/` all live there,
-   * never inside the per-dispatch worktree's own directory). `sandboxWrap` threads this into
-   * `SandboxPolicy.writablePaths` so a member's `git commit` inside its worktree has write access to
-   * where that commit's data actually lands, not just to the worktree's own working-tree files.
-   * Undefined for every dispatch without a worktree (self-referential/unresolvable `repo:`, or no work
-   * branch yet) — exactly `projectRepoPath`'s own no-worktree case.
+   * NOTES R4-SANDBOX-FIX-7/FIX-8 (live macOS gate: a member's own commit inside its dispatch worktree,
+   * denied by a working sandbox — then narrowed for security once shipped). Set alongside
+   * `projectRepoPath` ONLY when a real per-dispatch worktree was created
+   * (`withDispatchWorktree`/`withDispatchWorktreeAsync`) — the EXACT subpaths of the ORIGINAL project
+   * repo's `.git` directory a worktree commit actually reads/writes, confirmed by direct reproduction
+   * (not assumed): `.git/objects` (new blobs/trees/commits), `.git/refs` (the branch ref's own content
+   * update), `.git/logs` (the branch ref's reflog append), and this dispatch's OWN
+   * `.git/worktrees/<name>` admin directory (`HEAD`, `index`, `COMMIT_EDITMSG`, its own `logs/HEAD`) —
+   * never any sibling worktree's own admin directory, and never `.git` itself, `.git/hooks`, or
+   * `.git/config`. FIX-7 originally granted the whole `.git` directory; FIX-8 narrowed it after a
+   * security review named `.git/hooks/*` and `.git/config` (`core.hooksPath`/`core.fsmonitor`) as
+   * code-execution vectors that would otherwise run UNCONFINED the next time any git operation touches
+   * this repo outside the sandbox (the Conductor's own shell, levare's own gate-resolution commits, the
+   * daemon) — confirmed by direct reproduction that a plain commit never touches either path, so
+   * excluding them costs the feature nothing. `sandboxWrap` threads this straight into
+   * `SandboxPolicy.writablePaths`. Undefined for every dispatch without a worktree (self-referential/
+   * unresolvable `repo:`, or no work branch yet) — exactly `projectRepoPath`'s own no-worktree case.
    */
-  dispatchGitDir?: string;
+  dispatchGitWritePaths?: string[];
 }
 
 /** The native SDK boundary — synchronous, used by the phase-2 batch `Runner` (`levare replay`) and by
@@ -138,6 +145,30 @@ function nativeSpawnEnv(req: InvokeRequest, baseEnv: Record<string, string | und
 function resolveFeatureRepo(template: string | undefined, projectRepoPath: string | undefined): string | undefined {
   if (template === undefined) return undefined;
   return projectRepoPath ? template.replace(/\{feature_repo\}/g, projectRepoPath) : template;
+}
+
+// NOTES R4-SANDBOX-FIX-8 (security narrowing of FIX-7's own write grant): the EXACT subpaths a worktree
+// commit reads/writes — `.git/objects` (new objects), `.git/refs` (the branch ref's own content update),
+// `.git/logs` (the branch ref's reflog append), and this dispatch's OWN `.git/worktrees/<name>` admin
+// directory (`merge.ts#DispatchWorktree.gitDir`, read back from the worktree's own `.git` pointer file,
+// never guessed from a naming scheme) — confirmed by direct reproduction (chmod-deny each candidate path
+// on a plain, non-sandboxed repo and observe which one a commit actually needs). Deliberately NEVER the
+// `.git` directory itself, `.git/hooks`, or `.git/config`: both are code-execution vectors (a member
+// writing `.git/hooks/post-commit`, or setting `core.hooksPath`/`core.fsmonitor` in `config`) that would
+// run UNCONFINED the next time ANY git operation touches this repo outside the sandbox — the Conductor's
+// own shell, levare's own gate-resolution commits, the daemon — and no deterministic guardrail catches
+// either, since neither is part of any diff a merge gate inspects.
+//
+// `logs/` specifically is created here if missing (documented choice: create, never skip) — a repo whose
+// only commits predate any reflog, or one with `core.logAllRefUpdates=false`, may not have it yet, and a
+// bind-mount source that doesn't exist can't simply be granted; creating an empty directory costs
+// nothing and lets an otherwise-ordinary commit's own reflog write land somewhere, rather than silently
+// denying a legitimate write a test never had the chance to surface.
+function dispatchGitWritePaths(repoPath: string, worktreeGitDir: string): string[] {
+  const gitCommonDir = pathJoin(repoPath, ".git");
+  const logs = pathJoin(gitCommonDir, "logs");
+  if (!existsSync(logs)) mkdirSync(logs, { recursive: true });
+  return [pathJoin(gitCommonDir, "objects"), pathJoin(gitCommonDir, "refs"), logs, worktreeGitDir];
 }
 
 function nativeWorkerRequest(req: InvokeRequest, pathToClaudeCodeExecutable: string | undefined) {
@@ -691,8 +722,9 @@ export class AdapterRunner implements MemberRunner {
   // every downstream {feature_repo}/cwd resolution (nativeWorkerRequest, defaultCliCommand, cliInvocation)
   // reads it from there — and the worktree is torn down in `finally`, success or thrown AdapterError
   // alike, mirroring `withHomeScope`'s own create-immediately-before/clean-up-immediately-after shape.
-  // NOTES R4-SANDBOX-FIX-7: `req.dispatchGitDir` is set alongside it — the ORIGINAL repo's own `.git`,
-  // which `sandboxWrap` needs to grant WRITE access to (see `InvokeRequest.dispatchGitDir`'s own doc).
+  // NOTES R4-SANDBOX-FIX-7/FIX-8: `req.dispatchGitWritePaths` is set alongside it — the narrowed, exact
+  // subpaths `sandboxWrap` needs to grant WRITE access to (see `InvokeRequest.dispatchGitWritePaths`'s
+  // own doc), never the whole `.git` directory.
   private withDispatchWorktree<T>(member: string, dispatchRepo: { repoPath: string; branch?: string } | undefined, req: InvokeRequest, fn: (req: InvokeRequest) => T): T {
     if (!dispatchRepo?.branch) return fn(req);
     const created = createDispatchWorktree(dispatchRepo.repoPath, dispatchRepo.branch);
@@ -700,7 +732,7 @@ export class AdapterRunner implements MemberRunner {
       throw new AdapterError(`member '${member}': could not create dispatch worktree for work branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}': ${created.error}`);
     }
     try {
-      return fn({ ...req, projectRepoPath: created.worktree.path, dispatchGitDir: pathJoin(dispatchRepo.repoPath, ".git") });
+      return fn({ ...req, projectRepoPath: created.worktree.path, dispatchGitWritePaths: dispatchGitWritePaths(dispatchRepo.repoPath, created.worktree.gitDir) });
     } finally {
       created.worktree.cleanup();
     }
@@ -718,7 +750,7 @@ export class AdapterRunner implements MemberRunner {
       throw new AdapterError(`member '${member}': could not create dispatch worktree for work branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}': ${created.error}`);
     }
     try {
-      return await fn({ ...req, projectRepoPath: created.worktree.path, dispatchGitDir: pathJoin(dispatchRepo.repoPath, ".git") });
+      return await fn({ ...req, projectRepoPath: created.worktree.path, dispatchGitWritePaths: dispatchGitWritePaths(dispatchRepo.repoPath, created.worktree.gitDir) });
     } finally {
       created.worktree.cleanup();
     }
@@ -910,11 +942,11 @@ export class AdapterRunner implements MemberRunner {
       readOnlyPaths,
       operatorHome,
       grantedHomeTargets,
-      // NOTES R4-SANDBOX-FIX-7: read-write access to the ORIGINAL project repo's own `.git` directory,
-      // when this dispatch is running inside a per-dispatch worktree of it (`req.dispatchGitDir`'s own
-      // doc) — git's shared object store/refs/worktree-admin-state live there, never inside the
-      // worktree's own directory, and a member's `git commit` inside its worktree needs to reach it.
-      writablePaths: req.dispatchGitDir ? [req.dispatchGitDir] : [],
+      // NOTES R4-SANDBOX-FIX-7/FIX-8: read-write access to the EXACT `.git` subpaths (objects/refs/logs/
+      // this worktree's own admin dir) a worktree commit needs — never the whole `.git` directory, never
+      // `hooks`/`config` (see `InvokeRequest.dispatchGitWritePaths`'s own doc for the exec-escape this
+      // narrowing closes).
+      writablePaths: req.dispatchGitWritePaths ?? [],
     };
     return wrapForSandbox(argv, policy, detection);
   }

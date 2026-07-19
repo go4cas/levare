@@ -23,7 +23,7 @@
 // ref instead of a file's bytes) — byte-perfect rollback, and the caller sees nothing was ever merged.
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, existsSync, realpathSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, realpathSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { checkGuardrails, type DiffEntry, type GuardrailViolation } from "./guardrails.ts";
@@ -127,10 +127,36 @@ export function createWorkBranch(repoPath: string, branch: string, defaultBranch
 
 export interface DispatchWorktree {
   path: string;
+  /**
+   * NOTES R4-SANDBOX-FIX-8 (security narrowing of FIX-7's own write grant): the resolved
+   * `.git/worktrees/<name>` administrative directory for THIS worktree specifically — where its own
+   * `HEAD`, `index`, `logs/HEAD`, and `COMMIT_EDITMSG` actually live (git's worktree design, never inside
+   * `path` itself). Read directly from the worktree's own `.git` pointer file (`gitdir: <path>`, written
+   * by `git worktree add` itself) rather than assumed from a naming scheme — git can rename the admin
+   * directory on a name collision, so reading it back is the only way to know it exactly, not guess it.
+   * `adapters.ts#sandboxWrap` grants write access to exactly this directory, never to any OTHER
+   * worktree's own admin state sharing the same original repo.
+   */
+  gitDir: string;
   cleanup(): void;
 }
 
 export type CreateDispatchWorktreeResult = { ok: true; worktree: DispatchWorktree } | { ok: false; error: string };
+
+// NOTES R4-SANDBOX-FIX-8: parses the `gitdir: <path>` pointer `git worktree add` itself writes into the
+// new worktree's own `.git` (a plain file, never a real git directory, for any worktree — only the
+// PRIMARY checkout has a real `.git` directory). Returns undefined on anything unexpected (missing file,
+// unrecognized format) rather than guessing — `createDispatchWorktree` treats that as a creation failure,
+// the same loud-never-silent posture every other failure in this function already takes.
+function resolveWorktreeGitDir(worktreePath: string): string | undefined {
+  try {
+    const pointer = readFileSync(join(worktreePath, ".git"), "utf8").trim();
+    const m = /^gitdir:\s*(.+)$/.exec(pointer);
+    return m ? m[1] : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export function createDispatchWorktree(repoPath: string, branch: string): CreateDispatchWorktreeResult {
   const scratch = mkdtempSync(join(tmpdir(), "levare-dispatchwt-"));
@@ -139,11 +165,18 @@ export function createDispatchWorktree(repoPath: string, branch: string): Create
     rmSync(scratch, { recursive: true, force: true });
     return { ok: false, error: `git worktree add failed: ${wt.stderr.trim()}` };
   }
+  const gitDir = resolveWorktreeGitDir(scratch);
+  if (!gitDir) {
+    git(repoPath, ["worktree", "remove", "--force", scratch]);
+    rmSync(scratch, { recursive: true, force: true });
+    return { ok: false, error: `worktree at '${scratch}' has no readable/recognizable .git pointer file — cannot determine its own admin directory` };
+  }
   let cleaned = false;
   return {
     ok: true,
     worktree: {
       path: scratch,
+      gitDir,
       cleanup() {
         if (cleaned) return;
         cleaned = true;

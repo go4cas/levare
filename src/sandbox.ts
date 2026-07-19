@@ -408,17 +408,26 @@ export interface SandboxPolicy {
   grantedHomeTargets?: string[];
   /**
    * NOTES R4-SANDBOX-FIX-7 (live macOS gate: a member's own commit inside its dispatch worktree, exactly
-   * what Ruling 1 promises, denied by a working sandbox). Read-write. Extra paths a dispatch needs
-   * WRITE access to beyond `cwd`/`home` — currently only the ORIGINAL project repo's own `.git`
-   * directory, threaded here when the dispatch is running inside a `merge.ts#createDispatchWorktree`
-   * worktree (`adapters.ts#InvokeRequest.dispatchGitDir`). Git's own worktree design shares the object
-   * store, refs, and per-worktree administrative state (`HEAD`, `index`, `logs`) under the ORIGINAL
-   * repo's `.git/worktrees/<name>/` — never inside the per-dispatch worktree's own directory — so a
-   * member running `git commit` there needs write access to that shared directory too, not just to its
-   * own worktree's working-tree files. Confirmed directly (not assumed): a filesystem-permission
-   * experiment denying write on a plain (non-sandboxed) original repo's `.git` reproduces the identical
-   * failure (`Unable to create '.../index.lock': Permission denied`) a sandboxed spawn's own denial
-   * produces. Absent/empty is a legal no-op (no worktree this dispatch, or the read-only default
+   * what Ruling 1 promises, denied by a working sandbox) / FIX-8 (security narrowing, once shipped).
+   * Read-write. Extra paths a dispatch needs WRITE access to beyond `cwd`/`home` — currently the EXACT
+   * `.git` subpaths a worktree commit reads/writes, confirmed by direct reproduction, never the whole
+   * `.git` directory: `.git/objects` (new blobs/trees/commits), `.git/refs` (the branch ref's own content
+   * update), `.git/logs` (the branch ref's reflog append), and this dispatch's OWN
+   * `.git/worktrees/<name>` admin directory (`HEAD`, `index`, `logs/HEAD`, `COMMIT_EDITMSG` — git's own
+   * worktree design keeps these OUTSIDE the per-dispatch worktree's own directory, shared with every
+   * other worktree of the same repo) — threaded here by `adapters.ts#InvokeRequest.dispatchGitWritePaths`
+   * only when the dispatch is running inside a `merge.ts#createDispatchWorktree` worktree.
+   *
+   * Deliberately NEVER `.git` itself, NEVER `.git/hooks`, NEVER `.git/config` (FIX-7's original shape
+   * granted the whole directory, including both) — `.git/hooks/*` are executable scripts and
+   * `.git/config` can redirect execution via `core.hooksPath`/`core.fsmonitor`; either is a
+   * code-execution vector that would run UNCONFINED the next time ANY git operation touches this repo
+   * OUTSIDE the sandbox (the Conductor's own shell, levare's own gate-resolution commits, the daemon) —
+   * and no deterministic guardrail catches either, since neither is part of any diff a merge gate
+   * inspects. Confirmed directly (not assumed) that a plain commit never touches either path (byte-
+   * identical before/after) and that denying write on ANY of the four granted subpaths reproduces the
+   * identical failure (`Unable to create '.../index.lock': Permission denied`) a sandboxed spawn's own
+   * denial produces. Absent/empty is a legal no-op (no worktree this dispatch, or the read-only default
    * `context_artifacts: paths` case, where no commit is expected).
    */
   writablePaths?: string[];

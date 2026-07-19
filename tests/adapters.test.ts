@@ -1160,10 +1160,12 @@ describe("NOTES R4-SANDBOX Ruling 1 — per-dispatch worktree isolation", () => 
     }
   });
 
-  // NOTES R4-SANDBOX-FIX-7: proves `dispatchGitDir` actually reaches the wrapped argv as a WRITABLE
-  // grant — the same fake-"bubblewrap"-is-really-/bin/echo trick this file already uses to observe
+  // NOTES R4-SANDBOX-FIX-7/FIX-8: proves the NARROWED grant (objects/refs/logs/this-worktree's-own-
+  // admin-dir) actually reaches the wrapped argv as read-write binds — and, just as importantly, that
+  // `.git/hooks`, `.git/config`, and the bare `.git` root NEVER do (the security narrowing FIX-8 exists
+  // for) — via the same fake-"bubblewrap"-is-really-/bin/echo trick this file already uses to observe
   // wrapped argv without a real, working bwrap (see the readOnlyPaths test above).
-  test("a dispatch worktree's own project repo .git directory is threaded into the wrapped argv as a read-write bind, not merely a read-only one", async () => {
+  test("a dispatch worktree's own .git objects/refs/logs/admin-dir are threaded into the wrapped argv as read-write binds — never hooks, config, or the bare .git root", async () => {
     const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
     try {
       const repo = repoWithRealStorefrontRepo(projectRepo);
@@ -1176,14 +1178,25 @@ describe("NOTES R4-SANDBOX Ruling 1 — per-dispatch worktree isolation", () => 
         sandboxDetection: { platform: "linux", primitive: "bubblewrap", level: "full", bin: "/bin/echo" },
       });
       const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
-      const gitDir = join(projectRepo, ".git");
-      expect(doc).toContain(gitDir);
-      // Immediately preceded by --bind (read-write), never --ro-bind-try (read-only) — bubblewrapArgv's
-      // own distinction between readOnlyPaths and writablePaths.
-      const idx = doc.indexOf(gitDir);
-      const before = doc.slice(Math.max(0, idx - 10), idx);
-      expect(before).toContain("--bind");
-      expect(before).not.toContain("--ro-bind-try");
+      const gitCommonDir = join(projectRepo, ".git");
+
+      // Each of the four exact subpaths is read-write bound (--bind, never --ro-bind-try).
+      for (const sub of ["objects", "refs", "logs"]) {
+        const p = join(gitCommonDir, sub);
+        expect(doc).toContain(`--bind ${p} ${p}`);
+      }
+      // The worktree's own admin dir — dynamic name (git may rename on collision), so only its parent
+      // directory is asserted — still read-write bound.
+      const worktreesDir = join(gitCommonDir, "worktrees");
+      const idx = doc.indexOf(worktreesDir);
+      expect(idx).toBeGreaterThan(-1);
+      expect(doc.slice(Math.max(0, idx - 10), idx)).toContain("--bind");
+
+      // The security narrowing itself: hooks/config never appear anywhere, and the bare .git root is
+      // never bound as its own read-write pair (only its specific subpaths are).
+      expect(doc).not.toContain(join(gitCommonDir, "hooks"));
+      expect(doc).not.toContain(join(gitCommonDir, "config"));
+      expect(doc).not.toContain(`--bind ${gitCommonDir} ${gitCommonDir}`);
     } finally {
       rmSync(projectRepo, { recursive: true, force: true });
     }
@@ -1432,4 +1445,31 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
       rmSync(projectRepo, { recursive: true, force: true });
     }
   });
+
+  // NOTES R4-SANDBOX-FIX-8 (security narrowing of FIX-7's own write grant): the decoy-file proof's own
+  // counterpart for the exec-escape this round closes. `.git/objects`/`refs`/`logs`/this dispatch's own
+  // worktree admin dir ARE granted (proven above, and by the worktree-commit test) — but `.git/hooks` is
+  // deliberately NOT, because a member-written `post-commit` hook would execute UNCONFINED the next time
+  // ANY git operation touches this repo outside the sandbox.
+  test.skipIf(hostSandbox.level !== "full")(
+    "a sandboxed member cannot create .git/hooks/post-commit in the original repo, even though objects/refs/logs/its-own-worktree-admin-dir are genuinely writable",
+    async () => {
+      const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+      try {
+        const repo = repoWithRealStorefrontRepo(projectRepo);
+        const hookPath = join(projectRepo, ".git", "hooks", "post-commit");
+        const runner = new AdapterRunner(repo, {
+          pricing,
+          capabilities: [{ member: "finch", kind: "review" }],
+          native: nativeMock,
+          remote: remoteMock,
+          cliCommand: () => ["sh", "-c", `echo '#!/bin/sh' > "$1"`, "sh", hookPath],
+        });
+        await expect(runner.produceAsync("finch", "review", "checkout-flow", "storefront")).rejects.toThrow(AdapterError);
+        expect(existsSync(hookPath)).toBe(false);
+      } finally {
+        rmSync(projectRepo, { recursive: true, force: true });
+      }
+    },
+  );
 });

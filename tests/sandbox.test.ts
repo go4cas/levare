@@ -667,15 +667,21 @@ describe("buildSandboxExecProfile — deny-list model (NOTES R4-SANDBOX-FIX-3)",
     expect(profile).toContain('/a/\\"b');
   });
 
-  // NOTES R4-SANDBOX-FIX-7 (live macOS gate): `writablePaths` — currently only the ORIGINAL project
-  // repo's own `.git` directory when a dispatch worktree exists — needs BOTH read and write re-allows,
-  // unlike `readOnlyPaths` (read only): a member's `git commit` inside its worktree reads existing
-  // objects/refs from the shared git dir AND writes new ones there, plus its own worktree admin state
-  // (`.git/worktrees/<name>/index`, `HEAD`). Confirmed by direct reproduction (not assumed): denying
-  // write on a plain, non-sandboxed original repo's `.git` and committing from inside its worktree fails
-  // with the identical `Unable to create '.../index.lock': Permission denied` a sandboxed spawn's own
-  // kernel denial produces for the same path.
-  describe("writablePaths — read-write access beyond cwd/home (NOTES R4-SANDBOX-FIX-7)", () => {
+  // NOTES R4-SANDBOX-FIX-7 (live macOS gate) / FIX-8 (security narrowing, once shipped): `writablePaths`
+  // — the EXACT `.git` subpaths a worktree commit needs (`objects`/`refs`/`logs`/this dispatch's own
+  // `worktrees/<name>` admin dir), never the whole `.git` directory — needs BOTH read and write
+  // re-allows, unlike `readOnlyPaths` (read only): a member's `git commit` inside its worktree reads
+  // existing objects/refs from the shared git dir AND writes new ones there, plus its own worktree admin
+  // state (`.git/worktrees/<name>/index`, `HEAD`). Confirmed by direct reproduction (not assumed): denying
+  // write on ANY of the four subpaths and committing from inside the worktree fails with the identical
+  // `Unable to create '.../index.lock': Permission denied` a sandboxed spawn's own kernel denial produces
+  // for the same path — and that a plain commit never touches `.git/hooks` or `.git/config` at all
+  // (byte-identical before/after), which is exactly what makes excluding them (adapters.ts#
+  // `dispatchGitWritePaths`) cost the feature nothing while closing a code-execution vector: a member
+  // writing `.git/hooks/post-commit`, or `core.hooksPath`/`core.fsmonitor` into `.git/config`, would run
+  // UNCONFINED the next time any git operation touches this repo outside the sandbox — the Conductor's
+  // own shell, levare's own gate-resolution commits, the daemon.
+  describe("writablePaths — read-write access beyond cwd/home (NOTES R4-SANDBOX-FIX-7/FIX-8)", () => {
     test("gets both a read AND a write re-allow, unlike readOnlyPaths", () => {
       const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false, writablePaths: ["/proj/repo/.git"] });
       expect(profile).toContain('(allow file-read* (subpath "/proj/repo/.git"))');
@@ -708,6 +714,42 @@ describe("buildSandboxExecProfile — deny-list model (NOTES R4-SANDBOX-FIX-3)",
         rmSync(real, { recursive: true, force: true });
         rmSync(parent, { recursive: true, force: true });
       }
+    });
+
+    // NOTES R4-SANDBOX-FIX-8: the profile-structure proof of the narrowing itself — given the exact
+    // shape `adapters.ts#dispatchGitWritePaths` produces (objects/refs/logs/this-worktree's-own-admin-
+    // dir), the generated profile re-allows precisely those four subpaths and NEVER the `.git` root, and
+    // NEVER `hooks`/`config` — proven both here (construction) and in adapters.test.ts (wiring, plus a
+    // real skipIf-gated denial on a host with a working primitive).
+    describe("FIX-8 — narrowed to exact git subpaths, never hooks/config/the .git root", () => {
+      const gitCommonDir = "/proj/repo/.git";
+      const worktreeAdminDir = `${gitCommonDir}/worktrees/levare-dispatchwt-abc123`;
+      const paths = [`${gitCommonDir}/objects`, `${gitCommonDir}/refs`, `${gitCommonDir}/logs`, worktreeAdminDir];
+
+      test("emits exactly the four subpaths as read-write re-allows, never the bare .git root", () => {
+        const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false, writablePaths: paths });
+        for (const p of paths) {
+          expect(profile).toContain(`(allow file-write* (subpath ${JSON.stringify(p)}))`);
+          expect(profile).toContain(`(allow file-read* (subpath ${JSON.stringify(p)}))`);
+        }
+        expect(profile).not.toContain(`(allow file-write* (subpath ${JSON.stringify(gitCommonDir)}))`);
+        expect(profile).not.toContain(`(allow file-read* (subpath ${JSON.stringify(gitCommonDir)}))`);
+      });
+
+      test("never re-allows hooks or config, read or write, even though sibling subpaths of the same .git are granted", () => {
+        const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false, writablePaths: paths });
+        expect(profile).not.toContain(`${gitCommonDir}/hooks`);
+        expect(profile).not.toContain(`${gitCommonDir}/config`);
+      });
+
+      test("bubblewrap: --bind per exact subpath, never one --bind of the whole .git directory", () => {
+        const detection: SandboxDetection = { platform: "linux", primitive: "bubblewrap", level: "full", bin: "/usr/bin/bwrap" };
+        const wrapped = wrapForSandbox(["codex"], { cwd: "/a/b", allowNetwork: false, writablePaths: paths }, detection);
+        for (const p of paths) expect(wrapped.argv).toEqual(expect.arrayContaining(["--bind", p, p]));
+        expect(wrapped.argv).not.toContain(gitCommonDir);
+        expect(wrapped.argv).not.toContain(`${gitCommonDir}/hooks`);
+        expect(wrapped.argv).not.toContain(`${gitCommonDir}/config`);
+      });
     });
   });
 
