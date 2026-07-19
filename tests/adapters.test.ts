@@ -2,7 +2,7 @@ import { test, expect, describe } from "bun:test";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { loadRepo } from "../src/repo.ts";
 import { assembleContext } from "../src/context.ts";
 import { loadPricing } from "../src/pricing.ts";
@@ -1171,6 +1171,31 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
       const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
       expect(doc).toContain("sandbox: none");
       expect(doc).toContain("MARKER-checkout-flow"); // the real, unwrapped spawn still ran and succeeded.
+    } finally {
+      rmSync(projectRepo, { recursive: true, force: true });
+    }
+  });
+
+  // NOTES R4-SANDBOX-FIX (macOS host verification): proves `sandboxWrap` actually threads the studio
+  // root / interpreter directory into the wrapped argv's `readOnlyPaths`, without needing a real,
+  // working bwrap/sandbox-exec to observe it — a fake "bubblewrap" whose `bin` is really `/bin/echo`
+  // (a real, always-present binary on this Linux container) just echoes back whatever argv it was
+  // handed, which is exactly what wrapForSandbox constructs for a real bwrap call.
+  test("readOnlyPaths threaded into the wrapped argv include the studio root and the running interpreter's own directory", async () => {
+    const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+    try {
+      const repo = repoWithRealStorefrontRepo(projectRepo);
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        cliCommand: () => ["cat", "/dev/null"],
+        sandboxDetection: { platform: "linux", primitive: "bubblewrap", level: "full", bin: "/bin/echo" },
+      });
+      const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+      expect(doc).toContain(repo.root);
+      expect(doc).toContain(dirname(process.execPath));
     } finally {
       rmSync(projectRepo, { recursive: true, force: true });
     }

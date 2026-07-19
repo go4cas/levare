@@ -9,7 +9,7 @@
 // this file only proves detection/construction logic, which is host-independent by design.
 
 import { test, expect, describe } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { detectSandbox, wrapForSandbox, buildSandboxExecProfile, type SandboxDetection } from "../src/sandbox.ts";
@@ -143,6 +143,12 @@ describe("wrapForSandbox — pure argv construction, no OS sandbox required to v
     expect(wrapped.argv).not.toContain("/work/scratch-home");
   });
 
+  test("bubblewrap: extra readOnlyPaths (studio root, interpreter dir) are ro-bind-try'd alongside the platform baseline", () => {
+    const detection: SandboxDetection = { platform: "linux", primitive: "bubblewrap", level: "full", bin: "/usr/bin/bwrap" };
+    const wrapped = wrapForSandbox(["codex"], { ...policy, readOnlyPaths: ["/studio/root", "/opt/homebrew/bin"] }, detection);
+    expect(wrapped.argv).toEqual(expect.arrayContaining(["--ro-bind-try", "/studio/root", "/studio/root", "--ro-bind-try", "/opt/homebrew/bin", "/opt/homebrew/bin"]));
+  });
+
   test("unshare fallback: fs-only, bind-mounts cwd/home, no network attempt at all", () => {
     const detection: SandboxDetection = { platform: "linux", primitive: "unshare", level: "fs-only", bin: "/usr/bin/unshare" };
     const wrapped = wrapForSandbox(["codex", "run"], policy, detection);
@@ -177,6 +183,12 @@ describe("wrapForSandbox — pure argv construction, no OS sandbox required to v
     expect(wrapped.argv[2]).not.toContain("(deny network*)");
   });
 
+  test("sandbox-exec: extra readOnlyPaths (studio root, interpreter dir) are opened for reads too", () => {
+    const detection: SandboxDetection = { platform: "darwin", primitive: "sandbox-exec", level: "full", bin: "/usr/bin/sandbox-exec" };
+    const wrapped = wrapForSandbox(["codex"], { ...policy, readOnlyPaths: ["/studio/root"] }, detection);
+    expect(wrapped.argv[2]).toContain('(allow file-read* (subpath "/studio/root"))');
+  });
+
   test("none: argv passes through completely unchanged — never a thrown error for an unsandboxed platform", () => {
     const detection: SandboxDetection = { platform: "linux", primitive: "none", level: "none" };
     const wrapped = wrapForSandbox(["codex", "run", "--flag"], policy, detection);
@@ -204,6 +216,40 @@ describe("buildSandboxExecProfile — text worth asserting on directly (never li
   test("quotes an embedded quote in a path safely rather than breaking the profile string", () => {
     const profile = buildSandboxExecProfile({ cwd: '/a/"b', allowNetwork: false });
     expect(profile).toContain('/a/\\"b');
+  });
+
+  // NOTES R4-SANDBOX-FIX (macOS host verification): sandbox-exec's own `(subpath ...)` rules match the
+  // KERNEL-RESOLVED path — macOS's `/tmp`/`/var/folders` (where every scratch worktree/HOME this module
+  // scopes actually lives) are themselves symlinks into `/private`, so a profile written with the
+  // pre-resolution path silently never matched, denying the exact reach the sandbox exists to allow. This
+  // is provable on ANY platform (Linux symlinks work identically for this purpose) without needing a live
+  // macOS host — only whether `sandbox-exec` itself then enforces it needs one (see this file's own header).
+  test("canonicalizes cwd/home/readOnlyPaths through a real symlink before writing them into the profile", () => {
+    const real = mkdtempSync(join(tmpdir(), "levare-sandbox-real-"));
+    const parent = mkdtempSync(join(tmpdir(), "levare-sandbox-linkparent-"));
+    const link = join(parent, "tmp-like-symlink");
+    symlinkSync(real, link);
+    try {
+      const cwd = join(link, "worktree");
+      const home = join(link, "home");
+      mkdirSync(cwd, { recursive: true });
+      mkdirSync(home, { recursive: true });
+      const profile = buildSandboxExecProfile({ cwd, home, allowNetwork: false, readOnlyPaths: [link] });
+      // The SYMLINKED path never appears as its own subpath clause — only the resolved, real path does.
+      expect(profile).not.toContain(`(subpath ${JSON.stringify(cwd)})`);
+      expect(profile).toContain(`(allow file-write* (subpath ${JSON.stringify(join(real, "worktree"))}))`);
+      expect(profile).toContain(`(allow file-write* (subpath ${JSON.stringify(join(real, "home"))}))`);
+      expect(profile).toContain(`(allow file-read* (subpath ${JSON.stringify(real)}))`);
+    } finally {
+      rmSync(real, { recursive: true, force: true });
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  test("a path that doesn't exist on disk resolves to itself, never throws — this module's own pure unit tests above rely on exactly this", () => {
+    expect(() => buildSandboxExecProfile({ cwd: "/definitely/does/not/exist/anywhere", allowNetwork: false })).not.toThrow();
+    const profile = buildSandboxExecProfile({ cwd: "/definitely/does/not/exist/anywhere", allowNetwork: false });
+    expect(profile).toContain('(allow file-write* (subpath "/definitely/does/not/exist/anywhere"))');
   });
 });
 

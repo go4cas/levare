@@ -26,7 +26,7 @@
 // AdapterError.
 
 import { existsSync, statSync, accessSync, constants as fsConstants } from "node:fs";
-import { isAbsolute, join as pathJoin } from "node:path";
+import { isAbsolute, dirname, join as pathJoin } from "node:path";
 import { normalizeReceipt } from "./receipts.ts";
 import { buildMemberEnv, teamOf, subscriptionConnector, scopeHome, memberNetworkAllowed } from "./env.ts";
 import { allowedTools } from "./guardrails.ts";
@@ -395,6 +395,20 @@ function preflightCli(member: string, argv: string[], cwd: string | undefined, p
   } else if (Bun.which(argv0, { PATH: pathEnv ?? "" }) === null) {
     throw new AdapterError(`agent '${member}': command '${argv0}' not found on PATH`);
   }
+}
+
+// NOTES R4-SANDBOX-FIX: the SAME resolution `preflightCli` above already checks, but returning the
+// resolved absolute path rather than a bare boolean — `sandboxWrap` uses it to allowlist wherever this
+// dispatch's own argv[0] actually lives (a Homebrew/user-local install, `~/.bun`, anything the platform's
+// own static allowlist doesn't already cover), never a second, drifting copy of the same lookup.
+// `undefined` when unresolvable — `preflightCli` is what fails the dispatch for that case; this function
+// only ever runs alongside a preflight check that already passed.
+function resolveArgv0(argv0: string, cwd: string | undefined, pathEnv: string | undefined): string | undefined {
+  if (argv0.includes("/")) {
+    const resolved = isAbsolute(argv0) ? argv0 : pathJoin(cwd ?? process.cwd(), argv0);
+    return existsSync(resolved) ? resolved : undefined;
+  }
+  return Bun.which(argv0, { PATH: pathEnv ?? "" }) ?? undefined;
 }
 
 function isExecutableFile(p: string): boolean {
@@ -820,9 +834,20 @@ export class AdapterRunner implements MemberRunner {
   // process, so wrapping its argv would assert something about bwrap/unshare rather than about the
   // adapter's own logic (the identical reasoning `preflightCli`'s own `this.spawn === bunSpawn` guard
   // already applies, immediately below).
+  //
+  // NOTES R4-SANDBOX-FIX (macOS host verification): `readOnlyPaths` always includes the studio root
+  // (`this.repo.root` — a command checked into the studio, or a `context_artifacts: paths` member's own
+  // consumed-artifact reads, both need it; a live macOS run proved excluding it broke most of this
+  // repo's own real-spawn test fixtures, which is exactly the "read reach a vendor CLI actually needs"
+  // this module's own header names, not a loophole), the running levare binary's own directory
+  // (`process.execPath` — many of this repo's own fixtures spawn `bun` itself), and wherever THIS
+  // dispatch's own argv[0] resolves to (`resolveArgv0` — a Homebrew/user-local install, `~/.bun`,
+  // anything the platform's static allowlist doesn't already cover).
   private sandboxWrap(argv: string[], cwd: string | undefined, req: InvokeRequest): { argv: string[]; level: SandboxLevel } {
     const detection = this.opts.sandboxDetection ?? detectSandbox();
-    const policy: SandboxPolicy = { cwd: cwd ?? process.cwd(), home: req.env.HOME, allowNetwork: memberNetworkAllowed(this.repo, req.member) };
+    const resolvedBin = argv[0] ? resolveArgv0(argv[0], cwd, req.env.PATH) : undefined;
+    const readOnlyPaths = [this.repo.root, dirname(process.execPath), ...(resolvedBin ? [dirname(resolvedBin)] : [])];
+    const policy: SandboxPolicy = { cwd: cwd ?? process.cwd(), home: req.env.HOME, allowNetwork: memberNetworkAllowed(this.repo, req.member), readOnlyPaths };
     return wrapForSandbox(argv, policy, detection);
   }
 

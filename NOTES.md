@@ -8703,12 +8703,126 @@ none`, this container's own honest, unavoidable reality, and the frozen `expecte
 compares only final artifact STATUSES, never frontmatter fields like `sandbox:` — is unaffected by
 construction). `bun run build` → succeeds.
 
-## Honest residual
+## Honest residual (closed by NOTES R4-SANDBOX-FIX, below)
 
-A `cli` member declaring `context_artifacts: paths` that also runs under a working `full`-tier sandbox can
-no longer read its consumed-artifact paths off the studio filesystem — the enumerated read-only allowlist
-that makes the decoy-file test's "nothing else" literal does not include the studio root. Named here, in
-`docs/current-gaps.md`, and in `docs/guide/06-operations.md` rather than silently left for a future session
-to rediscover as a live bug; fixing it (e.g. adding the studio root read-only to the allowlist, or teaching
-`context_artifacts: paths` to fall back to `inline` under a detected sandbox) is real, additional scope this
-goal's own achieved-when criteria never asked for.
+The first draft of this goal excluded the studio root from the sandbox's own read-only allowlist entirely
+— a `cli` member declaring `context_artifacts: paths` that also ran under a working `full`-tier sandbox
+could no longer read its consumed-artifact paths off the studio filesystem. Named here as a residual,
+rather than silently left for a future session to rediscover as a live bug. **Closed by the very first
+live macOS verification run** (NOTES R4-SANDBOX-FIX): excluding the studio root turned out to break far
+more than `context_artifacts: paths` specifically — it broke nearly every real-spawn test fixture in this
+repo's own suite, since most of them spawn a script or interpreter that lives in the studio tree. The
+studio root is now a deliberate, always-included read-only exception; see that entry for the full account.
+
+# NOTES R4-SANDBOX-FIX — the first live macOS verification run, and what it actually broke
+
+A host-verification report came back from macOS: 20 pre-existing tests plus 2 of this goal's own new tests
+failed, all on real-CLI-spawn paths, with `sandbox-exec` reported as genuinely FUNCTIONAL for the first
+time (this repo's own dev container is Linux-only and has never once been able to exercise this code path
+for real — every prior verification of the macOS branch was construction-only, per NOTES R4-SANDBOX's own
+honest framing). Two independent root causes, both fixed without weakening the sandbox itself.
+
+## Root cause 1 — macOS path canonicalization (the report's own primary hypothesis, confirmed)
+
+`sandbox-exec`'s `(subpath ...)` rules match the KERNEL-RESOLVED (canonical) form of a path. macOS's
+`/tmp` and `/var/folders` — where `os.tmpdir()` lives, and therefore where every scratch worktree
+(`merge.ts#createDispatchWorktree`) and scratch HOME (`env.ts#scopeHome`) this goal creates actually sits
+— are themselves symlinks into `/private`. `buildSandboxExecProfile` was writing the PRE-resolution path
+into the profile's `(subpath ...)` clauses; Seatbelt evaluated every rule against the RESOLVED path and
+never matched, denying the sandboxed process access to exactly the worktree/HOME it was supposed to be
+allowed. The report named the precedent precisely: the same lesson as the phase-1 immutability fix (commit
+b9ae0f1) — a path comparison that ignores the filesystem's own symlink layer is comparing the wrong thing.
+
+**Fix:** `sandbox.ts#canon` (`realpathSync`, falling back to the literal string when the path doesn't
+exist — this module's own pure unit tests pass fixture paths like `/work/scratch-wt` that are never
+created on disk, and must keep resolving to themselves rather than throwing) is now applied to every path
+`buildSandboxExecProfile` writes into the profile: `cwd`, `home`, and every entry of the new
+`readOnlyPaths`/baseline-system-path lists (root cause 2, below). Proven directly, not just asserted wired:
+`tests/sandbox.test.ts` creates a REAL symlink (any platform — the mechanism is identical, only whether
+Seatbelt then enforces it needs a live macOS host) and asserts the generated profile names the symlink's
+RESOLVED target, never the symlink path itself.
+
+**Deliberately NOT applied to bubblewrap (Linux).** Bubblewrap constructs its OWN fresh, empty root and
+mounts SRC (kernel-resolved through symlinks automatically, via the ordinary semantics of `mount --bind`)
+onto DEST at the literal path string the spawned process will actually `chdir`/open. Canonicalizing DEST
+would risk creating the bound directory at a DIFFERENT path than the one the process is told to use — on
+a host where `/tmp` is a plain directory (this repo's own verified dev-container reality, and the common
+Linux case), that's a real, unverified risk this fix does not take on for no proven benefit. Named
+explicitly in `sandbox.ts`'s own header rather than left as an unexplained asymmetry between the two
+Linux/macOS code paths.
+
+## Root cause 2 — the enumerated allowlist excluded ordinary, expected CLI reach
+
+The original design (NOTES R4-SANDBOX) deliberately excluded the studio root and wherever the spawned
+interpreter's own binary lives, on the theory that "nothing else" should be as strict as the goal's own
+wording technically allowed. The live run proved that theory wrong in PRACTICE, not just in the one
+`context_artifacts: paths` case the original honest-residual section named: nearly every real-CLI-spawn
+test in this repo's OWN suite spawns either a stub script checked into the studio tree, or `bun` itself —
+and BOTH live outside the pre-fix allowlist. 20 of 20 macOS failures were exactly this, including two of
+this goal's own new tests (the two-concurrent-dispatch worktree test and the "can still read its own
+worktree" test — `cat`/`sh` themselves resolve from a Homebrew or system location the pre-fix allowlist
+never named, and the worktree/marker-file reads depend on the SAME canonicalization fix as root cause 1).
+
+**Fix, three parts, additive to `SandboxPolicy`:**
+1. **The studio root, always.** `adapters.ts#sandboxWrap` now includes `this.repo.root` in every
+   dispatch's `readOnlyPaths` — a command checked into the studio, or a `context_artifacts: paths`
+   member's own consumed-artifact reads, both need it. This directly closes the honest residual NOTES
+   R4-SANDBOX itself named, and turned out to be load-bearing for far more than that one case.
+2. **The running levare binary's own directory** (`dirname(process.execPath)`) — many of this repo's own
+   fixtures spawn `bun` itself as the CLI command (`stubCliCommand`, replay.ts's own `--stubs` machinery).
+3. **Wherever THIS dispatch's own argv[0] resolves to** (`adapters.ts#resolveArgv0`, a new function
+   mirroring `preflightCli`'s own resolution logic — returning the resolved path rather than a boolean,
+   reused rather than duplicated) — a Homebrew/user-local install, `~/.bun`, anything the platform's
+   static baseline doesn't already cover. `SANDBOX_EXEC_READONLY_PATHS` also gained `/opt/homebrew` and
+   `/usr/local` unconditionally (Apple Silicon and Intel Homebrew prefixes respectively) as a static
+   safety net for dynamic libraries a resolved binary might load from a SIBLING directory, which (2)/(3)
+   alone wouldn't cover.
+
+`SandboxPolicy` gained `readOnlyPaths?: string[]` to carry (1)-(3) uniformly into both `bubblewrapArgv`
+(each via `--ro-bind-try`, silently skipping one that doesn't exist — same posture as the platform
+baseline) and `buildSandboxExecProfile` (each canonicalized via `canon`, same as `cwd`/`home`).
+
+## The "1 error" alongside the 20 failures
+
+Not independently isolated — the report's raw log didn't carry a distinct stack trace for it, only the
+named 20 test failures. Read as a symptom of the SAME root causes: several of the 20 failing tests spin up
+a real daemon/board/server (`levare serve`'s own non-blocking CLI dispatch, the daemon's own gate-walking
+loop) whose background tick fires an async CLI spawn the test itself never directly awaits — a spawn that
+failed for the same profile reasons above, rejecting a promise outside the specific test's own assertion
+chain, is a plausible, unverified-but-consistent explanation for one extra top-level "error" distinct from
+the 20 named failures. Not chased further as its own defect: fixing the two root causes above removes the
+underlying spawn failure the same way for every caller, named or not — a symptom that shares its cause with
+20 already-diagnosed failures does not need a 21st independent diagnosis.
+
+## Regression proof added from inside this (Linux) container
+
+- `tests/sandbox.test.ts`: a real symlink, created fresh per test, proving `buildSandboxExecProfile`
+  canonicalizes `cwd`/`home`/`readOnlyPaths` to the symlink's RESOLVED target, never the symlink path
+  itself; a path that doesn't exist on disk still resolves to itself rather than throwing (the exact
+  behaviour every pre-existing pure unit test in this file already depended on); `wrapForSandbox`'s
+  `readOnlyPaths` support proven for both `bubblewrapArgv` (`--ro-bind-try` pairs) and
+  `buildSandboxExecProfile` (`(allow file-read* (subpath ...))` clauses).
+- `tests/adapters.test.ts`: a new integration test substitutes a fake "bubblewrap" whose `bin` is really
+  `/bin/echo` (a real, always-present binary on this Linux container) so the ACTUAL wrapped argv —
+  including the studio root and the running interpreter's own directory — is directly observable in the
+  produced artifact's own content, without needing a real, working bwrap/sandbox-exec to verify the
+  WIRING specifically (as opposed to the OS's own enforcement, which genuinely needs the live host — see
+  below).
+
+## What still, honestly, requires a live macOS (or a Linux host with a genuinely working bubblewrap/
+## unshare) to prove
+
+This container can prove: the profile/argv CONSTRUCTION is correct (canonicalization, the enumerated
+allowlist's shape, `readOnlyPaths` threading) and that the WIRING reaches every real cli spawn (the
+`/bin/echo`-as-bwrap trick, the `sandboxDetection: {level: "none"}` deterministic override). It cannot
+prove that `sandbox-exec`/`bubblewrap`/`unshare` THEMSELVES, given the corrected profile/argv, actually
+grant exactly the reach intended and deny everything else — that requires a kernel that will actually run
+the primitive, which this dev container's own outer seccomp policy structurally prevents for BOTH Linux
+primitives, and which no Linux host can prove for `sandbox-exec` at all. Concretely, still unverified live:
+whether the corrected macOS profile now passes this repo's own full suite end to end (the report that
+triggered this fix named the failures but this fix has not yet been re-verified on that same host); whether
+`/opt/homebrew`/`/usr/local`'s inclusion is sufficient for every real vendor CLI's own dynamic-library needs
+on macOS, or whether some vendor CLI needs a further, not-yet-discovered path; and the `unshare` fs-only
+fallback's own real behaviour on ANY host (this container's own `unshare --user --map-root-user --mount`
+fails for the identical reason `bwrap` does, so it has never once actually run for real, on any platform,
+in this project's history). Each of these is named here rather than assumed fixed by construction alone.

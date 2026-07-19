@@ -147,16 +147,23 @@ forwarding and a symlinked, per-run scoped `HOME` (the section above) close part
 a working primitive exists on the host — `bubblewrap` on Linux (falling back to a raw `unshare`
 confinement when `bubblewrap` isn't installed but the kernel still allows it), a generated `sandbox-exec`
 profile on macOS. Filesystem is a hard limit when a primitive works: the member's process can reach its
-own per-dispatch git worktree, its own scoped `HOME`, and a small set of read-only system paths — nothing
-else, not even the studio's own files, proven by a decoy-file test that plants a file outside that reach
-and confirms it is genuinely unreadable from inside the sandboxed run. Network is best-effort — denied
-unless the member holds a connector granting it somewhere to reach. **Detection is never assumed from the
-platform:** a host can have `bubblewrap` on `PATH` and still not actually support it (this project's own
-dev container is exactly that case — unprivileged user namespaces disabled by the outer container), and
-levare probes a real invocation before trusting either primitive, at both `levare doctor` time and at
-every spawn. When neither primitive works, the spawn proceeds unsandboxed rather than failing — a
-Conductor ruling, not an oversight — and `levare doctor`/`levare validate`/the registry all say so
-plainly (`SANDBOX_UNAVAILABLE`, the sibling to `CLI_TOOLS_NOT_ENFORCEABLE` above), with the actual
+own per-dispatch git worktree, its own scoped `HOME`, the studio root itself (read-only — so a command
+checked into the studio, and a `context_artifacts: paths` member's own consumed-artifact reads, both keep
+working), the running levare binary's own install and wherever the member's own interpreter resolves to,
+and a small set of baseline system paths — nothing else; a decoy file anywhere outside that reach is
+genuinely unreadable, proven by a dedicated test. Network is best-effort — denied unless the member holds
+a connector granting it somewhere to reach. **Detection is never assumed from the platform:** a host can
+have `bubblewrap` on `PATH` and still not actually support it (this project's own dev container is exactly
+that case — unprivileged user namespaces disabled by the outer container), and levare probes a real
+invocation before trusting either primitive, at both `levare doctor` time and at every spawn. A live macOS
+run — the first host where `sandbox-exec` actually engaged — caught two real bugs the Linux-only dev
+container couldn't: macOS's `/tmp` is a symlink into `/private`, which `sandbox-exec`'s own path rules
+don't follow the way a shell would, so every path in the generated profile is now canonicalized before
+it's written in; and the original design left out the studio root and the interpreter's own install
+location, which is exactly the reach an ordinary vendor CLI needs (NOTES R4-SANDBOX-FIX). When neither
+primitive works, the spawn proceeds unsandboxed rather than failing — a Conductor ruling, not an oversight
+— and `levare doctor`/`levare validate`/the registry all say so plainly (`SANDBOX_UNAVAILABLE`, the
+sibling to `CLI_TOOLS_NOT_ENFORCEABLE` above), with the actual
 enforcement level (`full` / `fs-only` / `none`) recorded on the produced artifact every run. Treat a
 `cli` member with the same caution you'd treat any script you're about to run regardless: know what the
 binary is, and grant it only what it needs — the sandbox narrows the blast radius of a mistake, it

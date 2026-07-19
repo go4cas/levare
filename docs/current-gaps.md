@@ -101,29 +101,46 @@ unscoped `HOME`) and gets a new `SUBSCRIPTION_NO_HOME` warning, the sibling to `
 (NOTES C15). This narrows, but does not close, "Per-member subscription-credential scoping" below — see
 that entry for the residual `home:` itself cannot fix.
 
-**OS-level sandboxing (v2) — closed (NOTES R4-SANDBOX, Ruling 2).** Process isolation between a `cli`
-member's spawned process and the operating system — the one item parts A and B both named but
-deliberately left unbuilt — now exists, best-effort and per-OS, honestly reported. Both real `cli` spawn
-paths (`adapters.ts`'s sync and async `CliSpawn` boundaries) wrap the member process in an OS sandbox
-where a working primitive exists on the host, detected fresh at every spawn (never assumed from the
-platform: a binary can be present and non-functional, e.g. this repo's own dev container, where
-`bubblewrap`/`unshare` are both on `PATH` but fail every invocation because the outer container disables
-unprivileged user namespaces). Filesystem is a hard condition when a primitive works: the process can
-reach its per-dispatch worktree (Ruling 1, above) read-write, its `scopeHome` scratch `HOME` (NOTES
-CAP-B) read-write, and a small enumerated set of read-only system paths (`/usr`, `/bin`, `/lib`,
-`/lib64`, `/etc` on Linux) — nothing else; a decoy file anywhere else, including the studio root itself,
-is genuinely unreadable, proven by a dedicated test. Network is best-effort — denied unless the member
-holds at least one granted connector (every connector this codebase has IS levare's own way of declaring
-an external reach). Per-OS: Linux tries `bubblewrap` first (level `full` — filesystem AND network),
-falling back to a raw `unshare` mount-namespace confinement (level `fs-only` — filesystem only, weaker
-than `full`: it confines writes to the declared roots via a read-only remount of `/`, but does not
-additionally hide unlisted read-only paths the way bubblewrap's empty-root construction does); macOS
-uses a generated `sandbox-exec` profile (level `full`, exercised only by construction in this repo's own
-test suite — never live, since this repo runs on Linux). No working primitive on either OS → an
-unsandboxed spawn (level `none`) — a Conductor ruling, never escalated to a spawn failure — plus a new
-`SANDBOX_UNAVAILABLE` doctor/validate/registry warning, sibling to `CLI_TOOLS_NOT_ENFORCEABLE` above. The
-enforcement level actually used is recorded on the produced artifact (`sandbox: full | fs-only | none`),
-per run, never omitted.
+**OS-level sandboxing (v2) — closed (NOTES R4-SANDBOX, Ruling 2; hardened by a live macOS run, NOTES
+R4-SANDBOX-FIX).** Process isolation between a `cli` member's spawned process and the operating system —
+the one item parts A and B both named but deliberately left unbuilt — now exists, best-effort and per-OS,
+honestly reported. Both real `cli` spawn paths (`adapters.ts`'s sync and async `CliSpawn` boundaries) wrap
+the member process in an OS sandbox where a working primitive exists on the host, detected fresh at every
+spawn (never assumed from the platform: a binary can be present and non-functional, e.g. this repo's own
+Linux dev container, where `bubblewrap`/`unshare` are both on `PATH` but fail every invocation because the
+outer container disables unprivileged user namespaces). Filesystem is a hard condition when a primitive
+works: the process can reach its per-dispatch worktree (Ruling 1, above) read-write, its `scopeHome`
+scratch `HOME` (NOTES CAP-B) read-write, the studio root itself (read-only — a command checked into the
+studio, or a `context_artifacts: paths` member's own consumed-artifact reads, both need it), the running
+levare binary's own directory and wherever this dispatch's own interpreter resolves to (read-only), and a
+small enumerated set of baseline system paths (`/usr`, `/bin`, `/lib`, `/lib64`, `/etc` on Linux; on macOS
+also `/opt/homebrew`, `/usr/local`, since a vendor CLI or its interpreter very commonly lives there) —
+nothing else; a decoy file anywhere outside that list is genuinely unreadable, proven by a dedicated test.
+Network is best-effort — denied unless the member holds at least one granted connector (every connector
+this codebase has IS levare's own way of declaring an external reach). Per-OS: Linux tries `bubblewrap`
+first (level `full` — filesystem AND network), falling back to a raw `unshare` mount-namespace confinement
+(level `fs-only` — filesystem only, weaker than `full`: it confines writes to the declared roots via a
+read-only remount of `/`, but does not additionally hide unlisted read-only paths the way bubblewrap's
+empty-root construction does); macOS uses a generated `sandbox-exec` profile (level `full`). No working
+primitive on either OS → an unsandboxed spawn (level `none`) — a Conductor ruling, never escalated to a
+spawn failure — plus a new `SANDBOX_UNAVAILABLE` doctor/validate/registry warning, sibling to
+`CLI_TOOLS_NOT_ENFORCEABLE` above. The enforcement level actually used is recorded on the produced artifact
+(`sandbox: full | fs-only | none`), per run, never omitted.
+
+**Honestly, in two parts.** The FIRST live run of this feature was on macOS — the only host in this
+project's history where `sandbox-exec` actually engaged rather than reporting `none` — and it failed 20
+pre-existing tests plus the two new decoy/read-back tests, all real-spawn paths. Root causes, both fixed
+(NOTES R4-SANDBOX-FIX): macOS's `/tmp`/`/var/folders` are symlinks into `/private`, and `sandbox-exec`'s
+own path rules match the KERNEL-RESOLVED form — every path written into the generated profile is now
+`realpathSync`-canonicalized first; and the original design excluded the studio root and the interpreter's
+own install location entirely, which broke nearly every real CLI fixture this repo's own suite spawns
+(stub scripts and `bun` itself, both living outside the original enumerated allowlist) — both are now
+explicitly included, per dispatch. What COULD be verified without a live macOS host (canonicalization
+logic, argv/profile construction, the enumerated-allowlist shape) was; what could only be proven by
+actually running there (bubblewrap's own Linux behaviour beyond this repo's own dev container, `unshare`'s
+fs-only fallback anywhere, and now sandbox-exec's ACTUAL enforcement of the corrected profile) still
+wasn't, and is named rather than assumed — see NOTES R4-SANDBOX-FIX's own "still requires a live host"
+list.
 
 ## Connector trust-tier taxonomy
 

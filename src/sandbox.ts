@@ -21,16 +21,26 @@
 //
 // Filesystem, at the "full" tier, is a HARD condition taken literally: the process can reach its
 // per-dispatch worktree (merge.ts#createDispatchWorktree, read-write), its scopeHome scratch HOME
-// (env.ts#scopeHome, read-write), and a small, ENUMERATED set of read-only system paths a vendor CLI's
-// own interpreter/libraries need to resolve (`/usr`, `/bin`, `/lib`, `/lib64`, `/etc`, `/dev`, `/proc`)
-// — nothing else. Bubblewrap builds this root from an empty `--tmpfs /` rather than `--ro-bind / /`,
-// specifically so "nothing else" is true of READS too, not just writes: a decoy anywhere outside that
-// list — including the studio root itself — is genuinely unreadable, proven directly by this module's
-// own decoy-file test (tests/adapters.test.ts). The named, honest cost: a member declaring
-// `context_artifacts: paths` (context.ts) that ALSO gets sandboxed can no longer read its consumed
-// artifacts off the studio filesystem the way an unsandboxed member could — recorded as a residual
-// (NOTES R4-SANDBOX), not silently papered over with a broader allowlist that would have defeated the
-// decoy test's own point.
+// (env.ts#scopeHome, read-write), a small ENUMERATED set of read-only system paths a vendor CLI's own
+// interpreter/dynamic linker/libraries need to resolve, the studio root itself (read-only — a command
+// checked into the studio, or a `context_artifacts: paths` member's consumed-artifact reads, both need
+// this), and the currently-running levare binary's own directory plus wherever THIS dispatch's own
+// argv[0] resolves to (read-only — the interpreter actually being spawned) — nothing else. A decoy
+// anywhere outside that list — an unrelated scratch directory, the operator's own home, another user's
+// files — is genuinely unreadable, proven directly by this module's own decoy-file test
+// (tests/adapters.test.ts).
+//
+// NOTES R4-SANDBOX-FIX (macOS host verification, first live run): the original design excluded the
+// studio root entirely, on the theory that "nothing else" should be as strict as possible. A live macOS
+// run — where `sandbox-exec` actually engages, unlike this repo's own Linux dev container, which only
+// ever detects `none` — proved that theory wrong in practice: most of this repo's OWN test fixtures spawn
+// commands (stub scripts, `bun` itself) that live IN the studio tree, and every one of them broke. The
+// studio root is now a deliberate, named exception to "nothing else" — narrower than the pre-fix
+// "ro-bind the whole disk" design this module never shipped, but broader than the post-fix-attempt
+// "enumerated system paths only" design that turned out to break ordinary, expected usage.
+//
+// Bubblewrap builds its root from an empty `--tmpfs /` rather than `--ro-bind / /`, so "nothing else" is
+// still true of reads for everything NOT explicitly named above.
 //
 // "fs-only" (the unshare fallback) is honestly WEAKER, not merely net-less: reconstructing bubblewrap's
 // own empty-root-plus-allowlist construction by hand, without bwrap's own tooling, is real additional
@@ -39,8 +49,24 @@
 // the declared roots, but a decoy elsewhere on disk remains READABLE (never writable) under this tier
 // specifically — the decoy-file test therefore only asserts against "full", and this asymmetry is named
 // here rather than implied to be uniform across tiers.
+//
+// macOS path canonicalization (NOTES R4-SANDBOX-FIX): `sandbox-exec`'s `(subpath ...)` rules match the
+// KERNEL-RESOLVED (canonical) form of a path, not whatever string happened to be passed to it — and on
+// macOS, `/tmp` and `/var/folders` (where `os.tmpdir()` lives) are themselves symlinks into `/private`.
+// A profile written with the pre-resolution path silently never matches, denying access to exactly the
+// worktree/scratch-HOME the sandbox exists to allow. `buildSandboxExecProfile` resolves every path
+// through `realpathSync` (falling back to the literal string when the path doesn't exist, e.g. this
+// module's own pure unit tests) before writing it into a `(subpath ...)` clause — the same lesson as the
+// phase-1 immutability fix (commit b9ae0f1): a path comparison that ignores the filesystem's own symlink
+// layer is comparing the wrong thing. Bubblewrap (Linux) is NOT given the same treatment: it constructs
+// its sandboxed root by mounting SRC (kernel-resolved through symlinks automatically, by the ordinary
+// semantics of `mount --bind`) onto DEST at the literal path string the spawned process will actually
+// `chdir`/open — canonicalizing DEST would risk creating the bound directory at a DIFFERENT path than the
+// one the process is told to use, which on a host where `/tmp` is a plain directory (the common Linux
+// case, and this repo's own verified dev-container reality) is unnecessary, unverified-on-a-symlinked-Linux-
+// host risk this fix does not take on.
 
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 
 export type SandboxLevel = "full" | "fs-only" | "none";
 export type SandboxPrimitive = "bubblewrap" | "unshare" | "sandbox-exec" | "none";
@@ -123,6 +149,13 @@ export interface SandboxPolicy {
    * external reach (an mcp server, a wrapped tool's remote backend, a subscription model's own API) —
    * holding none is the only case with nothing to reach for. */
   allowNetwork: boolean;
+  /** Read-only. Extra paths this specific dispatch needs beyond the platform's own baseline system
+   * paths — the studio root (adapters.ts always includes it: a command checked into the studio, or a
+   * `context_artifacts: paths` member's consumed-artifact reads, both need it), the running levare
+   * binary's own directory, and wherever this dispatch's own argv[0] resolves to (the interpreter
+   * actually being spawned, which may live somewhere the platform baseline doesn't cover — a
+   * Homebrew/user-local install, `~/.bun`, etc.). Absent/empty is a legal no-op. */
+  readOnlyPaths?: string[];
 }
 
 export interface WrappedSpawn {
@@ -151,6 +184,7 @@ const READONLY_SYSTEM_PATHS = ["/usr", "/bin", "/lib", "/lib64", "/etc"];
 function bubblewrapArgv(bin: string, argv: string[], policy: SandboxPolicy): string[] {
   const out = [bin, "--tmpfs", "/"];
   for (const p of READONLY_SYSTEM_PATHS) out.push("--ro-bind-try", p, p);
+  for (const p of policy.readOnlyPaths ?? []) out.push("--ro-bind-try", p, p);
   out.push("--dev", "/dev", "--proc", "/proc", "--bind", policy.cwd, policy.cwd);
   if (policy.home) out.push("--bind", policy.home, policy.home);
   if (!policy.allowNetwork) out.push("--unshare-net");
@@ -183,21 +217,48 @@ function sbxq(s: string): string {
 
 // The macOS equivalent of READONLY_SYSTEM_PATHS above — the paths dyld/the standard frameworks actually
 // need to resolve a normal process, kept to the same "enumerated, not the whole disk" shape as the
-// bubblewrap tier for the SAME "full" guarantee across platforms.
-const SANDBOX_EXEC_READONLY_PATHS = ["/usr", "/bin", "/System", "/Library", "/private/etc"];
+// bubblewrap tier for the SAME "full" guarantee across platforms. `/opt/homebrew` (Apple Silicon) and
+// `/usr/local` (Intel, and generic Unix-local installs) are included unconditionally — NOTES
+// R4-SANDBOX-FIX's own live-host finding: a vendor CLI or the interpreter running it (`bun`, `git`,
+// `node`, …) very commonly lives under one of these on a real macOS dev machine, and neither is under
+// `/usr`/`/System`/`/Library`.
+const SANDBOX_EXEC_READONLY_PATHS = ["/usr", "/bin", "/System", "/Library", "/private/etc", "/opt/homebrew", "/usr/local"];
 
-/** Exported for its own unit test — the profile TEXT is the thing worth asserting on, independent of
- * ever running `sandbox-exec` for real (this container is Linux; the macOS path is exercised only by
- * construction, never live — recorded honestly, NOTES R4-SANDBOX, rather than claimed as verified). */
+/**
+ * NOTES R4-SANDBOX-FIX: `realpathSync`, falling back to the literal string when the path doesn't exist
+ * (this module's own pure unit tests pass fixture paths like `/work/scratch-wt` that are never actually
+ * created on disk — those must keep resolving to themselves, not throw). `sandbox-exec`'s `(subpath ...)`
+ * rules match the KERNEL-RESOLVED form of a path — on macOS, `/tmp` and `/var/folders` (where
+ * `os.tmpdir()` lives, and therefore where every scratch worktree/HOME this module scopes actually sits)
+ * are themselves symlinks into `/private`, so a profile written with the pre-resolution path silently
+ * never matches. The same lesson as the phase-1 immutability fix (commit b9ae0f1): a path comparison that
+ * ignores the filesystem's own symlink layer is comparing the wrong thing.
+ */
+function canon(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+/** Exported for its own unit test — the profile TEXT is the thing worth asserting on. The canonicalization
+ * this function performs is proven directly (a real symlinked tmp dir, asserting the profile names the
+ * RESOLVED path); the rest of the macOS path — `sandbox-exec` actually enforcing what the profile says —
+ * is exercised only by construction in this repo's own Linux-only test suite, never live (recorded
+ * honestly, NOTES R4-SANDBOX/R4-SANDBOX-FIX, rather than claimed as verified). */
 export function buildSandboxExecProfile(policy: SandboxPolicy): string {
+  const readOnly = [...SANDBOX_EXEC_READONLY_PATHS, ...(policy.readOnlyPaths ?? [])];
+  const cwd = canon(policy.cwd);
+  const home = policy.home ? canon(policy.home) : undefined;
   const lines = [
     "(version 1)",
     "(deny default)",
     "(allow process-fork)",
     "(allow process-exec)",
-    ...SANDBOX_EXEC_READONLY_PATHS.map((p) => `(allow file-read* (subpath ${sbxq(p)}))`),
-    `(allow file-write* (subpath ${sbxq(policy.cwd)}))`,
-    policy.home ? `(allow file-write* (subpath ${sbxq(policy.home)}))` : "",
+    ...readOnly.map((p) => `(allow file-read* (subpath ${sbxq(canon(p))}))`),
+    `(allow file-write* (subpath ${sbxq(cwd)}))`,
+    home ? `(allow file-write* (subpath ${sbxq(home)}))` : "",
     '(allow file-read* (subpath "/dev"))',
     '(allow file-write* (subpath "/dev"))',
     policy.allowNetwork ? "(allow network*)" : "(deny network*)",
@@ -210,11 +271,13 @@ function sandboxExecArgv(bin: string, argv: string[], policy: SandboxPolicy): st
 }
 
 /**
- * Wrap `argv` for the primitive `detection` reports — a pure function (no I/O), so the argv SHAPE for
- * every tier is directly unit-testable without ever invoking a real sandbox. `detection.primitive ===
- * "none"` returns `argv` unchanged, `level: "none"` — the honest unsandboxed-spawn case, never a thrown
- * error (the goal's own ruling: best-effort per OS, an unsandboxed platform is never escalated to a
- * spawn failure).
+ * Wrap `argv` for the primitive `detection` reports. Side-effect-free and directly unit-testable without
+ * ever invoking a real sandbox (`detection` is an ordinary value, not a live probe) — the `sandbox-exec`
+ * path does read the filesystem (`realpathSync`, to canonicalize a path before writing it into the
+ * profile — see `buildSandboxExecProfile`'s own doc), never writes anything, and never throws (a path
+ * that doesn't exist yet just resolves to itself). `detection.primitive === "none"` returns `argv`
+ * unchanged, `level: "none"` — the honest unsandboxed-spawn case, never a thrown error (the goal's own
+ * ruling: best-effort per OS, an unsandboxed platform is never escalated to a spawn failure).
  */
 export function wrapForSandbox(argv: string[], policy: SandboxPolicy, detection: SandboxDetection): WrappedSpawn {
   if (detection.primitive === "bubblewrap" && detection.bin) return { argv: bubblewrapArgv(detection.bin, argv, policy), level: "full" };
