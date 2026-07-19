@@ -10380,3 +10380,121 @@ succeeds. `bun run src/cli.ts validate fixtures/golden` → `valid`, the same tw
 match, byte-for-byte. `bun run scripts/repro-r4-sandbox-fix10-hang.ts` → exits cleanly on this container's
 own platform guard; the full extended ladder (steps 1-8 plus the fix-variant section) sanity-checked
 separately with the stand-in `/bin/echo` primitive to prove the harness itself runs without error.
+
+# NOTES R4-SANDBOX-FIX-13 — an inversion in FIX-12's own emission order, and the harness gap that let the
+# ladder miss it
+
+FIX-12's live confirmation run came back with the LAST test still failing — but this time as the exact
+INVERSE of FIX-11's own regression. The hooks decoy now PASSES (the write is correctly denied) while the
+worktree-commit test now FAILS: the member's own commit dies creating
+`.git/worktrees/<name>/index.lock`, `exit 128`, "Operation not permitted". **This flip — a decoy test and
+a capability test trading places — is itself the fingerprint of a seal-ordering bug**: the seal now denies
+EVERYWHERE, including where it must not.
+
+## Root cause
+
+Confirmed directly from the `LEVARE_SANDBOX_DEBUG` profile capture on the failing test: the generated
+sequence was `[four .git subpath re-allows] → [xcrun regex grants] → [deny .git root LAST]` — the exact
+inversion of the FIX-12 instruction ("deny root, THEN the four re-allows, so the re-allows win"). Seatbelt's
+own last-matching-rule-wins semantics means the trailing deny clobbers all four re-allows for every
+subsequent operation.
+
+The generator's OWN source code already had the CORRECT order (deny root, then the four subpath
+re-allows, positioned last, exactly as designed) — the inversion happened elsewhere: `adapters.ts#
+sandboxWrap` legitimately populates `policy.writablePaths` with the SAME four subpaths `gitWriteGrant.
+subpaths` also carries (bubblewrap reads ONLY `writablePaths` — it has no `gitWriteGrant` concept at all —
+so the caller must keep feeding it there for bubblewrap's own sake). `buildSandboxExecProfile`'s GENERIC
+`reallowWrites` block (fed from `writablePaths`) emits these subpaths' own `(allow file-write* ...)` lines
+EARLY — well before the xcrun grant and the reseal block. The FINAL `dedupe()` call over the WHOLE line
+array keeps the FIRST occurrence of a repeated line and silently drops the rest — so the reseal's own
+LATER, correctly-ordered re-allow (positioned last, exactly as designed) was dropped as "just a duplicate"
+of the EARLY one, leaving the reseal's `(deny file-write* root)` as the TRUE last-emitted rule for these
+paths, with no re-allow surviving after it. The generator's own text was correct; the FINAL, deduplicated
+output was not — a dedup pass across a whole profile is not order-neutral when the SAME line legitimately
+needs to appear at two different positions for two different reasons.
+
+## Fix
+
+`buildSandboxExecProfile` now excludes `gitWriteGrant.subpaths` from the generic `writable` computation
+(`policy.writablePaths` filtered to remove anything already in `gitWriteGrant.subpaths`, computed once,
+reused for both the read and write generic reallow lists) — these subpaths are now emitted EXACTLY ONCE,
+by the reseal block alone, wherever `buildSandboxExecProfile` positions it (last, unchanged from FIX-12's
+own design). `adapters.ts#sandboxWrap` is unaffected — it still populates both `writablePaths` (for
+bubblewrap) and `gitWriteGrant` (for the darwin reseal) from the same `dispatchGitWriteGrant`, exactly as
+FIX-12 designed; the fix is entirely inside the generator's own deduplication boundary, not in what the
+caller sends.
+
+**Bubblewrap checked for an analogous risk, per the goal's own instruction — none found.** `bubblewrapArgv`
+builds its sandboxed root from an EMPTY `--tmpfs /` and only ever ADDS `--bind` entries; there is no `deny`
+operation competing with any `allow` the way Seatbelt's rule-order semantics require. Binding the same path
+twice is a harmless no-op, never a security issue, and `.git/hooks`/`.git/config` are simply never bound at
+all (never mentioned in `writablePaths`), so they stay inaccessible in the empty root regardless of bind
+order. No change needed on the bubblewrap path.
+
+## The harness gap this round exposed
+
+The ladder PASSED while production FAILED — the inverse of what a repro ladder should ever do. Root cause:
+the ladder's OWN hand-rolled policy construction (written for FIX-10/11/12) never reproduced the
+`writablePaths`/`gitWriteGrant` DUPLICATION `adapters.ts#sandboxWrap` actually sends — it built a "clean"
+policy with the subpaths ONLY in `gitWriteGrant`, never ALSO in `writablePaths`, so it never triggered the
+dedupe-ordering bug at all. **This is FIX-5's own weak-canary lesson wearing a new coat: a probe (or, here,
+a ladder) that exercises a narrower code path than production is not a probe — it proves nothing about
+what production actually does.**
+
+**Fix:** `adapters.ts#sandboxWrap`'s own policy-construction logic is extracted into a new EXPORTED
+function, `buildDispatchSandboxPolicy(repo, req, cwd, argv0, baseEnv)` — the identical code `sandboxWrap`
+itself now calls (a two-line wrapper: build the policy, then `wrapForSandbox`). The ladder now calls THIS
+function directly (via a real `loadRepo("fixtures/golden")` and a minimal, real `InvokeRequest`) instead of
+hand-rolling `readOnlyPaths`/`operatorHome`/`writablePaths`/`gitWriteGrant`/`darwinXcrunTempDir` itself —
+the exact duplication that caused this bug is now INHERITED by construction, not maintained by hand in two
+places that can drift.
+
+**A second, independent parity check was added on top of the shared function:** the ladder now drives a
+REAL, full `AdapterRunner.produceAsync()` dispatch (the entire production call chain — `prepare`,
+`withDispatchWorktreeAsync`, `sandboxWrap`, `wrapForSandbox`, `buildSandboxExecProfile` — never a partial
+simulation), captures its own generated profile via `LEVARE_SANDBOX_DEBUG=1`, and compares its STRUCTURE
+(fixed lines, rule types, relative order — with path literals normalized to a placeholder, since this
+dispatch necessarily creates its own separate scratch worktree) against the ladder's own profile from its
+earlier steps. A structural difference prints a loud, explicit REGRESSION rather than a quiet pass. This is
+deliberately a SECOND, independent proof beyond calling the shared function — even shared code can be
+called with subtly different inputs; driving the real, unmodified production entry point is what actually
+closes the "could the ladder ever disagree with production" question for good.
+
+## Regression proof added
+
+- `tests/sandbox.test.ts`: a new test constructs the profile with `writablePaths` set to the SAME subpaths
+  as `gitWriteGrant.subpaths` — the REAL production shape — and asserts each subpath's own re-allow line
+  appears EXACTLY ONCE and strictly AFTER the root deny; confirmed to fail against the pre-fix generator
+  (reverted the fix locally, re-ran, watched it fail with the exact `rootDenyIdx > reallowIdx` inversion,
+  then restored the fix) before being kept as the permanent regression guard. A second, index-based test
+  asserts the full structural invariant the goal's own required work names explicitly — `index(xcrun
+  grant) < index(deny root) < index(each subpath re-allow)` — under the complete real production shape
+  (xcrun grant present, `writablePaths` duplicating `gitWriteGrant`), making the inversion unrepresentable
+  by this generator, not merely currently absent from its output.
+- `scripts/repro-r4-sandbox-fix10-hang.ts`: rebuilt to call the newly-exported `buildDispatchSandboxPolicy`
+  for every profile it builds (main ladder, both fix-variants), and gained the parity-check section driving
+  a real `AdapterRunner` dispatch and diffing its own profile structure against the ladder's own. Sanity-
+  checked in this container with the same stand-in `/bin/echo` primitive used throughout this investigation
+  — the parity check correctly falls through to "SKIPPED" here (this container's own honest `none`
+  detection means no darwin profile is ever generated to compare against) and will perform the real
+  structural comparison only on a live darwin host.
+
+## What this does NOT claim
+
+Both properties (hooks decoy denies AND worktree commit succeeds) must hold SIMULTANEOUSLY on the next live
+run for this to be considered closed — this round's own evidence is construction-level (the dedupe fix
+proven directly, the shared-function/parity-check refactor proven to run without error) plus a confirmed
+REPRODUCTION of the exact bug against the pre-fix generator, but REAL Seatbelt enforcement of the corrected
+ordering, and the parity check's own structural comparison against a genuinely-driven production dispatch,
+both still require the live host — unchanged from every darwin-specific claim in this entire investigation.
+
+## Verification
+
+`bun test` — full suite green (1175 pass, up from 1173 at FIX-12 — the two new index/duplication-shape
+tests). `bun run typecheck` → exit 0. `bun run deps:check` → `deps ok`. `bun run build` → succeeds. `bun
+run src/cli.ts validate fixtures/golden` → `valid`, the same two pre-existing `SANDBOX_UNAVAILABLE`
+warnings, unchanged. `bun run src/cli.ts replay fixtures/golden --stubs` → oracle match, byte-for-byte.
+`bun run scripts/repro-r4-sandbox-fix10-hang.ts` → exits cleanly on this container's own platform guard; the
+rebuilt ladder (now calling `buildDispatchSandboxPolicy` throughout, plus the new parity-check section)
+sanity-checked separately with the stand-in `/bin/echo` primitive to prove the harness itself runs without
+error end to end, including the parity check's own real `AdapterRunner` dispatch.
