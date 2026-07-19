@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, realpathSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir, homedir } from "node:os";
 import { join, dirname } from "node:path";
@@ -1087,6 +1087,21 @@ function repoWithRealStorefrontRepo(projectRepoPath: string) {
   return repo;
 }
 
+/** NOTES R4-SANDBOX-FIX-9: a fake "bwrap"/"sandbox-exec" binary that ignores every prefix flag and
+ * `exec`s whatever follows the first `--` it sees, inheriting the caller's own env unchanged — unlike
+ * `/bin/echo` (which merely echoes the composed argv as text, never actually running anything), this
+ * genuinely EXECUTES the wrapped inner command, which is what proving an env-level effect (rather than
+ * just argv composition) requires: a REAL spawn (`this.spawn === bunSpawn`) still needs a functioning
+ * "primitive" to observe what the inner command's own process actually sees, on a container where no
+ * real bwrap/sandbox-exec works. */
+function fakeWorkingPrimitive(): string {
+  const dir = mkdtempSync(join(tmpdir(), "levare-fake-primitive-"));
+  const path = join(dir, "fake-bwrap.sh");
+  writeFileSync(path, ["#!/bin/sh", 'while [ "$#" -gt 0 ]; do', '  if [ "$1" = "--" ]; then', "    shift", '    exec "$@"', "  fi", "  shift", "done"].join("\n") + "\n");
+  chmodSync(path, 0o755);
+  return path;
+}
+
 describe("NOTES R4-SANDBOX Ruling 1 — per-dispatch worktree isolation", () => {
   test("two units on the same project get isolated per-dispatch checkouts, even dispatched concurrently", async () => {
     const projectRepo = makeProjectRepoWithBranches(["checkout-flow", "cart-icon-fix"]);
@@ -1164,7 +1179,18 @@ describe("NOTES R4-SANDBOX Ruling 1 — per-dispatch worktree isolation", () => 
   // admin-dir) actually reaches the wrapped argv as read-write binds — and, just as importantly, that
   // `.git/hooks`, `.git/config`, and the bare `.git` root NEVER do (the security narrowing FIX-8 exists
   // for) — via the same fake-"bubblewrap"-is-really-/bin/echo trick this file already uses to observe
-  // wrapped argv without a real, working bwrap (see the readOnlyPaths test above).
+  // wrapped argv without a real, working bwrap (see the readOnlyPaths test above). Forces
+  // `primitive: "bubblewrap"` regardless of host, so it exercises bwrap's OWN argv shape deterministically
+  // — see the platform-conditional test below for the REAL, un-forced host proof.
+  //
+  // NOTES R4-SANDBOX-FIX-9 (this test's own defect, live macOS gate): `dispatchGitWritePaths` derives
+  // ALL FOUR granted paths from `worktreeGitDir` (canonical — `git worktree add` itself resolves
+  // symlinks when writing the `.git` pointer file, confirmed by direct reproduction), never from the
+  // caller's own `repoPath`. `projectRepo` here is `mkdtempSync(tmpdir())`'s own return value, which is
+  // NOT canonical on a host where `tmpdir()` sits behind a symlink (macOS's `/var/folders` →
+  // `/private/var/folders`; this Linux container's own `/tmp` happens not to be one, which is exactly
+  // what let this ship without failing here first). `realpathSync` is applied to `projectRepo` before
+  // building the expected paths, per this file's own general path-comparison rule.
   test("a dispatch worktree's own .git objects/refs/logs/admin-dir are threaded into the wrapped argv as read-write binds — never hooks, config, or the bare .git root", async () => {
     const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
     try {
@@ -1178,7 +1204,7 @@ describe("NOTES R4-SANDBOX Ruling 1 — per-dispatch worktree isolation", () => 
         sandboxDetection: { platform: "linux", primitive: "bubblewrap", level: "full", bin: "/bin/echo" },
       });
       const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
-      const gitCommonDir = join(projectRepo, ".git");
+      const gitCommonDir = join(realpathSync(projectRepo), ".git");
 
       // Each of the four exact subpaths is read-write bound (--bind, never --ro-bind-try).
       for (const sub of ["objects", "refs", "logs"]) {
@@ -1241,6 +1267,85 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
     } finally {
       rmSync(projectRepo, { recursive: true, force: true });
     }
+  });
+
+  // NOTES R4-SANDBOX-FIX-9 (live macOS gate): a "full"-tier sandbox denies the operator's own real HOME,
+  // turning a git global-config read into a FATAL EPERM rather than a tolerated ENOENT. Proven end to
+  // end (not just the pure redirect function) via `fakeWorkingPrimitive` — a stand-in "bwrap" that
+  // genuinely executes the wrapped inner command, so the actual env the spawned process sees is what
+  // this test observes.
+  describe("git global/system config is redirected to /dev/null under a full-tier sandbox (NOTES R4-SANDBOX-FIX-9)", () => {
+    test("level: full → GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM are both /dev/null in the spawned env", async () => {
+      const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+      const primitiveBin = fakeWorkingPrimitive();
+      try {
+        const repo = repoWithRealStorefrontRepo(projectRepo);
+        const runner = new AdapterRunner(repo, {
+          pricing,
+          capabilities: [{ member: "finch", kind: "review" }],
+          native: nativeMock,
+          remote: remoteMock,
+          cliCommand: () => ["sh", "-c", 'printf "GLOBAL=%s SYSTEM=%s" "$GIT_CONFIG_GLOBAL" "$GIT_CONFIG_SYSTEM"'],
+          sandboxDetection: { platform: "linux", primitive: "bubblewrap", level: "full", bin: primitiveBin },
+        });
+        const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+        expect(doc).toContain("GLOBAL=/dev/null SYSTEM=/dev/null");
+      } finally {
+        rmSync(projectRepo, { recursive: true, force: true });
+        rmSync(dirname(primitiveBin), { recursive: true, force: true });
+      }
+    });
+
+    test("level: none → neither var is set at all — the redirect never fires without a full-tier sandbox", async () => {
+      const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+      try {
+        const repo = repoWithRealStorefrontRepo(projectRepo);
+        const runner = new AdapterRunner(repo, {
+          pricing,
+          capabilities: [{ member: "finch", kind: "review" }],
+          native: nativeMock,
+          remote: remoteMock,
+          cliCommand: () => ["sh", "-c", 'printf "GLOBAL=%s SYSTEM=%s" "$GIT_CONFIG_GLOBAL" "$GIT_CONFIG_SYSTEM"'],
+          sandboxDetection: { platform: "linux", primitive: "none", level: "none" },
+        });
+        const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+        expect(doc).toContain("GLOBAL= SYSTEM=");
+      } finally {
+        rmSync(projectRepo, { recursive: true, force: true });
+      }
+    });
+
+    // A "fs-only" (unshare) counterpart to the "none" test above was attempted and dropped: unlike
+    // bubblewrap's argv (which `fakeWorkingPrimitive` can transparently intercept), `unshareArgv`'s own
+    // wrapped command is a SHELL SCRIPT that itself runs real `mount --bind`/`mount -o remount` calls —
+    // these fail with "must be superuser to use mount" in this container regardless of what binary
+    // `detection.bin` names, the same real-privilege gap this codebase has documented since NOTES
+    // R4-SANDBOX itself ("the unshare fs-only fallback's own real behavior on ANY host... has never once
+    // actually run for real, on any platform, in this project's history"). The `wrapped.level === "full"`
+    // conditional gating the redirect (adapters.ts#runCli/runCliAsync) is a direct, one-line ternary —
+    // "fs-only" structurally can never satisfy it, which is provable by inspection, not by a live spawn
+    // this container cannot grant the privileges for.
+
+    test("a member's own -c flags / repo-local config are unaffected — only GLOBAL/SYSTEM are redirected", async () => {
+      const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+      const primitiveBin = fakeWorkingPrimitive();
+      try {
+        const repo = repoWithRealStorefrontRepo(projectRepo);
+        const runner = new AdapterRunner(repo, {
+          pricing,
+          capabilities: [{ member: "finch", kind: "review" }],
+          native: nativeMock,
+          remote: remoteMock,
+          cliCommand: (req) => ["git", "-C", req.projectRepoPath!, "-c", "user.name=member", "-c", "user.email=member@levare.test", "config", "--get", "user.name"],
+          sandboxDetection: { platform: "linux", primitive: "bubblewrap", level: "full", bin: primitiveBin },
+        });
+        const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+        expect(doc).toContain("member");
+      } finally {
+        rmSync(projectRepo, { recursive: true, force: true });
+        rmSync(dirname(primitiveBin), { recursive: true, force: true });
+      }
+    });
   });
 
   // NOTES R4-SANDBOX-FIX (macOS host verification): proves `sandboxWrap` actually threads the studio
@@ -1467,6 +1572,48 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
         });
         await expect(runner.produceAsync("finch", "review", "checkout-flow", "storefront")).rejects.toThrow(AdapterError);
         expect(existsSync(hookPath)).toBe(false);
+      } finally {
+        rmSync(projectRepo, { recursive: true, force: true });
+      }
+    },
+  );
+
+  // NOTES R4-SANDBOX-FIX-9: the platform-conditional counterpart the live gate's own failure calls for —
+  // NO forced `sandboxDetection` here; the REAL host's own `detectSandbox()` decides which generator
+  // actually produced the wrapped output, and the assertion branches on it. A bwrap-shaped assertion run
+  // against a seatbelt profile (or vice versa) tests nothing — this is what makes that structurally
+  // impossible: the shape being checked is read directly off `hostSandbox.primitive`, never assumed.
+  test.skipIf(hostSandbox.level !== "full")(
+    "the narrowed git-write grant reaches the REAL host's own wrapped output, in whichever shape its actual primitive produces",
+    async () => {
+      const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+      try {
+        const repo = repoWithRealStorefrontRepo(projectRepo);
+        const runner = new AdapterRunner(repo, {
+          pricing,
+          capabilities: [{ member: "finch", kind: "review" }],
+          native: nativeMock,
+          remote: remoteMock,
+          cliCommand: (req) => ["cat", join(req.projectRepoPath!, "marker.txt")],
+          // No sandboxDetection override — whichever primitive this live host actually has.
+        });
+        const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+        expect(doc).toContain("MARKER-checkout-flow"); // the real dispatch still succeeded end to end.
+
+        const gitCommonDir = join(realpathSync(projectRepo), ".git");
+        if (hostSandbox.primitive === "bubblewrap") {
+          for (const sub of ["objects", "refs", "logs"]) {
+            const p = join(gitCommonDir, sub);
+            expect(doc).toContain(`--bind ${p} ${p}`);
+          }
+        } else if (hostSandbox.primitive === "sandbox-exec") {
+          for (const sub of ["objects", "refs", "logs"]) {
+            const p = join(gitCommonDir, sub);
+            expect(doc).toContain(`(allow file-write* (subpath ${JSON.stringify(p)}))`);
+          }
+        }
+        expect(doc).not.toContain(join(gitCommonDir, "hooks"));
+        expect(doc).not.toContain(join(gitCommonDir, "config"));
       } finally {
         rmSync(projectRepo, { recursive: true, force: true });
       }

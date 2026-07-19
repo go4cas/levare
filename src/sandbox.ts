@@ -637,6 +637,16 @@ export function buildSandboxExecProfile(policy: SandboxPolicy): string {
       // denied by default). `(allow file-ioctl)` was deliberately NOT added alongside it: live testing
       // proved `sysctl-read` alone is sufficient, and the tty/`dtracehelper` `file-ioctl` denials observed
       // are cosmetic soft denials (NOTES R4-SANDBOX-FIX-3's own finding 5), not a second gap to chase.
+      // NOTES R4-SANDBOX-FIX-9 (round 9, live macOS gate): a SECOND catalogued instance of the identical
+      // class — Apple's own `/usr/bin/git` is an xcrun shim that `confstr`-asks for `DARWIN_USER_TEMP_DIR`
+      // (denied) and falls back to writing an `xcrun_db-*` cache file under it (also denied) — both
+      // WARNINGS in the kernel log, never fatal; git proceeds past them the same way it proceeds past the
+      // tty/dtracehelper denials above. Mach-lookup denials for `com.apple.diagnosticd`/`bsd.dirhelper`/
+      // `opendirectoryd` observed alongside are catalogued the same way. None of these three were added
+      // as new allow rules — evidence this round showed the commit itself never depended on any of them
+      // succeeding; see NOTES R4-SANDBOX-FIX-9 for the full account and what a future round should grant
+      // (the specific `/var/folders/<hash>/T` confstr temp dir, named literally, never `/tmp` broadly) IF
+      // a live run ever shows the xcrun cache write actually blocking a real commit.
       "(allow sysctl-read)",
       // Broad OS read, same as an unsandboxed process would see — verified live: this is the only shape
       // that lets dyld's own shared-cache lookup succeed on this platform (see this module's header).

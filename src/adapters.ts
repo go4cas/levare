@@ -164,8 +164,39 @@ function resolveFeatureRepo(template: string | undefined, projectRepoPath: strin
 // bind-mount source that doesn't exist can't simply be granted; creating an empty directory costs
 // nothing and lets an otherwise-ordinary commit's own reflog write land somewhere, rather than silently
 // denying a legitimate write a test never had the chance to surface.
-function dispatchGitWritePaths(repoPath: string, worktreeGitDir: string): string[] {
-  const gitCommonDir = pathJoin(repoPath, ".git");
+//
+// NOTES R4-SANDBOX-FIX-9 (canonicalization consistency, found while fixing a live-gate test failure):
+// `gitCommonDir` is derived from `worktreeGitDir` itself (`dirname(dirname(...))`, undoing exactly the
+// `/worktrees/<name>` suffix `merge.ts#createDispatchWorktree` appended), NEVER re-joined from the
+// caller's own `repoPath`. Confirmed directly: `git worktree add` canonicalizes the gitdir path it
+// records in the new worktree's own `.git` pointer file, even when every git command that created the
+// repo and the worktree ran entirely through a SYMLINKED path — so `worktreeGitDir` is ALWAYS the
+// canonical form, regardless of what `repoPath` originally was. Rejoining `.git` onto the caller's own,
+// possibly-still-symlinked `repoPath` would produce objects/refs/logs paths on a DIFFERENT literal
+// spelling than the worktree admin dir — harmless for `buildSandboxExecProfile` (which canonicalizes
+// every `writablePaths` entry itself), but a real gap for bubblewrap, which deliberately never
+// canonicalizes anything (see `bubblewrapArgv`'s own header): git's own internal `commondir` resolution
+// (a relative path from the worktree's own admin dir back to the shared `.git`) always resolves relative
+// to whichever canonical path git itself recorded, never the caller's original spelling, so a `--bind`
+// grant for objects/refs/logs at the WRONG (non-canonical) spelling would bind a path git's own commit
+// never actually tries to reach.
+// NOTES R4-SANDBOX-FIX-9 (live macOS gate): a "full"-tier sandbox denies the operator's own real HOME —
+// an empty root on Linux (bubblewrap), an explicit deny-list entry on macOS (sandbox-exec) — which turns
+// a read of `$HOME/.gitconfig` into EPERM rather than ENOENT. Git treats the two completely differently:
+// ENOENT ("no global config file") is tolerated, silently; EPERM is FATAL (`fatal: unable to access
+// '$HOME/.gitconfig': Operation not permitted`), because a permission denial reads as "this config is
+// broken", not "there is no config". Fixed environmentally, never by widening the sandbox to make
+// `.gitconfig` readable (that would defeat the whole point of denying the operator's real home): a
+// dispatch running under a "full" sandbox gets `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` redirected to
+// `/dev/null`, so git degrades cleanly to "no global/system config" instead of hitting the denial at all.
+// Neither env var touches per-repo config (`.git/config`, read regardless) or `-c` flags a member's own
+// command template already passes — a member needing git identity keeps working exactly as before.
+function gitConfigRedirectEnv(env: Record<string, string>): Record<string, string> {
+  return { ...env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
+}
+
+function dispatchGitWritePaths(worktreeGitDir: string): string[] {
+  const gitCommonDir = dirname(dirname(worktreeGitDir));
   const logs = pathJoin(gitCommonDir, "logs");
   if (!existsSync(logs)) mkdirSync(logs, { recursive: true });
   return [pathJoin(gitCommonDir, "objects"), pathJoin(gitCommonDir, "refs"), logs, worktreeGitDir];
@@ -732,7 +763,7 @@ export class AdapterRunner implements MemberRunner {
       throw new AdapterError(`member '${member}': could not create dispatch worktree for work branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}': ${created.error}`);
     }
     try {
-      return fn({ ...req, projectRepoPath: created.worktree.path, dispatchGitWritePaths: dispatchGitWritePaths(dispatchRepo.repoPath, created.worktree.gitDir) });
+      return fn({ ...req, projectRepoPath: created.worktree.path, dispatchGitWritePaths: dispatchGitWritePaths(created.worktree.gitDir) });
     } finally {
       created.worktree.cleanup();
     }
@@ -750,7 +781,7 @@ export class AdapterRunner implements MemberRunner {
       throw new AdapterError(`member '${member}': could not create dispatch worktree for work branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}': ${created.error}`);
     }
     try {
-      return await fn({ ...req, projectRepoPath: created.worktree.path, dispatchGitWritePaths: dispatchGitWritePaths(dispatchRepo.repoPath, created.worktree.gitDir) });
+      return await fn({ ...req, projectRepoPath: created.worktree.path, dispatchGitWritePaths: dispatchGitWritePaths(created.worktree.gitDir) });
     } finally {
       created.worktree.cleanup();
     }
@@ -974,8 +1005,11 @@ export class AdapterRunner implements MemberRunner {
     const real = this.spawn === bunSpawn;
     if (real) preflightCli(req.member, argv, cwd, req.env.PATH);
     const wrapped: { argv: string[]; level?: SandboxLevel; cleanup?: () => void } = real ? this.sandboxWrap(argv, cwd, req) : { argv };
+    // NOTES R4-SANDBOX-FIX-9: only a "full"-tier sandbox denies (rather than merely not-attempting-to-
+    // confine) the operator's real HOME — see `gitConfigRedirectEnv`'s own doc.
+    const env = wrapped.level === "full" ? gitConfigRedirectEnv(req.env) : req.env;
     try {
-      const result = this.spawn.run(wrapped.argv, { env: req.env, cwd, timeoutMs, stdin });
+      const result = this.spawn.run(wrapped.argv, { env, cwd, timeoutMs, stdin });
       if (real) AdapterRunner.logSpawnDebug(result);
       // NOTES R4-SANDBOX-FIX: the WRAPPED argv, never the pre-wrap member argv — a failed spawn used to
       // report what the member would have been invoked with had sandboxing never run, which made "did
@@ -993,8 +1027,9 @@ export class AdapterRunner implements MemberRunner {
     const real = this.asyncSpawn === asyncBunSpawn;
     if (real) preflightCli(req.member, argv, cwd, req.env.PATH);
     const wrapped: { argv: string[]; level?: SandboxLevel; cleanup?: () => void } = real ? this.sandboxWrap(argv, cwd, req) : { argv };
+    const env = wrapped.level === "full" ? gitConfigRedirectEnv(req.env) : req.env;
     try {
-      const result = await this.asyncSpawn.run(wrapped.argv, { env: req.env, cwd, timeoutMs, stdin });
+      const result = await this.asyncSpawn.run(wrapped.argv, { env, cwd, timeoutMs, stdin });
       if (real) AdapterRunner.logSpawnDebug(result);
       return { ...this.cliResultToDoc(req.member, agent, wrapped.argv, result), sandbox: wrapped.level };
     } finally {

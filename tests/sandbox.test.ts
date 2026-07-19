@@ -14,9 +14,21 @@
 // `/var`, and `/var/folders` (where `os.tmpdir()` — and therefore every scratch dir this module's own
 // tests create — actually lives) are themselves symlinks into `/private`. A raw, non-canonicalized
 // expected path happens to already equal its own realpath on a Linux container (where these aren't
-// symlinks), which is exactly what let this class of test defect ship unnoticed three separate times
-// (FIX-2's own symlink-canonicalization fixture, FIX-4's decoy-relocation context, and FIX-6's own cwd
-// assertion) before ever failing on the one platform where it actually matters.
+// symlinks), which is exactly what let this class of test defect ship unnoticed FOUR separate times
+// (FIX-2's own symlink-canonicalization fixture, FIX-4's decoy-relocation context, FIX-6's own cwd
+// assertion, and FIX-8's own git-write-grant wiring test in adapters.test.ts — that fourth one via a
+// SECOND path, not `sandbox.ts#canon` at all: `git worktree add` itself canonicalizes the gitdir path it
+// records, independent of anything this module does) before ever failing on the one platform where it
+// actually matters.
+//
+// NOTES R4-SANDBOX-FIX-9 — a second, related rule for any test that INSPECTS the wrapped argv/profile
+// (not just compares a path within it): the assertion must branch on the generator it is actually
+// inspecting. A test forcing `sandboxDetection` to a specific primitive is exempt (it deterministically
+// gets that primitive's own shape, on any host) — but a test exercising the REAL, un-forced
+// `detectSandbox()` result must check `hostSandbox.primitive` before asserting bwrap-shaped flags
+// (`--bind`) versus seatbelt-shaped rules (`(allow file-write* (subpath ...))`); a bwrap-shaped assertion
+// run against a real seatbelt profile (or the reverse) tests nothing — it isn't wrong so much as blind to
+// whichever generator the live host actually exercised.
 
 import { test, expect, describe } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, existsSync, realpathSync } from "node:fs";
