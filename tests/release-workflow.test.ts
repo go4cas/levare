@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 
 // NOTES DIST2: the release workflow can only truly be exercised by GitHub Actions itself (pushing a
 // `v*` tag and watching the run — see NOTES). This suite is the part that CAN be checked locally and
@@ -140,8 +140,17 @@ describe("README install section matches the release workflow (NOTES DIST2)", ()
     expect(readme).toContain("ANTHROPIC_API_KEY");
   });
 
-  test("the README does not claim an install script or Homebrew formula (deferred to step 3)", () => {
+  test("the README's curl|sh install claim points at a real file in this repo (NOTES DIST6)", () => {
+    const match = readme.match(/curl[^\n`]*\|\s*sh/);
+    expect(match).not.toBeNull();
+    const line = match![0];
+    const urlMatch = line.match(/https:\/\/raw\.githubusercontent\.com\/go4cas\/levare\/main\/(\S+)/);
+    expect(urlMatch).not.toBeNull();
+    const repoPath = urlMatch![1];
+    expect(existsSync(repoPath)).toBe(true);
+  });
+
+  test("the README does not claim a Homebrew formula (declined, not deferred — NOTES DIST6)", () => {
     expect(readme.toLowerCase()).not.toContain("brew install");
-    expect(readme.toLowerCase()).not.toContain("curl | sh");
   });
 });

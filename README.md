@@ -206,7 +206,21 @@ the compiled binary is a second, parallel path, not a replacement.
 
 **Installing a release binary** — tagged releases (`v0.1.0`, `v1.2.3`, ...) build and publish four
 platform binaries plus a checksum file via [.github/workflows/release.yml](.github/workflows/release.yml)
-(NOTES DIST2):
+(NOTES DIST2). The quickest path is the install script (NOTES DIST6):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/go4cas/levare/main/scripts/install.sh | sh
+```
+
+It detects your OS/arch, downloads the matching binary and `SHA256SUMS` from the latest release,
+refuses to install on a checksum mismatch, and puts `levare` on `~/.local/bin` (warning, without
+fixing it for you, if that directory isn't on your `PATH`). Two overrides:
+
+- `LEVARE_VERSION=v1.2.3 curl ... | sh` — pin to a specific release instead of the latest one.
+- `LEVARE_BIN_DIR=/usr/local/bin curl ... | sh` — install somewhere other than `~/.local/bin`
+  (needs write access to that directory, e.g. via `sudo`).
+
+**Installing by hand**, if you'd rather not pipe a script into `sh`:
 
 1. From the release's assets, download the binary for your platform: `levare-darwin-arm64`,
    `levare-darwin-x64`, `levare-linux-x64`, or `levare-linux-arm64`. (Windows is not built — levare
@@ -230,9 +244,10 @@ runtime it still needs:
   wrapped vendor CLI such as `claude` or `codex` on `PATH` (for cli members). Run `levare doctor`
   after installing to see exactly what's present and what's missing.
 
-An install script and Homebrew formula are deferred to a later step (NOTES DIST2); for now, the
-manual download-verify-install above is the supported path.
+A Homebrew formula was considered and declined, not deferred (NOTES DIST6): levare ships as a single
+static binary, and a formula would add a tap, a per-release PR, and a packaging dependency for zero
+gain over the install script above.
 
 Uncertainties and assumptions are recorded in [NOTES.md](NOTES.md) (phase-1 A1–A8, phase-2 B1–B7,
 phase-3 D1–D9, phase-4 E1–E14, phase-5 F1–F7, phase-6 G1/H1–H7, phase-7 K1–K9, phase-8 O1–O9,
-distribution DIST1–DIST2).
+distribution DIST1–DIST6).
