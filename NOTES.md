@@ -10233,3 +10233,150 @@ fixtures/golden --stubs` → oracle match, byte-for-byte. `bun run scripts/repro
 exits cleanly on this container's own platform guard; the extended fix-variant section sanity-checked
 separately with a stand-in primitive (`/bin/echo`) to prove the harness itself — profile-variant
 construction, env layering, per-variant worktree reset — runs without error.
+
+# NOTES R4-SANDBOX-FIX-12 — a real security regression, introduced by FIX-11, caught by FIX-8's own decoy
+# on its first live execution
+
+FIX-11's live confirmation run came back with the LAST failing test in this whole investigation reporting
+failure — but not the way every prior round's own failures did. The hooks-decoy test (FIX-8's own security
+proof: a sandboxed member cannot create `.git/hooks/post-commit` in the original repo) failed because the
+hook file WAS created. No kernel denial. The profile allowed it. This is the general lesson this round's
+own NOTES entry exists to state plainly: **a grant added for one tool's plumbing must be checked against
+every standing seal — the decoy tests exist precisely to catch this, and this round proves they do.**
+
+## Root cause
+
+FIX-11's fix for the xcrun-shim/`confstr` failure granted write access to the ENTIRE resolved
+`DARWIN_USER_TEMP_DIR` (`/var/folders/<hash>/T/`) via a flat `(subpath ...)` entry in the generic
+`writablePaths` mechanism. That directory is not a narrow, tool-specific scratch corner — it is
+`os.tmpdir()`'s own resolved target on macOS, which means it covers EVERYTHING this codebase scratches
+under it: every `mkdtempSync(tmpdir())`-based dispatch worktree, every scratch project repo (including
+this codebase's own test fixtures), every sandbox profile file this module itself writes. A flat allow
+rule has no way to say "except this specific subtree" — so the SAME broad grant that let xcrun write its
+cache file also, unconditionally, granted write access to `.git/hooks` whenever the scratch project repo
+happened to live directly under that temp directory (which every fixture in this codebase's own test
+suite does), and to a SIBLING dispatch's own worktree (since every concurrent dispatch's own worktree also
+lives under the identical directory) — breaking cross-dispatch write isolation as a second, independent
+consequence of the same root cause.
+
+## Fix — restore the seal via rule ordering, narrow the xcrun grant
+
+Two changes, addressing both halves the goal named:
+
+**1. The xcrun grant, narrowed to a seatbelt `(regex ...)` matching ONLY xcrun's own cache-file naming.**
+`SandboxPolicy` gained `darwinXcrunTempDir?: string` (replacing the flat `writablePaths` entry FIX-11
+used); `buildSandboxExecProfile` emits `(allow file-write*/read* (regex #"^<T-escaped>/xcrun_db-[^/]+$"))`
+— matching ONLY direct children of the resolved temp dir literally named `xcrun_db-*`, never a recursive
+subpath grant. A new `escapeSeatbeltRegex`/`sbxRegex` pair handles the string-literal escaping (reusing
+`sbxq`'s own backslash-doubling, since `(regex #"...")` uses the identical quoted-string syntax). This
+alone closes BOTH halves of the regression: a deeply-nested `.git/hooks/post-commit` several levels under
+the temp dir never matches the narrow pattern, and neither does a sibling dispatch's own worktree (named
+`levare-dispatchwt-*`, not `xcrun_db-*`).
+
+**2. The git-write grant, moved to a dedicated field with an explicit deny-then-reallow reseal —
+"regardless of which shape wins" (the goal's own instruction), never conditional on the xcrun grant's own
+shape.** `SandboxPolicy` gained `gitWriteGrant?: { root: string; subpaths: string[] }`, replacing the flat
+`writablePaths` entry FIX-7/FIX-8 used for this purpose. `buildSandboxExecProfile` now emits, as the LAST
+write-affecting rules in the entire generated profile: `(deny file-write* (subpath root))`, then an
+`(allow file-write* (subpath p))` for each of the four subpaths (objects/refs/logs/this dispatch's own
+worktree admin dir). Seatbelt's own last-matching-rule-wins semantics (the same principle FIX-3/FIX-4's own
+operator-home deny/reallow chain already established) is what makes this robust: being emitted LAST, the
+reseal wins over ANY broader grant emitted earlier for ANY reason — the xcrun grant specifically, but also
+anything else that might one day overlap the same root. This is deliberately NOT contingent on the regex
+narrowing in (1) actually holding; it is independent, layered defense-in-depth, exactly as the goal asked
+for.
+
+`adapters.ts` renamed `InvokeRequest.dispatchGitWritePaths` (a flat array) to `dispatchGitWriteGrant: {
+root, subpaths }`, threading `root` through for the first time — `dispatchGitWriteGrant()` (renamed from
+`dispatchGitWritePaths()`) now returns it alongside the four subpaths. `sandboxWrap` populates THREE
+things from this: `writablePaths: subpaths` (unchanged shape, still what bubblewrap/unshare consume — their
+own allow-list/empty-root model has NO equivalent swallow risk, so a flat list remains correct and
+sufficient there, unaffected by any of this), `gitWriteGrant: {root, subpaths}` (the new darwin-only
+reseal), and `darwinXcrunTempDir` (the narrowed regex grant, replacing its own flat inclusion in
+`writablePaths` from FIX-11). `sandbox.ts#probeSandboxExec` mirrors the `darwinXcrunTempDir` threading for
+structural parity with a real dispatch (the probe's own trivial script never invokes xcrun, so this is a
+harmless, unused grant there).
+
+## Cross-dispatch isolation — closed by the SAME narrowing, not a separate mechanism
+
+The goal asked, as a fallback, for an explicit `(deny file-write* ...)` for other dispatches' own scratch
+regions "if representable." It is not representable at profile-build time (sibling dispatch paths are
+created dynamically and unknown in advance) — but it is also unnecessary: narrowing the xcrun grant to the
+exact `xcrun_db-*` pattern (item 1 above) independently closes this leak, since a sibling worktree's own
+directory name never matches that pattern. This is recorded honestly rather than assumed permanent:
+`docs/current-gaps.md`'s own sandbox section now states that cross-dispatch write isolation under this
+model depends on the regex narrowing continuing to hold, and that the `gitWriteGrant` reseal protects the
+git-write seal specifically, not an arbitrary OTHER dispatch's scratch directory by name — if a future
+round ever needs to widen the xcrun grant back toward a broader shape, cross-dispatch isolation must be
+independently re-examined at that point, not assumed to still hold by extension.
+
+## The variant question — answered and banked
+
+FIX-11 left open whether `XCRUN_DISABLE_CACHE=1` (env-only, no write grant at all) might have sufficed on
+its own, narrower than any profile grant. This round's own live confirmation run answered it: env-only
+does NOT work; the write grant is required. This is exactly why FIX-12 narrows the grant rather than
+removing it — the fix-variant section of the ladder (B: env-only, no xcrun grant) is kept as a live
+regression check that this conclusion still holds under the corrected shapes, not as an open question to
+re-litigate every round.
+
+## Repro ladder: extended, not replaced (the established method)
+
+`scripts/repro-r4-sandbox-fix10-hang.ts` gained, in the SAME script:
+- **Env parity** — every git-invoking step (4, 5, 6, and the fix-variant full chains) now runs under the
+  identical `GIT_CONFIG_GLOBAL=/dev/null`/`GIT_CONFIG_SYSTEM=/dev/null` redirect a real dispatch applies
+  (`adapters.ts#gitConfigRedirectEnv`, FIX-9). This closes the harness gap this exact round exposed: the
+  ladder's own git steps, run without this redirect, produced a misleading 33ms `.gitconfig` EPERM failure
+  on every git step — pure harness noise (this script never applied FIX-9's own fix), not a product
+  failure, while the real product suite's own worktree-commit test (which DOES get the redirect via
+  `adapters.ts` itself) passes. A ladder that doesn't match production's own environment cannot tell the
+  Conductor anything true about production's own behavior.
+- **Step 7** — write `.git/hooks/post-commit` under the FIXED profile: MUST FAIL. The ladder's own version
+  of the FIX-8 decoy that caught this round's regression live.
+- **Step 8** — write an `xcrun_db-*`-named file directly under the resolved temp dir: MUST SUCCEED,
+  proving the narrow regex grant actually admits what xcrun itself needs, not just that it denies what it
+  shouldn't.
+- The fix-variant section (A/B/C) rebuilt to use `gitWriteGrant`/`darwinXcrunTempDir` instead of the
+  now-retired flat `writablePaths` shape — every variant carries the reseal unconditionally, matching the
+  "regardless of which shape wins" instruction; only the xcrun grant's own presence/env varies between them.
+
+Sanity-checked in this container with the same stand-in `/bin/echo` primitive used throughout this
+investigation (proving the harness — profile/variant construction, the two new MUST-FAIL/MUST-SUCCEED
+steps' own control flow, env layering — runs without error); the actual PASS/FAIL verdicts require the
+live host, exactly as every prior round's own sanity-check caveat already states.
+
+## Regression proof added
+
+- `tests/sandbox.test.ts`: a new `gitWriteGrant` describe block proves the deny-root-then-reallow-subpaths
+  shape directly, including the CORE regression proof — a broader, EARLIER grant covering the exact same
+  root (standing in for FIX-11's own xcrun grant, or anything else that might one day overlap) does NOT
+  defeat the reseal, since the reseal's own deny is asserted to come AFTER that broader grant in the
+  generated profile text. A new `darwinXcrunTempDir` describe block proves the regex shape, its escaping,
+  its absence-is-a-no-op case, and that it structurally cannot reach a sibling dispatch's own worktree
+  name. The pre-existing FIX-8 `writablePaths`-based tests are kept (still valid proofs of the generic
+  mechanism bubblewrap/unshare use) with a note that they no longer represent darwin's own production path.
+- `tests/adapters.test.ts`: a new `test.skipIf`-gated test creates a SECOND, sibling dispatch's own real
+  worktree directly (via `createDispatchWorktree`, the real production function) and asserts a member
+  cannot write into it — the cross-dispatch counterpart to the existing hooks-decoy test, gated identically
+  on this container's own honest lack of a working primitive.
+
+## What this does NOT claim
+
+The reseal and the narrowed xcrun grant are proven by construction in this container (a broader earlier
+grant demonstrably does not defeat the later, more specific deny-then-reallow block) and by a harness
+sanity check (the ladder's own control flow runs without error) — but REAL Seatbelt enforcement of both,
+and the live confirmation that env parity closes the false-failure noise this round found, both require
+the live host, exactly as every darwin-specific claim in this entire investigation has required one. The
+cross-dispatch isolation claim specifically rests on the regex narrowing continuing to hold, named as an
+explicit, ongoing dependency in `docs/current-gaps.md` rather than treated as permanently closed.
+
+## Verification
+
+`bun test` — full suite green (1173 pass, up from 1164 at FIX-11 — the new `gitWriteGrant`/
+`darwinXcrunTempDir` unit tests and the cross-dispatch skipIf-gated test), 6 skip (up from 5 — the new
+cross-dispatch test joins every other real-sandbox-only proof in staying skipped on this container's own
+honest `none` detection). `bun run typecheck` → exit 0. `bun run deps:check` → `deps ok`. `bun run build` →
+succeeds. `bun run src/cli.ts validate fixtures/golden` → `valid`, the same two pre-existing
+`SANDBOX_UNAVAILABLE` warnings, unchanged. `bun run src/cli.ts replay fixtures/golden --stubs` → oracle
+match, byte-for-byte. `bun run scripts/repro-r4-sandbox-fix10-hang.ts` → exits cleanly on this container's
+own platform guard; the full extended ladder (steps 1-8 plus the fix-variant section) sanity-checked
+separately with the stand-in `/bin/echo` primitive to prove the harness itself runs without error.
