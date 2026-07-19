@@ -1125,6 +1125,14 @@ describe("NOTES R4-SANDBOX Ruling 1 — per-dispatch worktree isolation", () => 
     }
   });
 
+  // NOTES R4-SANDBOX-FIX-7 (live macOS gate): this test failed under a genuinely working sandbox — git's
+  // worktree design shares the object store/refs/admin-state (HEAD, index) under the ORIGINAL repo's
+  // own `.git`, never inside the per-dispatch worktree's own directory, so the member's `git commit`
+  // here needs write access to `projectRepo/.git` too, not just to the worktree `cd "$1"` lands in. This
+  // runs against the REAL `bunSpawn`/real `detectSandbox()` (this container's own honest `none`), so it
+  // never exercised the gap directly here — see the next test for the structural proof that
+  // `dispatchGitDir` reaches the wrapped argv, and sandbox.test.ts's own `writablePaths` unit tests for
+  // the profile/bwrap-argv shape this closes.
   test("a member's own commit inside its dispatch worktree actually advances the work branch, never the shared tree", async () => {
     const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
     try {
@@ -1150,6 +1158,52 @@ describe("NOTES R4-SANDBOX Ruling 1 — per-dispatch worktree isolation", () => 
     } finally {
       rmSync(projectRepo, { recursive: true, force: true });
     }
+  });
+
+  // NOTES R4-SANDBOX-FIX-7: proves `dispatchGitDir` actually reaches the wrapped argv as a WRITABLE
+  // grant — the same fake-"bubblewrap"-is-really-/bin/echo trick this file already uses to observe
+  // wrapped argv without a real, working bwrap (see the readOnlyPaths test above).
+  test("a dispatch worktree's own project repo .git directory is threaded into the wrapped argv as a read-write bind, not merely a read-only one", async () => {
+    const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+    try {
+      const repo = repoWithRealStorefrontRepo(projectRepo);
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        cliCommand: () => ["cat", "/dev/null"],
+        sandboxDetection: { platform: "linux", primitive: "bubblewrap", level: "full", bin: "/bin/echo" },
+      });
+      const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+      const gitDir = join(projectRepo, ".git");
+      expect(doc).toContain(gitDir);
+      // Immediately preceded by --bind (read-write), never --ro-bind-try (read-only) — bubblewrapArgv's
+      // own distinction between readOnlyPaths and writablePaths.
+      const idx = doc.indexOf(gitDir);
+      const before = doc.slice(Math.max(0, idx - 10), idx);
+      expect(before).toContain("--bind");
+      expect(before).not.toContain("--ro-bind-try");
+    } finally {
+      rmSync(projectRepo, { recursive: true, force: true });
+    }
+  });
+
+  test("no dispatch worktree (no real local checkout) → no writablePaths at all, no git-dir grant", () => {
+    // storefront's own fixture `repo:` is a non-local `git@github.com` URL here (never swapped for a
+    // real local checkout, unlike `repoWithRealStorefrontRepo` above) — `resolveDispatchRepo` returns
+    // undefined, so no worktree, and therefore no `dispatchGitDir`, is ever created for this dispatch.
+    const repo = loadRepo(ROOT);
+    const runner = new AdapterRunner(repo, {
+      pricing,
+      capabilities: [{ member: "finch", kind: "review" }],
+      native: nativeMock,
+      remote: remoteMock,
+      cliCommand: () => ["cat", "/dev/null"],
+      sandboxDetection: { platform: "linux", primitive: "bubblewrap", level: "full", bin: "/bin/echo" },
+    });
+    const { doc } = runner.produce("finch", "review", "checkout-flow", "storefront");
+    expect(doc).not.toContain(".git");
   });
 });
 

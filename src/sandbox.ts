@@ -406,6 +406,22 @@ export interface SandboxPolicy {
    * Absent/empty is a legal no-op (no subscription grant, or one declaring no `home:`).
    */
   grantedHomeTargets?: string[];
+  /**
+   * NOTES R4-SANDBOX-FIX-7 (live macOS gate: a member's own commit inside its dispatch worktree, exactly
+   * what Ruling 1 promises, denied by a working sandbox). Read-write. Extra paths a dispatch needs
+   * WRITE access to beyond `cwd`/`home` — currently only the ORIGINAL project repo's own `.git`
+   * directory, threaded here when the dispatch is running inside a `merge.ts#createDispatchWorktree`
+   * worktree (`adapters.ts#InvokeRequest.dispatchGitDir`). Git's own worktree design shares the object
+   * store, refs, and per-worktree administrative state (`HEAD`, `index`, `logs`) under the ORIGINAL
+   * repo's `.git/worktrees/<name>/` — never inside the per-dispatch worktree's own directory — so a
+   * member running `git commit` there needs write access to that shared directory too, not just to its
+   * own worktree's working-tree files. Confirmed directly (not assumed): a filesystem-permission
+   * experiment denying write on a plain (non-sandboxed) original repo's `.git` reproduces the identical
+   * failure (`Unable to create '.../index.lock': Permission denied`) a sandboxed spawn's own denial
+   * produces. Absent/empty is a legal no-op (no worktree this dispatch, or the read-only default
+   * `context_artifacts: paths` case, where no commit is expected).
+   */
+  writablePaths?: string[];
 }
 
 export interface WrappedSpawn {
@@ -456,6 +472,7 @@ function bubblewrapArgv(bin: string, argv: string[], policy: SandboxPolicy): str
   for (const p of policy.readOnlyPaths ?? []) out.push("--ro-bind-try", p, p);
   out.push("--dev", "/dev", "--proc", "/proc", "--bind", policy.cwd, policy.cwd);
   if (policy.home) out.push("--bind", policy.home, policy.home);
+  for (const p of policy.writablePaths ?? []) out.push("--bind", p, p);
   if (!policy.allowNetwork) out.push("--unshare-net");
   out.push("--die-with-parent", "--", ...argv);
   return out;
@@ -472,6 +489,7 @@ function unshareArgv(bin: string, argv: string[], policy: SandboxPolicy): string
     "mount --bind / /",
     `mount --bind ${shq(policy.cwd)} ${shq(policy.cwd)}`,
     policy.home ? `mount --bind ${shq(policy.home)} ${shq(policy.home)}` : "",
+    ...(policy.writablePaths ?? []).map((p) => `mount --bind ${shq(p)} ${shq(p)}`),
     "mount -o remount,bind,ro /",
     'exec "$@"',
   ]
@@ -582,9 +600,13 @@ export function buildSandboxExecProfile(policy: SandboxPolicy): string {
   const scopedHome = rawHome && rawHome !== operatorHome ? rawHome : undefined;
   const grantedTargets = (policy.grantedHomeTargets ?? []).map(canon);
   const readOnly = (policy.readOnlyPaths ?? []).map(canon);
+  // NOTES R4-SANDBOX-FIX-7: read-write, same as `cwd`/`scopedHome` — a member committing inside its
+  // dispatch worktree needs to both read (existing objects/refs) and write (new objects/refs, the
+  // worktree's own admin state) the ORIGINAL project repo's shared `.git` directory.
+  const writable = (policy.writablePaths ?? []).map(canon);
 
-  const reallowReads = dedupe([cwd, ...(scopedHome ? [scopedHome] : []), ...grantedTargets, ...readOnly]);
-  const reallowWrites = dedupe([cwd, ...(scopedHome ? [scopedHome] : [])]);
+  const reallowReads = dedupe([cwd, ...(scopedHome ? [scopedHome] : []), ...grantedTargets, ...readOnly, ...writable]);
+  const reallowWrites = dedupe([cwd, ...(scopedHome ? [scopedHome] : []), ...writable]);
   // DEFECT 2: ancestor metadata for every read re-allow — write re-allows are a subset of reallowReads
   // already, so their own ancestors are already covered here, not computed a second time.
   const ancestorMetadata = dedupe(reallowReads.flatMap(ancestorsOf));

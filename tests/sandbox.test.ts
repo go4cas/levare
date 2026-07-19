@@ -7,6 +7,16 @@
 // A separate, real end-to-end proof (an actual sandboxed spawn, a decoy file genuinely unreadable) lives
 // in tests/adapters.test.ts, gated behind `test.skipIf` on this HOST's own real primitive availability —
 // this file only proves detection/construction logic, which is host-independent by design.
+//
+// NOTES R4-SANDBOX-FIX-7 — a general rule for every test in this file (and any other comparing a real
+// filesystem path against generated `sandbox-exec` profile TEXT): realpath the expected value first.
+// `buildSandboxExecProfile` canonicalizes every path it writes (`sandbox.ts#canon`), and on macOS `/tmp`,
+// `/var`, and `/var/folders` (where `os.tmpdir()` — and therefore every scratch dir this module's own
+// tests create — actually lives) are themselves symlinks into `/private`. A raw, non-canonicalized
+// expected path happens to already equal its own realpath on a Linux container (where these aren't
+// symlinks), which is exactly what let this class of test defect ship unnoticed three separate times
+// (FIX-2's own symlink-canonicalization fixture, FIX-4's decoy-relocation context, and FIX-6's own cwd
+// assertion) before ever failing on the one platform where it actually matters.
 
 import { test, expect, describe } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, existsSync, realpathSync } from "node:fs";
@@ -127,6 +137,7 @@ describe("detectSandbox — never assumed from the platform alone", () => {
   test("the darwin probe threads its own scratch cwd to the actual spawn — a profile allowing scratchDir is worthless if the process never runs there (NOTES R4-SANDBOX-FIX-6)", () => {
     let seenArgv: string[] | undefined;
     let seenCwd: string | undefined;
+    let seenCwdReal = "";
     let profileText = "";
     detectSandbox({
       platform: "darwin",
@@ -134,8 +145,10 @@ describe("detectSandbox — never assumed from the platform alone", () => {
       probe: (argv, opts) => {
         seenArgv = argv;
         seenCwd = opts?.cwd;
-        // Read the profile HERE, before probeSandboxExec's own `finally` cleans up the scratch dir.
+        // Read the profile AND realpath the cwd HERE, before probeSandboxExec's own `finally` cleans up
+        // the scratch dir (realpathSync throws on a path that no longer exists).
         profileText = readFileSync(argv[2], "utf8");
+        seenCwdReal = realpathSync(seenCwd!);
         return true;
       },
     });
@@ -144,8 +157,14 @@ describe("detectSandbox — never assumed from the platform alone", () => {
     // OWN cwd (opts.cwd) must be that identical directory, never left undefined/ambient.
     expect(dirname(seenArgv![4]!)).toBe(seenCwd!);
     // The profile handed to `-f` is built FOR that same cwd — the fix's whole point is that the profile's
-    // own claim and the process's own reality now agree.
-    expect(profileText).toContain(`(allow file-write* (subpath ${JSON.stringify(seenCwd)}))`);
+    // own claim and the process's own reality now agree. NOTES R4-SANDBOX-FIX-7 (live macOS gate, third
+    // occurrence of this test-defect class — see this file's own header note on realpath-ing path
+    // expectations): `buildSandboxExecProfile` writes the CANONICALIZED cwd into the profile
+    // (`sandbox.ts#canon`), and on macOS `os.tmpdir()` itself sits behind a symlink (`/var/folders/... ->
+    // /private/var/folders/...`) — comparing against the raw `seenCwd` passed a Linux container (where
+    // `/tmp` isn't a symlink) but would silently fail on macOS. `realpathSync` here mirrors what the
+    // generator itself already does internally before this assertion ever runs.
+    expect(profileText).toContain(`(allow file-write* (subpath ${JSON.stringify(seenCwdReal)}))`);
   });
 
   // NOTES R4-SANDBOX-FIX-6: the second proven defect — the probe's own spawn (the ONE spawn that decides
@@ -309,6 +328,18 @@ describe("wrapForSandbox — pure argv construction, no OS sandbox required to v
     expect(wrapped.argv).toEqual(expect.arrayContaining(["--ro-bind-try", "/studio/root", "/studio/root", "--ro-bind-try", "/opt/homebrew/bin", "/opt/homebrew/bin"]));
   });
 
+  // NOTES R4-SANDBOX-FIX-7 (live macOS gate: a member's own commit inside its dispatch worktree, denied
+  // by a working sandbox — git's shared object store/refs/worktree-admin-state live under the ORIGINAL
+  // repo's `.git`, never inside the per-dispatch worktree itself, so a member committing there needs
+  // WRITE access to that shared directory too).
+  test("bubblewrap: writablePaths get a real --bind (read-write), never --ro-bind-try", () => {
+    const detection: SandboxDetection = { platform: "linux", primitive: "bubblewrap", level: "full", bin: "/usr/bin/bwrap" };
+    const wrapped = wrapForSandbox(["codex"], { ...policy, writablePaths: ["/proj/repo/.git"] }, detection);
+    expect(wrapped.argv).toEqual(expect.arrayContaining(["--bind", "/proj/repo/.git", "/proj/repo/.git"]));
+    const gitDirIdx = wrapped.argv.indexOf("/proj/repo/.git");
+    expect(wrapped.argv[gitDirIdx - 1]).toBe("--bind"); // never --ro-bind-try for a writable path
+  });
+
   test("unshare fallback: fs-only, bind-mounts cwd/home, no network attempt at all", () => {
     const detection: SandboxDetection = { platform: "linux", primitive: "unshare", level: "fs-only", bin: "/usr/bin/unshare" };
     const wrapped = wrapForSandbox(["codex", "run"], policy, detection);
@@ -321,6 +352,13 @@ describe("wrapForSandbox — pure argv construction, no OS sandbox required to v
     expect(script).toContain("remount,bind,ro /");
     expect(script).not.toContain("net");
     expect(wrapped.argv.slice(-2)).toEqual(["codex", "run"]);
+  });
+
+  test("unshare fallback: writablePaths also get their own mount --bind, read-write like cwd/home", () => {
+    const detection: SandboxDetection = { platform: "linux", primitive: "unshare", level: "fs-only", bin: "/usr/bin/unshare" };
+    const wrapped = wrapForSandbox(["codex"], { ...policy, writablePaths: ["/proj/repo/.git"] }, detection);
+    const script = wrapped.argv.find((a) => a.includes("mount --bind"));
+    expect(script).toContain("/proj/repo/.git");
   });
 
   // NOTES R4-SANDBOX-FIX (round 2): the profile is written to a temp file and passed via `-f <path>` —
@@ -627,6 +665,50 @@ describe("buildSandboxExecProfile — deny-list model (NOTES R4-SANDBOX-FIX-3)",
   test("quotes an embedded quote in a path safely rather than breaking the profile string", () => {
     const profile = buildSandboxExecProfile({ cwd: '/a/"b', allowNetwork: false });
     expect(profile).toContain('/a/\\"b');
+  });
+
+  // NOTES R4-SANDBOX-FIX-7 (live macOS gate): `writablePaths` — currently only the ORIGINAL project
+  // repo's own `.git` directory when a dispatch worktree exists — needs BOTH read and write re-allows,
+  // unlike `readOnlyPaths` (read only): a member's `git commit` inside its worktree reads existing
+  // objects/refs from the shared git dir AND writes new ones there, plus its own worktree admin state
+  // (`.git/worktrees/<name>/index`, `HEAD`). Confirmed by direct reproduction (not assumed): denying
+  // write on a plain, non-sandboxed original repo's `.git` and committing from inside its worktree fails
+  // with the identical `Unable to create '.../index.lock': Permission denied` a sandboxed spawn's own
+  // kernel denial produces for the same path.
+  describe("writablePaths — read-write access beyond cwd/home (NOTES R4-SANDBOX-FIX-7)", () => {
+    test("gets both a read AND a write re-allow, unlike readOnlyPaths", () => {
+      const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false, writablePaths: ["/proj/repo/.git"] });
+      expect(profile).toContain('(allow file-read* (subpath "/proj/repo/.git"))');
+      expect(profile).toContain('(allow file-write* (subpath "/proj/repo/.git"))');
+    });
+
+    test("absent/empty is a legal no-op — no writablePaths, no extra write re-allow beyond cwd/home", () => {
+      const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false });
+      expect(profile.match(/allow file-write\*/g)?.length).toBe(2); // cwd + /dev only
+    });
+
+    test("gets its own ancestor metadata like any other re-allow, so traversal into it survives a denied ancestor", () => {
+      const profile = buildSandboxExecProfile({ cwd: "/a/b", operatorHome: "/Users/cas", allowNetwork: false, writablePaths: ["/Users/cas/source/proj/.git"] });
+      expect(profile).toContain('(allow file-read-metadata (literal "/Users/cas/source/proj"))');
+    });
+
+    test("canonicalized through a symlink, same as cwd/home/readOnlyPaths", () => {
+      const real = mkdtempSync(join(tmpdir(), "levare-sandbox-writable-real-"));
+      const parent = mkdtempSync(join(tmpdir(), "levare-sandbox-writable-link-"));
+      const link = join(parent, "repo-symlink");
+      symlinkSync(real, link);
+      try {
+        const gitDir = join(link, ".git");
+        mkdirSync(gitDir, { recursive: true });
+        const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false, writablePaths: [gitDir] });
+        const realCanonical = realpathSync(real);
+        expect(profile).not.toContain(`(subpath ${JSON.stringify(gitDir)})`);
+        expect(profile).toContain(`(allow file-write* (subpath ${JSON.stringify(join(realCanonical, ".git"))}))`);
+      } finally {
+        rmSync(real, { recursive: true, force: true });
+        rmSync(parent, { recursive: true, force: true });
+      }
+    });
   });
 
   // NOTES R4-SANDBOX-FIX (macOS host verification): sandbox-exec's own `(subpath ...)` rules match the
