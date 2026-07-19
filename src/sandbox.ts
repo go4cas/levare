@@ -641,12 +641,17 @@ export function buildSandboxExecProfile(policy: SandboxPolicy): string {
       // class — Apple's own `/usr/bin/git` is an xcrun shim that `confstr`-asks for `DARWIN_USER_TEMP_DIR`
       // (denied) and falls back to writing an `xcrun_db-*` cache file under it (also denied) — both
       // WARNINGS in the kernel log, never fatal; git proceeds past them the same way it proceeds past the
-      // tty/dtracehelper denials above. Mach-lookup denials for `com.apple.diagnosticd`/`bsd.dirhelper`/
-      // `opendirectoryd` observed alongside are catalogued the same way. None of these three were added
-      // as new allow rules — evidence this round showed the commit itself never depended on any of them
-      // succeeding; see NOTES R4-SANDBOX-FIX-9 for the full account and what a future round should grant
-      // (the specific `/var/folders/<hash>/T` confstr temp dir, named literally, never `/tmp` broadly) IF
-      // a live run ever shows the xcrun cache write actually blocking a real commit.
+      // tty/dtracehelper denials above. None of these were added as new allow rules — evidence this round
+      // showed the commit itself never depended on either succeeding; see NOTES R4-SANDBOX-FIX-9 for the
+      // full account and what a future round should grant (the specific `/var/folders/<hash>/T` confstr
+      // temp dir, named literally, never `/tmp` broadly) IF a live run ever shows the xcrun cache write
+      // actually blocking a real commit.
+      // NOTES R4-SANDBOX-FIX-10 (round 10): the mach-lookup denials for `com.apple.system.
+      // opendirectoryd.membership`/`.libinfo`/`bsd.dirhelper`/`com.apple.diagnosticd` observed alongside
+      // a hung member chain were a live SUSPECT for the hang itself, not merely catalogued on suspicion —
+      // hand-ACQUITTED on the live host: a profile explicitly `(deny mach-lookup ...)`-ing both
+      // opendirectoryd services still ran the identical `git add`/`git commit` chain in 88ms, exit 0.
+      // Confirmed cosmetic, same class as the tty/dtracehelper/xcrun denials above; not chased further.
       "(allow sysctl-read)",
       // Broad OS read, same as an unsandboxed process would see — verified live: this is the only shape
       // that lets dyld's own shared-cache lookup succeed on this platform (see this module's header).

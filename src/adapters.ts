@@ -318,6 +318,40 @@ export interface AsyncCliSpawn {
 
 // Default CLI spawn: a real, synchronous Bun.spawn with a hard timeout and the allowlisted env ONLY
 // (env is replaced wholesale, not merged over process.env — that is the allowlist guarantee).
+// NOTES R4-SANDBOX-FIX-10 (live macOS gate: a hung member chain — "killed 1 dangling process" reported at
+// teardown with no diagnosis of WHICH link blocked). Gated on the identical `LEVARE_SANDBOX_DEBUG=1` flag
+// every other sandbox diagnostic already uses. Prints whatever stdout/stderr bytes were actually
+// captured before a timeout fired — the SUCCESS-path return already discards this (`stdout: timedOut ?
+// "" : stdout`, a deliberate "never trust output from a killed/incomplete process" choice this leaves
+// unchanged) — a hang's own partial output is exactly what tells a Conductor which link in a
+// `sh -c "a && b && c"` chain actually got stuck, versus one that failed outright (which already reports
+// its own stderr via `diagnoseCliFailure`).
+function debugTimeoutOutput(stdout: string, stderr: string): void {
+  if (process.env.LEVARE_SANDBOX_DEBUG !== "1") return;
+  console.error(`[levare:sandbox-debug] timeout: partial stdout (${stdout.length} bytes): ${JSON.stringify(stdout.slice(0, 2000))}`);
+  console.error(`[levare:sandbox-debug] timeout: partial stderr (${stderr.length} bytes): ${JSON.stringify(stderr.slice(0, 2000))}`);
+}
+
+// NOTES R4-SANDBOX-FIX-10: lists every process sharing `pgid` — `detached: true` (below) makes the
+// spawned member its own process-group leader, and every child IT spawns (`sh` spawning `git`, `git`
+// spawning a hook) inherits that SAME pgid unless one of them detaches again — called BEFORE
+// `killProcessGroup` tears the group down, so a future hang names the blocking link (by pid and command
+// name) instead of only ever reporting "N dangling processes" after they're already gone. `ps -A -o
+// pid,ppid,pgid,comm` is the common subset both GNU (Linux) and BSD (macOS) `ps` accept identically —
+// deliberately no distro/platform branch. Best-effort: if `ps` itself is unavailable or fails, this
+// prints why rather than throwing and losing the timeout's own error path.
+function debugAliveProcessGroup(pgid: number): void {
+  if (process.env.LEVARE_SANDBOX_DEBUG !== "1") return;
+  try {
+    const r = Bun.spawnSync(["ps", "-A", "-o", "pid,ppid,pgid,comm"], { stdout: "pipe", stderr: "ignore" });
+    const text = r.stdout ? new TextDecoder().decode(r.stdout) : "";
+    const lines = text.split("\n").filter((line, i) => i === 0 || line.trim().split(/\s+/)[2] === String(pgid));
+    console.error(`[levare:sandbox-debug] timeout: process group ${pgid} still alive at kill time:\n${lines.join("\n")}`);
+  } catch (e) {
+    console.error(`[levare:sandbox-debug] timeout: could not list process group ${pgid}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 export const bunSpawn: CliSpawn = {
   run(argv, opts) {
     const proc = Bun.spawnSync(argv, {
@@ -330,13 +364,20 @@ export const bunSpawn: CliSpawn = {
       stdin: opts.stdin !== undefined ? Buffer.from(opts.stdin) : "ignore",
       timeout: opts.timeoutMs,
     });
+    const stdout = proc.stdout ? new TextDecoder().decode(proc.stdout) : "";
+    const stderr = proc.stderr ? new TextDecoder().decode(proc.stderr) : "";
+    const timedOut = proc.exitedDueToTimeout === true;
+    // NOTES R4-SANDBOX-FIX-10: `Bun.spawnSync`'s own `timeout` option kills the process internally, with
+    // no hook for this module to inspect the process tree BEFOREHAND (unlike `asyncBunSpawn`, which owns
+    // its own `setTimeout`) — only the partial-output half of this round's instrumentation applies here.
+    if (timedOut) debugTimeoutOutput(stdout, stderr);
     return {
-      stdout: proc.stdout ? new TextDecoder().decode(proc.stdout) : "",
+      stdout,
       exitCode: proc.exitCode ?? -1,
       // Bun's own timeout flag — the authoritative signal. A slow-but-successful member (which exits
       // 0 on its own) is never misread as timed out, and a plain non-zero exit stays a non-zero exit.
-      timedOut: proc.exitedDueToTimeout === true,
-      stderr: proc.stderr ? new TextDecoder().decode(proc.stderr) : "",
+      timedOut,
+      stderr,
       signalCode: proc.signalCode ?? null,
     };
   },
@@ -374,10 +415,16 @@ export const asyncBunSpawn: AsyncCliSpawn = {
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      if (proc.pid) killProcessGroup(proc.pid);
+      // NOTES R4-SANDBOX-FIX-10: list who's still alive BEFORE killing — the whole point is naming the
+      // blocking link, which the kill itself would otherwise erase all evidence of.
+      if (proc.pid) {
+        debugAliveProcessGroup(proc.pid);
+        killProcessGroup(proc.pid);
+      }
     }, opts.timeoutMs);
     try {
       const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+      if (timedOut) debugTimeoutOutput(stdout, stderr);
       return {
         stdout: timedOut ? "" : stdout,
         exitCode: proc.exitCode ?? -1,

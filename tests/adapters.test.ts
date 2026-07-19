@@ -923,6 +923,39 @@ describe("timeout vs. exit-code, kept distinct", () => {
     // actually fired rather than the call merely eventually resolving on its own.
     expect(elapsed).toBeLessThan(5000);
   });
+
+  // NOTES R4-SANDBOX-FIX-10 (live macOS gate: a hung member chain, "killed 1 dangling process" reported
+  // with no diagnosis of which link blocked). Proves the new instrumentation actually fires under a real
+  // async timeout: the process group still alive at kill time is listed (by pid/command), and whatever
+  // partial stdout the member printed before hanging is captured, not silently discarded the way the
+  // functional `SpawnResult.stdout` already is on a timeout (`timedOut ? "" : stdout`, unchanged).
+  test("LEVARE_SANDBOX_DEBUG=1 prints the alive process group and partial stdout when a real async timeout fires", async () => {
+    const repo = loadRepo(ROOT);
+    repo.agents.set("hangingSleeper", { ...repo.agents.get("finch")!, name: "hangingSleeper", command: ["sh", "-c", "echo partial-output-marker; sleep 10"], cwd: undefined, timeout: 1 });
+    repo.teams.get("kestrel")!.members.push("hangingSleeper");
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "hangingSleeper", kind: "review" }], native: nativeMock, remote: remoteMock });
+    const prior = process.env.LEVARE_SANDBOX_DEBUG;
+    const origError = console.error;
+    const lines: string[] = [];
+    console.error = (...args: unknown[]) => {
+      lines.push(args.map(String).join(" "));
+    };
+    try {
+      process.env.LEVARE_SANDBOX_DEBUG = "1";
+      await expect(runner.produceAsync("hangingSleeper", "review", "checkout-flow", "storefront")).rejects.toThrow(/timed out/);
+      const captured = lines.join("\n");
+      expect(captured).toContain("process group");
+      expect(captured).toContain("still alive at kill time");
+      // The "sleep" link is named by its own command, proving the listing is real, not a placeholder.
+      expect(captured).toContain("sleep");
+      expect(captured).toContain("timeout: partial stdout");
+      expect(captured).toContain("partial-output-marker");
+    } finally {
+      console.error = origError;
+      if (prior === undefined) delete process.env.LEVARE_SANDBOX_DEBUG;
+      else process.env.LEVARE_SANDBOX_DEBUG = prior;
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1583,11 +1616,32 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
   // actually produced the wrapped output, and the assertion branches on it. A bwrap-shaped assertion run
   // against a seatbelt profile (or vice versa) tests nothing — this is what makes that structurally
   // impossible: the shape being checked is read directly off `hostSandbox.primitive`, never assumed.
+  //
+  // NOTES R4-SANDBOX-FIX-10 (live macOS gate, this test's own defect): the darwin branch used to assert
+  // against `doc` — the PRODUCED ARTIFACT (`cat marker.txt`'s own stdout, wrapped in review frontmatter:
+  // `kind: review`, `sandbox: full`) — which never contains the wrapped argv or profile text at all,
+  // regardless of primitive. That only worked by accident for the earlier fake-`/bin/echo`-as-bwrap
+  // tests elsewhere in this file, where the "primitive" binary itself echoes the composed argv AS the
+  // member's own stdout; a REAL primitive (genuinely enforcing) spawns the actual wrapped command, whose
+  // stdout is whatever the MEMBER prints, never the wrapper's own composition. Fixed: captured via
+  // `LEVARE_SANDBOX_DEBUG=1` instead (the same `console.error` capture pattern the debug-flag test above
+  // already uses) — `wrapForSandbox` prints the composed argv (bwrap) or the profile text (sandbox-exec)
+  // there, unconditionally, which is the actual object either branch needs to inspect. A guard assertion
+  // (`(version 1)` — the seatbelt profile's own first line) runs BEFORE any grant assertion on the darwin
+  // branch, so a future wrong-object capture fails loudly at the source, never as a misleading
+  // grant-missing error several lines down.
   test.skipIf(hostSandbox.level !== "full")(
     "the narrowed git-write grant reaches the REAL host's own wrapped output, in whichever shape its actual primitive produces",
     async () => {
       const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+      const prior = process.env.LEVARE_SANDBOX_DEBUG;
+      const origError = console.error;
+      const lines: string[] = [];
+      console.error = (...args: unknown[]) => {
+        lines.push(args.map(String).join(" "));
+      };
       try {
+        process.env.LEVARE_SANDBOX_DEBUG = "1";
         const repo = repoWithRealStorefrontRepo(projectRepo);
         const runner = new AdapterRunner(repo, {
           pricing,
@@ -1600,21 +1654,35 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
         const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
         expect(doc).toContain("MARKER-checkout-flow"); // the real dispatch still succeeded end to end.
 
+        // The wrapped composed-argv/profile text is the debug capture, NEVER `doc` (the produced
+        // artifact) — see this test's own FIX-10 doc above.
+        const captured = lines.join("\n");
         const gitCommonDir = join(realpathSync(projectRepo), ".git");
         if (hostSandbox.primitive === "bubblewrap") {
+          // Guard: this must genuinely be composed bwrap argv, not some other captured object.
+          expect(captured).toContain("--tmpfs");
           for (const sub of ["objects", "refs", "logs"]) {
             const p = join(gitCommonDir, sub);
-            expect(doc).toContain(`--bind ${p} ${p}`);
+            expect(captured).toContain(`--bind ${p} ${p}`);
           }
+          expect(captured).not.toContain(join(gitCommonDir, "hooks"));
+          expect(captured).not.toContain(join(gitCommonDir, "config"));
         } else if (hostSandbox.primitive === "sandbox-exec") {
+          // Guard: this must genuinely be the seatbelt profile TEXT, not some other captured object —
+          // a wrong-object capture (e.g. the produced artifact) fails HERE, loudly, never several lines
+          // down as a misleading "grant missing" failure.
+          expect(captured).toContain("(version 1)");
           for (const sub of ["objects", "refs", "logs"]) {
             const p = join(gitCommonDir, sub);
-            expect(doc).toContain(`(allow file-write* (subpath ${JSON.stringify(p)}))`);
+            expect(captured).toContain(`(allow file-write* (subpath ${JSON.stringify(p)}))`);
           }
+          expect(captured).not.toContain(join(gitCommonDir, "hooks"));
+          expect(captured).not.toContain(join(gitCommonDir, "config"));
         }
-        expect(doc).not.toContain(join(gitCommonDir, "hooks"));
-        expect(doc).not.toContain(join(gitCommonDir, "config"));
       } finally {
+        console.error = origError;
+        if (prior === undefined) delete process.env.LEVARE_SANDBOX_DEBUG;
+        else process.env.LEVARE_SANDBOX_DEBUG = prior;
         rmSync(projectRepo, { recursive: true, force: true });
       }
     },
