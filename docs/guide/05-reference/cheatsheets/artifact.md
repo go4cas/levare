@@ -47,6 +47,7 @@ A markdown deliverable with YAML frontmatter, produced by a member and tracked t
 | `merge_result.executed_at` | string | ✅ | — | — |
 | `merge_result.merge_commit` | string | ✅ | — | — |
 | `merge_result.pushed` | boolean | ✅ | ✅ | — |
+| `sandbox` | enum | — | ✅ | `full` · `fs-only` · `none` |
 
 ## Minimal valid skeleton
 

@@ -20,24 +20,26 @@ project declares `remote:` — a push failure rolls the local merge back byte-pe
 gate with the reason named. `checkGuardrails` (guardrails.ts) is no longer dormant: its production
 call site is `board/gateops.ts#doApproveMerge`.
 
-Two things this closure deliberately does NOT cover, both recorded honestly rather than silently
-assumed:
+One thing this closure deliberately did NOT cover, closed by a later goal, and one standing exclusion
+that remains by design:
 
-- **Member-side work-branch checkout is single-working-tree, not per-member isolated.** A member
-  dispatched for a unit on a repo-bearing project gets the work branch checked out in the PROJECT's own
-  one working tree (`adapters.ts#AdapterRunner`'s `memberWorkingContext`) — not a scratch worktree per
-  dispatch. Two members dispatched concurrently against the same repo-bearing project (a loop's two
-  members in one round; two units on the same project advanced in the same daemon tick) race each
-  other's checkout. Per-member worktree isolation would close this and was considered in scope for a
-  *future* goal, not this one — the merge MACHINERY itself (trial merge, execution, rollback) already
-  uses scratch worktrees throughout and is unaffected by this gap.
+- **Member-side work-branch checkout is per-dispatch isolated — closed (NOTES R4-SANDBOX, Ruling 1).**
+  The single-working-tree checkout named here at the time of this closure (`adapters.ts#AdapterRunner`'s
+  `memberWorkingContext`, since retired) has been replaced: a member dispatched for a unit on a
+  repo-bearing project now gets its own `git worktree add` of the work branch, under a per-run scratch
+  path, created immediately before the invoke call and removed immediately after
+  (`merge.ts#createDispatchWorktree`) — the same scratch-worktree technique the merge machinery itself
+  (trial merge, execution, rollback) already used, extended to a third caller. Two units on the same
+  repo-bearing project advanced concurrently now get two independent worktrees of their own two
+  branches — no shared checkout to race. A two-concurrent-dispatch test proves the isolation directly
+  (`tests/adapters.test.ts`).
 - **Self-referential projects (`repo: .`, e.g. the golden fixture's own `studio` project) are excluded
-  from the whole mechanism** — no work branch, no merge gate — because that path IS the studio's own
-  repo, the same one every gate resolution in this app commits artifacts into. Mixing branch-switching
-  into that tree would be a correctness hazard, not a feature; `resolveProjectRepoPath` (merge.ts)
-  excludes it structurally. A project whose `repo:` doesn't resolve to a real local git checkout at all
-  (an unfetched SSH URL, a placeholder) is likewise unaffected — no work branch, no merge gate, flow
-  completion behaves exactly as it did before this goal.
+  from the whole mechanism** — no work branch, no merge gate, no per-dispatch worktree — because that
+  path IS the studio's own repo, the same one every gate resolution in this app commits artifacts into.
+  Mixing branch-switching into that tree would be a correctness hazard, not a feature; `resolveProjectRepoPath`
+  (merge.ts) excludes it structurally. A project whose `repo:` doesn't resolve to a real local git checkout at
+  all (an unfetched SSH URL, a placeholder) is likewise unaffected — no work branch, no merge gate, no
+  worktree, flow completion behaves exactly as it did before either goal.
 
 ## Remote/MCP members
 
@@ -85,24 +87,43 @@ levare-acts shape a real, gated write path for the first time.
 sdk-transport.ts) rather than a free-form registry — an unknown name is a validation error naming the
 real one. For a `native` member the declared list forwards to the Claude Agent SDK's own boundary
 verbatim (a test proves the boundary receives exactly the declared list); a `cli` member's `tools:`
-cannot be enforced the same way — there is no SDK boundary in that spawn path for an allowlist to
-reach — so it's a validate/doctor warning instead (`CLI_TOOLS_NOT_ENFORCEABLE`), silenced only by
-removing the field. A connector also gains `home:` — dotpaths under `$HOME` a subscription-authenticated
-vendor CLI actually needs (`home: [".codex"]`); a member granted a connector that declares it gets a
-per-run scratch `HOME` symlinking only those paths (never a copy — the login is a live credential),
-created before the spawn and removed after. A subscription connector declaring no `home:` keeps the
-pre-CAP-B behaviour (the member's process sees the real, unscoped `HOME`) and gets a new
-`SUBSCRIPTION_NO_HOME` warning, the sibling to `SUBSCRIPTION_NO_ROLE` (NOTES C15). This narrows, but
-does not close, "Per-member subscription-credential scoping" below — see that entry for the residual
-`home:` itself cannot fix.
+cannot be enforced the same way at the per-tool level — there is no SDK boundary in that spawn path for
+a named-tool allowlist to reach — so it's a validate/doctor warning instead (`CLI_TOOLS_NOT_ENFORCEABLE`),
+silenced only by removing the field. **v2's OS sandbox (below) narrows this warning's text, but does not
+silence it:** a working sandbox confines a `cli` member's overall filesystem/network reach, which is a
+coarser boundary than `tools:` itself describes (it cannot distinguish "may use Read" from "may use
+Write") — so the gap the warning names is real either way. A connector also gains `home:` — dotpaths
+under `$HOME` a subscription-authenticated vendor CLI actually needs (`home: [".codex"]`); a member
+granted a connector that declares it gets a per-run scratch `HOME` symlinking only those paths (never a
+copy — the login is a live credential), created before the spawn and removed after. A subscription
+connector declaring no `home:` keeps the pre-CAP-B behaviour (the member's process sees the real,
+unscoped `HOME`) and gets a new `SUBSCRIPTION_NO_HOME` warning, the sibling to `SUBSCRIPTION_NO_ROLE`
+(NOTES C15). This narrows, but does not close, "Per-member subscription-credential scoping" below — see
+that entry for the residual `home:` itself cannot fix.
 
-**What remains, still not built:**
-
-- **OS-level sandboxing (v2).** Process isolation — a member-specific filesystem view, network
-  restriction — beyond the environment/credential/tool-allowlist/HOME scoping parts A and B now give.
-  Ratified as v2's own next-in-line item (R4). Parts A and B govern WHAT a member can read/act through
-  and, for `native`, which SDK tools it can reach; none of that sits between a `cli` member and the
-  operating system it runs on.
+**OS-level sandboxing (v2) — closed (NOTES R4-SANDBOX, Ruling 2).** Process isolation between a `cli`
+member's spawned process and the operating system — the one item parts A and B both named but
+deliberately left unbuilt — now exists, best-effort and per-OS, honestly reported. Both real `cli` spawn
+paths (`adapters.ts`'s sync and async `CliSpawn` boundaries) wrap the member process in an OS sandbox
+where a working primitive exists on the host, detected fresh at every spawn (never assumed from the
+platform: a binary can be present and non-functional, e.g. this repo's own dev container, where
+`bubblewrap`/`unshare` are both on `PATH` but fail every invocation because the outer container disables
+unprivileged user namespaces). Filesystem is a hard condition when a primitive works: the process can
+reach its per-dispatch worktree (Ruling 1, above) read-write, its `scopeHome` scratch `HOME` (NOTES
+CAP-B) read-write, and a small enumerated set of read-only system paths (`/usr`, `/bin`, `/lib`,
+`/lib64`, `/etc` on Linux) — nothing else; a decoy file anywhere else, including the studio root itself,
+is genuinely unreadable, proven by a dedicated test. Network is best-effort — denied unless the member
+holds at least one granted connector (every connector this codebase has IS levare's own way of declaring
+an external reach). Per-OS: Linux tries `bubblewrap` first (level `full` — filesystem AND network),
+falling back to a raw `unshare` mount-namespace confinement (level `fs-only` — filesystem only, weaker
+than `full`: it confines writes to the declared roots via a read-only remount of `/`, but does not
+additionally hide unlisted read-only paths the way bubblewrap's empty-root construction does); macOS
+uses a generated `sandbox-exec` profile (level `full`, exercised only by construction in this repo's own
+test suite — never live, since this repo runs on Linux). No working primitive on either OS → an
+unsandboxed spawn (level `none`) — a Conductor ruling, never escalated to a spawn failure — plus a new
+`SANDBOX_UNAVAILABLE` doctor/validate/registry warning, sibling to `CLI_TOOLS_NOT_ENFORCEABLE` above. The
+enforcement level actually used is recorded on the produced artifact (`sandbox: full | fs-only | none`),
+per run, never omitted.
 
 ## Connector trust-tier taxonomy
 

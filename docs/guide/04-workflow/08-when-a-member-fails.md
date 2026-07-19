@@ -64,6 +64,35 @@ These are pre-flight checks. A member whose working directory is gone, or whose 
 installed, fails with a *reason* rather than an opaque exit code — because "exited 1" is a symptom,
 not a diagnosis.
 
+## Failures from the sandbox
+
+A `cli` member spawned on a host with a working OS sandbox (NOTES R4-SANDBOX, v2 Ruling 2 — see
+[6 · Operations](../06-operations.md)) runs confined to its own per-dispatch worktree, its own scoped
+`HOME`, and a handful of read-only system paths — nothing else. If the member's own command reaches for
+something outside that (a path it assumed it could read, a socket it assumed it could open), the
+sandbox denies it, and that denial surfaces through the exact same card as any other member failure —
+no new verb, no new state, just the vendor's own "permission denied" (or the sandbox's own error, if it
+couldn't even start) in the same position the card always shows it:
+
+```
+review-add-command-v1 · work/todo-cli/add-command/                         BLOCKED
+
+  The daemon could not produce this artifact: cli member 'corvid' exited 1
+
+  cat: /home/operator/.ssh/id_ed25519: Permission denied
+
+  argv: ["codex", "review", "--input", "…", "--repo", "/tmp/levare-dispatchwt-a1b2c3"]
+
+  [ Retry ]  [ Skip ]  [ Abandon ]
+```
+
+The `argv` shown is always the member's OWN command — never the sandbox wrapper levare actually ran it
+through — so this reads exactly like any other CLI failure card; only the error text hints at *why*. If
+a member is reliably failing this way, the fix is almost never **Retry**: the command is reaching
+outside its own worktree/scoped `HOME` on purpose, and the sandbox is doing its job. `levare doctor`
+names the enforcement level actually in force on this host (`full` / `fs-only` / `none`) if you need to
+confirm a sandbox is even active before chasing a denial that isn't one.
+
 ## Failures that aren't failures
 
 Two states look like failure and aren't:

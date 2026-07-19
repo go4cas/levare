@@ -8484,3 +8484,231 @@ beyond the one pre-existing, 0 fail, every run (23.26s–23.95s each) — same s
 above. Combined with the pre-fix five-run measurement pass (also 0 fail, used to ground the timeout choice
 rather than to prove the fix), ten consecutive full-suite runs total across this investigation, 0 failures
 observed.
+
+# NOTES R4-SANDBOX — v2's own next-in-line item: per-dispatch worktree isolation (Ruling 1) and OS-level
+# sandboxing (Ruling 2)
+
+Goal: close the "OS-level sandboxing (v2)" register entry and the shared-working-tree race
+`docs/current-gaps.md` named as its own precondition (NOTES MERGE-1's honest residual). Two Conductor
+rulings, encoded directly, matching this codebase's own convention for design-session rulings (NOTES
+CAP-A/CAP-B's own "Conductor rulings ... encoded directly" posture).
+
+## Ruling 1 — worktree per dispatch (`merge.ts#createDispatchWorktree`)
+
+`adapters.ts#AdapterRunner`'s former `memberWorkingContext` checked the unit's work branch out in the
+project repo's OWN single working tree before every dispatch — real, but racy: two dispatches against the
+same repo-bearing project (concurrently, or merely interleaved by async scheduling) fought over which
+branch was actually checked out when either one's spawn read the filesystem. `merge.ts` already had the
+technique that closes this — the trial-merge/execution scratch worktrees M2/M4 use — so Ruling 1 is that
+same technique extended to a third, structurally distinct caller.
+
+`createDispatchWorktree(repoPath, branch)` is NOT `withScratchWorktree` reused verbatim: the trial-
+merge/execution helper is callback-scoped (create, run one synchronous git command inside, tear down, all
+within one function call) because a merge attempt is one git operation; a dispatch worktree must instead
+stay alive across an entire member invocation (assemble context, scope env/HOME, spawn, read the result) —
+so it returns a plain `{path, cleanup()}` pair, the identical shape `env.ts#scopeHome` already uses for its
+own per-spawn scratch resource, rather than forcing every caller through a callback. It also checks the
+branch out NORMALLY, never `--detach` (unlike the trial-merge/execution worktrees, which must never move a
+real branch) — a member's own commits inside the worktree need to actually advance `levare/<unit>`, which
+only happens with a real checkout.
+
+`AdapterRunner#prepare` now resolves `{repoPath, branch}` (via the same `resolveProjectRepoPath`/
+`workBranchName`/`branchExists` merge.ts already exports — "does this project have a real local checkout"
+is answered identically everywhere, unchanged) but does NOT create the worktree there; `produce`/
+`produceAsync` wrap the whole dispatch in `withDispatchWorktree`/`withDispatchWorktreeAsync`, which create
+it immediately before the invoke call, override `req.projectRepoPath` to the worktree's own path for the
+duration, and `cleanup()` in a `finally` — success or thrown `AdapterError` alike, mirroring
+`withHomeScope`'s identical create-immediately-before/clean-up-immediately-after shape (the two now nest:
+dispatch worktree outside, home scope inside, for `native`/`cli`). Every `{feature_repo}`/cwd resolution
+downstream (`nativeWorkerRequest`, `defaultCliCommand`, `cliInvocation`) reads `req.projectRepoPath`
+exactly as before — none of them know or care whether it's a worktree or the plain repo path.
+
+**Judgment call — this applies to `native` dispatches too, not only `cli`.** The goal's own phrasing
+("a cli member dispatched...") names the motivating case, but the retired `memberWorkingContext` covered
+BOTH `native` and `cli` (only `remote`, a mocked boundary that never spawns, was excluded) — leaving
+native dispatches on the old racy shared-tree checkout while only fixing cli would have been an
+inconsistent, half-migrated state for no benefit; the worktree wrapper is applied uniformly to both, per
+`memberWorkingContext`'s own prior scope.
+
+**What still doesn't get a worktree, unchanged:** self-referential projects (`repo: .`) and any project
+whose `repo:` doesn't resolve to a real local checkout — `resolveProjectRepoPath` excludes both
+structurally, exactly as it did before this goal (`docs/current-gaps.md`'s own residual, narrowed but not
+touched by this ruling). Two dispatches for the SAME unit's SAME branch at once is not a case this — or
+the pre-existing flow model (a loop's two members alternate sequentially) — ever produces; if that
+assumption is ever wrong, `git worktree add` refuses a second checkout of a branch already checked out
+elsewhere with a loud, named error, never a silent race.
+
+## Ruling 2 — the OS sandbox (`src/sandbox.ts`)
+
+New module, deliberately never imported by anything except `adapters.ts` (the two real `cli` spawn paths),
+`doctor.ts`/`cli.ts`/`validate.ts`/`board/render/registry.ts` (the honesty surfaces), mirroring the "one
+module owns the mechanism, several surfaces repeat the telling" shape NOTES CAP-B already established for
+scoped HOME.
+
+**Detection is never assumed from the platform — `detectSandbox` PROBES.** The goal's own instruction
+("never assume one exists because the platform suggests it should") is not advisory here: this exact dev
+container has both `bwrap` and `unshare` on `PATH`, and BOTH fail every real invocation (`bwrap: No
+permissions to create a new namespace` — confirmed by hand before writing a line of this module, the outer
+container's own seccomp/AppArmor policy disables unprivileged user namespaces even though
+`/proc/sys/user/max_user_namespaces` is nonzero). A `which`-only check would have reported "full" on a host
+that cannot sandbox anything at all. `detectSandbox` always runs a real minimal invocation (`bwrap
+--ro-bind ... -- true`, `unshare --user --map-root-user --mount -- true`, `sandbox-exec -p "(version
+1)(allow default)" -- true`) and only trusts a `bin` it just watched succeed — proven directly:
+`tests/sandbox.test.ts`'s "this actual host, right now" test calls the REAL (un-injected) `detectSandbox()`
+and asserts `level: "none"` on Linux, in-repo, rather than only asserting the seam is wired. Called fresh
+at doctor time (`cli.ts#runDoctorCmd`) AND at validate time (`cli.ts#runValidate`) AND at every real cli
+spawn (`adapters.ts#sandboxWrap`) — no process-lifetime cache; a probe is one cheap subprocess and the
+alternative (a stale belief outliving a host's actual state, e.g. a login session that just gained/lost
+namespace permission) is the exact honesty gap this module exists to close.
+
+**Three levels, one always-honest report:**
+- **`full`** — filesystem AND network confined. Linux: `bubblewrap`. macOS: a generated `sandbox-exec`
+  profile (constructed, unit-tested on profile TEXT — `buildSandboxExecProfile` — never run live, since
+  this repo and its test suite are Linux-only; recorded as such, not claimed as verified).
+- **`fs-only`** — filesystem confined, network NOT attempted. Linux only: a raw `unshare` fallback for a
+  host with the kernel capability but no `bubblewrap` binary installed.
+- **`none`** — no primitive worked. The spawn proceeds unsandboxed — a Conductor ruling (best-effort,
+  per-OS, never a spawn failure), not a bug — and the level is still recorded, never silently absent.
+
+**Filesystem is a hard condition at `full`, taken literally.** The first design draft used `--ro-bind / /`
+(broad, honest reads everywhere, including the studio root a `context_artifacts: paths` member might want)
+plus `--tmpfs /tmp` to hide sibling scratch dirs specifically — but that leaves everything OUTSIDE `/tmp`
+readable, which contradicts the goal's own "nothing else" wording and would have made the decoy-file test
+depend on WHERE the decoy happened to sit. Rewritten to build the sandbox root from an EMPTY `--tmpfs /`
+plus an ENUMERATED allowlist (`/usr`, `/bin`, `/lib`, `/lib64` via `--ro-bind-try`, which silently skips a
+source that doesn't exist — this container's own Debian merged-usr layout has no separate `/lib64` and
+symlinks `/bin`/`/lib` into `/usr`; `--ro-bind-try` handles both shapes without a distro-detection branch)
+plus `/etc` (certs, resolv.conf, nsswitch), `/dev`, `/proc`, and the two rw binds (cwd, scoped HOME). This
+makes "nothing else" true of READS, not just writes — a decoy ANYWHERE outside that list, including the
+studio root, is genuinely unreadable, which is what the decoy-file test actually proves.
+
+**The named cost of that stricter reading:** a `cli` member declaring `context_artifacts: paths` (§6 item
+7, ruling C9) reads its consumed-artifact paths off the STUDIO filesystem in the unsandboxed case — under
+a working `full`-tier sandbox, it can no longer do that (the studio root isn't in the allowlist). Not
+fixed by this goal; named here and in `docs/current-gaps.md`/`docs/guide/06-operations.md` rather than
+silently left for a future session to rediscover as a live bug. `context_artifacts: inline` (rook's own
+declared mode, for exactly the "isolated scratch directory" case) is unaffected either way.
+
+**`fs-only` is honestly weaker, not just net-less.** Reconstructing bubblewrap's own empty-root-plus-
+allowlist construction by hand via raw `unshare` (no pivot_root/chroot tooling, would need a jail
+directory plus several more bind mounts and real risk of getting the ordering wrong, unverifiable in this
+container either way since `unshare --user --map-root-user --mount` fails here for the identical
+namespace-disabled reason `bwrap` does) was rejected as scope this ruling's own "best-effort" framing
+doesn't ask for. The shipped fallback takes the simpler, well-known "bind `/` onto itself, bind cwd/home
+writable on top, remount the outer `/` bind read-only" shape: writes are confined to the declared roots,
+but a decoy elsewhere remains READABLE (never writable) at this tier specifically — the decoy-file test
+therefore asserts only against `full`, and this asymmetry is named in the module's own header comment, not
+left implicit.
+
+**Network — best-effort, gated on "holds a connector."** The goal's own phrasing ("a connector declaring a
+remote endpoint") named no such field, and none of the existing `Connector` shape (`server`, `command`,
+`env`, `home`, `actions`) is specifically "a remote endpoint declaration" separate from being a connector
+at all. **Judgment call:** every connector this codebase has (an `mcp` server, a `cli` wrapping an external
+service, an `auth: subscription` model's own API) IS levare's own declared way of naming an external
+reach — there is no connector shape that names a purely-local capability — so `env.ts#memberNetworkAllowed`
+checks "granted at least one connector" rather than inventing a second, parallel field for the same fact a
+grant already states. A member with no grants has nothing to reach for; network is denied by default.
+
+**No working primitive → the new warning, sibling to `CLI_TOOLS_NOT_ENFORCEABLE`.** `validate.ts#
+validateAgentSandboxWarning` fires `SANDBOX_UNAVAILABLE` per `kind: cli` agent when the CALLER passes a
+detection reporting `level: "none"` — `validatePath` gained an optional third `sandbox?: SandboxDetection`
+parameter (mirroring how `doctor.ts`'s env/CLI probes are always caller-injected) so the validator itself
+stays host-independent by default (every existing call site, and most tests, pass nothing and get no
+warning — never assumed) while `cli.ts#runValidate`'s REAL invocation wires in a real `detectSandbox()`.
+`doctor.ts#formatDoctor` gained a `sandbox`/`cliAgents` pair, printed alongside `orchestrator`/`versionInfo`
+(the same "what does this host actually offer" family), with the per-agent warning line only when there
+IS a `kind: cli` agent to warn about. The registry's agent card mirrors both (`board/render/registry.ts`).
+
+**`CLI_TOOLS_NOT_ENFORCEABLE`'s text is narrowed, per the goal's own instruction, never silenced.** A
+working sandbox confines a `cli` member's OVERALL filesystem/network reach — a coarser boundary than
+`tools:` describes, which cannot distinguish "may use Read" from "may use Write" the way a real per-tool
+allowlist would. The warning's message (validate.ts, doctor.ts, registry.ts — all three, identically) now
+says so explicitly rather than implying the sandbox closes this gap.
+
+**The enforcement level is recorded on the produced artifact, independent of `usage`/`unreported`.** First
+design drew this in `Usage`/`Receipt` (nested under `usage:`, forcing `unreported: false` whenever a
+sandbox level was known — mirroring F17's own "a subscription member's plan is never simply omitted"
+precedent) — but that broke a much bigger, unrelated contract: EVERY plain (non-subscription) `cli`
+member's silence is meaningful (`tests/replay.test.ts`'s own "the deliberately-silent CLI member is
+recorded as unreported, never $0" test, and the golden oracle's own frozen transcript, both regressed).
+Reverted to a plain, TOP-LEVEL `Artifact.sandbox` field (`ARTIFACT_SCHEMA`, `repo.ts#toArtifact`) — sibling
+to `merge`/`merge_result`/`execution`, never nested in `usage:` — set by `AdapterRunner#author` whenever
+`agent.kind === "cli"` and a level was determined, completely orthogonal to whether the member reported any
+usage at all. `docs:generate` regenerated `artifact.md`'s cheatsheet for the new field (one new row; no new
+`FieldSpec` type needed, unlike CAP-A's `action-map`/`str-map` additions — a plain enum renders through the
+existing generic field-table code).
+
+**Sandbox wrapping only ever touches the REAL spawn boundary, never a test double** — the identical
+`this.spawn === bunSpawn` guard `preflightCli` already established (NOTES F3), reused rather than a second
+condition invented for the same reason: a test-injected `CliSpawn` is a stand-in for arbitrary behaviour,
+never a real OS process, so wrapping its argv would assert something about bwrap/unshare's own argv shape
+rather than about the adapter's own logic. This is also what keeps this goal's blast radius on the
+existing suite at zero — every one of the ~1000 pre-existing tests that inject a fake `CliSpawn` continues
+to see its own exact, unwrapped argv, unchanged.
+
+## Docs + honesty
+
+`docs/current-gaps.md`: the merge-phase closure's own residual bullet (single-working-tree checkout) is
+rewritten to state Ruling 1 closes it, cross-referencing this entry; the capability layer's "What remains,
+still not built" OS-sandboxing bullet is replaced with a full closure paragraph (mirroring Part A/Part B's
+own "is built" shape) naming the per-OS matrix, the enumerated-allowlist design, the `fs-only` asymmetry,
+and the `SANDBOX_UNAVAILABLE` warning; Part B's own `CLI_TOOLS_NOT_ENFORCEABLE` paragraph gained the
+narrowed-not-silenced sentence. `docs/guide/06-operations.md`'s "What levare does not constrain" section
+rewrote its own opening claim (levare now DOES govern cli process reach, best-effort) and closed its final
+paragraph's "what remains deferred" language into a full closure paragraph with the same content as
+current-gaps.md's, in this guide's own operational voice. `docs/guide/04-workflow/08-when-a-member-fails.md`
+gained a new "Failures from the sandbox" subsection — a sandbox denial surfaces through the EXACT same
+generic failure card every other cli failure already uses (no new verb, no new state: the denied read's
+own "Permission denied" is just whatever stderr the failed command produced), which is worth naming
+explicitly since it's easy to mistake for a flaky vendor error and reach for **Retry** when the real fix is
+narrowing what the command reaches for.
+
+## Verification
+
+`bun test` — 1092 pass, 3 skip (1 pre-existing + 2 new, both `test.skipIf` on this HOST's own real
+`detectSandbox()` reporting a working primitive — confirmed `none` in this container, so both skip here and
+are expected to RUN for real on a host where `bubblewrap` actually works), 0 fail, across 86 files (up from
+85 — one new file, `tests/sandbox.test.ts`, 27 tests: `detectSandbox`'s platform/primitive/probe matrix
+including the "this actual host, right now" un-injected proof; `wrapForSandbox`'s pure argv construction for
+all four cases — full/fs-only/sandbox-exec/none — network-allowed and denied; `buildSandboxExecProfile`'s
+text; `validateAgentSandboxWarning`'s `SANDBOX_UNAVAILABLE` firing/silencing/native-exemption; `formatDoctor`'s
+new sandbox status line + per-agent warning). `tests/merge.test.ts` gained a `createDispatchWorktree` describe
+block (5 tests: real checkout not detached, a member's own commit advancing the branch while the project's
+own tree stays untouched, two units on the same project getting two independent worktrees at once, the
+loud-failure case for a missing branch) replacing the retired `ensureWorkBranchCheckedOut`'s own block
+(the function itself deleted — nothing in production code calls it anymore since `memberWorkingContext`'s
+retirement). `tests/adapters.test.ts` gained two new describe blocks against the REAL `bunSpawn`/
+`asyncBunSpawn` boundary (never an injected double) driving real local git repos this file creates itself,
+substituting one onto `fixtures/golden`'s own loaded `storefront` project (whose fixture `repo:` stays a
+deliberate non-local placeholder, unchanged) rather than hand-building a second studio: the two-concurrent-
+dispatch isolation proof (`Promise.all` over two units' worktrees, each reading back its own branch's own
+marker file, never the other's, with the project's own working tree and worktree list both asserted
+untouched/clean after); a member's own commit inside its worktree actually advancing the branch; the
+deterministic `sandboxDetection` override proving the recorded level end-to-end (`sandbox: none`, forced,
+alongside the real command actually succeeding unwrapped); native/remote never carrying a `sandbox:` line;
+an injected `CliSpawn` double never getting its argv wrapped; and the two `test.skipIf`-gated real,
+end-to-end proofs (decoy-file unreadable; the same dispatch's own worktree still readable) for a host where
+`full` is actually detected. `bun run typecheck` → exit 0. `bun run deps:check` → `deps ok`. `bun run
+docs:generate` regenerated `artifact.md` (one new `sandbox` field row); the drift test
+(`tests/cheatsheets.test.ts`) is green against the committed output. `bun run src/cli.ts validate
+fixtures/golden` → `valid` (two `SANDBOX_UNAVAILABLE` warnings follow, naming `finch`/`rook` — this
+container's own honest reality, never assumed; three pre-existing tests asserting this fixture's exact CLI
+stdout — `tests/validate.test.ts`, `tests/init.test.ts`, `tests/version.test.ts` — were updated to assert
+the first line + exit code rather than byte-exact whole-output equality, the same posture
+`tests/validate.test.ts`'s own pre-existing `REMOTE_NOT_IMPLEMENTED` warning test already took). `bun run
+src/cli.ts replay fixtures/golden --stubs` → oracle match, byte-for-byte (replay's stub member CLIs spawn
+via REAL `Bun.spawn`, so this goal's sandbox wrapping and per-dispatch worktree logic both genuinely run
+during replay too — confirmed directly: the transcript's own `kestrel/finch` review lines show `sandbox:
+none`, this container's own honest, unavoidable reality, and the frozen `expected.json` oracle — which
+compares only final artifact STATUSES, never frontmatter fields like `sandbox:` — is unaffected by
+construction). `bun run build` → succeeds.
+
+## Honest residual
+
+A `cli` member declaring `context_artifacts: paths` that also runs under a working `full`-tier sandbox can
+no longer read its consumed-artifact paths off the studio filesystem — the enumerated read-only allowlist
+that makes the decoy-file test's "nothing else" literal does not include the studio root. Named here, in
+`docs/current-gaps.md`, and in `docs/guide/06-operations.md` rather than silently left for a future session
+to rediscover as a live bug; fixing it (e.g. adding the studio root read-only to the allowlist, or teaching
+`context_artifacts: paths` to fall back to `inline` under a detected sandbox) is real, additional scope this
+goal's own achieved-when criteria never asked for.
