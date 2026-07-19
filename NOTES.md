@@ -9978,3 +9978,132 @@ never worked at all, on any profile, in this project's history.
 build` → succeeds. `bun run src/cli.ts validate fixtures/golden` → `valid`, the same two pre-existing
 `SANDBOX_UNAVAILABLE` warnings, unchanged. `bun run src/cli.ts replay fixtures/golden --stubs` → oracle
 match, byte-for-byte.
+
+# NOTES R4-SANDBOX-FIX-10 — live macOS gate on FIX-9: a hung member chain (instrumented, not diagnosed
+# from this container), a test defect convicted by its own wrong-object capture, and one theory hand-tried
+# and acquitted
+
+FIX-9 went back to the live gate. One acquittal, one test defect fixed outright, and one hang that this
+container genuinely cannot reproduce — instrumented instead, with a hand-runnable repro ladder handed
+back for the live host to actually convict.
+
+## Acquitted — opendirectoryd mach-lookup denials are NOT the hang's cause
+
+`com.apple.system.opendirectoryd.membership`/`.libinfo` mach-lookup denials were observed in the kernel
+log during the hang and were a live suspect, not merely a catalogued curiosity — the Conductor hand-tested
+this directly on the live host: a profile explicitly `(deny mach-lookup ...)`-ing both ran the identical
+`git add` + `git commit` chain in 88ms, exit 0. This is a genuine acquittal, not an assumption — recorded
+in `sandbox.ts`'s own fixed-preamble comment alongside the tty/`dtracehelper`/xcrun cosmetic-denial
+catalogue from FIX-9, and NOT chased with a new allow rule, per the goal's own instruction.
+
+## Failure 1 — a hung member chain, instrumented rather than diagnosed blind
+
+The worktree-commit test HANGS on the live gate: 5000ms timeout, "killed 1 dangling process" — a child
+still alive at teardown, with no name attached to it. The captured profile is structurally correct (all
+four `.git` subpaths read-write, the worktree bound) — something in it admits a BLOCK, not a failure,
+which is a different class of defect than every prior round's own crash/EPERM findings, and one this
+container cannot reproduce at all: no real `sandbox-exec` exists on Linux, and this container's own
+`bwrap`/`unshare` are both broken for an unrelated, already-documented reason (the outer seccomp policy).
+Per the goal's own instruction, no theory was chased blind — the fix this round is entirely instrumentation
+plus a hand-runnable reproduction the live host can actually convict something with.
+
+**Instrumentation added (`src/adapters.ts`, gated on the identical `LEVARE_SANDBOX_DEBUG=1` flag every
+other sandbox diagnostic already uses):**
+- `debugAliveProcessGroup(pgid)` — lists every process sharing the dispatch's own process group (by pid
+  and command name) BEFORE `killProcessGroup` tears it down. `detached: true` makes the spawned member its
+  own process-group leader, and every child it spawns (`sh` spawning `git`, `git` spawning a hook) inherits
+  the SAME pgid unless one of them detaches again — so this is what will finally NAME the blocking link on
+  the next live run, rather than only ever reporting "N dangling processes" after they're already gone.
+  Uses `ps -A -o pid,ppid,pgid,comm`, the common subset both GNU and BSD `ps` accept identically —
+  deliberately no platform branch.
+- `debugTimeoutOutput(stdout, stderr)` — prints whatever partial stdout/stderr bytes a timed-out spawn
+  actually produced before it was killed. The functional `SpawnResult.stdout` on a timeout still discards
+  this (`timedOut ? "" : stdout`, a deliberate "never trust output from an incomplete process" choice, left
+  unchanged) — but for DIAGNOSIS, a hang's own partial output (e.g. did `echo written` ever land before the
+  chain stalled?) is exactly what narrows which `&&`-joined link got stuck. Wired into both `bunSpawn`
+  (post-hoc only — `Bun.spawnSync`'s own internal `timeout` option kills the process with no hook for this
+  module to inspect beforehand) and `asyncBunSpawn` (which owns its own `setTimeout`, so the alive-process
+  listing runs there too, immediately before the kill).
+
+Proven to actually fire, not just wired: a new test (`tests/adapters.test.ts`) forces a real async timeout
+on a member that prints a marker then sleeps past its own timeout, and asserts both the process-group
+listing (naming `sleep` by command) and the partial-stdout capture (containing the marker) appear in the
+captured debug output.
+
+**Hand-runnable repro ladder** (`scripts/repro-r4-sandbox-fix10-hang.ts`, run via `bun run
+scripts/repro-r4-sandbox-fix10-hang.ts` on the live macOS host — a no-op elsewhere, guarded on
+`process.platform === "darwin"`): builds the EXACT SAME profile a real dispatch would, using the real,
+unmocked `buildSandboxExecProfile`/`createDispatchWorktree` production functions (never a hand-copied
+approximation that could drift), then walks the member's own chain LINK BY LINK under `sandbox-exec -f
+<profile>` directly, each with its own hard kill-timeout mirroring `asyncBunSpawn`'s own technique:
+
+1. `sh` + `cd` alone.
+2. The `echo ... > file` redirect into the granted cwd.
+3. A direct `stat` probe of `.git/hooks/pre-commit` and `.git/hooks/post-commit` (the DENIED directory,
+   per FIX-8's own narrowing) — squarely in the EPERM-vs-ENOENT class that has struck twice already
+   (the `.gitconfig` read in FIX-9, and the operator-home read in earlier rounds), and named early in the
+   ladder for exactly that reason — but a probe returning promptly (whichever error) ACQUITS this
+   candidate rather than convicting it; only a probe that itself hangs would be a new, separate finding.
+   The goal's own instruction is followed precisely here: named as a candidate to STRUCTURE the repro,
+   never assumed as the cause in advance.
+4. `git add -A` alone.
+5. `git commit` alone, after a real `add`.
+6. The FULL original chain, verbatim, as a baseline confirming the hang reproduces under this harness at
+   all before trusting any of the isolated steps above.
+
+Each step prints OK/FAIL/HANG, elapsed time, exit code/signal, and (for a HANG or FAIL) partial stdout/
+stderr — the same shape the new in-process instrumentation prints, so the two are directly comparable.
+Sanity-checked in this container with a stand-in "sandbox-exec" (`/bin/echo`, the same trick this
+codebase's own tests already use elsewhere) to prove the harness itself — worktree creation, profile
+generation, argv construction, per-step timeout/kill — runs without error; the actual `sandbox-exec`
+enforcement this ladder exists to observe can only be exercised on the live host.
+
+## Failure 2 — the darwin branch's own wrong-object capture, convicted by its own output
+
+The real-host wiring test's darwin branch (`tests/adapters.test.ts`, "the narrowed git-write grant reaches
+the REAL host's own wrapped output...") asserted against `doc` — the PRODUCED ARTIFACT (`cat marker.txt`'s
+own stdout, wrapped in review frontmatter: `kind: review`, `sandbox: full`) — which never contains the
+wrapped argv or profile text at all, regardless of primitive. This only ever worked by construction for
+the earlier fake-`/bin/echo`-as-bwrap tests elsewhere in this file, where the stand-in "primitive" binary
+itself echoes the composed argv AS the member's own stdout; a REAL, genuinely-enforcing primitive spawns
+the actual wrapped command, whose stdout is whatever the MEMBER prints, never the wrapper's own
+composition. The received text (review frontmatter) named this precisely — the capture plumbing grabbed
+the wrong object, not a real grant gap.
+
+**Fix:** captured via `LEVARE_SANDBOX_DEBUG=1` instead — the same `console.error` capture pattern the
+debug-flag test elsewhere in this file already uses. `wrapForSandbox` prints the composed argv (bwrap) or
+profile text (sandbox-exec) there unconditionally, which is the actual object either branch needs to
+inspect. A GUARD assertion runs first on each branch (`--tmpfs` for bwrap, `(version 1)` — the seatbelt
+profile's own first line — for sandbox-exec) before any grant assertion, so a future wrong-object capture
+fails LOUDLY at the guard, never as a misleading "grant missing" error several lines further down.
+
+## Regression proof added
+
+- `tests/adapters.test.ts`: a new test proves the timeout instrumentation fires on a real async timeout —
+  the alive process group is listed (naming the hung `sleep`), and partial stdout is captured, not
+  silently discarded.
+- `tests/adapters.test.ts`: the real-host wiring test's capture is fixed and now guards against a
+  wrong-object capture explicitly on both branches.
+- `scripts/repro-r4-sandbox-fix10-hang.ts`: a new hand-runnable ladder, sanity-checked in this container
+  with a stand-in primitive; its actual diagnostic value requires the live macOS host.
+
+## What this does NOT claim
+
+The hang's own root cause is NOT identified by this round — per the goal's own instruction, no theory was
+chased without conviction, and none of the four named candidates (the echo redirect, git add's lock
+behavior, git commit's hook-path probing, sh's own behavior under the profile) has been confirmed or ruled
+out yet. What this round DOES provide is the instrumentation and the ladder that the next live run needs
+to convict one of them — the process-group listing names the still-alive link directly if the in-process
+instrumentation fires again, and the ladder isolates each candidate independently if run by hand. Both are
+new evidence-gathering tools, not a diagnosis.
+
+## Verification
+
+`bun test` — full suite green, including the new timeout-instrumentation test (proven firing for real, not
+just wired) and the corrected real-host wiring test (still `skipIf`-gated on this container's own honest
+lack of a working primitive — unchanged, unrun here). `bun run typecheck` → exit 0. `bun run deps:check` →
+`deps ok`. `bun run build` → succeeds. `bun run src/cli.ts validate fixtures/golden` → `valid`, the same
+two pre-existing `SANDBOX_UNAVAILABLE` warnings, unchanged. `bun run src/cli.ts replay fixtures/golden
+--stubs` → oracle match, byte-for-byte. `bun run scripts/repro-r4-sandbox-fix10-hang.ts` → exits cleanly on
+this container's own platform guard (darwin-only), sanity-checked separately with a stand-in primitive to
+prove the harness itself (worktree/profile/argv construction, per-step timeout) runs without error.
