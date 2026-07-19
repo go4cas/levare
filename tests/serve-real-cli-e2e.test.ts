@@ -114,6 +114,20 @@ describe("`./levare serve` spawns a CLI member's REAL command, never the fixture
     // CLI agent whose command is the script above. `{task}` substitutes to the resolved kind
     // (`product-brief`); the trailing literal element is the capture-file path, passed straight
     // through unchanged (only `{task}`/`{feature_repo}` are ever substituted).
+    //
+    // NOTES R4-SANDBOX-FIX-7 (live macOS gate: tests conform to the sandbox, never the reverse):
+    // `cwd: scriptDir` declares wren's own working directory as exactly the directory the capture file
+    // lives in — the same read-write grant every real dispatch's own cwd already gets from
+    // `adapters.ts#sandboxWrap` (mirroring `finch`'s own fixture `cwd: "{feature_repo}"`). Without this,
+    // wren's spawn had no declared cwd at all, so the sandbox granted read-write to whatever the
+    // SERVER process's own ambient cwd happened to be — never scriptDir — and a working sandbox
+    // correctly denied the script's write to `argv-capture.txt` there (kernel evidence: `deny(1)
+    // file-write-create .../levare-real-cli-script-.../argv-capture.txt`). This is not a test-only
+    // write grant or a profile widening — it is the member declaring where it operates, exactly like
+    // any real CLI agent would, so its own output lands somewhere the sandbox was always going to
+    // allow. `context_artifacts: inline` is required alongside an out-of-studio `cwd` (ruling C9,
+    // `validate.ts#validateAgentContextScope`'s `CWD_OUTSIDE_STUDIO_NO_INLINE`) — wren consumes no
+    // artifacts in this test either way, so this is a true, harmless declaration, not a workaround.
     const wrenFile = join(root, "agents/wren.md");
     writeFileSync(
       wrenFile,
@@ -123,6 +137,8 @@ describe("`./levare serve` spawns a CLI member's REAL command, never the fixture
         "kind: cli",
         "produces: [product-brief]",
         `command: ["${scriptPath}", "{task}", "${capturePath}"]`,
+        `cwd: "${scriptDir}"`,
+        "context_artifacts: inline",
         "timeout: 30",
         'result: "Emits a product-brief artifact markdown file to stdout."',
         "style:",
