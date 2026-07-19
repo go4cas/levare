@@ -1,7 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { loadRepo } from "../src/repo.ts";
 import { assembleContext } from "../src/context.ts";
@@ -1181,7 +1181,7 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
   // working bwrap/sandbox-exec to observe it — a fake "bubblewrap" whose `bin` is really `/bin/echo`
   // (a real, always-present binary on this Linux container) just echoes back whatever argv it was
   // handed, which is exactly what wrapForSandbox constructs for a real bwrap call.
-  test("readOnlyPaths threaded into the wrapped argv include the studio root and the running interpreter's own directory", async () => {
+  test("readOnlyPaths threaded into the wrapped argv include the studio root and the running interpreter's own directory AND its install tree", async () => {
     const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
     try {
       const repo = repoWithRealStorefrontRepo(projectRepo);
@@ -1196,6 +1196,9 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
       const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
       expect(doc).toContain(repo.root);
       expect(doc).toContain(dirname(process.execPath));
+      // NOTES R4-SANDBOX-FIX-3: the interpreter's own INSTALL TREE, not just its immediate directory —
+      // "~/.bun, not just ~/.bun/bin — dyld reads beyond bin/" (adapters.ts#sandboxWrap's own treeDirs).
+      expect(doc).toContain(dirname(dirname(process.execPath)));
     } finally {
       rmSync(projectRepo, { recursive: true, force: true });
     }
@@ -1284,11 +1287,19 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
   // seccomp policy, confirmed directly in sandbox.test.ts's own "this actual host" test) and expected to
   // RUN for real wherever bubblewrap actually works (a normal Linux host, most CI runners).
   const hostSandbox = detectSandbox();
+  // NOTES R4-SANDBOX-FIX-3 (round 3, live macOS bisection): the decoy is planted under the OPERATOR'S
+  // OWN HOME, not an arbitrary tmp directory — the ruling's own hard condition ("a file in the operator's
+  // HOME outside the granted set must be unreadable"). This is deliberately the ONE decoy location that
+  // proves the guarantee identically on BOTH platforms under their now-different "full" models: Linux
+  // bubblewrap denies EVERYTHING outside its explicit allow-list (home included, same as before this
+  // round — a strictly stronger claim than this test needs); macOS sandbox-exec's new deny-list model
+  // denies the operator's home SPECIFICALLY (broad OS reads elsewhere are now deliberately allowed — see
+  // sandbox.ts's own header — so a decoy anywhere ELSE would no longer prove anything on macOS).
   test.skipIf(hostSandbox.level !== "full")(
-    "decoy-file proof: a file outside the sandbox root is genuinely unreadable from inside a sandboxed run",
+    "decoy-file proof: a file under the operator's own HOME, outside anything granted, is genuinely unreadable from inside a sandboxed run",
     async () => {
       const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
-      const decoyDir = mkdtempSync(join(tmpdir(), "levare-r4-decoy-"));
+      const decoyDir = mkdtempSync(join(homedir(), ".levare-r4-decoy-"));
       try {
         writeFileSync(join(decoyDir, "secret.txt"), "SECRET\n");
         const repo = repoWithRealStorefrontRepo(projectRepo);

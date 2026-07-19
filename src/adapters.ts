@@ -34,6 +34,7 @@ import { assembleContext, unitArtifactPaths } from "./context.ts";
 import { asyncSdkTransport, bunSdkTransport, resolveNativeBinary, type AsyncSdkTransport, type SdkTransport } from "./sdk-transport.ts";
 import { repoCapabilities } from "./repo.ts";
 import { resolveProjectRepoPath, workBranchName, branchExists, createDispatchWorktree } from "./merge.ts";
+import { isSafeHomeDotpath } from "./validate.ts";
 import { detectSandbox, wrapForSandbox, type SandboxDetection, type SandboxLevel, type SandboxPolicy, type WrappedSpawn } from "./sandbox.ts";
 import type { Pricing } from "./pricing.ts";
 import type { Repo } from "./repo.ts";
@@ -865,8 +866,36 @@ export class AdapterRunner implements MemberRunner {
   private sandboxWrap(argv: string[], cwd: string | undefined, req: InvokeRequest): WrappedSpawn {
     const detection = this.opts.sandboxDetection ?? detectSandbox();
     const resolvedBin = argv[0] ? resolveArgv0(argv[0], cwd, req.env.PATH) : undefined;
-    const readOnlyPaths = [this.repo.root, dirname(process.execPath), ...(resolvedBin ? [dirname(resolvedBin)] : [])];
-    const policy: SandboxPolicy = { cwd: cwd ?? process.cwd(), home: req.env.HOME, allowNetwork: memberNetworkAllowed(this.repo, req.member), readOnlyPaths };
+    // NOTES R4-SANDBOX-FIX-3: the live bisection's own finding — "the interpreter's install TREE (e.g.
+    // ~/.bun, not just ~/.bun/bin — dyld reads beyond bin/)" — so both the running levare binary's own
+    // install and the resolved member command's own install include one level ABOVE their immediate
+    // directory (dirname(dirname(...))), not just the immediate one. For `~/.bun/bin/bun`, that's
+    // `~/.bun/bin` (the command's own directory) AND `~/.bun` (the install tree) — both named explicitly,
+    // matching the ruling's own wording rather than leaving the tree implicit.
+    const treeDirs = (p: string) => [dirname(p), dirname(dirname(p))];
+    const readOnlyPaths = [this.repo.root, ...treeDirs(process.execPath), ...(resolvedBin ? treeDirs(resolvedBin) : [])];
+    // NOTES R4-SANDBOX-FIX-3 (macOS deny-list model only — see sandbox.ts's own header; ignored entirely
+    // by bubblewrap's allow-list model on Linux): the operator's REAL, unscoped HOME — denied broadly —
+    // and the resolved real target(s) a granted subscription connector's OWN `home:` dotpaths point at,
+    // re-allowed explicitly. `env.ts#scopeHome` may have symlinked `req.env.HOME` (already possibly
+    // scratch-scoped by the time this runs) to these same real targets; denying the operator's HOME
+    // broadly would otherwise deny reading THROUGH those symlinks to their real destinations too.
+    // `isSafeHomeDotpath` mirrors `env.ts#scopeHome`'s own defense-in-depth (NOTES SEC-V11 F1): this
+    // function only ever WIDENS what's readable, so a traversal dotpath sneaking through here would
+    // re-expose exactly what the deny was supposed to keep out — filtered independently of whether
+    // validate.ts ever ran against this studio, the same "fails closed regardless" posture scopeHome
+    // itself takes.
+    const operatorHome = this.opts.baseEnv?.HOME ?? process.env.HOME;
+    const sub = subscriptionConnector(this.repo, req.member);
+    const grantedHomeTargets = operatorHome ? (sub?.home ?? []).filter(isSafeHomeDotpath).map((dotpath) => pathJoin(operatorHome, dotpath)) : [];
+    const policy: SandboxPolicy = {
+      cwd: cwd ?? process.cwd(),
+      home: req.env.HOME,
+      allowNetwork: memberNetworkAllowed(this.repo, req.member),
+      readOnlyPaths,
+      operatorHome,
+      grantedHomeTargets,
+    };
     return wrapForSandbox(argv, policy, detection);
   }
 

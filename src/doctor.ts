@@ -12,7 +12,22 @@ import type { Connector } from "./types.ts";
 import type { EnvProvenance } from "./dotenv.ts";
 import type { OrchestratorStatus } from "./orchestrator-status.ts";
 import type { VersionInfo } from "./version.ts";
-import type { SandboxDetection } from "./sandbox.ts";
+import type { SandboxDetection, SandboxPrimitive } from "./sandbox.ts";
+
+// NOTES R4-SANDBOX-FIX-3: a one-line reminder of what `full`/`fs-only` actually MEAN for the primitive
+// that produced them — see `formatDoctor`'s own doc for why this can't be left implicit.
+function sandboxModelNote(primitive: SandboxPrimitive): string {
+  switch (primitive) {
+    case "bubblewrap":
+      return "allow-list from an empty root";
+    case "sandbox-exec":
+      return "OS-visible, operator HOME denied";
+    case "unshare":
+      return "fs-only, no allow-list";
+    default:
+      return "";
+  }
+}
 
 /** Whether `docs/orchestrator-prompt.md` was actually readable at doctor-run time, and from where —
  * NOTES DIST4/DIST5: independent of `orchestrator`'s on/off state above, which (since DIST5) reflects
@@ -117,7 +132,14 @@ export function diagnose(connectors: Connector[], env: EnvProbe, probe: CliProbe
  * kind of "what does this machine actually offer" fact. A `level: "none"` result also gets the sibling
  * warning to `CLI_TOOLS_NOT_ENFORCEABLE`/`remoteAgents` above, once per `kind: cli` agent in the studio
  * (`cliAgents`) — a studio with no cli agents at all has nothing this warning is FOR, so it stays quiet
- * even on a host with no working primitive. */
+ * even on a host with no working primitive.
+ *
+ * NOTES R4-SANDBOX-FIX-3 (round 3): `full` does NOT mean the same shape of confinement on every
+ * `primitive` — Linux `bubblewrap` builds an allow-list from an empty root (nothing reachable unless
+ * named); macOS `sandbox-exec` (forced to a deny-list model by a live-host bisection — see sandbox.ts's
+ * own header) leaves the OS broadly readable and denies the operator's own user data instead. Printing
+ * bare `full` next to `bubblewrap`/`sandbox-exec` without saying so would let a Conductor reasonably
+ * assume the two enforce identically, which they do not — `sandboxModelNote` names the difference inline. */
 export function formatDoctor(
   health: ConnectorHealth[],
   orchestrator?: OrchestratorStatus,
@@ -142,7 +164,8 @@ export function formatDoctor(
     out.push("");
   }
   if (sandbox) {
-    out.push(`sandbox: ${sandbox.level === "none" ? "none — unconfined cli spawns" : `${sandbox.level} (${sandbox.primitive})`}`);
+    const model = sandboxModelNote(sandbox.primitive);
+    out.push(`sandbox: ${sandbox.level === "none" ? "none — unconfined cli spawns" : `${sandbox.level} (${sandbox.primitive}${model ? ` — ${model}` : ""})`}`);
     if (sandbox.level === "none" && cliAgents && cliAgents.length > 0) {
       out.push(
         `⚠ no working OS-level sandbox primitive found on this host (tried: ${sandbox.platform === "linux" ? "bubblewrap, unshare" : sandbox.platform === "darwin" ? "sandbox-exec" : "none available for this platform"}) — these cli members run unconfined beyond env/HOME scoping: ${cliAgents.join(", ")}`,

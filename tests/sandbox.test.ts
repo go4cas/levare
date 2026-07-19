@@ -288,12 +288,15 @@ describe("LEVARE_SANDBOX_DEBUG — diagnostic argv/profile dump", () => {
   });
 });
 
-describe("buildSandboxExecProfile — text worth asserting on directly (never live-run on this Linux container)", () => {
-  test("always denies by default and only opens the specific paths this dispatch needs", () => {
+// NOTES R4-SANDBOX-FIX-3 (round 3, live macOS bisection): the deny-list model — broad OS read by
+// default, the operator's own user data denied, exactly what this dispatch needs re-allowed on top.
+// Ratified by a Conductor after 14 hand-run profiles on a live host proved the round-1/round-2
+// enumerated-allowlist model unwinnable against dyld on this platform (see sandbox.ts's own header).
+describe("buildSandboxExecProfile — deny-list model (NOTES R4-SANDBOX-FIX-3)", () => {
+  test("denies default, allows broad OS read, denies default and only re-opens what this dispatch needs", () => {
     const profile = buildSandboxExecProfile({ cwd: "/a/b", home: "/c/d", allowNetwork: false });
     expect(profile).toContain("(deny default)");
-    expect(profile).toContain('(allow file-read* (subpath "/usr"))');
-    expect(profile).not.toContain('(allow file-read* (subpath "/"))');
+    expect(profile).toContain('(allow file-read* (subpath "/"))'); // broad OS read — verified live, see header
     expect(profile).toContain('(allow file-write* (subpath "/a/b"))');
     expect(profile).toContain('(allow file-write* (subpath "/c/d"))');
     expect(profile).toContain("(deny network*)");
@@ -303,6 +306,61 @@ describe("buildSandboxExecProfile — text worth asserting on directly (never li
     const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false });
     expect(profile).toContain('(allow file-write* (subpath "/a/b"))');
     expect(profile.match(/allow file-write\*/g)?.length).toBe(2); // cwd + /dev, no home
+  });
+
+  test("denies the operator's real HOME, /Users, and /Volumes broadly", () => {
+    const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false, operatorHome: "/Users/cas" });
+    expect(profile).toContain('(deny file-read* (subpath "/Users/cas"))');
+    expect(profile).toContain('(deny file-read* (subpath "/Users"))');
+    expect(profile).toContain('(deny file-read* (subpath "/Volumes"))');
+  });
+
+  test("no operatorHome given → /Users and /Volumes are still denied unconditionally, but no HOME-specific deny", () => {
+    const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false });
+    expect(profile).toContain('(deny file-read* (subpath "/Users"))');
+    expect(profile).toContain('(deny file-read* (subpath "/Volumes"))');
+    expect(profile.match(/deny file-read\*/g)?.length).toBe(2); // /Users, /Volumes — no third HOME-specific deny
+  });
+
+  // RULE ORDER IS LOAD-BEARING (Seatbelt: last matching rule wins) — a deny AFTER its own re-allow would
+  // silently win instead, making the re-allow inert. This is the one property this fix must never regress.
+  test("every deny precedes every read re-allow it's meant to be carved open by (rule order)", () => {
+    const profile = buildSandboxExecProfile({
+      cwd: "/work/wt",
+      home: "/work/home",
+      allowNetwork: false,
+      operatorHome: "/Users/cas",
+      grantedHomeTargets: ["/Users/cas/.codex"],
+      readOnlyPaths: ["/studio/root"],
+    });
+    const lines = profile.split("\n");
+    const lastDenyIdx = Math.max(
+      lines.findIndex((l) => l === '(deny file-read* (subpath "/Users/cas"))'),
+      lines.findIndex((l) => l === '(deny file-read* (subpath "/Users"))'),
+      lines.findIndex((l) => l === '(deny file-read* (subpath "/Volumes"))'),
+    );
+    const reallows = ['(allow file-read* (subpath "/work/wt"))', '(allow file-read* (subpath "/work/home"))', '(allow file-read* (subpath "/Users/cas/.codex"))', '(allow file-read* (subpath "/studio/root"))'];
+    for (const r of reallows) {
+      const idx = lines.indexOf(r);
+      expect(idx).toBeGreaterThan(-1);
+      expect(idx).toBeGreaterThan(lastDenyIdx);
+    }
+  });
+
+  test("re-allows a granted connector's own real home target — reading THROUGH a scopeHome symlink to it", () => {
+    const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false, operatorHome: "/Users/cas", grantedHomeTargets: ["/Users/cas/.codex"] });
+    expect(profile).toContain('(allow file-read* (subpath "/Users/cas/.codex"))');
+  });
+
+  test("re-allows readOnlyPaths (studio root, interpreter tree, member command directory) for reads", () => {
+    const profile = buildSandboxExecProfile({
+      cwd: "/a/b",
+      allowNetwork: false,
+      readOnlyPaths: ["/studio/root", "/Users/cas/.bun", "/Users/cas/.bun/bin"],
+    });
+    expect(profile).toContain('(allow file-read* (subpath "/studio/root"))');
+    expect(profile).toContain('(allow file-read* (subpath "/Users/cas/.bun"))');
+    expect(profile).toContain('(allow file-read* (subpath "/Users/cas/.bun/bin"))');
   });
 
   test("quotes an embedded quote in a path safely rather than breaking the profile string", () => {
@@ -422,8 +480,27 @@ describe("validate.ts: SANDBOX_UNAVAILABLE (NOTES R4-SANDBOX, sibling to CLI_TOO
 describe("doctor.ts: sandbox status line + the sibling warning (NOTES R4-SANDBOX)", () => {
   test("prints the detected level plainly when a primitive works", () => {
     const out = formatDoctor([], undefined, undefined, undefined, undefined, undefined, FULL, ["finch"]);
-    expect(out).toContain("sandbox: full (bubblewrap)");
+    expect(out).toContain("sandbox: full (bubblewrap");
     expect(out).not.toContain("unconfined");
+  });
+
+  // NOTES R4-SANDBOX-FIX-3: `full` does not mean the same thing on both platforms after round 3 — the
+  // model note is how a Conductor reading `levare doctor`'s output is told so, rather than left to assume
+  // bubblewrap and sandbox-exec enforce identically just because both print "full".
+  test("names the enforcement MODEL alongside the primitive — bubblewrap and sandbox-exec do not enforce identically", () => {
+    const bwrapOut = formatDoctor([], undefined, undefined, undefined, undefined, undefined, FULL, ["finch"]);
+    expect(bwrapOut).toContain("allow-list from an empty root");
+
+    const sbxDetection: SandboxDetection = { platform: "darwin", primitive: "sandbox-exec", level: "full", bin: "/usr/bin/sandbox-exec" };
+    const sbxOut = formatDoctor([], undefined, undefined, undefined, undefined, undefined, sbxDetection, ["finch"]);
+    expect(sbxOut).toContain("OS-visible, operator HOME denied");
+
+    // The two model notes are themselves distinct — never the same text for the two primitives.
+    const bwrapNote = bwrapOut.match(/sandbox: full \(bubblewrap — (.+)\)/)?.[1];
+    const sbxNote = sbxOut.match(/sandbox: full \(sandbox-exec — (.+)\)/)?.[1];
+    expect(bwrapNote).toBeTruthy();
+    expect(sbxNote).toBeTruthy();
+    expect(bwrapNote).not.toBe(sbxNote);
   });
 
   test("prints none plainly and names every cli agent left unconfined", () => {

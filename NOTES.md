@@ -8947,3 +8947,149 @@ both together — was the actual trigger for the wrapper dying before the sandbo
 independently isolated; the fix aligns the implementation with the ONE invocation shape directly proven
 to work by hand on the live host, and `LEVARE_SANDBOX_DEBUG=1` is what a third run should use to confirm
 the composed argv now matches that shape exactly, rather than trusting construction alone a second time.
+
+# NOTES R4-SANDBOX-FIX-3 — third live macOS run: a Conductor ruling, forced by a 14-profile bisection
+
+Round 2's fix (the `-f` temp file, no `--`) worked exactly as intended — `LEVARE_SANDBOX_DEBUG` confirmed
+the composed argv matched the verified-working shape, and the kernel's own unified log showed the sandbox
+genuinely applying. The process still died. This round is not a bug fix in the round-1/round-2 sense — it
+is a Conductor ruling, made necessary by live evidence that the round-1 DESIGN (an enumerated read-only
+allow-list, however widened) cannot be satisfied on this platform at all.
+
+## The bisection evidence
+
+Fourteen hand-run `sandbox-exec` profiles on the live host, each verified by direct execution:
+
+1. **The wrapper is correct.** Composed argv verified via `LEVARE_SANDBOX_DEBUG`; the sandbox applies;
+   the process dies UNDER it, not before it (closing round 2's own open question).
+2. **The crash is dyld failing ignition, not a sandbox denial.** The `.ips` crash report's own stack:
+   `dyld4::CacheFinder → ignition_halt → abort_with_reason` — `SIGABRT`, before `main()` ever runs. No
+   kernel sandbox denial logged for it, and no payload string naming what was denied.
+3. **Deny-default with an enumerated allow-list is unwinnable on this macOS (26.5), full stop.** Every
+   variant tried — `/usr`, `/bin`, `/sbin`, `/System`, `/System/Volumes`, `/System/Cryptexes`, `/Library`,
+   every `/private/{etc,var,tmp,preboot}` variant, `/opt/homebrew`, `/usr/local`, `~/.bun`, ancestor-
+   directory metadata, even a blanket `file-read-metadata` on `/` — aborts identically. The shared-cache
+   access path `CacheFinder` needs `data-read` on is not externally discoverable; the `(trace)` Seatbelt
+   facility that would normally name a denial is itself dead on this OS release, so there was no facility
+   left to consult — the bisection had to reach its conclusion by exhaustive execution, not by reading a
+   trace.
+4. **What passes, verified green:** `(deny default)` + `(allow process-fork)(allow process-exec)` +
+   `(allow file-read* (subpath "/"))` + `(deny file-read* (subpath "/Users/cas"))` + explicit re-allows
+   for `~/.bun` and the levare tree + confined `file-write*` + `(deny network*)`. Seatbelt's own
+   later-rule-wins semantics makes this work as a DENY-LIST: broad OS read by default, the operator's own
+   user data denied except by explicit grant.
+5. **Soft denials under the working profile are survivable noise, not chased:** `sysctl-read
+   hw.pagesize_compat`, tty/`dtracehelper` `file-ioctl`. Named here so a future session doesn't waste time
+   rediscovering that these are harmless.
+
+## The ruling
+
+**The macOS profile flips to the deny-user-data model.** This is a Conductor ruling, not a workaround:
+it satisfies the ACTUAL threat model this whole goal was built for — a member must not read the
+operator's dotfiles, other projects, or the studio beyond its grants — and hiding the OS itself from
+`dyld` was never the goal, and (per finding 3) is not achievable on this platform regardless of how much
+further effort was spent trying. **Linux `bubblewrap` KEEPS its strict bind-mount allow-list from an
+empty root, completely unchanged by this round** — it is proven (this repo's own dev-container reality,
+and every pre-round-3 test), and it is STRONGER than anything the darwin model can now claim (a decoy
+under `/usr`/`/System`/anywhere outside the darwin re-allow list is, as of this round, deliberately
+readable there — it never was on Linux, and still isn't). Nothing in this round's own live evidence
+argues against bubblewrap; the bisection that forced macOS's hand is a fact about `dyld`'s own
+shared-cache mechanism on THIS OS, not a general argument against enumerated allow-lists.
+
+## What changed (`src/sandbox.ts`, `src/adapters.ts`)
+
+`buildSandboxExecProfile` is now a deny-list, matching finding 4 exactly:
+
+```
+(deny default)
+(allow process-fork)(allow process-exec)
+(allow file-read* (subpath "/"))                    ; broad OS read — verified live
+(deny file-read* (subpath "<operator's real HOME>")) ; canonicalized
+(deny file-read* (subpath "/Users"))
+(deny file-read* (subpath "/Volumes"))
+;; --- everything above this line is a deny; everything below re-allows exactly what this
+;; --- dispatch needs. RULE ORDER IS LOAD-BEARING (Seatbelt: last matching rule wins) — a deny
+;; --- written AFTER its own re-allow would win instead, making the re-allow silently inert.
+(allow file-read* (subpath "<dispatch worktree>"))
+(allow file-read* (subpath "<member's own (possibly scratch-scoped) HOME>"))
+(allow file-read* (subpath "<granted connector's OWN real home target, e.g. ~/.codex>"))
+(allow file-read* (subpath "<studio root / interpreter install tree / member command's own dir>"))
+(allow file-write* (subpath "<dispatch worktree>"))
+(allow file-write* (subpath "<member's own HOME>"))
+(allow/deny network*)
+```
+
+`SandboxPolicy` gained two new fields, both darwin-only (bubblewrap's own `bubblewrapArgv` never reads
+either — its allow-list model doesn't need them):
+- **`operatorHome`** — the REAL, unscoped operator `$HOME` (`adapters.ts#sandboxWrap`:
+  `this.opts.baseEnv?.HOME ?? process.env.HOME` — the same source `env.ts#scopeHome` itself resolves
+  `realHome` from), denied broadly.
+- **`grantedHomeTargets`** — the RESOLVED real paths a granted `auth: subscription` connector's OWN
+  `home:` dotpaths point at (e.g. `/Users/cas/.codex` for `home: [".codex"]`). Distinct from the member's
+  own (possibly scratch-scoped) `home` field: `env.ts#scopeHome` may have symlinked the member's scratch
+  `HOME` to these same real targets, and denying the operator's `HOME` broadly would otherwise deny
+  reading THROUGH those symlinks to their real destinations too — filtered through the SAME
+  `isSafeHomeDotpath` defense-in-depth `scopeHome` itself uses (NOTES SEC-V11 F1), since this function
+  only ever WIDENS what's readable and a traversal dotpath sneaking through here would re-expose exactly
+  what the deny exists to keep out.
+
+`readOnlyPaths` (shared by both platforms, unaffected in its OWN construction by this ruling) gained one
+change: finding 3's own "the interpreter tree — e.g. `~/.bun`, not just `~/.bun/bin` — dyld reads beyond
+`bin/`" is now honored by including BOTH the immediate directory and its own parent
+(`adapters.ts#sandboxWrap`'s `treeDirs`) for both the running levare binary's own install and the
+resolved member command's own install — for `~/.bun/bin/bun`, that's `~/.bun/bin` (the command's own
+directory) AND `~/.bun` (the install tree), both named explicitly rather than left implicit.
+
+## Item 2 — the decoy test's meaning, kept intact
+
+The pre-round-3 decoy-file test planted its decoy in an arbitrary scratch tmp directory — a location
+that, under the NEW darwin model, is now deliberately readable (broad OS read is the whole point). Fixed
+by planting the decoy under the OPERATOR'S OWN `$HOME` instead (`tests/adapters.test.ts`, `homedir()`) —
+the ruling's own stated hard condition ("a file in the operator's HOME outside the granted set must be
+unreadable"). This is deliberately the ONE decoy location whose proof holds under BOTH platforms' now-
+different "full" models without needing two separate tests: Linux bubblewrap denies EVERYTHING outside
+its explicit allow-list (home included — a strictly stronger claim than this test requires), and macOS
+sandbox-exec's new model denies the operator's home specifically. One test, one assertion, true on both.
+
+## Item 3 — enforcement-level honesty
+
+`sandbox: full` no longer means the same shape of confinement on both platforms, and nothing in this
+codebase may print it as if it does. `doctor.ts#formatDoctor` gained `sandboxModelNote(primitive)` — a
+one-line reminder printed alongside the primitive name (`sandbox: full (bubblewrap — allow-list from an
+empty root)` vs. `sandbox: full (sandbox-exec — OS-visible, operator HOME denied)`) — so a Conductor
+reading `levare doctor`'s own output is told the difference rather than left to assume uniformity because
+both happen to print the same word. `sandbox.ts`'s own module header (the `"full"` bullet in its opening
+comment) states the same distinction as the canonical definition; `docs/current-gaps.md` mirrors it.
+
+## Item 4 — `LEVARE_SANDBOX_DEBUG` unchanged
+
+Kept exactly as built in round 2 — it was decisive in this round too (confirming the wrapper composed
+and applied correctly, which is what let this round conclude the bug was downstream of the wrapper
+entirely, in dyld's own shared-cache mechanism). No changes to the debug flag itself.
+
+## Regression proof added from inside this (Linux) container
+
+- `tests/sandbox.test.ts`: the deny-list shape (broad `/` read, `deny default`, `/Users`/`/Volumes`
+  denied unconditionally, `operatorHome` denied when given); a dedicated RULE-ORDER test — building a
+  profile with every deny/re-allow field populated and asserting every re-allow's line index is strictly
+  greater than every deny's line index, the one property this fix must never regress; a test proving
+  `grantedHomeTargets` and `readOnlyPaths` both appear as read re-allows; the `doctor.ts` model-note test
+  proving bubblewrap's and sandbox-exec's own notes are textually distinct, never the same string.
+- `tests/adapters.test.ts`: the decoy-file test now plants its decoy under `homedir()`, proven to still
+  pass (as a `test.skipIf` on this container's own real `none` detection, so it doesn't run here — but the
+  PURE logic change plus the profile-shape unit tests above are what's actually exercised in-container);
+  the "readOnlyPaths threaded" wiring test extended to assert the interpreter's install TREE
+  (`dirname(dirname(process.execPath))`), not just its immediate directory, appears in the wrapped argv.
+
+## What still, honestly, requires a live macOS host to prove
+
+Everything rounds 1 and 2's own lists already named remains true. This round adds: whether the deny-list
+model, exactly as implemented (not just the shape finding 4 verified by hand), actually clears the same
+20 test failures rounds 1 and 2 could not; whether `/Users`/`/Volumes` are the complete set of paths that
+need denying for this threat model on a real multi-user or multi-volume macOS setup, or whether some
+other path (e.g. `/Network`, a mounted Time Machine volume style path) needs the same treatment; and
+whether the soft denials named in finding 5 remain merely cosmetic under a REAL member workload (not just
+the bisection's own minimal test commands) rather than a real, if survivable, functional gap. This
+round's own profile shape is evidence-derived from live execution, not deduced — but "the shape that
+passed 14 hand-run checks" and "the shape this file's own generated profile text produces for a real
+dispatch" are two different claims, and only a live re-run closes the gap between them.

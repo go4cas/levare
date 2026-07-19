@@ -101,33 +101,52 @@ unscoped `HOME`) and gets a new `SUBSCRIPTION_NO_HOME` warning, the sibling to `
 (NOTES C15). This narrows, but does not close, "Per-member subscription-credential scoping" below — see
 that entry for the residual `home:` itself cannot fix.
 
-**OS-level sandboxing (v2) — closed (NOTES R4-SANDBOX, Ruling 2; hardened by a live macOS run, NOTES
-R4-SANDBOX-FIX).** Process isolation between a `cli` member's spawned process and the operating system —
-the one item parts A and B both named but deliberately left unbuilt — now exists, best-effort and per-OS,
-honestly reported. Both real `cli` spawn paths (`adapters.ts`'s sync and async `CliSpawn` boundaries) wrap
-the member process in an OS sandbox where a working primitive exists on the host, detected fresh at every
-spawn (never assumed from the platform: a binary can be present and non-functional, e.g. this repo's own
-Linux dev container, where `bubblewrap`/`unshare` are both on `PATH` but fail every invocation because the
-outer container disables unprivileged user namespaces). Filesystem is a hard condition when a primitive
-works: the process can reach its per-dispatch worktree (Ruling 1, above) read-write, its `scopeHome`
-scratch `HOME` (NOTES CAP-B) read-write, the studio root itself (read-only — a command checked into the
-studio, or a `context_artifacts: paths` member's own consumed-artifact reads, both need it), the running
-levare binary's own directory and wherever this dispatch's own interpreter resolves to (read-only), and a
-small enumerated set of baseline system paths (`/usr`, `/bin`, `/lib`, `/lib64`, `/etc` on Linux; on macOS
-also `/opt/homebrew`, `/usr/local`, since a vendor CLI or its interpreter very commonly lives there) —
-nothing else; a decoy file anywhere outside that list is genuinely unreadable, proven by a dedicated test.
-Network is best-effort — denied unless the member holds at least one granted connector (every connector
-this codebase has IS levare's own way of declaring an external reach). Per-OS: Linux tries `bubblewrap`
-first (level `full` — filesystem AND network), falling back to a raw `unshare` mount-namespace confinement
-(level `fs-only` — filesystem only, weaker than `full`: it confines writes to the declared roots via a
-read-only remount of `/`, but does not additionally hide unlisted read-only paths the way bubblewrap's
-empty-root construction does); macOS uses a generated `sandbox-exec` profile (level `full`). No working
-primitive on either OS → an unsandboxed spawn (level `none`) — a Conductor ruling, never escalated to a
-spawn failure — plus a new `SANDBOX_UNAVAILABLE` doctor/validate/registry warning, sibling to
-`CLI_TOOLS_NOT_ENFORCEABLE` above. The enforcement level actually used is recorded on the produced artifact
-(`sandbox: full | fs-only | none`), per run, never omitted.
+**OS-level sandboxing (v2) — closed (NOTES R4-SANDBOX, Ruling 2; the macOS shape settled by a Conductor
+ruling after live bisection, NOTES R4-SANDBOX-FIX-3).** Process isolation between a `cli` member's
+spawned process and the operating system — the one item parts A and B both named but deliberately left
+unbuilt — now exists, best-effort and per-OS, honestly reported. Both real `cli` spawn paths
+(`adapters.ts`'s sync and async `CliSpawn` boundaries) wrap the member process in an OS sandbox where a
+working primitive exists on the host, detected fresh at every spawn (never assumed from the platform: a
+binary can be present and non-functional, e.g. this repo's own Linux dev container, where
+`bubblewrap`/`unshare` are both on `PATH` but fail every invocation because the outer container disables
+unprivileged user namespaces).
 
-**Honestly, in three rounds.** The FIRST live run of this feature was on macOS — the only host in this
+**The two platforms no longer enforce the SAME SHAPE of confinement at the `full` tier, and this is
+recorded honestly rather than implied uniform (`levare doctor` prints a model note alongside the
+primitive name for exactly this reason).** Linux `bubblewrap`, unchanged since Ruling 2: an allow-list
+built from an EMPTY root — the process can reach its per-dispatch worktree (Ruling 1, above) read-write,
+its `scopeHome` scratch `HOME` (NOTES CAP-B) read-write, the studio root, the interpreter's own install
+tree, and a small enumerated set of baseline system paths (`/usr`, `/bin`, `/lib`, `/lib64`, `/etc`) —
+nothing else; a decoy file ANYWHERE outside that list is genuinely unreadable. macOS `sandbox-exec`,
+flipped to a DENY-LIST model by a live 14-profile bisection (NOTES R4-SANDBOX-FIX-3): the allow-list shape
+proved unwinnable against `dyld`'s own shared-cache lookup on this OS (every enumerated variant tried
+aborted identically, `SIGABRT` before `main()`, no sandbox denial logged for it) — the OS is broadly
+readable by default, the same as an unsandboxed process, and the operator's own user data (`$HOME`,
+`/Users`, `/Volumes`) is denied instead, with the dispatch worktree/scoped HOME/granted connector targets/
+interpreter tree re-allowed explicitly on top (Seatbelt's own later-rule-wins semantics makes this a real
+deny-list, not merely a differently-ordered allow-list). Both satisfy the actual threat model — a member
+must not read the operator's dotfiles, other projects, or the studio beyond its grants — by different,
+non-equivalent means; hiding the OS from `dyld` was never the goal and, per the bisection, isn't
+achievable on this platform regardless of further effort. The darwin decoy-file test's own meaning
+survives this change: a file under the operator's `$HOME` outside the granted set is still genuinely
+unreadable, proven the identical way — it's simply no longer true that everything outside a short
+allow-list is unreadable on macOS, because nothing on this OS can make that claim survive contact with
+`dyld`.
+
+Network is best-effort on both platforms — denied unless the member holds at least one granted connector
+(every connector this codebase has IS levare's own way of declaring an external reach). Per-OS primitive
+selection: Linux tries `bubblewrap` first (level `full`), falling back to a raw `unshare` mount-namespace
+confinement (level `fs-only` — filesystem only, weaker than `full` in a THIRD distinct way: it confines
+writes to the declared roots via a read-only remount of `/`, but does not additionally hide unlisted
+read-only paths the way bubblewrap's empty-root construction does); macOS uses a generated `sandbox-exec`
+profile (level `full`, deny-list shape). No working primitive on either OS → an unsandboxed spawn (level
+`none`) — a Conductor ruling, never escalated to a spawn failure — plus a new `SANDBOX_UNAVAILABLE`
+doctor/validate/registry warning, sibling to `CLI_TOOLS_NOT_ENFORCEABLE` above. The enforcement level
+actually used is recorded on the produced artifact (`sandbox: full | fs-only | none`), per run, never
+omitted — though as of this ruling, `full` itself requires reading which `primitive` produced it to know
+which of the two non-equivalent guarantees actually applied.
+
+**Honestly, in four rounds.** The FIRST live run of this feature was on macOS — the only host in this
 project's history where `sandbox-exec` actually engaged rather than reporting `none` — and it failed 20
 pre-existing tests plus the two new decoy/read-back tests, all real-spawn paths. Round 1 (NOTES
 R4-SANDBOX-FIX) fixed macOS path canonicalization (`sandbox-exec`'s path rules match the KERNEL-RESOLVED
@@ -139,14 +158,20 @@ judged anything, an entirely different class of bug than round 1 fixed. Round 2 
 R4-SANDBOX-FIX-2) found the actual composition defect: the profile was passed inline (`-p <string>`,
 never independently verified on this host) rather than via a temp file (`-f <path>`, the exact form a
 manual check proved works), plus an unverified `--` separator neither `man sandbox-exec` nor that same
-manual check ever showed. Both are now aligned with the one invocation shape actually proven to work, and
-a `LEVARE_SANDBOX_DEBUG=1` env var prints the composed argv and raw spawn result for whichever run
+manual check ever showed. Both are now aligned with the one invocation shape actually proven to work. A
+THIRD live run — with the wrapper now composing and applying correctly, confirmed via
+`LEVARE_SANDBOX_DEBUG` — found the process still dying, this time under `dyld`'s own
+`ignition_halt`/`abort_with_reason`, no sandbox denial logged for it; a 14-profile bisection on the live
+host proved no enumerated allow-list satisfies `dyld` on this OS, and a Conductor ruling (NOTES
+R4-SANDBOX-FIX-3) flipped the macOS model to deny-listing instead, described above. Throughout, a
+`LEVARE_SANDBOX_DEBUG=1` env var prints the composed argv and raw spawn result for whichever run
 confirms it. What COULD be verified without a live macOS host (canonicalization logic, argv/profile
-construction, the enumerated-allowlist shape, the composed-argv shape itself) was; what could only be
-proven by actually running there (bubblewrap's own Linux behaviour beyond this repo's own dev container,
-`unshare`'s fs-only fallback anywhere, and now whether the round-2 composition fix actually clears the
-same 20 failures) still wasn't, and is named rather than assumed — see NOTES R4-SANDBOX-FIX-2's own
-"still requires a live host" list.
+construction, rule ORDER in the generated profile text, the composed-argv shape itself) was; what could
+only be proven by actually running there (bubblewrap's own Linux behaviour beyond this repo's own dev
+container, `unshare`'s fs-only fallback anywhere, and now whether the deny-list model — the shape 14
+hand-run profiles verified, not necessarily byte-identical to what this file's own generator produces for
+a real dispatch — actually clears the same 20 failures) still wasn't, and is named rather than assumed —
+see NOTES R4-SANDBOX-FIX-3's own "still requires a live host" list.
 
 ## Connector trust-tier taxonomy
 

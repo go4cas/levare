@@ -11,7 +11,19 @@
 // exact case this module's own tests run against). When nothing works, the spawn proceeds unsandboxed
 // — never a hard failure — and every caller records which of the three levels actually applied:
 //
-//   "full"     — filesystem AND network confined (bubblewrap on Linux; sandbox-exec on macOS).
+//   "full"     — filesystem AND network confined — but NOT the identical SHAPE of confinement on both
+//                OSes as of round 3 (NOTES R4-SANDBOX-FIX-3), and this is recorded honestly rather than
+//                implied uniform: on LINUX (bubblewrap), it means an enumerated allow-list built from an
+//                EMPTY root — nothing is reachable unless explicitly named, the strongest guarantee this
+//                module makes. On MACOS (sandbox-exec), it means the OS is broadly readable (as an
+//                unsandboxed process would see it) with the OPERATOR'S OWN USER DATA explicitly denied
+//                except for a short, explicit re-allow list — a deny-list, not an allow-list, forced by a
+//                live-host finding that an allow-list is unwinnable against dyld on this platform (see the
+//                round 3 comment block below for the full bisection). Both satisfy the actual threat model
+//                (a member must not read the operator's dotfiles, other projects, or the studio beyond its
+//                grants) — they just satisfy it by different, non-equivalent means, and doctor/the
+//                registry/a produced artifact's own `sandbox: full` must never be read as "these two
+//                platforms enforce identically."
 //   "fs-only"  — filesystem confined via a raw `unshare` mount-namespace fallback (no bubblewrap
 //                binary, but the kernel still permits unprivileged user+mount namespaces); network is
 //                NOT attempted at this tier — reconstructing a working net-namespace by hand without
@@ -19,7 +31,7 @@
 //                ruling already calls network "best-effort", not a hard condition.
 //   "none"     — no primitive worked at all. Recorded, never silently absent.
 //
-// Filesystem, at the "full" tier, is a HARD condition taken literally: the process can reach its
+// Filesystem, at the "full" tier on LINUX, is a HARD condition taken literally: the process can reach its
 // per-dispatch worktree (merge.ts#createDispatchWorktree, read-write), its scopeHome scratch HOME
 // (env.ts#scopeHome, read-write), a small ENUMERATED set of read-only system paths a vendor CLI's own
 // interpreter/dynamic linker/libraries need to resolve, the studio root itself (read-only — a command
@@ -28,7 +40,9 @@
 // argv[0] resolves to (read-only — the interpreter actually being spawned) — nothing else. A decoy
 // anywhere outside that list — an unrelated scratch directory, the operator's own home, another user's
 // files — is genuinely unreadable, proven directly by this module's own decoy-file test
-// (tests/adapters.test.ts).
+// (tests/adapters.test.ts). On MACOS at the "full" tier (round 3, below), the hard condition is narrower
+// in scope: the operator's OWN user data (`$HOME`, `/Users`, `/Volumes`) is what a decoy must be planted
+// under to prove denial — the rest of the OS is deliberately readable, by design, not by gap.
 //
 // NOTES R4-SANDBOX-FIX (macOS host verification, first live run): the original design excluded the
 // studio root entirely, on the theory that "nothing else" should be as strict as possible. A live macOS
@@ -37,7 +51,10 @@
 // commands (stub scripts, `bun` itself) that live IN the studio tree, and every one of them broke. The
 // studio root is now a deliberate, named exception to "nothing else" — narrower than the pre-fix
 // "ro-bind the whole disk" design this module never shipped, but broader than the post-fix-attempt
-// "enumerated system paths only" design that turned out to break ordinary, expected usage.
+// "enumerated system paths only" design that turned out to break ordinary, expected usage. (This
+// enumerated-allowlist-plus-studio-root shape is what Linux/bubblewrap STILL uses today — round 3, below,
+// only changes the macOS/sandbox-exec model; the studio root's inclusion in `readOnlyPaths` is shared by
+// both platforms regardless, since macOS's broad `/` read trivially covers it either way.)
 //
 // Bubblewrap builds its root from an empty `--tmpfs /` rather than `--ro-bind / /`, so "nothing else" is
 // still true of reads for everything NOT explicitly named above.
@@ -91,6 +108,43 @@
 // third live run needs to confirm or refute it precisely, rather than guessing again from a Linux-only
 // vantage point. See NOTES R4-SANDBOX-FIX's own "still requires a live host" section for the full list of
 // what remains unconfirmed.
+
+// NOTES R4-SANDBOX-FIX-3 (round 3 — live macOS bisection, 14 hand-run profiles): round 2's fix (the `-f`
+// temp file, no `--`) made the wrapper compose correctly — `LEVARE_SANDBOX_DEBUG` confirmed the composed
+// argv, and the sandbox DID apply. The process still died. The crash report's own stack (dyld4::
+// CacheFinder → ignition_halt → abort_with_reason, SIGABRT before `main()` ever runs) named the actual
+// failure: dyld's shared-cache lookup aborts when it cannot get the data-read access it needs, and that
+// access path is not externally documented or discoverable — the round 1 design's own enumerated
+// read-only allowlist (`/usr`, `/bin`, `/System`, `/System/Volumes`, `/System/Cryptexes`, `/Library`,
+// every `/private/*` variant, `/opt/homebrew`, `/usr/local`, `~/.bun`, ancestor-directory metadata, even
+// a blanket `file-read-metadata` on `/`) was bisected exhaustively on the live host — fourteen profiles,
+// each verified by direct execution — and EVERY enumerated-allowlist variant aborts identically. A
+// default-deny, explicitly-enumerate-every-read model is unwinnable against dyld on this macOS (26.5):
+// there is no finite list of paths that satisfies it, because the actual need isn't expressible as a
+// finite list at all.
+//
+// What DOES work, verified green on the same host: flip the model. `(allow file-read* (subpath "/"))` —
+// the OS is broadly readable, by default, the same as an unsandboxed process — then explicitly DENY the
+// operator's own user data (`$HOME`, `/Users`, `/Volumes`), then re-allow exactly the paths this dispatch
+// actually needs (which, being a short, concrete list — a worktree, a scoped HOME grant, an interpreter's
+// own install tree — IS expressible finitely, unlike "everything dyld might ever touch"). Seatbelt's own
+// later-rule-wins semantics makes this a deny-LIST rather than an allow-list: broad OS read by default,
+// user data denied except by explicit grant.
+//
+// This is a genuine model change, not a tuning of the same one: macOS's `full` and Linux's `full` no
+// longer mean the same shape of confinement, and callers that render `sandbox: full` (doctor, the
+// registry, a produced artifact's own frontmatter) must not imply otherwise. Linux `bubblewrap` KEEPS its
+// original allow-list-from-empty-root construction, deliberately unchanged by this round: it is proven,
+// it is stronger (a decoy ANYWHERE outside the explicit allow-list is unreadable, which the darwin model
+// cannot claim for anything under `/usr`/`/System`/etc.), and nothing in this round's own live evidence
+// argues against it — the bisection that forced macOS's hand is a macOS-specific fact about dyld's own
+// shared-cache mechanism, not a general argument against enumerated allow-lists as such.
+//
+// The darwin decoy-file test's own meaning survives this change intact, just narrower in SCOPE, not
+// weaker in KIND: a file under the operator's `$HOME` outside the explicitly re-allowed set is still
+// genuinely unreadable — proven the identical way (plant it, try to read it, confirm failure) — it is
+// simply no longer true that literally everything outside a short allow-list is unreadable, because nothing
+// on this OS can make that claim survive contact with dyld.
 
 import { existsSync, realpathSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -205,8 +259,27 @@ export interface SandboxPolicy {
    * `context_artifacts: paths` member's consumed-artifact reads, both need it), the running levare
    * binary's own directory, and wherever this dispatch's own argv[0] resolves to (the interpreter
    * actually being spawned, which may live somewhere the platform baseline doesn't cover — a
-   * Homebrew/user-local install, `~/.bun`, etc.). Absent/empty is a legal no-op. */
+   * Homebrew/user-local install, `~/.bun`, etc.). Absent/empty is a legal no-op. On Linux (bubblewrap)
+   * these are the entirety of what's readable beyond `cwd`/`home`; on macOS (round 3) they are RE-ALLOWS
+   * layered on top of a broader OS-wide read default — see `buildSandboxExecProfile`'s own doc. */
   readOnlyPaths?: string[];
+  /**
+   * NOTES R4-SANDBOX-FIX-3 (macOS only — bubblewrap's own allow-list model never reads this field). The
+   * operator's REAL, unscoped `$HOME` (e.g. `/Users/cas`) — denied broadly on the darwin deny-list model,
+   * with `readOnlyPaths`/`home`/`grantedHomeTargets` layered back on top as explicit re-allows. Undefined
+   * when the real HOME can't be determined (no deny is emitted for it in that case — `/Users`/`/Volumes`
+   * still are, unconditionally).
+   */
+  operatorHome?: string;
+  /**
+   * NOTES R4-SANDBOX-FIX-3 (macOS only). The RESOLVED real filesystem paths a granted `auth: subscription`
+   * connector's own `home:` dotpaths point at (e.g. `/Users/cas/.codex` for a connector declaring `home:
+   * [".codex"]`) — distinct from `home` above (the member's own scratch-scoped `$HOME`, which may contain
+   * SYMLINKS to these same real targets): denying the operator's `$HOME` broadly would also deny reading
+   * THROUGH those symlinks to their real targets unless the targets themselves are explicitly re-allowed.
+   * Absent/empty is a legal no-op (no subscription grant, or one declaring no `home:`).
+   */
+  grantedHomeTargets?: string[];
 }
 
 export interface WrappedSpawn {
@@ -285,24 +358,17 @@ function sbxq(s: string): string {
   return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
-// The macOS equivalent of READONLY_SYSTEM_PATHS above — the paths dyld/the standard frameworks actually
-// need to resolve a normal process, kept to the same "enumerated, not the whole disk" shape as the
-// bubblewrap tier for the SAME "full" guarantee across platforms. `/opt/homebrew` (Apple Silicon) and
-// `/usr/local` (Intel, and generic Unix-local installs) are included unconditionally — NOTES
-// R4-SANDBOX-FIX's own live-host finding: a vendor CLI or the interpreter running it (`bun`, `git`,
-// `node`, …) very commonly lives under one of these on a real macOS dev machine, and neither is under
-// `/usr`/`/System`/`/Library`.
-const SANDBOX_EXEC_READONLY_PATHS = ["/usr", "/bin", "/System", "/Library", "/private/etc", "/opt/homebrew", "/usr/local"];
-
 /**
- * NOTES R4-SANDBOX-FIX: `realpathSync`, falling back to the literal string when the path doesn't exist
- * (this module's own pure unit tests pass fixture paths like `/work/scratch-wt` that are never actually
- * created on disk — those must keep resolving to themselves, not throw). `sandbox-exec`'s `(subpath ...)`
- * rules match the KERNEL-RESOLVED form of a path — on macOS, `/tmp` and `/var/folders` (where
- * `os.tmpdir()` lives, and therefore where every scratch worktree/HOME this module scopes actually sits)
- * are themselves symlinks into `/private`, so a profile written with the pre-resolution path silently
- * never matches. The same lesson as the phase-1 immutability fix (commit b9ae0f1): a path comparison that
- * ignores the filesystem's own symlink layer is comparing the wrong thing.
+ * NOTES R4-SANDBOX-FIX (round 1) / R4-SANDBOX-FIX-3 (round 3): `realpathSync`, falling back to the
+ * literal string when the path doesn't exist (this module's own pure unit tests pass fixture paths like
+ * `/work/scratch-wt` that are never actually created on disk — those must keep resolving to themselves,
+ * not throw). `sandbox-exec`'s `(subpath ...)` rules match the KERNEL-RESOLVED form of a path — on macOS,
+ * `/tmp`, `/var/folders` (where `os.tmpdir()` lives), and the operator's own `$HOME` can all sit behind
+ * symlinks, so a profile written with the pre-resolution path silently never matches. The same lesson as
+ * the phase-1 immutability fix (commit b9ae0f1): a path comparison that ignores the filesystem's own
+ * symlink layer is comparing the wrong thing. Round 3 canonicalizes the DENY targets too (`operatorHome`),
+ * not just the re-allows — a deny written against the wrong (symlinked) spelling would silently fail to
+ * deny anything, which is the opposite failure mode from a re-allow that silently fails to re-allow.
  */
 function canon(p: string): string {
   try {
@@ -312,21 +378,51 @@ function canon(p: string): string {
   }
 }
 
-/** Exported for its own unit test — the profile TEXT is the thing worth asserting on. The canonicalization
- * this function performs is proven directly (a real symlinked tmp dir, asserting the profile names the
- * RESOLVED path); the rest of the macOS path — `sandbox-exec` actually enforcing what the profile says —
- * is exercised only by construction in this repo's own Linux-only test suite, never live (recorded
- * honestly, NOTES R4-SANDBOX/R4-SANDBOX-FIX, rather than claimed as verified). */
+/**
+ * NOTES R4-SANDBOX-FIX-3 (round 3, live macOS bisection — see this module's own header for the full
+ * evidence): a DENY-LIST, not an allow-list. Fourteen hand-run profiles on a live host proved that an
+ * enumerated allow-list (however broad — every system path this module's own round-1 design tried, one at
+ * a time and in combination) aborts identically: dyld's own shared-cache lookup needs a data-read access
+ * path that is not externally discoverable or expressible as a finite list. The only verified-working
+ * shape grants broad OS reads by default and denies the operator's own user data instead.
+ *
+ * RULE ORDER IS LOAD-BEARING. Seatbelt's `(allow ...)`/`(deny ...)` rules are evaluated with the LAST
+ * matching rule winning for a given operation — never first-match, never "most specific wins" the way some
+ * other policy languages work. Every `(deny file-read* ...)` line below MUST appear BEFORE the
+ * `(allow file-read* ...)` re-allow lines that are meant to carve exceptions back out of it; reversing the
+ * order would make the re-allows silently inert (the LATER deny would win instead) — this is exactly the
+ * kind of bug this file's own comment exists to prevent a future edit from reintroducing.
+ *
+ * Exported for its own unit test — the profile TEXT is the thing worth asserting on, including rule
+ * ORDER specifically. The actual enforcement (`sandbox-exec` denying what this profile says to deny) is
+ * exercised only by construction in this repo's own Linux-only test suite, never live — recorded
+ * honestly (NOTES R4-SANDBOX/R4-SANDBOX-FIX/R4-SANDBOX-FIX-3) rather than claimed as verified beyond what
+ * the live-host bisection itself already confirmed (the shape below, not this exact generated text).
+ */
 export function buildSandboxExecProfile(policy: SandboxPolicy): string {
-  const readOnly = [...SANDBOX_EXEC_READONLY_PATHS, ...(policy.readOnlyPaths ?? [])];
   const cwd = canon(policy.cwd);
   const home = policy.home ? canon(policy.home) : undefined;
+  const operatorHome = policy.operatorHome ? canon(policy.operatorHome) : undefined;
+  const reallowReads = [cwd, ...(home ? [home] : []), ...(policy.grantedHomeTargets ?? []).map(canon), ...(policy.readOnlyPaths ?? []).map(canon)];
   const lines = [
     "(version 1)",
     "(deny default)",
     "(allow process-fork)",
     "(allow process-exec)",
-    ...readOnly.map((p) => `(allow file-read* (subpath ${sbxq(canon(p))}))`),
+    // Broad OS read, same as an unsandboxed process would see — verified live: this is the only shape
+    // that lets dyld's own shared-cache lookup succeed on this platform (see this module's header).
+    '(allow file-read* (subpath "/"))',
+    // --- Denies below, re-allows after: order is load-bearing (see this function's own doc). ---
+    operatorHome ? `(deny file-read* (subpath ${sbxq(operatorHome)}))` : "",
+    '(deny file-read* (subpath "/Users"))',
+    '(deny file-read* (subpath "/Volumes"))',
+    // Re-allows: exactly what THIS dispatch needs, carved back out of the denies above. The dispatch
+    // worktree, the member's own (possibly scratch-scoped) HOME, any granted connector's OWN real home
+    // targets (env.ts#scopeHome may have symlinked to these — denying $HOME broadly would otherwise deny
+    // reading THROUGH those symlinks too), and readOnlyPaths (the studio root, the interpreter's install
+    // tree, the member command's own directory — see adapters.ts#sandboxWrap's own doc for exactly what
+    // populates this list).
+    ...reallowReads.map((p) => `(allow file-read* (subpath ${sbxq(p)}))`),
     `(allow file-write* (subpath ${sbxq(cwd)}))`,
     home ? `(allow file-write* (subpath ${sbxq(home)}))` : "",
     '(allow file-read* (subpath "/dev"))',
