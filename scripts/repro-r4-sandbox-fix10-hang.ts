@@ -391,7 +391,8 @@ async function main() {
   worktree.cleanup();
   rmSync(projectRepo, { recursive: true, force: true });
 
-  // --- Ladder/production parity check (NOTES R4-SANDBOX-FIX-13) ---
+  // --- Ladder/production parity check (NOTES R4-SANDBOX-FIX-13, comparison-inputs fix NOTES
+  // R4-SANDBOX-FIX-14) ---
   //
   // Everything above already calls `buildDispatchSandboxPolicy` — the SAME function `AdapterRunner#
   // sandboxWrap` calls internally — so the ladder's own policy construction can no longer silently drift
@@ -403,8 +404,17 @@ async function main() {
   // OWN separate scratch worktree) against the ladder's own profile from step 4 above. Any structural
   // difference means the ladder and production have diverged again — the exact "weak canary" failure
   // mode FIX-5 first named, now caught here rather than assumed closed.
+  //
+  // NOTES R4-SANDBOX-FIX-14: the EQUALITY assertion below is only honest when BOTH sides are
+  // repo-bearing (the ladder's own profile always is — step 2 above always builds a real scratch
+  // worktree). The production side must be dispatched against an equally repo-bearing project, never the
+  // golden fixture's own `storefront` UNTOUCHED (`repo:` there is a deliberate placeholder SSH URL — see
+  // NOTES MERGE-1 — so that dispatch legitimately builds no worktree and carries no git-write section: a
+  // shape difference, not a generator disagreement). A second, clearly-labeled INFORMATIONAL check below
+  // drives that repo-less dispatch on purpose and pins the expected shape difference, so the repo-less
+  // profile's own shape is under test too, never just assumed.
   console.log("");
-  console.log("=== Ladder/production parity check (NOTES R4-SANDBOX-FIX-13) ===");
+  console.log("=== Ladder/production parity check (NOTES R4-SANDBOX-FIX-13/FIX-14) ===");
 
   function profileSkeleton(text: string): string {
     // Regex literals first (they also match the quoted-string pattern below) — both collapse every
@@ -412,63 +422,126 @@ async function main() {
     return text.replace(/#"(?:[^"\\]|\\.)*"/g, "#<PATH>").replace(/"(?:[^"\\]|\\.)*"/g, "<PATH>");
   }
 
+  // The git-write reseal's own deny line, skeletonized — present if and only if this dispatch built a
+  // per-dispatch worktree with a `dispatchGitWriteGrant` (see `adapters.ts#dispatchGitWriteGrant`);
+  // unique in the profile (the only OTHER write-affecting rule is `(deny network*)`, a different literal
+  // entirely), so its presence alone is a reliable structural marker for "this profile is repo-bearing".
+  const GIT_RESEAL_DENY_LINE = "(deny file-write* (subpath <PATH>))";
+
+  // Drives a real `AdapterRunner.produceAsync()` dispatch of finch/review against `repo`'s `project`/
+  // `unit`, capturing the darwin sandbox-exec profile text it prints under `LEVARE_SANDBOX_DEBUG=1` (a
+  // failed dispatch still prints it — the profile is built and logged BEFORE the spawn itself runs, so
+  // the dispatch's own success/failure is irrelevant here). Returns its skeleton, or `null` when this
+  // host's own detected primitive never reaches the real sandbox-exec debug print (e.g. this container's
+  // own honest `none` detection). Shared between the repo-bearing (primary) and repo-less (informational)
+  // checks below — the only thing that differs between them is which `repo`/`project` is passed in.
+  async function captureProductionSkeleton(repo: ReturnType<typeof loadRepo>, project: string, unit: string): Promise<string | null> {
+    const nativeMock: NativeBoundary = { invoke: () => ({ doc: "unused" }) };
+    const remoteMock: RemoteBoundary = { call: () => ({ doc: "unused" }) };
+    const pricing = loadPricing("fixtures/golden");
+    const capturedLines: string[] = [];
+    const origConsoleError = console.error;
+    console.error = (...args: unknown[]) => {
+      capturedLines.push(args.map(String).join(" "));
+    };
+    const priorDebug = process.env.LEVARE_SANDBOX_DEBUG;
+    process.env.LEVARE_SANDBOX_DEBUG = "1";
+    try {
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        cliCommand: () => ["cat", "/dev/null"],
+      });
+      await runner.produceAsync("finch", "review", unit, project);
+    } catch (e) {
+      console.log(`(dispatch itself reported: ${e instanceof Error ? e.message : String(e)} — expected/irrelevant, only its own printed profile text matters here)`);
+    } finally {
+      console.error = origConsoleError;
+      if (priorDebug === undefined) delete process.env.LEVARE_SANDBOX_DEBUG;
+      else process.env.LEVARE_SANDBOX_DEBUG = priorDebug;
+    }
+    const profileTextLine = capturedLines.find((l) => l.startsWith("[levare:sandbox-debug] darwin sandbox-exec profile text:"));
+    if (!profileTextLine) return null;
+    return profileSkeleton(profileTextLine.slice(profileTextLine.indexOf("\n") + 1));
+  }
+
+  const ladderSkeleton = profileSkeleton(profile);
+
+  // --- Primary check: REPO-BEARING vs REPO-BEARING, asserted for structural EQUALITY. ---
   const parityProjectRepo = mkdtempSync(join(tmpdir(), "levare-fix13-parity-proj-"));
   git(parityProjectRepo, ["init", "-q"]);
   writeFileSync(join(parityProjectRepo, "README.md"), "hello\n");
   git(parityProjectRepo, ["add", "-A"]);
   git(parityProjectRepo, ["commit", "-q", "-m", "initial"]);
-  git(parityProjectRepo, ["branch", "levare/parity-unit", "main"]);
+  // NOTES R4-SANDBOX-FIX-14: capture whatever this host's own git actually named the initial branch
+  // (never assumed) — this section used to hard-code `git branch levare/parity-unit main`, which
+  // silently no-ops (branch never created, git's own error going unchecked) on any host whose git
+  // initializes a fresh repo on a default branch other than "main".
+  const parityDefaultBranch = git(parityProjectRepo, ["rev-parse", "--abbrev-ref", "HEAD"]).stdout.trim();
+  // `checkout -q -b`, the SAME technique the MAIN ladder's own `projectRepo` above already uses to cut
+  // its own work branch from whatever HEAD already is — no starting-point name to get wrong. Then
+  // checkout BACK to the captured default branch, exactly like the main ladder does right after seeding
+  // its own branch (`git(projectRepo, ["checkout", "-q", "main"])` above) — `createDispatchWorktree`'s own
+  // `git worktree add` refuses to check out a branch that's already checked out in this primary worktree.
+  git(parityProjectRepo, ["checkout", "-q", "-b", "levare/parity-unit"]);
+  git(parityProjectRepo, ["checkout", "-q", parityDefaultBranch]);
+  // Verify it loudly rather than trust it silently — exactly the class of silent-failure bug this whole
+  // investigation keeps finding (FIX-9's EPERM/ENOENT confusion, FIX-13's own dedupe swallow). A missing
+  // branch here would silently degrade this "primary" check back into the repo-less shape it exists to
+  // rule out, which is the ORIGINAL false-positive bug wearing a new disguise.
+  const parityBranchCheck = git(parityProjectRepo, ["rev-parse", "--verify", "--quiet", "refs/heads/levare/parity-unit"]);
+  if (parityBranchCheck.status !== 0) {
+    throw new Error(
+      "parity check setup failed: 'levare/parity-unit' was not created in the parity project repo — the primary check below would silently degrade into a repo-less comparison, exactly the false positive NOTES R4-SANDBOX-FIX-14 fixed",
+    );
+  }
 
   const parityRepo = loadRepo("fixtures/golden");
   const storefront = parityRepo.projects.get("storefront")!;
   parityRepo.projects.set("storefront", { ...storefront, repo: parityProjectRepo });
 
-  const nativeMock: NativeBoundary = { invoke: () => ({ doc: "unused" }) };
-  const remoteMock: RemoteBoundary = { call: () => ({ doc: "unused" }) };
-  const pricing = loadPricing("fixtures/golden");
+  const productionSkeleton = await captureProductionSkeleton(parityRepo, "storefront", "parity-unit");
+  rmSync(parityProjectRepo, { recursive: true, force: true });
 
-  const capturedLines: string[] = [];
-  const origConsoleError = console.error;
-  console.error = (...args: unknown[]) => {
-    capturedLines.push(args.map(String).join(" "));
-  };
-  const priorDebug = process.env.LEVARE_SANDBOX_DEBUG;
-  process.env.LEVARE_SANDBOX_DEBUG = "1";
-  try {
-    const parityRunner = new AdapterRunner(parityRepo, {
-      pricing,
-      capabilities: [{ member: "finch", kind: "review" }],
-      native: nativeMock,
-      remote: remoteMock,
-      cliCommand: () => ["cat", "/dev/null"],
-    });
-    await parityRunner.produceAsync("finch", "review", "parity-unit", "storefront");
-  } catch (e) {
-    // A failed dispatch still prints its own pre-spawn debug lines (profile text included) BEFORE the
-    // spawn itself runs — the dispatch's own success/failure is irrelevant to this structural check.
-    console.log(`(parity dispatch itself reported: ${e instanceof Error ? e.message : String(e)} — expected/irrelevant, only its own printed profile text matters here)`);
-  } finally {
-    console.error = origConsoleError;
-    if (priorDebug === undefined) delete process.env.LEVARE_SANDBOX_DEBUG;
-    else process.env.LEVARE_SANDBOX_DEBUG = priorDebug;
-    rmSync(parityProjectRepo, { recursive: true, force: true });
+  if (productionSkeleton === null) {
+    console.log("PARITY CHECK SKIPPED — no 'darwin sandbox-exec profile text:' line captured (this host's own detected primitive may not be sandbox-exec, or the dispatch never reached the real spawn boundary).");
+  } else if (ladderSkeleton === productionSkeleton) {
+    console.log(">>> PASS: the ladder's own profile and a REAL, repo-bearing production dispatch's own profile are structurally identical <<<");
+  } else {
+    console.log(">>> REGRESSION: the ladder's own profile and a REAL, repo-bearing production dispatch's own profile DIFFER in structure <<<");
+    console.log("--- ladder skeleton ---");
+    console.log(ladderSkeleton);
+    console.log("--- production skeleton ---");
+    console.log(productionSkeleton);
   }
 
-  const profileTextLine = capturedLines.find((l) => l.startsWith("[levare:sandbox-debug] darwin sandbox-exec profile text:"));
-  if (!profileTextLine) {
-    console.log("PARITY CHECK SKIPPED — no 'darwin sandbox-exec profile text:' line captured (this host's own detected primitive may not be sandbox-exec, or the dispatch never reached the real spawn boundary).");
+  // --- Secondary check (NOTES R4-SANDBOX-FIX-14): INFORMATIONAL, never a regression gate. Dispatches
+  // against the golden fixture's own `storefront` project UNTOUCHED — deliberately repo-less (`repo:` is
+  // a placeholder SSH URL never actually cloned locally, per NOTES MERGE-1) — and pins the EXPECTED
+  // shape difference (git-write section present in the ladder's own profile, absent here) rather than
+  // leaving that shape untested. If this ever stops differing the way it's expected to, that means the
+  // repo-less DETECTION itself broke (`resolveProjectRepoPath` started treating this placeholder as a
+  // real checkout) — a real bug, but a different one than the primary check above guards against, so it
+  // is named and printed distinctly rather than folded into "REGRESSION".
+  console.log("");
+  console.log("=== Repo-less dispatch shape check (NOTES R4-SANDBOX-FIX-14, informational — not a regression gate) ===");
+  const repolessRepo = loadRepo("fixtures/golden");
+  const repolessSkeleton = await captureProductionSkeleton(repolessRepo, "storefront", "repro");
+  if (repolessSkeleton === null) {
+    console.log("INFORMATIONAL CHECK SKIPPED — no profile text captured (same host-primitive caveat as the primary check above).");
   } else {
-    const productionProfile = profileTextLine.slice(profileTextLine.indexOf("\n") + 1);
-    const ladderSkeleton = profileSkeleton(profile);
-    const productionSkeleton = profileSkeleton(productionProfile);
-    if (ladderSkeleton === productionSkeleton) {
-      console.log(">>> PASS: the ladder's own profile and a REAL production dispatch's own profile are structurally identical <<<");
+    const ladderHasGitSection = ladderSkeleton.includes(GIT_RESEAL_DENY_LINE);
+    const repolessHasGitSection = repolessSkeleton.includes(GIT_RESEAL_DENY_LINE);
+    if (ladderHasGitSection && !repolessHasGitSection) {
+      console.log(">>> PASS (expected shape difference): the ladder's own repo-bearing profile carries the git-write reseal; the repo-less dispatch's own profile correctly carries none <<<");
     } else {
-      console.log(">>> REGRESSION: the ladder's own profile and a REAL production dispatch's own profile DIFFER in structure <<<");
-      console.log("--- ladder skeleton ---");
-      console.log(ladderSkeleton);
-      console.log("--- production skeleton ---");
-      console.log(productionSkeleton);
+      console.log(
+        `>>> UNEXPECTED SHAPE: this pinned expectation no longer holds (ladderHasGitSection=${ladderHasGitSection}, repolessHasGitSection=${repolessHasGitSection}) — the repo-less DETECTION itself may have changed <<<`,
+      );
+      console.log("--- repo-less skeleton ---");
+      console.log(repolessSkeleton);
     }
   }
 }
