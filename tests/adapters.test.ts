@@ -1181,6 +1181,17 @@ describe("NOTES R4-SANDBOX Ruling 1 — per-dispatch worktree isolation", () => 
   // never exercised the gap directly here — see the next test for the structural proof that
   // `dispatchGitDir` reaches the wrapped argv, and sandbox.test.ts's own `writablePaths` unit tests for
   // the profile/bwrap-argv shape this closes.
+  //
+  // NOTES R4-SANDBOX-FIX-10/FIX-11: this test's own default bun:test timeout (5000ms, never raised — a
+  // raised timeout would hide the exact regression this asserts against) is what convicted the live
+  // gate's own "hang": under the pre-FIX-11 profile, `git add`/`git commit` each failed SLOWLY (~3.3s +
+  // ~2.2s ≈ 5.5s of xcodebuild/DVT stall before `exit 128`) via Apple's own xcrun-shimmed `/usr/bin/git`
+  // hitting a denied `confstr(DARWIN_USER_TEMP_DIR)` — exceeding the test's own 5000ms ceiling with no
+  // diagnosis of which link was slow. FIX-11 grants the mach-lookup this confstr call needs plus a write
+  // grant at the resolved per-user temp dir; the elapsed-time assertion below is the regression guard —
+  // generous headroom (this container's own unsandboxed baseline is single-digit milliseconds), never a
+  // raised ceiling, so a future regression back to the slow-failure path fails LOUDLY on timing, not just
+  // eventually timing out the whole test with no signal about why.
   test("a member's own commit inside its dispatch worktree actually advances the work branch, never the shared tree", async () => {
     const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
     try {
@@ -1199,7 +1210,13 @@ describe("NOTES R4-SANDBOX Ruling 1 — per-dispatch worktree isolation", () => 
           req.projectRepoPath!,
         ],
       });
+      const start = Date.now();
       await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+      const elapsed = Date.now() - start;
+      // Generous headroom under the test's own 5000ms ceiling — a sandboxed commit that regresses back
+      // toward the multi-second xcrun-shim slow-failure path fails HERE, on timing, rather than only ever
+      // hitting the outer test timeout with no signal about which link got slow.
+      expect(elapsed).toBeLessThan(2000);
       expect(git(projectRepo, ["rev-parse", "levare/checkout-flow"]).trim()).not.toBe(beforeSha);
       // Never landed in the project's own working tree.
       expect(existsSync(join(projectRepo, "member-output.txt"))).toBe(false);

@@ -35,7 +35,7 @@ import { asyncSdkTransport, bunSdkTransport, resolveNativeBinary, type AsyncSdkT
 import { repoCapabilities } from "./repo.ts";
 import { resolveProjectRepoPath, workBranchName, branchExists, createDispatchWorktree } from "./merge.ts";
 import { isSafeHomeDotpath } from "./validate.ts";
-import { detectSandbox, wrapForSandbox, type SandboxDetection, type SandboxLevel, type SandboxPolicy, type WrappedSpawn } from "./sandbox.ts";
+import { detectSandbox, wrapForSandbox, resolveDarwinUserTempDir, type SandboxDetection, type SandboxLevel, type SandboxPolicy, type WrappedSpawn } from "./sandbox.ts";
 import type { Pricing } from "./pricing.ts";
 import type { Repo } from "./repo.ts";
 import type { MemberRunner } from "./runner.ts";
@@ -1013,6 +1013,11 @@ export class AdapterRunner implements MemberRunner {
     const operatorHome = this.opts.baseEnv?.HOME ?? process.env.HOME;
     const sub = subscriptionConnector(this.repo, req.member);
     const grantedHomeTargets = operatorHome ? (sub?.home ?? []).filter(isSafeHomeDotpath).map((dotpath) => pathJoin(operatorHome, dotpath)) : [];
+    // NOTES R4-SANDBOX-FIX-11: the per-user DARWIN_USER_TEMP_DIR (resolved by the unsandboxed parent —
+    // `undefined` off-darwin or if unresolvable) — an xcrun-shimmed tool (git) needs write access here or
+    // its own confstr-then-write-fallback chain convicts it with exit 128 (see `resolveDarwinUserTempDir`'s
+    // own doc). A no-op everywhere else, exactly like every other optional grant in this policy.
+    const darwinTempDir = resolveDarwinUserTempDir();
     const policy: SandboxPolicy = {
       cwd: cwd ?? process.cwd(),
       home: req.env.HOME,
@@ -1023,8 +1028,9 @@ export class AdapterRunner implements MemberRunner {
       // NOTES R4-SANDBOX-FIX-7/FIX-8: read-write access to the EXACT `.git` subpaths (objects/refs/logs/
       // this worktree's own admin dir) a worktree commit needs — never the whole `.git` directory, never
       // `hooks`/`config` (see `InvokeRequest.dispatchGitWritePaths`'s own doc for the exec-escape this
-      // narrowing closes).
-      writablePaths: req.dispatchGitWritePaths ?? [],
+      // narrowing closes). NOTES R4-SANDBOX-FIX-11 adds the resolved darwin user-temp-dir alongside it,
+      // when present.
+      writablePaths: [...(req.dispatchGitWritePaths ?? []), ...(darwinTempDir ? [darwinTempDir] : [])],
     };
     return wrapForSandbox(argv, policy, detection);
   }

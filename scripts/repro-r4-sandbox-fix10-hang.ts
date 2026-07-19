@@ -1,44 +1,56 @@
-// NOTES R4-SANDBOX-FIX-10 — hand-runnable repro ladder for the live macOS gate's own hang.
+// NOTES R4-SANDBOX-FIX-10/FIX-11 — hand-runnable repro ladder for the live macOS gate.
 //
-// The failing test (`tests/adapters.test.ts`, "a member's own commit inside its dispatch worktree
-// actually advances the work branch") HANGS on the live macOS gate under a genuinely working
-// `sandbox-exec` — 5000ms timeout, "killed 1 dangling process" — with no diagnosis of which link in the
-// member's own chain (`sh -c "cd $1 && echo written > member-output.txt && git add -A && git commit -q
-// -m ..."`) actually blocked. This container cannot reproduce it (no working sandbox-exec exists on
-// Linux, and this container's own bwrap/unshare are both broken for an unrelated, already-documented
-// reason). This script is the evidence-first alternative: it builds the EXACT SAME profile a real
-// dispatch would (via `buildSandboxExecProfile`/`createDispatchWorktree`, the real, unmocked production
-// functions — not a hand-copied approximation that could drift), then runs the member's chain LINK BY
-// LINK, timing each one under `sandbox-exec -f <profile>` directly, so whichever link blocks is named by
-// this run's own printed output — never assumed in advance.
+// FIX-10's own report: the worktree-commit test (`tests/adapters.test.ts`, "a member's own commit inside
+// its dispatch worktree actually advances the work branch") HANGS on the live macOS gate under a
+// genuinely working `sandbox-exec` — 5000ms timeout, "killed 1 dangling process". This container cannot
+// reproduce it directly (no working `sandbox-exec` exists on Linux, and this container's own `bwrap`/
+// `unshare` are both broken for an unrelated, already-documented reason). Steps 1-6 below are the
+// evidence-first alternative: build the EXACT SAME profile a real dispatch would (via
+// `buildSandboxExecProfile`/`createDispatchWorktree`, the real, unmocked production functions — never a
+// hand-copied approximation that could drift), then run the member's chain LINK BY LINK, timing each one
+// under `sandbox-exec -f <profile>` directly, so whichever link blocks is named by this run's own printed
+// output — never assumed in advance.
+//
+// FIX-11's own live run of steps 1-6 CONVICTED it: not a hang at all, but SLOW FATAL FAILURE — Apple's
+// own xcrun-shimmed `/usr/bin/git` calls `confstr(DARWIN_USER_TEMP_DIR)` at startup, denied because the
+// mach service backing it (`com.apple.bsd.dirhelper`) was never allowed; `confstr` fails, xcrun falls back
+// to `/tmp`, that write is ALSO denied, and every git subcommand exits 128 after several seconds of
+// xcodebuild/DVT stall (`git add` ~3.3s, `git commit` ~2.2s — together exceeding the test's own 5000ms
+// ceiling). The fix-variant section after step 6 confirms the remedy: `buildSandboxExecProfile`'s own
+// fixed preamble now unconditionally allows the `dirhelper` mach-lookup, and the caller threads a resolved
+// per-user temp-dir write grant (`resolveDarwinUserTempDir`) into `writablePaths`. Three variants (A:
+// profile grant only — this round's shipped fix; B: env-only, `XCRUN_DISABLE_CACHE=1`, no write grant; C:
+// both) let ONE live run also tell a future round whether the write grant is droppable in favor of the
+// narrower env-only path.
 //
 // Run on the live macOS host: `bun run scripts/repro-r4-sandbox-fix10-hang.ts`
 //
-// The candidate space this ladder is structured to isolate (per the goal's own instruction — named to
-// STRUCTURE the repro, never to pre-judge which one is guilty):
+// The candidate space steps 1-6 are structured to isolate (per FIX-10's own instruction — named to
+// STRUCTURE the repro, never to pre-judge which one is guilty; CONVICTED above as `com.apple.bsd.
+// dirhelper`, surfacing through steps 4/5/6 specifically, never steps 1-3):
 //   1. `sh` + `cd` alone — does the shell itself start and change directory under the profile?
 //   2. The `echo ... > file` redirect — does a simple shell redirect into the granted `cwd` work?
 //   3. A direct `stat` probe of `.git/hooks/pre-commit` and `.git/hooks/post-commit` — since `.git/hooks`
 //      is DENIED (never granted, per FIX-8's own narrowing) while `.git/objects`/`refs`/`logs` and this
 //      dispatch's own worktree admin dir ARE granted, this is where an EPERM-vs-ENOENT class defect (the
 //      same class that struck twice already: the git-config read in FIX-9, and the `.git` root read in
-//      earlier rounds) would show up cheaply, without running a real `git add`/`commit` at all. A stat
-//      probe returning quickly (whether EPERM or ENOENT) ACQUITS this candidate; a probe that itself
-//      hangs would be a genuinely new and separate finding.
-//   4. `git add -A` alone, inside the worktree.
-//   5. `git commit` alone, inside the worktree (after a real `git add`).
-//   6. The FULL original chain, verbatim, as a baseline confirming the hang reproduces under this
+//      earlier rounds) would show up cheaply, without running a real `git add`/`commit` at all. Acquitted
+//      by the live run: a probe returning promptly (whichever error) never blocked anything.
+//   4. `git add -A` alone, inside the worktree — where CONVICTION 1 (dirhelper) first surfaces.
+//   5. `git commit` alone, inside the worktree (after a real `git add`) — same conviction, second link.
+//   6. The FULL original chain, verbatim, as a baseline confirming the failure reproduces under this
 //      harness at all.
 //
 // Each step runs with its own hard kill-timeout (mirroring `adapters.ts#asyncBunSpawn`'s own technique,
 // not `timeout(1)` — not guaranteed present on a fresh macOS install). A step that hangs is KILLED (its
 // whole process group, exactly like a real dispatch's own timeout) and reported as HANG, never left
-// running past this script's own exit.
+// running past this script's own exit; a step that fails fast or slow is reported as FAIL with its own
+// elapsed time and captured stderr, distinguishable from a genuine HANG at a glance.
 
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { buildSandboxExecProfile, type SandboxPolicy } from "../src/sandbox.ts";
+import { buildSandboxExecProfile, resolveDarwinUserTempDir, type SandboxPolicy } from "../src/sandbox.ts";
 import { createDispatchWorktree } from "../src/merge.ts";
 
 const STEP_TIMEOUT_MS = 5_000;
@@ -61,10 +73,12 @@ function killProcessGroup(pid: number): void {
 
 // Mirrors adapters.ts#asyncBunSpawn's own timeout technique exactly — a real dispatch's own kill
 // mechanism, not a simulated stand-in, so a step reported HANG here is genuinely what a real dispatch
-// would have killed too.
-async function runStep(label: string, argv: string[]): Promise<void> {
+// would have killed too. `env`, when given, is layered over `process.env` (never a strict allowlist —
+// this is a standalone diagnostic script, not a production dispatch, so the full-fidelity env-scoping
+// machinery in adapters.ts#buildMemberEnv is deliberately not reproduced here).
+async function runStep(label: string, argv: string[], env?: Record<string, string>): Promise<void> {
   const start = Date.now();
-  const proc = Bun.spawn(argv, { stdout: "pipe", stderr: "pipe", stdin: "ignore", detached: true });
+  const proc = Bun.spawn(argv, { stdout: "pipe", stderr: "pipe", stdin: "ignore", detached: true, env: env ? { ...process.env, ...env } : undefined });
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
@@ -204,8 +218,77 @@ async function main() {
     ]),
   );
 
+  // --- Fix-variant confirmation (NOTES R4-SANDBOX-FIX-11) ---
+  //
+  // CONVICTION (from the round that ran this ladder first): `com.apple.bsd.dirhelper`'s mach-lookup
+  // denial makes `confstr(DARWIN_USER_TEMP_DIR)` fail (code 5), xcrun falls back to `/tmp`, the fallback
+  // write is ALSO denied, and every git subcommand exits 128 after several seconds of xcodebuild/DVT
+  // stall — what the original test's own 5000ms timeout actually caught was SLOW FAILURE, not a hang.
+  //
+  // `buildSandboxExecProfile`'s own fixed preamble now unconditionally allows the `dirhelper` mach-lookup
+  // (mirroring `sysctl-read`'s own precedent — there is no toggle to omit it, by design), so all three
+  // variants below already have that half. What varies is ONLY the WRITE grant at the resolved per-user
+  // temp dir and the `XCRUN_DISABLE_CACHE=1` env redirect — "whichever variant proves green with the
+  // LEAST grant becomes the fix" (the goal's own instruction). Variant A is what this round actually
+  // ships (`adapters.ts#sandboxWrap` threading `resolveDarwinUserTempDir()` into `writablePaths`); B and
+  // C are here so ONE live run can also tell a future round whether the write grant is droppable.
+  console.log("");
+  console.log("=== Fix-variant confirmation (NOTES R4-SANDBOX-FIX-11) ===");
+
+  const darwinTempDir = resolveDarwinUserTempDir();
+  console.log(`resolved DARWIN_USER_TEMP_DIR: ${darwinTempDir ?? "(unresolved — variant A/C's own write grant will be empty)"}`);
+
+  function writeVariantProfile(name: string, includeTempDirGrant: boolean): string {
+    const p = join(profileScratchDir, `${name}.sb`);
+    const variantProfile = buildSandboxExecProfile({
+      cwd: worktree.path,
+      home: process.env.HOME,
+      allowNetwork: false,
+      operatorHome: homedir(),
+      readOnlyPaths,
+      writablePaths: includeTempDirGrant && darwinTempDir ? [...writablePaths, darwinTempDir] : writablePaths,
+    });
+    writeFileSync(p, variantProfile);
+    return p;
+  }
+
+  const profileWithGrant = writeVariantProfile("variant-with-grant", true);
+  const profileNoGrant = writeVariantProfile("variant-no-grant", false);
+
+  const fullChainArgv = (variantProfilePath: string) => [
+    sbx,
+    "-f",
+    variantProfilePath,
+    "sh",
+    "-c",
+    `cd "$1" && echo written > variant-output.txt && git -c user.name=member -c user.email=member@levare.test -c commit.gpgsign=false add -A && git -c user.name=member -c user.email=member@levare.test -c commit.gpgsign=false commit -q -m "variant commit" && echo "committed variant work"`,
+    "sh",
+    worktree.path,
+  ];
+
+  // Reset before EACH variant so every one starts from the identical, clean, uncommitted state — never
+  // carrying over a previous variant's own commit.
+  function resetWorktreeForVariant(): void {
+    git(worktree.path, ["reset", "-q", "--hard", "HEAD~1"]);
+    try {
+      rmSync(join(worktree.path, "variant-output.txt"), { force: true });
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  resetWorktreeForVariant();
+  await runStep("A. profile grant only — mach-lookup (always on) + write grant at resolved temp dir, NO env fix (this round's SHIPPED fix)", fullChainArgv(profileWithGrant));
+
+  resetWorktreeForVariant();
+  await runStep("B. env-only — XCRUN_DISABLE_CACHE=1, NO temp-dir write grant (tests whether the write grant is droppable)", fullChainArgv(profileNoGrant), { XCRUN_DISABLE_CACHE: "1" });
+
+  resetWorktreeForVariant();
+  await runStep("C. both together — profile grant AND env fix (belt-and-suspenders baseline)", fullChainArgv(profileWithGrant), { XCRUN_DISABLE_CACHE: "1" });
+
   console.log("");
   console.log(`profile text left at: ${profilePath} (inspect by hand if any step above is unclear — not auto-removed)`);
+  console.log(`variant profiles left at: ${profileWithGrant} , ${profileNoGrant}`);
   console.log("cleaning up the scratch repo/worktree...");
   worktree.cleanup();
   rmSync(projectRepo, { recursive: true, force: true });

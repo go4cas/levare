@@ -297,11 +297,18 @@ function probeSandboxExec(bin: string, probe: (argv: string[], opts?: { cwd?: st
     const scriptPath = join(scratchDir, "probe.js");
     writeFileSync(scriptPath, "// levare sandbox probe — a trivial script, run through the real interpreter\n");
     const interpreter = Bun.which("bun") ?? process.execPath;
+    // NOTES R4-SANDBOX-FIX-11: threaded for STRUCTURAL PARITY with a real dispatch's own policy (the
+    // probe's trivial script never itself invokes an xcrun-shimmed tool, so this is a harmless, unused
+    // grant here) — the probe and a real dispatch must keep computing their enforcement level through
+    // the identical generator with equivalent profile shape, the same property every prior round's own
+    // structural-equivalence tests already assert.
+    const darwinTempDir = resolveDarwinUserTempDir();
     const profile = buildSandboxExecProfile({
       cwd: scratchDir,
       allowNetwork: false,
       operatorHome: homedir(),
       readOnlyPaths: [dirname(interpreter), dirname(dirname(interpreter))],
+      writablePaths: darwinTempDir ? [darwinTempDir] : [],
     });
     const profilePath = join(scratchDir, "probe.sb");
     writeFileSync(profilePath, profile);
@@ -368,6 +375,47 @@ export function detectSandbox(opts: SandboxDetectOptions = {}): SandboxDetection
     return { platform, primitive: "none", level: "none" };
   }
   return { platform, primitive: "none", level: "none" };
+}
+
+/**
+ * NOTES R4-SANDBOX-FIX-11 (live macOS gate — the FIX-10 "hang" convicted as a slow FATAL failure, not a
+ * hang at all). Apple's own `/usr/bin/git` is an `xcrun` shim: it calls `confstr(_CS_DARWIN_USER_TEMP_DIR,
+ * ...)` at startup, which was denied under the darwin deny-list model because the mach service backing
+ * it (`com.apple.bsd.dirhelper`) was never allowed — `com.apple.bsd.dirhelper` was catalogued as a
+ * cosmetic soft denial in FIX-9/FIX-10 for `bun`'s own startup, but this round proved the SAME denial is
+ * FATAL for an xcrun-shimmed tool: `confstr` fails (code 5), xcrun falls back to `/tmp`, the resulting
+ * `file-write-create /private/tmp/xcrun_db-*` is ALSO denied, and git exits 128 after several seconds of
+ * xcodebuild/DVT machinery stalling — the test's own "5000ms hang" was `git add` (~3.3s) + `git commit`
+ * (~2.2s) of slow FAILURE exceeding the timeout, not a genuine deadlock.
+ *
+ * This resolves the REAL per-user directory via `getconf`, run by the UNSANDBOXED parent process —
+ * never assumed to be `/tmp` or `/var/folders` broadly, and never re-derived from INSIDE the sandbox
+ * itself (where the identical mach-lookup denial that convicts git would convict this resolution too).
+ * The caller threads the result into `SandboxPolicy.writablePaths` like any other grant;
+ * `buildSandboxExecProfile`'s own fixed preamble separately allows the `dirhelper` mach-lookup itself
+ * (unconditionally, mirroring `sysctl-read`'s own precedent: process-bootstrap plumbing that resolves
+ * SYSTEM DIRECTORY PATHS, never user data, needed by more than just git).
+ *
+ * `undefined` off-darwin, or if `getconf` itself is unavailable/fails/returns nothing — the caller treats
+ * that as "nothing to grant", the same best-effort posture every other optional grant in this module
+ * already takes; never a hard failure over a resolution this module cannot make on every host.
+ */
+export function resolveDarwinUserTempDir(opts: { platform?: string; getconf?: (name: string) => string | undefined } = {}): string | undefined {
+  const platform = opts.platform ?? process.platform;
+  if (platform !== "darwin") return undefined;
+  const getconf = opts.getconf ?? realGetconf;
+  return getconf("DARWIN_USER_TEMP_DIR");
+}
+
+function realGetconf(name: string): string | undefined {
+  try {
+    const r = Bun.spawnSync(["getconf", name], { stdout: "pipe", stderr: "ignore" });
+    if (r.exitCode !== 0) return undefined;
+    const raw = (r.stdout ? new TextDecoder().decode(r.stdout) : "").trim();
+    return raw || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export interface SandboxPolicy {
@@ -555,6 +603,22 @@ function ancestorsOf(p: string): string[] {
   return out;
 }
 
+// NOTES R4-SANDBOX-FIX-11 (live macOS gate, catalogued rather than fixed — evidence-based choice):
+// `sh`/`git` both emit `getcwd: cannot access parent directories: Operation not permitted` under the
+// darwin profile. `getcwd()`'s own POSIX algorithm walks UP the tree from the current directory, at each
+// level reading the PARENT's directory ENTRIES (a data-read/listing operation) to find which entry's
+// inode matches the child it came from, to learn that child's own name — a fundamentally different
+// operation than the `(allow file-read-metadata (literal ...))` grants `ancestorsOf` above emits for
+// every re-allowed path (existence/stat only, never a directory's contents). Cataloguing this rather
+// than widening the grant: the live ladder proved every step in the observed member chain (bare `cd`, the
+// echo redirect, `git add`, `git commit`) TOLERATES the warning and completes regardless — the calling
+// process falls back to using the path string it was already given rather than a kernel-resolved one,
+// which is all any of these operations actually need. Adding a data-read grant on the ancestor chain
+// would be a REAL widening (directory listings reveal sibling file/directory NAMES, a materially larger
+// read surface than the metadata-only ancestor grants this module deliberately limits itself to) for a
+// warning that has not been shown to block any real operation in the fully-supported chain — the
+// evidence argues against granting it, not for it.
+
 /**
  * NOTES R4-SANDBOX-FIX-3 (round 3, live macOS bisection — see this module's own header for the full
  * evidence): a DENY-LIST, not an allow-list. Fourteen hand-run profiles on a live host proved that an
@@ -637,22 +701,34 @@ export function buildSandboxExecProfile(policy: SandboxPolicy): string {
       // denied by default). `(allow file-ioctl)` was deliberately NOT added alongside it: live testing
       // proved `sysctl-read` alone is sufficient, and the tty/`dtracehelper` `file-ioctl` denials observed
       // are cosmetic soft denials (NOTES R4-SANDBOX-FIX-3's own finding 5), not a second gap to chase.
-      // NOTES R4-SANDBOX-FIX-9 (round 9, live macOS gate): a SECOND catalogued instance of the identical
-      // class — Apple's own `/usr/bin/git` is an xcrun shim that `confstr`-asks for `DARWIN_USER_TEMP_DIR`
-      // (denied) and falls back to writing an `xcrun_db-*` cache file under it (also denied) — both
-      // WARNINGS in the kernel log, never fatal; git proceeds past them the same way it proceeds past the
-      // tty/dtracehelper denials above. None of these were added as new allow rules — evidence this round
-      // showed the commit itself never depended on either succeeding; see NOTES R4-SANDBOX-FIX-9 for the
-      // full account and what a future round should grant (the specific `/var/folders/<hash>/T` confstr
-      // temp dir, named literally, never `/tmp` broadly) IF a live run ever shows the xcrun cache write
-      // actually blocking a real commit.
+      // NOTES R4-SANDBOX-FIX-9 (round 9, live macOS gate): first catalogued Apple's own `/usr/bin/git`
+      // (an xcrun shim) `confstr`-asking for `DARWIN_USER_TEMP_DIR` and falling back to an `xcrun_db-*`
+      // cache write when denied, filing both as WARNINGS never fatal — true for `bun`'s OWN startup
+      // (what that round's own evidence actually watched), proven WRONG for git specifically by FIX-11
+      // (below): per-denial CONTEXT matters, the same denial is noise for one binary and fatal for
+      // another, and this comment block records that correction rather than erasing the original entry.
       // NOTES R4-SANDBOX-FIX-10 (round 10): the mach-lookup denials for `com.apple.system.
-      // opendirectoryd.membership`/`.libinfo`/`bsd.dirhelper`/`com.apple.diagnosticd` observed alongside
-      // a hung member chain were a live SUSPECT for the hang itself, not merely catalogued on suspicion —
-      // hand-ACQUITTED on the live host: a profile explicitly `(deny mach-lookup ...)`-ing both
-      // opendirectoryd services still ran the identical `git add`/`git commit` chain in 88ms, exit 0.
-      // Confirmed cosmetic, same class as the tty/dtracehelper/xcrun denials above; not chased further.
+      // opendirectoryd.membership`/`.libinfo`/`com.apple.diagnosticd` observed alongside a reported "hung"
+      // member chain were a live SUSPECT, not merely catalogued on suspicion — hand-ACQUITTED on the live
+      // host: a profile explicitly `(deny mach-lookup ...)`-ing both opendirectoryd services still ran
+      // the identical `git add`/`git commit` chain in 88ms, exit 0. Confirmed cosmetic — DIFFERENT mach
+      // services than `com.apple.bsd.dirhelper` below, not chased further.
+      // NOTES R4-SANDBOX-FIX-11 (round 11, live macOS gate): the FIX-10 "hang" was reconvicted as a slow
+      // FATAL failure, not a hang — `com.apple.bsd.dirhelper` (FIX-9's own "cosmetic" catalogue entry)
+      // is the mach service `confstr(DARWIN_USER_TEMP_DIR)` needs; denying it makes `confstr` fail (code
+      // 5), which is fine for `bun`'s own startup but sends `git`'s own xcrun shim down a fallback path
+      // (write to `/tmp/xcrun_db-*`, ALSO denied) that convicts every git subcommand with `exit 128` after
+      // several seconds of xcodebuild/DVT stall — the test's own "5000ms hang" was slow FAILURE (`git add`
+      // ~3.3s + `git commit` ~2.2s) exceeding the timeout, never a genuine deadlock. RECLASSIFIED:
+      // `com.apple.bsd.dirhelper` moves from "cosmetic" to "fatal for xcrun-shim tools (git); allowed by
+      // ruling" — granted below. This does not weaken the threat model: `dirhelper` resolves per-user
+      // SYSTEM DIRECTORY PATHS (kernel/system plumbing, the same category `sysctl-read` above already
+      // covers), never user data, and the resolved directory itself is exactly the sandbox's own scratch
+      // territory (`sandbox.ts#resolveDarwinUserTempDir`, threaded into `SandboxPolicy.writablePaths` by
+      // the caller) — the same kind of place this module's own profiles/probe-scripts/worktrees already
+      // live, not a new category of exposure.
       "(allow sysctl-read)",
+      "(allow mach-lookup (global-name \"com.apple.bsd.dirhelper\"))",
       // Broad OS read, same as an unsandboxed process would see — verified live: this is the only shape
       // that lets dyld's own shared-cache lookup succeed on this platform (see this module's header).
       '(allow file-read* (subpath "/"))',

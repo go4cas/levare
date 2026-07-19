@@ -34,7 +34,7 @@ import { test, expect, describe } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { detectSandbox, wrapForSandbox, buildSandboxExecProfile, type SandboxDetection } from "../src/sandbox.ts";
+import { detectSandbox, wrapForSandbox, buildSandboxExecProfile, resolveDarwinUserTempDir, type SandboxDetection } from "../src/sandbox.ts";
 import { validatePath } from "../src/validate.ts";
 import { formatDoctor } from "../src/doctor.ts";
 
@@ -265,7 +265,14 @@ describe("detectSandbox — never assumed from the platform alone", () => {
       operatorHome: "/Users/cas",
       readOnlyPaths: ["/Users/cas/source/levare", "/Users/cas/.bun/bin", "/Users/cas/.bun"],
     });
-    for (const fixedLine of ["(deny default)", "(allow sysctl-read)", '(allow file-read* (subpath "/"))', '(deny file-read* (subpath "/Users"))', '(deny file-read* (subpath "/Volumes"))']) {
+    for (const fixedLine of [
+      "(deny default)",
+      "(allow sysctl-read)",
+      '(allow mach-lookup (global-name "com.apple.bsd.dirhelper"))',
+      '(allow file-read* (subpath "/"))',
+      '(deny file-read* (subpath "/Users"))',
+      '(deny file-read* (subpath "/Volumes"))',
+    ]) {
       expect(probeProfileText).toContain(fixedLine);
       expect(dispatchProfileText).toContain(fixedLine);
     }
@@ -498,11 +505,58 @@ describe("LEVARE_SANDBOX_DEBUG — diagnostic argv/profile dump", () => {
   });
 });
 
+// NOTES R4-SANDBOX-FIX-11 (live macOS gate: the FIX-10 "hang" reconvicted as slow FATAL failure — Apple's
+// own xcrun-shimmed `/usr/bin/git` calling `confstr(DARWIN_USER_TEMP_DIR)` and hitting a denied mach
+// service). `resolveDarwinUserTempDir` is what the UNSANDBOXED caller resolves the real per-user
+// directory with, via `getconf` — never re-derived from inside the sandbox, and never assumed to be
+// `/tmp`/`/var/folders` broadly.
+describe("resolveDarwinUserTempDir (NOTES R4-SANDBOX-FIX-11)", () => {
+  test("off-darwin → undefined, without ever calling getconf", () => {
+    let called = false;
+    const result = resolveDarwinUserTempDir({
+      platform: "linux",
+      getconf: () => {
+        called = true;
+        return "/should/never/be/used";
+      },
+    });
+    expect(result).toBeUndefined();
+    expect(called).toBe(false);
+  });
+
+  test("darwin + a resolving getconf → the resolved path, verbatim", () => {
+    const result = resolveDarwinUserTempDir({
+      platform: "darwin",
+      getconf: (name) => (name === "DARWIN_USER_TEMP_DIR" ? "/private/var/folders/xx/yyyyy/T" : undefined),
+    });
+    expect(result).toBe("/private/var/folders/xx/yyyyy/T");
+  });
+
+  test("darwin + getconf failing/unavailable → undefined, never a thrown error", () => {
+    const result = resolveDarwinUserTempDir({ platform: "darwin", getconf: () => undefined });
+    expect(result).toBeUndefined();
+  });
+
+  test("this actual host, right now — the real getconf path, un-injected — undefined on Linux", () => {
+    const result = resolveDarwinUserTempDir();
+    if (process.platform !== "darwin") expect(result).toBeUndefined();
+  });
+});
+
 // NOTES R4-SANDBOX-FIX-3 (round 3, live macOS bisection): the deny-list model — broad OS read by
 // default, the operator's own user data denied, exactly what this dispatch needs re-allowed on top.
 // Ratified by a Conductor after 14 hand-run profiles on a live host proved the round-1/round-2
 // enumerated-allowlist model unwinnable against dyld on this platform (see sandbox.ts's own header).
 describe("buildSandboxExecProfile — deny-list model (NOTES R4-SANDBOX-FIX-3)", () => {
+  // NOTES R4-SANDBOX-FIX-11: `com.apple.bsd.dirhelper`'s mach-lookup is now unconditionally allowed in
+  // the fixed preamble, mirroring `sysctl-read`'s own precedent — process-bootstrap plumbing (per-user
+  // SYSTEM DIRECTORY PATHS), never user data, needed by any xcrun-shimmed tool (git among them), not
+  // policy-gated since every darwin dispatch needs it equally.
+  test("the fixed preamble allows the dirhelper mach-lookup unconditionally", () => {
+    const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false });
+    expect(profile).toContain('(allow mach-lookup (global-name "com.apple.bsd.dirhelper"))');
+  });
+
   test("denies default, allows broad OS read, denies default and only re-opens what this dispatch needs", () => {
     const profile = buildSandboxExecProfile({ cwd: "/a/b", home: "/c/d", allowNetwork: false });
     expect(profile).toContain("(deny default)");
