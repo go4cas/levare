@@ -9748,3 +9748,91 @@ outside `writablePaths`' current single entry.
 `bun run typecheck` → exit 0. `bun run deps:check` → `deps ok`. `bun run build` → succeeds. `bun run
 src/cli.ts validate fixtures/golden` → `valid`, the same two pre-existing `SANDBOX_UNAVAILABLE` warnings,
 unchanged. `bun run src/cli.ts replay fixtures/golden --stubs` → oracle match, byte-for-byte.
+
+# NOTES R4-SANDBOX-FIX-8 — a security narrowing of FIX-7's own write grant, before the live gate:
+# `.git` is not just data; parts of it are executed
+
+FIX-7 granted a member's own dispatch worktree write access to the ORIGINAL project repo's ENTIRE `.git`
+directory, to make `git commit` work under a working sandbox. Held before that branch reached the live
+gate: `.git/hooks/*` are executable scripts, and `.git/config` can redirect execution via
+`core.hooksPath`/`core.fsmonitor` — either is a code-execution vector a member could plant that would run
+UNCONFINED the next time ANY git operation touches this repo OUTSIDE the sandbox: the Conductor's own
+shell, `levare`'s own gate-resolution commits, the daemon's own background tick. Deterministic guardrails
+cannot catch this — a hook file or a `core.hooksPath` edit is not part of any diff a merge gate inspects,
+because a merge gate inspects the PROJECT's own diff, never the shared `.git` administrative state a
+member's write grant happened to also reach.
+
+## Evidence before narrowing, not a guess
+
+The same reproduction technique FIX-7 used — a plain, non-sandboxed repo, `chmod`-deny a candidate path,
+attempt the operation, read the failure — was extended to answer precisely: exactly which subpaths does an
+ordinary worktree commit read or write? A worktree was created, a commit made from inside it, and every
+path under the original repo's `.git` was diffed (directory listing) and hashed (content) before/after:
+
+- `.git/objects/**` — new blob/tree/commit objects. Written.
+- `.git/refs/heads/<branch>` — the branch ref's own file CONTENT updated (existing file, not a new one —
+  a plain directory-listing diff alone misses this; confirmed by reading the file's own content before and
+  after). Written.
+- `.git/logs/refs/heads/<branch>` — the branch ref's own reflog gained an appended entry. Written.
+- `.git/worktrees/<name>/{HEAD,index,ORIG_HEAD,COMMIT_EDITMSG,logs/HEAD}` — this dispatch's own worktree
+  admin state. Written.
+- `.git/config` and `.git/hooks/*` — SHA-256 of the config file and of every file under `hooks/`, taken
+  before and after the commit, were byte-identical. Untouched.
+
+This directly answers the goal's own instruction ("narrow to exactly the subpaths a worktree commit
+writes... never hooks, never config, never the .git root itself") with confirmed evidence rather than an
+assumption from reading git's own documentation alone.
+
+## Fix
+
+**`merge.ts#DispatchWorktree` gained `gitDir`** — the resolved `.git/worktrees/<name>` administrative
+directory for THIS worktree specifically, read directly from the worktree's own `.git` pointer file
+(`gitdir: <path>`, the plain text file `git worktree add` itself writes) rather than assumed from a naming
+scheme. This matters: git can rename the admin directory on a name collision, so the only way to know it
+exactly — not guess it from `basename(worktreePath)` — is to read back what git itself recorded.
+`createDispatchWorktree` now fails loudly (the same Result-based, never-thrown posture the rest of the
+function already has) if that pointer file is missing or unrecognized, rather than silently proceeding
+with an undefined admin directory.
+
+**`adapters.ts` gained `dispatchGitWritePaths(repoPath, worktreeGitDir)`** — replacing FIX-7's single
+`dispatchGitDir` (the whole `.git`) with the exact four subpaths above: `.git/objects`, `.git/refs`,
+`.git/logs`, and the worktree's own `gitDir`. `logs/` is created if missing (documented choice: create,
+never skip) — a repo whose only commits predate any reflog, or one with `core.logAllRefUpdates=false`, may
+not have it yet, and a bind-mount source that doesn't exist can't simply be granted; creating an empty
+directory costs nothing, while silently skipping it would deny an otherwise-ordinary commit's own reflog
+write with no test in this round having surfaced that edge case yet. `InvokeRequest.dispatchGitDir` is
+renamed to `dispatchGitWritePaths: string[]`, threaded identically from `withDispatchWorktree`/
+`withDispatchWorktreeAsync` into `sandboxWrap`'s `SandboxPolicy.writablePaths`.
+
+**No change needed in `sandbox.ts` itself.** `writablePaths` was already a plain array, iterated per-
+element by both `bubblewrapArgv` (`--bind` per entry) and `buildSandboxExecProfile` (read+write re-allow
+plus ancestor metadata per entry) — narrowing from one directory to four specific subpaths is entirely a
+matter of what array `adapters.ts` now builds and passes in, not a shape sandbox.ts's own generators
+needed to learn. This is the same "the generator already treats this list generically" property that made
+FIX-7 itself a small, additive change to begin with.
+
+## Regression proof
+
+- `tests/sandbox.test.ts`: a new `FIX-8` describe block proves the profile emits read+write re-allows for
+  exactly the four subpaths and NEVER the bare `.git` root; NEVER anything under `hooks`/`config`, even
+  though sibling subpaths of the identical `.git` directory ARE granted; `bubblewrapArgv` gives each
+  subpath its own `--bind` pair, never one `--bind` of the whole directory.
+- `tests/adapters.test.ts`: the FIX-7 wiring test rewritten to assert the four exact subpaths (not the
+  whole `.git` dir) get real `--bind` pairs, AND that `hooks`/`config`/the bare `.git` root never appear —
+  proving the narrowing reaches the real wrapped argv, not just the generator's own construction. A new
+  `test.skipIf(hostSandbox.level !== "full")` test — mirroring the existing decoy-file proof's own
+  gating — has a member attempt to write `.git/hooks/post-commit` in the original repo and asserts the
+  dispatch throws; skipped in this container (no working primitive here, same as every other live-
+  sandbox-only proof in this file) and expected to RUN for real, and fail the write, on the live gate. The
+  pre-existing worktree-commit test (the capability this narrowing must not regress) still passes
+  unchanged.
+
+## Honest residual
+
+The named security property (`.git/hooks`/`.git/config` never granted) is proven by construction in this
+container and will be proven by REAL denial only on the next live host with a working primitive — the
+skipIf-gated test above is what that run exercises. Per the goal's own instruction: if a live run shows a
+plain worktree commit needs one more specific path this round's reproduction didn't surface (e.g. a
+transient lock file at the `.git` root itself, under some git version or configuration this container's
+own git didn't exercise), the fix is to add that EXACT literal path, evidence-first, named here — never to
+re-widen back to granting the directory.
