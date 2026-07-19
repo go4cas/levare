@@ -224,14 +224,29 @@ declared), rather than let a scoped grant read as a per-member-revocable one. A 
 `home:` at all gets the pre-CAP-B behaviour unchanged — the member's process sees the operator's entire
 real `HOME` — and a new warning (`SUBSCRIPTION_NO_HOME`) names that gap explicitly.
 
-## Install script and Homebrew formula
+## Install script and Homebrew formula — closed (NOTES DIST6)
 
-Distribution today is a downloaded, checksum-verified binary placed on `PATH` by hand, or a
-build-from-source. `README.md`'s own Distribution section and NOTES DIST2 state explicitly that an
-install script and a Homebrew formula are deferred to a later step, rather than implying either
-exists — `tests/release-workflow.test.ts` asserts the README makes no premature `brew install`/
-`curl | sh` claim. The release pipeline (four cross-compiled platform binaries, checksums, a GitHub
-Release) is built; the one-line installer on top of it is not.
+`scripts/install.sh` (POSIX `sh`, no bashisms) is the one-line installer DIST2 left for a later step:
+`curl -fsSL https://raw.githubusercontent.com/go4cas/levare/main/scripts/install.sh | sh` detects
+OS/arch, maps it to one of the four release assets (anything else fails, naming the platform it
+found), resolves the latest GitHub Release via its `/releases/latest/download/<asset>` redirect
+unless `LEVARE_VERSION=vX.Y.Z` pins a specific one, downloads the binary and `SHA256SUMS`, verifies
+the checksum and refuses to install on a mismatch (leaving nothing behind — the download lands in a
+`mktemp -d` scratch dir cleaned up by a trap, never touching the install destination until the
+checksum passes), installs to `~/.local/bin/levare` unless `LEVARE_BIN_DIR` overrides it, and warns
+without fixing it if that directory is off `PATH`. Re-running it is idempotent — it simply
+re-downloads and overwrites. `tests/install-script.test.ts` proves platform mapping, latest-vs-pinned
+resolution, the `LEVARE_BIN_DIR` override, checksum-mismatch refusal (including that nothing is left
+behind, in the bin dir or the scratch `TMPDIR`), the missing-from-`SHA256SUMS` case, idempotent
+re-runs, and the PATH warning — all against a local fixture release layout (`file://` URLs into a temp
+dir of fake assets and `SHA256SUMS`), never live GitHub; `tests/release-workflow.test.ts` now asserts
+the README's `curl | sh` claim exists and its URL resolves to a real file in this repo, inverting its
+pre-DIST6 assertion that no such claim existed yet.
+
+**A Homebrew formula was declined, not deferred** — a Conductor ruling (NOTES DIST6): levare ships as
+a single static binary with no library dependencies to resolve, so a formula would add a tap, a
+per-release PR to keep it current, and an ongoing packaging dependency, for zero gain over the install
+script above. This is a closed decision, not a placeholder for "someday."
 
 ## The loadRepo-per-request position
 

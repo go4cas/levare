@@ -9322,3 +9322,109 @@ where `bun` genuinely isn't on `PATH` separately (named as a limitation above, n
 in this container, which always has a real `bun` on `PATH`); and whether the cosmetic soft denials
 (tty/`dtracehelper` `file-ioctl`) stay merely cosmetic under a longer-running or more I/O-heavy real
 member workload than the stub's own brief canned-artifact print.
+
+# NOTES: DIST6 — the install script, and Homebrew declined by ruling
+
+## What this closes
+
+`docs/current-gaps.md`'s "Install script and Homebrew formula" entry named two things left undone
+after DIST2: a one-line installer on top of the release pipeline, and a decision on Homebrew. Both are
+closed here. The NOTES numbering runs DIST1 → DIST5 already (DIST3 and DIST4 went to unrelated
+build/runtime fixes found running the compiled binary for real); this entry is DIST6, but it is the
+work DIST2's own README text called "step 3" — the two numbering schemes (NOTES heading order vs. the
+prose "step" count) diverge here, named explicitly so a reader cross-referencing one against the other
+isn't left confused by the gap.
+
+## `scripts/install.sh`
+
+POSIX `sh`, `set -eu`, no bashisms — it has to run via `curl ... | sh` on whatever `/bin/sh` a user's
+machine ships, not just bash. `shellcheck -s sh scripts/install.sh` is clean (exit 0); the container
+had no `shellcheck` preinstalled, so it was installed via `apt-get` for this goal (`sudo apt-get update
+&& sudo apt-get install -y shellcheck`, version 0.11.0) and run locally — not inferred or skipped.
+
+**Platform mapping.** `uname -s`/`uname -m` map to one of exactly four assets DIST2's own release
+matrix produces (`levare-darwin-arm64`, `levare-darwin-x64`, `levare-linux-x64`,
+`levare-linux-arm64`); `arm64`/`aarch64` both fold to `arm64`, `x86_64`/`amd64` both fold to `x64`.
+Anything else — a BSD, Windows-via-uname-emulation, an architecture DIST2 doesn't build — fails with
+the raw `uname -s`/`uname -m` values named directly in the error, never a generic "unsupported"
+message.
+
+**Version resolution without a JSON parser.** Rather than hitting `api.github.com` and parsing JSON
+(which would need `jq`/`python`/`node` on top of `sh` itself — a self-containment cost the goal
+explicitly ruled out), the script uses GitHub's own `/<repo>/releases/latest/download/<asset>` URL,
+which redirects to the actual latest release's asset without the caller ever needing to know its tag.
+`LEVARE_VERSION=vX.Y.Z` swaps that for `/<repo>/releases/download/<version>/<asset>` instead — the
+same URL shape GitHub uses for every release, pinned rather than resolved. Neither path needs `jq`;
+only `curl -fsSL` (or `wget` as a fallback) and `sha256sum`/`shasum` are required beyond POSIX
+core-utils.
+
+**Checksum verification and refusal.** Both the asset and `SHA256SUMS` download into a `mktemp -d`
+scratch directory; a `trap ... EXIT INT TERM` removes it unconditionally. The script greps its own
+asset's line out of `SHA256SUMS` by exact filename match (`awk '$2 == want'`, not a regex, so no asset
+name can accidentally match as a substring of another) and pipes just that line to `sha256sum -c -` /
+`shasum -a 256 -c -` (whichever is present — the same OS split the README's manual instructions already
+documented). A mismatch — or the asset being entirely absent from `SHA256SUMS` — refuses to install
+and exits nonzero; because the install destination is never touched until after the checksum passes,
+"refuse and leave nothing behind" holds by construction, not by a separate rollback step.
+
+**Install and idempotency.** Destination is `${LEVARE_BIN_DIR:-$HOME/.local/bin}/levare`; `mkdir -p`
+then `mv` from the scratch dir (portable across filesystems — POSIX `mv` copies-and-removes on
+`EXDEV`). No pre-check for "already installed at this version" — re-running just re-downloads and
+overwrites, which is what "idempotent on re-run" means here: safe to run twice, not skip-if-present. A
+`case ":$PATH:" in *":$bin_dir:"*)` check warns on stderr (never edits a shell profile) if the install
+dir isn't reachable. The install's success message is produced by actually invoking the freshly
+installed binary's own `--version` — never a guessed or reconstructed version string — so "print
+installed path and version" is always honest about what actually landed on disk.
+
+**The one internal, undocumented seam.** `LEVARE_RELEASE_BASE_URL` overrides the
+`https://github.com/go4cas/levare/releases` base wholesale — needed so `tests/install-script.test.ts`
+can point the script at a local fixture via a `file://` URL instead of live GitHub. It is not mentioned
+in the README (which documents exactly the two overrides the goal named, `LEVARE_VERSION` and
+`LEVARE_BIN_DIR`) and is called out as a test-only seam in the script's own header comment, the same
+way this codebase elsewhere avoids implying a capability that isn't a supported end-user surface.
+
+## Homebrew — declined, not deferred
+
+DIST2's README language said a Homebrew formula was "deferred to a later step." That framing is
+retired: a Conductor ruling records it as **declined**. levare ships as a single static binary with no
+library dependencies for Homebrew's dependency resolution to add value against; a formula would mean
+maintaining a tap, opening a version-bump PR on every release, and carrying an ongoing packaging
+dependency, for a convenience the install script above already provides. `docs/current-gaps.md`'s
+entry is closed with this ruling recorded, not left open as a "someday."
+
+## Tests
+
+`tests/install-script.test.ts` (new) — 17 tests, entirely against a local fixture release layout
+(`file://` URLs into a temp dir shaped like `<base>/latest/download/<asset>` and
+`<base>/download/<version>/<asset>`, each with a real `SHA256SUMS` computed via Node's own
+`node:crypto`), never live GitHub:
+
+- platform mapping for all four supported OS/arch combos (plus an `amd64` alias case), proven by
+  reading back the installed fixture binary's own `--version` output, not by inspecting which URL was
+  requested
+- an unrecognized combo (`SunOS`/`sun4u`) fails, naming exactly what `uname` reported
+- unpinned installs from `latest/download`; `LEVARE_VERSION` pins to `download/<version>` instead —
+  proven by giving the two paths distinguishable fixture content and asserting which one landed
+- a pinned version absent from the fixture fails cleanly, install dir never created
+- `LEVARE_BIN_DIR` override lands the binary at a custom path; the unset default resolves under
+  `$HOME/.local/bin`
+- a checksum mismatch refuses the install (bin dir never created) and leaves no `levare-install.*`
+  scratch directory behind under `TMPDIR`
+- an asset present on disk but absent from `SHA256SUMS` fails cleanly, naming the asset
+- running the script twice in a row succeeds both times with the same end state (idempotency)
+- the PATH warning fires when the bin dir is off `PATH` (exit 0 regardless) and stays silent when it's
+  already on `PATH`
+
+`tests/release-workflow.test.ts` — inverted the pre-DIST6 assertion that the README made no
+`curl | sh` claim into one that requires the claim to exist AND resolve: it extracts the
+`raw.githubusercontent.com/go4cas/levare/main/<path>` URL from the README's own install line and
+asserts `<path>` exists in this repo (i.e. `scripts/install.sh` is real, not a placeholder). A separate
+test keeps asserting no `brew install` claim exists, now framed as "declined" rather than "deferred."
+
+## Verification
+
+`bun test` — full suite green, including the 17 new install-script tests and the inverted
+release-workflow test. `bun run typecheck` → exit 0. `bun run deps:check` → `deps ok` (the install
+script and its tests add no runtime dependency — `sh`/`curl`/`sha256sum` are not `package.json`
+dependencies). `bun run build` → succeeds, unaffected by this goal (no source files under `src/`
+touched). `shellcheck -s sh scripts/install.sh` → exit 0.
