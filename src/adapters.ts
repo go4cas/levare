@@ -857,12 +857,36 @@ export class AdapterRunner implements MemberRunner {
   // NOTES R4-SANDBOX-FIX-7/FIX-8: `req.dispatchGitWritePaths` is set alongside it — the narrowed, exact
   // subpaths `sandboxWrap` needs to grant WRITE access to (see `InvokeRequest.dispatchGitWritePaths`'s
   // own doc), never the whole `.git` directory.
+  // NOTES R4-SANDBOX-FIX-14 (round 3, live host): a dispatch that DECLINES a worktree is not just a
+  // harness-parity concern — declining means the member's own commits land against the studio's SHARED
+  // tree instead of an isolated scratch worktree, in production exactly as much as in the ladder. Round 2
+  // isolated a live case where the fixture satisfied `resolveDispatchRepo`'s own precondition (verified
+  // directly, immediately pre-dispatch) yet the actual dispatch still declined — a silent divergence
+  // between the precondition and the decision, with no way to see WHERE it diverged. This prints the
+  // decision itself — created (with the resolved path) or declined (naming exactly which guard fired) —
+  // for EVERY dispatch, gated on the SAME `LEVARE_SANDBOX_DEBUG=1` env var every other sandbox-debug line
+  // in this codebase already uses. A silent decline is the actual bug class here regardless of which
+  // guard turns out to be responsible.
+  private static logWorktreeDebug(outcome: string): void {
+    if (process.env.LEVARE_SANDBOX_DEBUG !== "1") return;
+    console.error(`[levare:sandbox-debug] ${outcome}`);
+  }
+
   private withDispatchWorktree<T>(member: string, dispatchRepo: { repoPath: string; branch?: string } | undefined, req: InvokeRequest, fn: (req: InvokeRequest) => T): T {
-    if (!dispatchRepo?.branch) return fn(req);
+    if (!dispatchRepo?.branch) {
+      AdapterRunner.logWorktreeDebug(
+        dispatchRepo
+          ? `dispatch worktree declined for '${member}': work branch '${workBranchName(req.unit)}' does not exist in '${dispatchRepo.repoPath}' (resolveDispatchRepo's own branchExists check failed)`
+          : `dispatch worktree declined for '${member}': resolveDispatchRepo found no repo-bearing project for project '${req.project}' (project not found, repo: unset/unresolvable, or self-referential to the studio root)`,
+      );
+      return fn(req);
+    }
     const created = createDispatchWorktree(dispatchRepo.repoPath, dispatchRepo.branch);
     if (!created.ok) {
+      AdapterRunner.logWorktreeDebug(`dispatch worktree declined for '${member}': createDispatchWorktree failed for branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}': ${created.error}`);
       throw new AdapterError(`member '${member}': could not create dispatch worktree for work branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}': ${created.error}`);
     }
+    AdapterRunner.logWorktreeDebug(`dispatch worktree created for '${member}' at '${created.worktree.path}' (gitDir '${created.worktree.gitDir}') for branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}'`);
     try {
       return fn({ ...req, projectRepoPath: created.worktree.path, dispatchGitWriteGrant: dispatchGitWriteGrant(created.worktree.gitDir) });
     } finally {
@@ -876,11 +900,20 @@ export class AdapterRunner implements MemberRunner {
     req: InvokeRequest,
     fn: (req: InvokeRequest) => Promise<T>,
   ): Promise<T> {
-    if (!dispatchRepo?.branch) return fn(req);
+    if (!dispatchRepo?.branch) {
+      AdapterRunner.logWorktreeDebug(
+        dispatchRepo
+          ? `dispatch worktree declined for '${member}': work branch '${workBranchName(req.unit)}' does not exist in '${dispatchRepo.repoPath}' (resolveDispatchRepo's own branchExists check failed)`
+          : `dispatch worktree declined for '${member}': resolveDispatchRepo found no repo-bearing project for project '${req.project}' (project not found, repo: unset/unresolvable, or self-referential to the studio root)`,
+      );
+      return fn(req);
+    }
     const created = createDispatchWorktree(dispatchRepo.repoPath, dispatchRepo.branch);
     if (!created.ok) {
+      AdapterRunner.logWorktreeDebug(`dispatch worktree declined for '${member}': createDispatchWorktree failed for branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}': ${created.error}`);
       throw new AdapterError(`member '${member}': could not create dispatch worktree for work branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}': ${created.error}`);
     }
+    AdapterRunner.logWorktreeDebug(`dispatch worktree created for '${member}' at '${created.worktree.path}' (gitDir '${created.worktree.gitDir}') for branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}'`);
     try {
       return await fn({ ...req, projectRepoPath: created.worktree.path, dispatchGitWriteGrant: dispatchGitWriteGrant(created.worktree.gitDir) });
     } finally {

@@ -1740,4 +1740,112 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
       }
     },
   );
+
+  // NOTES R4-SANDBOX-FIX-14 (round 3, live host): the ladder's parity check isolated a live case where
+  // `resolveDispatchRepo`'s own precondition was independently verified to hold, yet the actual dispatch
+  // still declined a worktree — a silent divergence with no way to see where it happened. These three
+  // tests pin `withDispatchWorktree{,Async}`'s own decision-line output (never gated on a live sandbox
+  // primitive — this is plain decision logic, exercised identically on every platform) so that class of
+  // silent divergence becomes impossible to ship unnoticed again: a created OR declined worktree must now
+  // always be named, loudly, under `LEVARE_SANDBOX_DEBUG=1`.
+  test("LEVARE_SANDBOX_DEBUG=1 prints 'dispatch worktree created' with the resolved worktree/gitDir paths for a repo-bearing dispatch", async () => {
+    const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+    const prior = process.env.LEVARE_SANDBOX_DEBUG;
+    const origError = console.error;
+    const lines: string[] = [];
+    console.error = (...args: unknown[]) => {
+      lines.push(args.map(String).join(" "));
+    };
+    try {
+      process.env.LEVARE_SANDBOX_DEBUG = "1";
+      const repo = repoWithRealStorefrontRepo(projectRepo);
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        cliCommand: (req) => ["cat", join(req.projectRepoPath!, "marker.txt")],
+      });
+      await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+      const created = lines.find((l) => l.includes("dispatch worktree created for 'finch'"));
+      expect(created).toBeDefined();
+      expect(created).toContain("gitDir '");
+      expect(created).toContain("for branch 'levare/checkout-flow'");
+      expect(lines.some((l) => l.includes("dispatch worktree declined"))).toBe(false);
+    } finally {
+      console.error = origError;
+      if (prior === undefined) delete process.env.LEVARE_SANDBOX_DEBUG;
+      else process.env.LEVARE_SANDBOX_DEBUG = prior;
+      rmSync(projectRepo, { recursive: true, force: true });
+    }
+  });
+
+  test("LEVARE_SANDBOX_DEBUG=1 prints 'dispatch worktree declined' naming the missing project resolution for a repo-less dispatch", async () => {
+    const prior = process.env.LEVARE_SANDBOX_DEBUG;
+    const origError = console.error;
+    const lines: string[] = [];
+    console.error = (...args: unknown[]) => {
+      lines.push(args.map(String).join(" "));
+    };
+    try {
+      process.env.LEVARE_SANDBOX_DEBUG = "1";
+      // The golden fixture's own `storefront`, UNTOUCHED — `repo:` is a placeholder SSH URL never
+      // actually cloned locally (NOTES MERGE-1), so `resolveProjectRepoPath` returns undefined.
+      const repo = loadRepo(ROOT);
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        cliCommand: () => ["cat", "/dev/null"],
+      });
+      await runner.produceAsync("finch", "review", "checkout-flow", "storefront").catch(() => {
+        /* the mocked cliCommand emits no usable content — irrelevant, only the debug line matters here */
+      });
+      const declined = lines.find((l) => l.includes("dispatch worktree declined for 'finch'"));
+      expect(declined).toBeDefined();
+      expect(declined).toContain("no repo-bearing project for project 'storefront'");
+      expect(lines.some((l) => l.includes("dispatch worktree created"))).toBe(false);
+    } finally {
+      console.error = origError;
+      if (prior === undefined) delete process.env.LEVARE_SANDBOX_DEBUG;
+      else process.env.LEVARE_SANDBOX_DEBUG = prior;
+    }
+  });
+
+  test("LEVARE_SANDBOX_DEBUG=1 prints 'dispatch worktree declined' naming the missing work branch when the project is repo-bearing but the unit's branch was never created", async () => {
+    // A repo-bearing project (repoWithRealStorefrontRepo), but dispatched against a unit whose
+    // `levare/<unit>` branch was never created — mirrors resolveDispatchRepo's own second guard
+    // (repoPath resolves; branchExists doesn't) independently of the first.
+    const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+    const prior = process.env.LEVARE_SANDBOX_DEBUG;
+    const origError = console.error;
+    const lines: string[] = [];
+    console.error = (...args: unknown[]) => {
+      lines.push(args.map(String).join(" "));
+    };
+    try {
+      process.env.LEVARE_SANDBOX_DEBUG = "1";
+      const repo = repoWithRealStorefrontRepo(projectRepo);
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        cliCommand: () => ["cat", "/dev/null"],
+      });
+      await runner.produceAsync("finch", "review", "no-such-unit", "storefront").catch(() => {
+        /* the mocked cliCommand emits no usable content — irrelevant, only the debug line matters here */
+      });
+      const declined = lines.find((l) => l.includes("dispatch worktree declined for 'finch'"));
+      expect(declined).toBeDefined();
+      expect(declined).toContain("work branch 'levare/no-such-unit' does not exist in");
+      expect(lines.some((l) => l.includes("dispatch worktree created"))).toBe(false);
+    } finally {
+      console.error = origError;
+      if (prior === undefined) delete process.env.LEVARE_SANDBOX_DEBUG;
+      else process.env.LEVARE_SANDBOX_DEBUG = prior;
+      rmSync(projectRepo, { recursive: true, force: true });
+    }
+  });
 });
