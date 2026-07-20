@@ -11300,3 +11300,158 @@ standing gate. If that run shows every step passing or cleanly diagnosed (never 
 `gh-vendor-dir-permission` recurrence), R4 holds against real `gh` with this one narrow, evidence-justified
 fix. If it doesn't, the new classifier bucket will say exactly where, not leave a Conductor guessing a
 third time.**
+
+# NOTES R4-VENDOR-CLI, round 2 (live macOS run) — the config fix WORKED; a second, independent finding in
+# `gh`'s own auth gate, unrelated to R4, invalidated the network-boundary proof a second time
+
+The Conductor re-ran `bun run scripts/repro-r4-vendor-cli-gh.ts` against the round-1 fix. Two results, read
+in the same evidence-first order the Conductor's own report gave them:
+
+## The config/state/data/cache redirect (round 1's fix) is LIVE-CONFIRMED WORKING
+
+`gh-vendor-dir-permission` is gone from every step. The kernel log shows no `config.yml` denial anywhere in
+the run. `gh` starts clean under the sandbox — the FIX-9 pattern (redirect a vendor tool's own config
+resolution to a granted scratch location rather than deny it its real one) generalizes correctly to a
+second tool with a genuinely different (four-directory, not one-file) config shape. **This closes round 1's
+own finding for good** — no further action needed on the config/state/data/cache redirect itself.
+
+## The decoy (step 4) PASSED again
+
+`cat` reading the marker under the operator's real `$HOME` was denied, exactly as round 1 also showed. The
+deny-user-data seal holds under the config redirect, confirmed a second time, for a network-granted
+gh-shaped dispatch specifically — network reach and filesystem confinement remain orthogonal grants that
+never leak into one another.
+
+## The SECOND finding: `gh`'s own auth gate, not R4, invalidated steps 2/3 again — for a different reason
+
+Steps 2 and 3 BOTH failed identically: `gh api /zen` exited 4, `To get started with GitHub CLI please run:
+gh auth login / populate GH_TOKEN`. Read past the fact that step 2 "failed" (which superficially LOOKS like
+a `must-fail` PASS) to what actually happened, per the Conductor's own diagnosis: **`gh api` refuses to
+issue ANY request — even to a genuinely public, unauthenticated endpoint like `/zen` — without a resolved
+token, entirely in userspace, before ever attempting a socket.** `/zen` being public does not exempt it.
+Neither step ever reached the network layer this run; the "denial" both reported is `gh`'s own business
+logic, not the sandbox's `(deny network*)`. Zero differential, zero valid conclusion about R4's network
+boundary — the SAME symptom as round 1 (steps 2/3 failing identically), a DIFFERENT root cause (auth gate,
+not config EPERM).
+
+**This is a HARNESS gap, confirmed by the Conductor's own diagnosis, never a product finding — R4's
+network boundary itself was never shown to be broken, only never validly exercised, twice now, for two
+independent reasons.**
+
+## Why step 2 can never simply "get a token too" — checked and rejected, not overlooked
+
+The obvious first fix — give step 2 a token as well, so auth is held constant and only the network grant
+varies — is **structurally impossible** under this codebase's real production model, confirmed by reading
+the code rather than assumed: `env.ts#memberNetworkAllowed` and `buildMemberEnv`'s own connector-gated
+allowlist are the IDENTICAL `grantedConnectors(repo, member).length > 0` condition. A member cannot hold a
+connector's own injected secret while being network-denied — there is no connector shape that grants an
+env var without also flipping network on (`env.ts`'s own doc, quoted directly: "there is no connector
+shape that names a purely-local capability"). This is not an accident to route around; it is exactly the
+goal's own "no connector declaring a remote endpoint" ↔ "network denied" coupling, by design. Any harness
+design generating a "token present, network denied" state would be testing a synthetic condition
+production can never actually reach.
+
+## The fix — a raw, gh-auth-independent network probe, appended to the SAME dispatch
+
+`scripts/repro-r4-vendor-cli-gh.ts`, round 3 of the SAME script (never a new file, per the goal's own
+"the established method — the Conductor runs it once" instruction):
+
+- **`ghApiWithRawTcpProbe()`** — steps 2 and 3's own command becomes a `bash -c` script that runs the
+  original `gh api /zen` (preserving the real vendor-CLI dispatch this whole goal exists to validate)
+  AND appends a raw `/dev/tcp/api.github.com/443` connect attempt (`bash`'s own built-in, no `gh`
+  involved at all) — `RAW_TCP_CONNECT=OK`/`DENIED`, echoed to both stdout and stderr so it survives
+  whichever path (`gh`'s own success doc, or its own AdapterError-derived failure message) the dispatch
+  takes. This is what actually answers "did the sandbox's own network boundary bite," entirely
+  independent of whatever `gh`'s own auth logic decides to do first. No `timeout` wrapper (GNU `timeout`
+  is not guaranteed present on a fresh macOS install, the same reason `scripts/repro-r4-sandbox-fix10-
+  hang.ts` never uses it) — the agent's own 30-second dispatch-level kill (production's own
+  `asyncBunSpawn` timeout) is the real safety net against a hang.
+- **`classifyGhFailure` gains `gh-auth-required`** — `gh`'s own auth-login prompt, checked independently
+  of the network/permission buckets (shares no substring with either), so it is never silently folded
+  into "network" or "other."
+- **The verdict for steps 2/3 is now keyed on `RAW_TCP_CONNECT`, never on `gh`'s own exit code** — a new
+  `tcpExpect` parameter on `runGhDispatch` makes the TCP marker the PRIMARY verdict for these two steps
+  specifically; `gh`'s own `gh-auth-required` outcome is printed as SECONDARY context — genuinely
+  unremarkable for step 2 (no connector was ever going to supply a token, by design, per the section
+  above), but its OWN distinct finding for step 3 if it recurs there (see below).
+- **`diagnoseMemberEnv(repo, member)`** — calls the real, exported `buildMemberEnv` (env.ts) directly
+  (the identical function `AdapterRunner#prepare` calls internally) and prints, for every step, whether
+  `GH_TOKEN`/`GITHUB_TOKEN` reached that step's own resolved env — presence only, values never printed.
+  This is what would have shown DIRECTLY, on round 2's own live run, that NEITHER step ever got a token —
+  rather than requiring the Conductor to infer it after the fact from `gh`'s own ambiguous error text.
+
+## Requirement for the next live run — exact env setup, named per the Conductor's own request
+
+Steps 2 and 3 stay as the goal's own condition (a)/(b) pair (no connector vs. `github` connector) — only
+step 3 needs a credential, and it must be exported in the Conductor's own shell BEFORE running the script
+(this codebase never stores or generates one — invariant 11):
+
+    export GITHUB_TOKEN=<a real, minimally-scoped, read-only PAT>
+
+**Exactly `GITHUB_TOKEN`, not `GH_TOKEN`** — the golden fixture's own `github` connector
+(`fixtures/golden/connectors/github.md`) declares `env: [GITHUB_TOKEN]` only. `gh` itself checks `GH_TOKEN`
+with HIGHER precedence than `GITHUB_TOKEN`, but this connector was never built (or changed by this goal) to
+forward that name — named here as a pre-existing fixture detail, not a bug this goal's own scope reaches to
+fix speculatively. `diagnoseMemberEnv`'s own printed line for step 3 will read `GITHUB_TOKEN present=true`
+once the export is correct; `present=false` there is itself the exact HARNESS-setup finding (not a sandbox
+finding) this round's own instrumentation exists to catch immediately, rather than after the fact.
+
+**What each step will then prove, unambiguously:**
+- Step 2 (no connector, no token, by design): `gh` itself will report `gh-auth-required` — expected, not a
+  finding. The actual assertion is `RAW_TCP_CONNECT`, which MUST read `DENIED` — this is what proves the
+  sandbox's own network boundary bites a real socket attempt, independent of `gh`.
+- Step 3 (`github` connector, real token exported): `gh` itself should succeed (the `/zen` quote). The
+  actual assertion is `RAW_TCP_CONNECT`, which should read `OK` IF this host has real internet
+  reachability. Read step 3's own `RAW_TCP_CONNECT` against step 2's: `(2 DENIED, 3 OK)` is the
+  differential evidence that confirms the sandbox's own network boundary is real; `(2 DENIED, 3 also
+  DENIED)` points at this host's own connectivity, not the sandbox; `(2 OK)` is itself the step-2
+  regression, independent of step 3.
+
+## In-container sanity check (construction and control-flow only)
+
+A stub `gh` simulating exactly the live shape (auth-gate refusal when `GITHUB_TOKEN` is absent from its own
+env, success when present) plus a stand-in `sandbox-exec` (unconfined `exec`, the same trick used
+throughout this saga) ran the full round-3 script end to end, twice — once with no token exported, once
+with `GITHUB_TOKEN` exported in this container's own shell before running. Confirmed directly:
+- No token: `diagnoseMemberEnv` correctly printed `GITHUB_TOKEN present=false` for both steps 2 and 3;
+  step 2's own secondary line correctly read "gh itself refused locally — auth-required, expected... not a
+  finding"; step 3 correctly printed the NEW `>>> FINDING: this step HOLDS a connector grant... but gh
+  still reports no resolved token <<<` — proving the exact diagnostic a live re-run needs if the export is
+  ever missed again.
+- Token exported: `diagnoseMemberEnv` correctly printed `GITHUB_TOKEN present=true` for step 3; the stub
+  `gh` succeeded; no FINDING notice fired; `RAW_TCP_CONNECT=OK` (this container has real outbound
+  connectivity and the stand-in primitive confines nothing, so both steps' own TCP probes correctly
+  connect — steps 2 and 4 both print their own expected `>>> REGRESSION <<<` under the SAME unconfined
+  stand-in, unchanged from every prior round's own caveat: proves the harness's WIRING, never live
+  Seatbelt enforcement, which only the real host can confirm).
+
+## Honest residuals (unchanged from round 1, still open)
+
+- The redirect's generalization to other vendor CLIs (Codex, Gemini) remains unconfirmed for any CLI other
+  than `gh`.
+- The `.git/hooks` reseal (FIX-8/FIX-12) remains un-re-exercised — every dispatch in this harness is still
+  deliberately repo-less.
+- The raw TCP probe tests reachability to `api.github.com:443` specifically — it does not, and cannot,
+  independently confirm that gh's own HTTPS/TLS layer would behave identically; it is a deliberately lower-
+  level, gh-independent signal, chosen BECAUSE gh's own layer is what round 2 showed can't be trusted alone
+  for this specific boundary question.
+
+## Verification
+
+`bun test` — full suite green (1202 pass, 6 skip, 0 fail — up from 1199: six new `classifyGhFailure` tests
+for the `gh-auth-required` bucket and its ordering independence). `bun run typecheck` → exit 0. `bun run
+deps:check` → `deps ok` (no dependency change — this round touches only the diagnostic script and its own
+test file, zero `src/` change). `bun run build` → succeeds. `bun run src/cli.ts validate fixtures/golden` →
+`valid`, the same two pre-existing `SANDBOX_UNAVAILABLE` warnings, unchanged. `bun run src/cli.ts replay
+fixtures/golden --stubs` → oracle match, byte-for-byte. `bun run scripts/repro-r4-vendor-cli-gh.ts` in this
+container → exits cleanly on the darwin platform guard (unchanged). The in-container sanity check above
+(stub `gh` simulating the live auth-gate shape, run both with and without `GITHUB_TOKEN` exported) ran
+successfully both ways, confirming the new diagnostic/verdict logic end to end.
+
+**Bottom line: round 1's fix is now LIVE-CONFIRMED — `gh` runs clean under the sandbox, no code change
+needed there. Round 2 surfaced a SECOND, independent, harness-only gap (never a product finding) in how
+this script tested the network boundary — `gh`'s own auth gate, not R4, made steps 2/3 inconclusive a
+second time. Fixed with a gh-auth-independent raw TCP probe and direct token-presence diagnostics, zero
+further `src/` change. R4's network boundary itself has STILL not been validly exercised by a live run —
+that is exactly one more manual run away, this time with `export GITHUB_TOKEN=<...>` set beforehand, via
+this project's own standing gate.**
