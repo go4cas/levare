@@ -11568,3 +11568,120 @@ that direction CAN produce against this member shape, a structural ceiling confi
 not a harness limitation to keep chasing. R4's network boundary is still exactly one live run away —
 `export GITHUB_TOKEN=<a real PAT>` then `bun run scripts/repro-r4-vendor-cli-gh.ts`, unchanged from the
 prior instruction — but this time the run's own output means what its own labels say it means.**
+
+# NOTES R4-VENDOR-CLI, round 3 live result — a THIRD finding: TLS certificate trust evaluation needs its
+# own mach-lookup grant, gated on network; the deny direction and the operator-home decoy both PASSED
+
+The Conductor ran round 3 live, with `GITHUB_TOKEN` exported as instructed. Read against the corrected,
+asymmetric verdict design (round 3's own design-review section, above):
+
+- **Step 2 — PASS, correctly.** `RAW_TCP_CONNECT=DENIED`. The sandbox's network boundary bites a real
+  socket attempt for a no-connector member, exactly the deny direction's own ceiling (raw-socket-level,
+  never gh-level, per the design review's own confirmed-from-source conclusion).
+- **Step 4 (decoy) — PASS, correctly.** The operator-home marker stayed denied. The seal holds under a
+  network-granted, now also trustd-granted (see below), gh-shaped dispatch.
+- **Step 3 — a NEW, third finding, not a grant regression.** `gh api /zen` reached `api.github.com` and
+  STARTED a TLS handshake — `gh`'s own reported error was a downstream `x509: failed to verify
+  certificate: x509: OSStatus -26276`, and the live kernel log confirmed why: `deny(1) mach-lookup
+  com.apple.trustd.agent`. macOS does not verify TLS certificates in-process; it round-trips through the
+  system `trustd` daemon over a mach service, and `(allow network*)` alone never covers that. **This is the
+  OPPOSITE of a blocked grant** — a certificate to fail verifying only exists after a real TCP connection
+  and a real handshake attempt succeeded that far. The harness's own PRE-fix verdict logic read this as a
+  `REGRESSION` (network-classified failure) — a genuine misdiagnosis, corrected below alongside the
+  product fix itself.
+
+## The fix — `src/sandbox.ts`: a network-gated `trustd.agent` mach-lookup grant
+
+Same class of gap as `com.apple.bsd.dirhelper` (FIX-11) and `sysctl-read` (FIX-5) — a mach service one
+consumer never needed and another cannot function without, denied by the profile's own `(deny default)`
+unless explicitly named. **Unlike those two (unconditional for every dispatch), this grant is gated on
+`policy.allowNetwork`**: a member with no network reach has no use for trust-evaluation reach either, and
+granting it unconditionally would be exactly the kind of convenience widening this whole investigation has
+never permitted. Named EXACTLY as quoted from the live kernel log —
+`(allow mach-lookup (global-name "com.apple.trustd.agent"))` — never bundled with the OTHER mach-lookup
+denials the same log reportedly showed alongside it (`opendirectoryd.libinfo`, `mDNSResponder`): their own
+load-bearing-ness for a working request is not independently confirmed by evidence this round, and adding
+them speculatively would be the same mistake this investigation corrected for itself once already (FIX-10's
+own opendirectoryd suspicion, hand-ACQUITTED by a targeted live test rather than assumed guilty by
+association). If round 4's own live run still fails at certificate verification, the fix is to name and add
+whichever OTHER mach service that run's own kernel log shows, evidence-first, never to widen this grant on
+suspicion alone.
+
+## The harness fix — `gh-tls-trust`, a bucket for the opposite signal
+
+`classifyGhFailure` gains `gh-tls-trust` (`"failed to verify certificate"`, `"x509:"`, `"certificate is not
+trusted"`, `"certificate signed by unknown authority"`, `"sectrustevaluate"`), checked BEFORE the generic
+`network` bucket — an x509/certificate-verify failure is a strictly more specific, more diagnostic signal,
+and folding it into `network` (as the pre-fix classifier did, if that substring path is what actually fired
+live — see the honest caveat below) makes a step's own verdict logic read a WORKING grant as a
+REGRESSION, backwards. `runGhDispatch`'s own `"grant-via-gh"` verdict branch gains a dedicated `gh-tls-trust`
+case: prints a FINDING naming the trustd fix directly, explicitly NOT a REGRESSION, and explicitly notes
+that a RECURRENCE after this fix ships means the mach-lookup grant is incomplete for some other service,
+not that the network grant itself regressed.
+
+**Honest caveat, named rather than papered over:** this round's own report was a summary, not the raw
+terminal output or raw kernel-log lines — re-deriving `classifyGhFailure`'s pre-fix behavior against the
+exact quoted message ("tls: failed to verify certificate: x509: OSStatus -26276") suggests it would NOT
+have matched any pre-fix `network` signal (none of `"dial tcp"`, `"tls handshake"`, `"ssl_connect"`, etc.
+appear in it) — meaning the pre-fix classification was more likely `"other"`, and the printed verdict more
+likely the generic `"FINDING: gh failed for a reason other than..."` than a literal `REGRESSION` banner.
+This is NOT independently confirmed either way this round (no raw output to check against) — the FIX
+itself (the new `gh-tls-trust` bucket, checked first, with its own non-REGRESSION message) is correct and
+warranted regardless of which exact pre-fix message actually printed, so it shipped without waiting to
+resolve this ambiguity; the ambiguity itself is named here rather than silently assumed resolved.
+
+## An open, unconfirmed observation — named, not chased without evidence
+
+The Conductor's own report additionally noted step 3's own secondary `RAW_TCP_CONNECT` probe (corroboration
+only, never the primary verdict there) showed a "Killed: 9" shape rather than a clean `OK`/`DENIED`. Not
+independently diagnosed this round — no raw kernel-log evidence exists yet to confirm a specific mechanism.
+The leading candidate, consistent with this whole investigation's own established pattern (a denied
+mach-lookup producing a hard process/subshell kill rather than a clean `EPERM` for SOME consumers — see
+FIX-4's `SIGTRAP`/`std::__call_once` precedent, FIX-5's bun/Zig panic precedent): the raw socket-open
+attempt inside bash's own `/dev/tcp` implementation may hit a similarly-denied mach service (DNS resolution
+on macOS can itself consult system services) and get killed rather than cleanly erroring, while the
+SURROUNDING bash script continues normally (bash treats a killed command inside an `if` condition as a
+failed condition, taking the `else` branch — consistent with the probe still managing to print
+`RAW_TCP_CONNECT=DENIED` afterward, per the report). **Not fixed, not chased further this round** — it
+never drives step 3's own verdict (already demoted to corroboration-only by the round 3 design review,
+BEFORE this observation existed), and per this investigation's own standing discipline, a mechanism is
+named as a candidate, never assumed, until a live run's own raw kernel-log evidence confirms or refutes it.
+The probe itself is left in place (cheap, harmless) rather than removed on a guess.
+
+## In-container sanity check
+
+`buildSandboxExecProfile({ allowNetwork: true })` includes the new grant; `{ allowNetwork: false }` does
+not (unit-tested, `tests/sandbox.test.ts`); the grant coexists with the operator-home deny in the same
+profile (orthogonal grants, re-verified per NOTES R4-SANDBOX-FIX-8/FIX-12's own standing instruction).
+End-to-end: a real `AdapterRunner.produceAsync` dispatch (stub `gh`/`sandbox-exec`, network-granted member)
+confirmed via `LEVARE_SANDBOX_DEBUG=1` that the generated profile contains
+`(allow mach-lookup (global-name "com.apple.trustd.agent"))` directly alongside `(allow network*)`.
+
+## Honest residuals
+
+- **Round 4 (this fix) has not yet been live-confirmed** — handed back below for exactly that.
+- **The full mach-lookup set a real HTTPS client needs is not fully enumerated** — only `trustd.agent` is
+  granted, backed by the one piece of hard evidence quoted verbatim; `opendirectoryd.libinfo`/
+  `mDNSResponder` (also observed denied in the same log) remain unconfirmed and ungranted.
+- **The step-3 "Killed: 9" observation remains unexplained** — named as a candidate mechanism, not fixed,
+  pending raw kernel-log evidence from a future live run.
+- Every residual named in rounds 1-3 above (CLI generalization beyond `gh`, the `.git/hooks` reseal not
+  re-exercised, step 3's own connectivity ambiguity) remains open, unchanged.
+
+## Verification
+
+`bun test` — full suite green (1207 pass, 6 skip, 0 fail — up from 1202: two new `buildSandboxExecProfile`
+tests for the network-gated trustd grant plus its coexistence with the operator-home deny, and four new
+`classifyGhFailure` tests for `gh-tls-trust`). `bun run typecheck` → exit 0. `bun run deps:check` → `deps
+ok`. `bun run build` → succeeds. `bun run src/cli.ts validate fixtures/golden` → `valid`, unchanged. `bun
+run src/cli.ts replay fixtures/golden --stubs` → oracle match, byte-for-byte. In-container sanity check (a
+real dispatch via stub `gh`/`sandbox-exec`) confirmed the grant reaches a real generated profile end to end.
+
+**Bottom line: three real, live, evidence-justified findings now closed in sequence (config/state/data/
+cache redirect, gh's own auth-gate harness gap, TLS trust-evaluation mach-lookup) — each fixed with the
+narrowest grant or harness correction the evidence in hand justified, none guessed at in advance. R4's own
+network boundary — proven in BOTH directions simultaneously, in one run — is still exactly one live run
+away: `export GITHUB_TOKEN=<a real PAT>` then `bun run scripts/repro-r4-vendor-cli-gh.ts`. If that run shows
+step 2 DENIED, step 3 a real gh success (not `gh-tls-trust` again), and the decoy still denied, R4 holds
+against real `gh` with these three narrow fixes. If step 3 still shows `gh-tls-trust`, that names precisely
+what to look for next — the raw kernel-log lines from THAT run, not another guess.**
