@@ -75,6 +75,47 @@ import { loadPricing } from "../src/pricing.ts";
 
 const STEP_TIMEOUT_MS = 5_000;
 
+// Regex literals first (they also match the quoted-string pattern below) — both collapse every
+// path-specific literal to a single placeholder, leaving only the RULE STRUCTURE to compare.
+export function profileSkeleton(text: string): string {
+  return text.replace(/#"(?:[^"\\]|\\.)*"/g, "#<PATH>").replace(/"(?:[^"\\]|\\.)*"/g, "<PATH>");
+}
+
+// NOTES R4-SANDBOX-FIX-14 (round 4, live host — the actual root cause of the ENTIRE parity false-positive
+// chain): `sandbox.ts#detectSandbox` PROBES the primitive before a real dispatch ever wraps anything —
+// its own probe (`probeSandboxExec`) prints the IDENTICAL `LEVARE_SANDBOX_DEBUG` line shapes a real
+// dispatch's own wrap does ("darwin sandbox-exec profile written to: .../levare-sandbox-probe-*/probe.sb",
+// "darwin sandbox-exec profile text:\n...", "cwd: <scratchDir>") — by design, so a Conductor can compare
+// the probe's own block against a real dispatch's moments later. On a live host where the probe actually
+// runs (a genuinely working `sandbox-exec`), its block is EMITTED FIRST, ahead of the dispatch's own —
+// this container's own stand-in-primitive sanity checks never surfaced it because a forced
+// `sandboxDetection` override skips `detectSandbox()` (and therefore the probe) entirely. `.find()` over
+// captured lines picks whichever block comes FIRST — the probe's, not the dispatch's — silently. THIS
+// (never a real product divergence) is what produced every false REGRESSION in this saga: round 1 and
+// round 3's structural diffs were the probe's profile vs. the ladder's own; round 2's "no worktree cwd"
+// finding was the PROBE's own scratch-dir cwd, misread as the dispatch's.
+//
+// Fixed by selecting on IDENTITY, never ORDER: the dispatch's own profile is written under
+// `levare-sandbox-profile-*` (see `sandbox.ts#sandboxExecArgv`), the probe's under
+// `levare-sandbox-probe-*` (see `sandbox.ts#probeSandboxExec`) — two DIFFERENT `mkdtempSync` prefixes,
+// never a substring of one another. `written to:`/`profile text:` are always printed as two consecutive
+// `debugLine` calls at the SAME call site (no other debug output interleaves between them — both call
+// sites do this identically), so once the correctly-identified `written to:` line is found, the very next
+// captured line is its own `profile text:` line. A capture that instead selected "whichever text line
+// comes first" is exactly the failure mode this function exists to rule out — the general lesson: a
+// capture that selects by POSITION breaks the moment new instrumentation adds output ahead of it; select
+// by IDENTITY instead. Returns `null` when no dispatch-identified block was captured at all (this host's
+// own detected primitive isn't `sandbox-exec`, or the dispatch never reached the real spawn boundary).
+export function selectDispatchProfileText(lines: string[]): string | null {
+  const writtenToIdx = lines.findIndex(
+    (l) => l.startsWith("[levare:sandbox-debug] darwin sandbox-exec profile written to:") && l.includes("levare-sandbox-profile-"),
+  );
+  if (writtenToIdx === -1) return null;
+  const textLine = lines[writtenToIdx + 1];
+  if (!textLine || !textLine.startsWith("[levare:sandbox-debug] darwin sandbox-exec profile text:")) return null;
+  return textLine.slice(textLine.indexOf("\n") + 1);
+}
+
 // NOTES R4-SANDBOX-FIX-12: mirrors `adapters.ts#gitConfigRedirectEnv` exactly (not imported — that
 // function is private to adapters.ts, and reproducing two lines here is simpler and less coupling than
 // exporting an internal helper solely for this script). Every git-invoking step below must carry this,
@@ -416,27 +457,17 @@ async function main() {
   console.log("");
   console.log("=== Ladder/production parity check (NOTES R4-SANDBOX-FIX-13/FIX-14) ===");
 
-  function profileSkeleton(text: string): string {
-    // Regex literals first (they also match the quoted-string pattern below) — both collapse every
-    // path-specific literal to a single placeholder, leaving only the RULE STRUCTURE to compare.
-    return text.replace(/#"(?:[^"\\]|\\.)*"/g, "#<PATH>").replace(/"(?:[^"\\]|\\.)*"/g, "<PATH>");
-  }
-
-  // NOTES R4-SANDBOX-FIX-14 (round 3 — live host): round 2's own instrumentation isolated the gap
-  // precisely — the fixture satisfied `resolveDispatchRepo`'s own precondition (verified directly,
-  // immediately pre-dispatch), yet the ACTUAL dispatch still declined the worktree, with no way to see
-  // WHERE the divergence happened. `adapters.ts#withDispatchWorktree{,Async}` now prints its own
-  // decision — "dispatch worktree created for '<member>' at '<path>' ..." or "dispatch worktree declined
-  // for '<member>': <reason>" — under `LEVARE_SANDBOX_DEBUG=1`, for EVERY dispatch, unconditionally (this
-  // line fires from plain decision logic inside `prepare()`/`withDispatchWorktree{,Async}`, never gated
-  // on a live sandbox primitive — see `tests/adapters.test.ts`'s own three new regression tests pinning
-  // this). The parity step now keys directly on THAT line — the adapter's own stated decision — rather
-  // than inferring the decision from profile-text shape a second time.
-  function profileSkeleton(text: string): string {
-    // Regex literals first (they also match the quoted-string pattern below) — both collapse every
-    // path-specific literal to a single placeholder, leaving only the RULE STRUCTURE to compare.
-    return text.replace(/#"(?:[^"\\]|\\.)*"/g, "#<PATH>").replace(/"(?:[^"\\]|\\.)*"/g, "<PATH>");
-  }
+  // NOTES R4-SANDBOX-FIX-14 (round 3 — live host): round 2's own instrumentation isolated what LOOKED
+  // like a gap — the fixture satisfied `resolveDispatchRepo`'s own precondition (verified directly,
+  // immediately pre-dispatch), yet the ACTUAL dispatch still appeared to decline the worktree. Round 4
+  // (below `captureProductionDispatch`'s own doc) found that appearance was itself a capture artifact, not
+  // a real divergence — see NOTES for the full correction. What round 3 DID add for real:
+  // `adapters.ts#withDispatchWorktree{,Async}` now prints its own decision — "dispatch worktree created
+  // for '<member>' at '<path>' ..." or "dispatch worktree declined for '<member>': <reason>" — under
+  // `LEVARE_SANDBOX_DEBUG=1`, for EVERY dispatch, unconditionally (plain decision logic, never gated on a
+  // live sandbox primitive — see `tests/adapters.test.ts`'s own three regression tests pinning this). The
+  // parity step keys directly on THAT line for the worktree decision — genuine product observability,
+  // kept regardless of round 4's own correction below.
 
   // Mirrors `AdapterRunner#resolveDispatchRepo`'s own condition via the EXACT exported functions it
   // calls internally (`resolveProjectRepoPath`, `workBranchName`, `branchExists`) — pure git/fs logic,
@@ -469,14 +500,25 @@ async function main() {
 
   // Drives a real `AdapterRunner.produceAsync()` dispatch of finch/review against `repo`'s `project`/
   // `unit`, capturing (1) the adapter's own `dispatch worktree created/declined` decision line — the
-  // AUTHORITATIVE signal this round's own fix keys on — and (2) the darwin sandbox-exec profile text,
-  // when this host's own detected primitive reaches that far, for the structural equality check. Both are
-  // read from `LEVARE_SANDBOX_DEBUG=1` output; a failed dispatch still prints both — built and logged
-  // BEFORE the spawn itself runs, so the dispatch's own success/failure is irrelevant here. `decision` is
-  // `null` only if NEITHER a created nor a declined line was captured at all (a setup error in this
-  // capture harness itself, never a legitimate outcome — `withDispatchWorktree{,Async}` always prints
-  // exactly one). Shared between the repo-bearing (primary) and repo-less (informational) checks below —
-  // the only thing that differs between them is which `repo`/`project` is passed in.
+  // AUTHORITATIVE signal for the worktree decision — and (2) the darwin sandbox-exec profile text, when
+  // this host's own detected primitive reaches that far, for the structural equality check. Both are read
+  // from `LEVARE_SANDBOX_DEBUG=1` output; a failed dispatch still prints both — built and logged BEFORE
+  // the spawn itself runs, so the dispatch's own success/failure is irrelevant here.
+  //
+  // NOTES R4-SANDBOX-FIX-14 (round 4 — the root cause of the entire parity false-positive chain): the
+  // profile text is selected via `selectDispatchProfileText` (module scope, this file's own header
+  // comment has the full story), never a bare `.find()` — `detectSandbox()` PROBES the primitive before a
+  // real dispatch ever wraps anything, and that probe prints the IDENTICAL debug line shapes a real
+  // dispatch does (by design, so the two are directly comparable by eye). On a live host where the probe
+  // genuinely runs, its own profile block is emitted FIRST — a position-based `.find()` silently picked
+  // the PROBE's profile every time, never the dispatch's, which is what produced every false structural
+  // "REGRESSION" in rounds 1 and 3 (and round 2's own "no worktree cwd" finding was the same shape: the
+  // probe's own `cwd:` line, misread as the dispatch's). `decision` is unaffected by this — the
+  // `created`/`declined` decision line is emitted only by `withDispatchWorktree{,Async}`, never by the
+  // probe, so no ordering ambiguity ever existed there; `null` only if NEITHER a created nor a declined
+  // line was captured at all (a setup error in this capture harness itself, never a legitimate outcome).
+  // Shared between the repo-bearing (primary) and repo-less (informational) checks below — the only thing
+  // that differs between them is which `repo`/`project` is passed in.
   async function captureProductionDispatch(repo: ReturnType<typeof loadRepo>, project: string, unit: string): Promise<{ skeleton: string | null; decision: WorktreeDecision | null }> {
     const nativeMock: NativeBoundary = { invoke: () => ({ doc: "unused" }) };
     const remoteMock: RemoteBoundary = { call: () => ({ doc: "unused" }) };
@@ -511,8 +553,8 @@ async function main() {
       : declinedLine
         ? { kind: "declined", reason: declinedLine.slice("[levare:sandbox-debug] ".length) }
         : null;
-    const profileTextLine = capturedLines.find((l) => l.startsWith("[levare:sandbox-debug] darwin sandbox-exec profile text:"));
-    const skeleton = profileTextLine ? profileSkeleton(profileTextLine.slice(profileTextLine.indexOf("\n") + 1)) : null;
+    const dispatchProfileText = selectDispatchProfileText(capturedLines);
+    const skeleton = dispatchProfileText ? profileSkeleton(dispatchProfileText) : null;
     return { skeleton, decision };
   }
 
@@ -600,4 +642,9 @@ async function main() {
   }
 }
 
-await main();
+// Guarded so `tests/repro-r4-sandbox-fix10-hang.test.ts` can import `profileSkeleton`/
+// `selectDispatchProfileText` (module scope, above) without triggering the whole ladder run — the same
+// pattern `scripts/generate-cheatsheets.ts` already uses for its own `tests/cheatsheets.test.ts`.
+if (import.meta.main) {
+  await main();
+}
