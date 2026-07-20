@@ -11108,3 +11108,195 @@ enforcement itself, which only the live host can confirm.
 claim R4 holds against a real `gh` either. That claim is exactly one manual live-host run away, via this
 project's own standing gate: `bun run scripts/repro-r4-vendor-cli-gh.ts` on a real Mac with `gh` on PATH,
 output pasted back for diagnosis — the harness this round built is what that run needs.**
+
+**SUPERSEDED by round 1, below — the harness this section describes has since found a real, live,
+confirmed finding, and a fix has shipped for it.** Kept verbatim as the historical record of what the
+harness looked like before any live evidence existed; read round 1 for what actually happened.
+
+# NOTES R4-VENDOR-CLI, round 1 (live macOS run) — the finding: `gh`'s own config directory, not R4 itself
+
+The Conductor ran `bun run scripts/repro-r4-vendor-cli-gh.ts` on a real Mac and returned the harness's
+FIRST live output — this whole goal's own reason for existing. Read past the individual step labels to
+the actual result, per the Conductor's own framing: **every step invoking a real `gh` failed at the
+IDENTICAL wall**, confirmed by kernel evidence on every invocation:
+
+    gh(...) deny(1) file-read-data /Users/cas/.config/gh/config.yml
+
+`gh` treats a DENIED (present-but-forbidden) read of its own config file as FATAL, before it ever reaches
+the network — the EXACT EPERM-vs-ENOENT class NOTES R4-SANDBOX-FIX-9 already named for git's own
+`.gitconfig`, now confirmed to recur for a different vendor CLI with a different (four-directory, not
+one-file) config shape. **This is a finding about `gh`, not about R4's own deny-user-data model** — the
+model did exactly what it was built to do (deny the operator's real `$HOME`, including `~/.config/gh`);
+`gh`'s own failure to degrade gracefully when that read is denied is what needed a fix.
+
+## What this invalidates from round 1's own four-hats-one-finding steps, and what survives
+
+Per the Conductor's own read of the evidence, confirmed correct:
+
+- **Steps 2 and 3's network conclusions are INVALID.** `gh` died at config-load before ever attempting the
+  network call either dispatch was actually testing — "denied" in both cases, for the SAME wrong reason
+  (config EPERM), not the intended network-deny-vs-network-allow differential. Neither step's own
+  must-fail/informational verdict from that run means anything about R4's network boundary.
+- **Step 4 (the decoy, `cat` reading a marker under the operator's real `$HOME`) is a VALID PASS.** That
+  member is `cat`, never `gh` — it never touches `~/.config/gh` at all, so it exercised the operator-home
+  seal directly and cleanly, unconfounded by the config-directory finding. **The deny-user-data seal
+  holds**, confirmed live, for a network-granted gh-shaped dispatch specifically (the exact recheck NOTES
+  R4-SANDBOX-FIX-8/FIX-12's own standing instruction calls for whenever a new reach is added).
+- **Steps 1a/1b are consistent with (not independent confirmation of) the finding** — 1a's own failure is
+  exactly the config-load death; 1b (`--version`) is a fast-exit flag that structurally never reaches
+  config-load at all (this script's own header already named `--version` a "weak canary" for this reason
+  before any live evidence existed), so it neither confirms nor contradicts anything about the finding.
+
+## The ruling (Conductor, evidence-first, presented as a design fork before any code was written)
+
+Two options were presented with evidence and a recommendation, per the goal's own "this is a Conductor
+decision — present options, then STOP for a ruling" instruction; the ruling is **Option A**:
+
+- **Option A (shipped): environment redirect, mirroring `gitConfigRedirectEnv` (FIX-9) exactly.** Give
+  `gh` a fresh, empty scratch location for its own config/state/data/cache directories rather than deny it
+  its real one — zero profile widening, no operator data ever exposed. Auth for a sandboxed `gh` member
+  comes through its connector's own `GITHUB_TOKEN` env var, never the operator's local login session — `gh`
+  itself documents `GH_TOKEN`/`GITHUB_TOKEN` as taking PRECEDENCE over a stored session, so this is the
+  vendor-intended way to run `gh` without a local session, not a workaround forced on it.
+- **Option B (named, rejected on the record): a read-only grant of `~/.config/gh`.** Rejected because
+  `hosts.yml` under that directory holds the operator's own real GitHub auth tokens — granting read access
+  would pipe the operator's own credentials straight into the sandbox, the precise leak NOTES
+  R4-SANDBOX-FIX-3/FIX-4's deny-user-data ruling exists to prevent, and the EXACT thing step 4's own live
+  PASS just proved this model correctly denies. Never seriously considered as a real candidate.
+
+**Two explicit guardrails the ruling attached to Option A, both honored below:**
+1. Enumerate `gh`'s FULL startup read set from real evidence, not just `config.yml` — never a one-path fix
+   that leaves a second path to fail next round (this saga's own FIX-10-round-2-shaped trap, named
+   explicitly by the Conductor).
+2. Re-run the network boundary properly once the redirect ships — it was never validly tested this round.
+
+## The fix — `src/adapters.ts`: `cliVendorScratchEnv` / `createCliVendorScratch` / `fullSandboxEnvRedirect`
+
+**Guardrail 1, closed by going to the source rather than guessing:** `gh`'s own config/state/data/cache
+resolution was read directly from the library it vendors for exactly this, `cli/go-gh`'s
+`pkg/config/config.go` (fetched and read in full, not inferred from behavior or documentation prose) —
+four directories, each independently overridable:
+
+| Directory | Env override (checked first) | Fallback | What lives there |
+|---|---|---|---|
+| Config | `GH_CONFIG_DIR` | `XDG_CONFIG_HOME`/gh → `$HOME/.config/gh` | `config.yml`, `hosts.yml` (the operator's own real auth tokens) |
+| State | `XDG_STATE_HOME` (gh appends `/gh` itself — no gh-specific override exists for this one) | `$HOME/.local/state/gh` | `state.yml` (e.g. update-check bookkeeping) |
+| Data | `XDG_DATA_HOME` (same, gh appends `/gh`) | `$HOME/.local/share/gh` | — |
+| Cache | `XDG_CACHE_HOME` (same, gh appends `/gh`) | `$HOME/.cache/gh` → **`$TMPDIR/gh-cli-cache`** | — |
+
+The live evidence directly confirmed `config.yml`; the Conductor's own report additionally named
+`hosts.yml` and "a state file" as read during the run. **The cache path's own fallback
+(`$TMPDIR/gh-cli-cache`) is closed PROACTIVELY here, not independently live-confirmed this round** — named
+honestly as such: under this sandbox's own narrow xcrun-only temp-dir grant (FIX-11/FIX-12), an
+un-redirected cache write would be its own fresh EPERM the moment any `gh` subcommand touches the cache,
+and the evidence this round gathered may not have exercised it (neither `auth status` nor `--version`
+necessarily hits the cache; `api /zen` might).
+
+**The fix, four pieces, all in `src/adapters.ts`:**
+- `cliVendorScratchEnv(scratchDir)` — maps the four directories above onto four subdirectories of a single
+  scratch root (`GH_CONFIG_DIR`/`XDG_STATE_HOME`/`XDG_DATA_HOME`/`XDG_CACHE_HOME`). Only the ROOT is
+  created in advance (`createCliVendorScratch`, `mkdtempSync(tmpdir())`, mirroring `env.ts#scopeHome`'s own
+  scratch-resource lifecycle exactly) — each leaf subdirectory is created by `gh` itself on first write
+  (`os.MkdirAll`, confirmed directly from `go-gh`'s own source), the same "grant the root, let the real
+  workload populate the rest" posture FIX-8's own `dispatchGitWriteGrant` already established.
+- `fullSandboxEnvRedirect(env, vendorScratchDir)` — composes the git redirect (FIX-9) and this new one into
+  the single env layering `runCli`/`runCliAsync` apply, gated on the IDENTICAL condition git's own redirect
+  already uses (`wrapped.level === "full"` — never for `"none"`/`"fs-only"`, so an unsandboxed dispatch's
+  behavior is completely unchanged).
+- `buildDispatchSandboxPolicy` threads the scratch root into `SandboxPolicy.writablePaths` — no new field
+  needed (unlike `gitWriteGrant`, this grant has no reseal/deny-then-reallow complexity to express; it is a
+  single fresh directory nobody else claims, exactly what `writablePaths`'s own generic mechanism already
+  handles for both platforms).
+- `runCli`/`runCliAsync` create the scratch dir unconditionally whenever the spawn is real (the level isn't
+  known until `sandboxWrap` runs `detectSandbox()` internally, so there's no earlier point to decide
+  "will this actually be needed" — the cost of an unused `mkdtempSync`/`rmSync` pair is trivial, matching
+  every other per-dispatch scratch resource this file already creates regardless of final level), and clean
+  it up in the SAME `finally` block `wrapped.cleanup?.()` already uses.
+
+**Applied GENERICALLY to every `"full"`-tier `kind: cli` dispatch, never gated on `argv[0] === "gh"`
+specifically** — mirroring `gitConfigRedirectEnv`'s own precedent (that redirect isn't gated on "is this
+member git" either) and because the XDG Base Directory spec is a general Unix convention, not a `gh`-only
+one; FIX-5's own named residual (Codex, Gemini) may benefit from the SAME redirect, though this is **not
+independently live-confirmed for any CLI other than `gh`** and is named as a residual below, never claimed
+proven.
+
+## Guardrail 2 — the network boundary, re-validated by re-running the IDENTICAL ladder
+
+The ladder script itself is UNCHANGED in shape (same five steps, same commands, same expectations) — only
+`classifyGhFailure` gained a new, more specific bucket, `gh-vendor-dir-permission` (checked before the
+generic `filesystem-permission` bucket, so a config/state/data/cache-path-shaped EPERM is never folded into
+the generic label a verdict could misread), and `runGhDispatch`'s own verdict logic now checks for that
+bucket FIRST, before applying a step's own must-fail/must-succeed/informational meaning — printing an
+explicit `>>> FINDING <<<` rather than a bare PASS/REGRESSION whenever it fires, exactly the correction
+this round's own evidence demanded. This closes the class of mistake round 1's own verdict logic made
+(silently misreading a config-load death as a valid network result) structurally, not just for THIS one
+finding — any FUTURE un-redirected `gh` path that surfaces the identical EPERM shape will be diagnosed as
+such automatically, never silently misclassified again.
+
+**This is round 2 of the SAME script** (the goal's own "the established method — the Conductor runs it
+once" instruction, followed exactly as FIX-11/FIX-12/FIX-13 all did for their own ladder) — handed back for
+a live re-run below, not yet re-executed live this session (no live macOS access exists in this container;
+unchanged from every prior claim in this file).
+
+## In-container sanity checks (construction only — not enforcement, not a live network/deny verdict)
+
+Two independent proofs, neither claiming what only the live host can:
+
+1. **Unit-level, via `fakeWorkingPrimitive` (the SAME genuinely-executing stand-in `tests/adapters.test.ts`
+   already uses for the FIX-9 git-redirect proof):** a real `AdapterRunner.produceAsync` dispatch, under a
+   forced `level: "full"`, observed directly via a real spawned shell reading back its own env —
+   `GH_CONFIG_DIR`/`XDG_STATE_HOME`/`XDG_DATA_HOME`/`XDG_CACHE_HOME` all resolve under ONE freshly-created
+   scratch root, which exists WHILE the dispatch's own spawned child runs (checked from inside the child
+   itself, the only point it's guaranteed to) and is REMOVED once the dispatch returns; under `level:
+   "none"`, none of the four vars are set at all; two concurrent dispatches get two DISTINCT scratch roots,
+   never shared. A separate, `/bin/echo`-as-bwrap construction test (mirroring the FIX-7/FIX-8
+   `dispatchGitWriteGrant` proof exactly) confirms the scratch root reaches the wrapped argv as a REAL
+   `--bind <path> <path>` pair, never merely an env-var claim unconnected to any actual sandbox grant.
+2. **Integration-level, via the ladder script itself:** a temporary, non-committed copy (platform/primitive
+   guards bypassed, stand-in `sandbox-exec`/`gh` binaries — the `gh` stub echoing its own received env vars
+   to stderr) ran all five steps end to end through the REAL, unmodified `AdapterRunner.produceAsync` path
+   the live ladder itself calls. Confirmed directly: four DISTINCT scratch roots across four dispatches
+   (`levare-cli-vendor-vm6IBq`, `-fOKzT6`, `-WAjShj`, `-2mC1zY`), each with all four env vars resolving
+   under it correctly. Steps 2 and 4 print their own `>>> REGRESSION <<<` under this stand-in, expected and
+   unchanged from every prior round's own caveat: an unconfined `exec` denies nothing, so this proves the
+   FIX's WIRING end-to-end, never live Seatbelt enforcement, which only the real host can confirm.
+
+## Honest residuals (this round)
+
+- **The fix is not yet live-confirmed.** Round 1's own live run is what discovered the finding this round
+  fixes; round 2 (this round) has not yet been re-run live — the harness is handed back below for exactly
+  that.
+- **The cache-path closure (`XDG_CACHE_HOME` → `$TMPDIR/gh-cli-cache`'s own fallback) is proactive, not
+  live-confirmed** — named explicitly above, not claimed as part of round 1's own confirmed evidence.
+- **Generalizing this redirect to other vendor CLIs (Codex, Gemini) is unconfirmed** — the redirect is
+  applied unconditionally to every `"full"`-tier `kind: cli` dispatch by design (never gated on `gh`
+  specifically), but no OTHER CLI's own config-directory behavior has been independently verified to
+  benefit from (or tolerate) this redirect; FIX-5's own residual for those CLIs remains open.
+- **The `.git/hooks` reseal (FIX-8/FIX-12) is still not re-exercised** — unchanged from round 1's own
+  residual; every dispatch in this harness remains deliberately repo-less.
+- **Step 3's own success/failure remains inherently ambiguous without a paired step 2 result** — unchanged
+  from round 1's own residual; a live host with no real internet reachability would still make step 3 fail
+  for a reason unrelated to the sandbox.
+
+## Verification
+
+`bun test` — full suite green (1199 pass, 6 skip, 0 fail — up from 1192 at the harness-only round: the new
+`cliVendorScratchEnv`/scratch-dir describe block in `tests/adapters.test.ts` (four tests: all-four-vars-
+under-one-root-then-cleaned-up, none-set-under-`level:none`, two-dispatches-never-share-a-root, and the
+`--bind`-construction proof) plus the extended `classifyGhFailure` coverage in
+`tests/repro-r4-vendor-cli-gh.test.ts`). `bun run typecheck` → exit 0. `bun run deps:check` → `deps ok`
+(the fix adds no dependency — `node:fs`/`node:os` only). `bun run build` → succeeds. `bun run src/cli.ts
+validate fixtures/golden` → `valid`, the same two pre-existing `SANDBOX_UNAVAILABLE` warnings, unchanged.
+`bun run src/cli.ts replay fixtures/golden --stubs` → oracle match, byte-for-byte. `bun run
+scripts/repro-r4-vendor-cli-gh.ts` in this container → exits cleanly on the darwin platform guard, printing
+exactly why (unchanged). Both in-container sanity checks above ran successfully.
+
+**Bottom line: R4 required ONE real, evidence-justified fix to hold against real `gh` — a config/state/
+data/cache directory redirect, mirroring FIX-9's own git precedent exactly, applied generically to every
+sandboxed `cli` dispatch, never a sandbox widening. The fix is proven by construction (unit tests, a
+second integration-level stand-in run through the unmodified ladder) but NOT yet proven live — that is
+exactly one more manual run of `bun run scripts/repro-r4-vendor-cli-gh.ts` away, via this project's own
+standing gate. If that run shows every step passing or cleanly diagnosed (never another silent
+`gh-vendor-dir-permission` recurrence), R4 holds against real `gh` with this one narrow, evidence-justified
+fix. If it doesn't, the new classifier bucket will say exactly where, not leave a Conductor guessing a
+third time.**
