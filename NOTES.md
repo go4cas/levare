@@ -10588,3 +10588,78 @@ profile and a REAL, repo-bearing production dispatch's own profile are structura
 by `>>> PASS (expected shape difference): the ladder's own repo-bearing profile carries the git-write
 reseal; the repo-less dispatch's own profile correctly carries none <<<` — parity reported, not the false
 regression.
+
+## Round 2 (live host) — a SECOND, different degradation path to no-worktree, and the proxy that hid it
+
+The live gate's next confirmation run STILL printed `>>> REGRESSION <<<` after the fix above shipped — the
+production dispatch's own profile still carried no git-write section (skeleton running straight from the
+xcrun regex grants to the `/dev` grants, no deny-root, no four re-allows), while the ladder's own profile
+still had the full section. This time the work branch genuinely existed — round 1's own fix was correct
+and did close the branch-naming path — so `withDispatchWorktreeAsync` was degrading to `return fn(req)`
+(no worktree) via a DIFFERENT condition than the one round 1 fixed. **The branch existing in the fixture's
+repo is not sufficient to prove the adapter's own `resolveDispatchRepo` will find it** — and the STRUCTURAL
+SKELETON DIFF this check relied on is a PROXY: it can only say "these two profiles differ," never WHY,
+which is exactly why round 1's own diagnosis (branch-name hard-coding) fixed a real bug without fixing the
+live symptom — the check had no way to confirm its own fix actually closed the live gap before declaring
+victory, and neither did the in-container stand-in run, which only ever re-verified the SAME skeleton-diff
+proxy, never the adapter's own actual precondition.
+
+**This round's own root cause is deliberately left UNNAMED here** — no live macOS access exists in this
+container, and guessing a second time without a way to confirm it would repeat the exact mistake round 1
+made (a plausible, real, but possibly non-exhaustive fix declared closed on container-only evidence). What
+changed instead is the CHECK ITSELF, per the goal's own instruction to stop verifying proxies:
+
+1. **Direct pre-dispatch condition check** (`diagnoseDispatchRepoCondition`, `scripts/repro-r4-sandbox-
+   fix10-hang.ts`): calls the EXACT exported functions `AdapterRunner#resolveDispatchRepo` calls internally
+   — `resolveProjectRepoPath`, `workBranchName`, `branchExists` (all three already exported from
+   `merge.ts`, never re-implemented by hand a second time, closing off the exact class of drift FIX-13
+   already named once) — against the parity fixture BEFORE dispatching, and throws loudly, naming
+   precisely which of the adapter's own two conditions (`repoPath` resolution vs. branch existence) isn't
+   satisfied, if either isn't. This is pure git/fs logic with ZERO sandbox-primitive dependency: it runs
+   and means the identical thing on this container as on a live darwin host, closing the gap named twice
+   now ("container pass didn't predict host pass") for this specific piece — there is no stand-in-primitive
+   trick involved, nothing platform-specific to fake.
+2. **Direct post-dispatch worktree check**: `captureProductionSkeleton` now also reads the `cwd:` line
+   `wrapForSandbox` itself prints under `LEVARE_SANDBOX_DEBUG=1` and reports whether it names a
+   `levare-dispatchwt-*` scratch path (`merge.ts#createDispatchWorktree`'s own `mkdtempSync` prefix) — the
+   OBSERVABLE fact that a per-dispatch worktree was actually used for THIS spawn, read from the adapter's
+   own real output, never inferred from whether the profile TEXT happens to contain a particular rule
+   line. When the pre-dispatch check (1) passes but this one doesn't, the parity step now prints a THIRD,
+   more specific verdict — not "differ in structure," but "the precondition held, yet no worktree was
+   actually used for this dispatch" — pinpointing the divergence to inside `withDispatchWorktreeAsync`/
+   `createDispatchWorktree`'s own dispatch-time behavior specifically, information no prior round had.
+3. The structural EQUALITY assertion is now reached ONLY once BOTH direct checks confirm a real,
+   worktree-backed dispatch happened on both sides — restoring the check's actual purpose (catching a
+   genuine generator disagreement) rather than a setup failure wearing that disguise for the second time.
+4. The repo-less informational check mirrors the same two direct signals in the opposite direction:
+   `diagnoseDispatchRepoCondition` against the golden fixture's own UNTOUCHED `storefront` is expected to
+   fail (and names why: the placeholder `repo:` URL), and the dispatch's own `worktreeCwd` is expected to
+   be absent — both now asserted directly rather than inferred from a single skeleton substring check.
+
+**The harness-parity lesson recursing, named explicitly per the goal's own instruction:** a check whose
+in-container verification path (a stand-in `sandbox-exec` primitive faking a real spawn) is NARROWER than
+what it claims to verify (the adapter's actual worktree-creation decision) will pass in-container without
+that meaning the live behavior is understood — exactly FIX-13's own "a probe that exercises a narrower
+code path than production proves nothing about what production does" lesson, recurring one layer up: this
+time the NARROWER thing was the VERIFICATION itself, not the ladder's policy construction. The fix is the
+same shape both times — stop approximating, call the real, exported, adapter-internal logic directly.
+
+## Verification (round 2)
+
+`bun test` — full suite green (1175 pass, unchanged — still a diagnostic-script-only change, no production
+code, no new automated tests). `bun run typecheck` → exit 0. `bun run deps:check` → `deps ok`. `bun run
+build` → succeeds. `bun run src/cli.ts validate fixtures/golden` → `valid`, the same two pre-existing
+`SANDBOX_UNAVAILABLE` warnings, unchanged. `bun run src/cli.ts replay fixtures/golden --stubs` → oracle
+match, byte-for-byte. A temporary, non-committed copy of the rebuilt script (platform/primitive guards
+bypassed, `/bin/echo` standing in for `sandbox-exec`) ran end to end in this container and printed: `parity
+fixture satisfies resolveDispatchRepo's own condition: repoPath=... branch=levare/parity-unit`, then `>>>
+PASS: ... (worktree cwd: /tmp/levare-dispatchwt-...) are structurally identical <<<`, then for the
+informational check, `golden fixture's own 'storefront' correctly does NOT satisfy resolveDispatchRepo's
+own condition: ...` followed by `>>> PASS (expected shape difference) <<<`. The pre-dispatch condition
+check specifically — the piece with zero sandbox dependency — was also exercised standalone (no stand-in
+primitive at all) against the exact fixture-construction sequence the script uses, independently confirming
+`resolveProjectRepoPath`/`branchExists` resolve correctly for this fixture in this container. What remains
+unverified, as with every darwin-specific claim in this whole investigation, is the live host itself — this
+round's own instrumentation is built specifically so the NEXT live run either passes for real or names
+exactly which of the adapter's two preconditions still doesn't hold, closing the guessing loop instead of
+repeating it a third time.
