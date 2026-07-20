@@ -60,6 +60,33 @@
 // instruction). Steps 1a/1b/4 are UNCHANGED from round 1; steps 2/3 changed their OWN command (adding the
 // raw TCP probe) and each now has its OWN, asymmetric verdict logic — see `NetworkTestRole`'s own doc.
 //
+// ROUND 3 LIVE RESULT (with `GITHUB_TOKEN` exported, as instructed): step 2's RAW_TCP_CONNECT read DENIED
+// (PASS — the deny direction holds). Step 4's decoy still denied (PASS — the seal holds). Step 3's own
+// `gh api /zen` reached api.github.com and STARTED a TLS handshake — a THIRD, independent finding, never
+// seen before this round: `gh` reported a downstream `x509: failed to verify certificate` error, and the
+// live kernel log confirmed why — `deny(1) mach-lookup com.apple.trustd.agent`. macOS routes TLS
+// certificate trust evaluation through the system `trustd` daemon over a mach service; `(allow network*)`
+// alone was never sufficient for a real HTTPS client. This is the OPPOSITE of a blocked grant (the
+// connection SUCCEEDED — a certificate to fail verifying only exists after a real connection), so it must
+// never read as a network-grant regression. `classifyGhFailure` gained `gh-tls-trust`, checked BEFORE the
+// generic `network` bucket, so this exact signal is never conflated with either a real deny or a shrug.
+// ROUND 4 (fix, shipped before any further live run): `src/sandbox.ts#buildSandboxExecProfile` grants
+// `(allow mach-lookup (global-name "com.apple.trustd.agent"))`, gated on `policy.allowNetwork` — named
+// EXACTLY as quoted from the live kernel log, never bundled with the OTHER mach-lookup denials observed in
+// the same log (`opendirectoryd.libinfo`, `mDNSResponder`) whose own load-bearing-ness for a working
+// request is not yet independently confirmed by evidence — narrowest grant the evidence in hand justifies,
+// per this whole investigation's own standing discipline; if round 4's own live run still fails at cert
+// verification, the fix is to name and add whichever OTHER mach service the NEXT kernel log names, never
+// to preemptively widen this grant now. One open, UNRESOLVED observation from round 3's own report, named
+// honestly rather than guessed at: step 3's own raw TCP probe (the secondary corroborating signal, never
+// the primary verdict there) reportedly showed a "Killed: 9" shape rather than a clean OK/DENIED — this
+// script does not yet have a confirmed explanation (a genuine external SIGKILL of the probe's own subshell,
+// distinct from `gh`'s own clean x509 exit, is the leading candidate, consistent with this investigation's
+// own established pattern of a denied mach-lookup producing a hard kill rather than a clean EPERM for SOME
+// consumers — see FIX-4/FIX-5's own SIGTRAP precedent — but not confirmed from raw kernel-log evidence this
+// round). Untouched this round pending that evidence — the probe stays in place (cheap, harmless, already
+// demoted to corroboration-only) rather than removed on a guess.
+//
 // Five steps, each a REAL `AdapterRunner.produceAsync` dispatch of a synthetic `kind: cli` member whose
 // `command` invokes the real `gh` binary — never a bespoke, weaker probe (FIX-5's own "weak canary"
 // lesson: `gh --version` alone would prove nothing about `gh`'s real startup path, exactly the trap a
@@ -153,8 +180,21 @@ const STEP_TIMEOUT_S = 30;
 // never silently folded into a generic label a verdict could misread as "the intended seal held." Every
 // caller must check for this bucket FIRST, before applying a step's own must-fail/must-succeed
 // expectation — see `runGhDispatch`'s own verdict logic below.
-export function classifyGhFailure(message: string): "network" | "gh-vendor-dir-permission" | "gh-auth-required" | "filesystem-permission" | "not-found" | "other" {
+export function classifyGhFailure(message: string): "network" | "gh-tls-trust" | "gh-vendor-dir-permission" | "gh-auth-required" | "filesystem-permission" | "not-found" | "other" {
   const m = message.toLowerCase();
+  // NOTES R4-VENDOR-CLI (round 3 live finding): a network-GRANTED real gh request completed its TCP
+  // connection and STARTED a TLS handshake — gh's own reported error was a DOWNSTREAM `x509: failed to
+  // verify certificate`, kernel-confirmed as `deny(1) mach-lookup com.apple.trustd.agent` (macOS routes
+  // TLS trust evaluation through the system trustd daemon, not in-process). This is the OPPOSITE signal
+  // from a connection-level network deny — the connection SUCCEEDED — and must never be folded into the
+  // generic `network` bucket (which a step's own verdict logic reads as "the deny bit," backwards for this
+  // case) or into a bare `other` (which would hide a real, recognized, evidence-backed finding behind a
+  // shrug). Checked BEFORE the network-signal list: an x509/certificate-verify failure is a strictly more
+  // specific, more diagnostic signal than any of the connection-level ones below, and this codebase's own
+  // fix for it (src/sandbox.ts's network-gated `trustd.agent` mach-lookup grant) means a RECURRENCE of this
+  // exact bucket after the fix ships is itself the thing to look for — never silently reclassified away.
+  const tlsTrustSignals = ["failed to verify certificate", "x509:", "certificate is not trusted", "certificate signed by unknown authority", "sectrustevaluate"];
+  if (tlsTrustSignals.some((s) => m.includes(s))) return "gh-tls-trust";
   const networkSignals = [
     "dial tcp",
     "lookup ",
@@ -355,6 +395,17 @@ async function runGhDispatch(repo: Repo, pricing: Pricing, label: string, agent:
       );
     } else if (outcome === "succeeded") {
       console.log("        >>> PASS: gh itself reached the network with a real, authenticated request — the network GRANT works against a real gh client <<<");
+    } else if (classification === "gh-tls-trust") {
+      // NOTES R4-VENDOR-CLI (round 3 live finding, round 4 fix): the OPPOSITE of a blocked grant — the TCP
+      // connection succeeded and TLS handshake STARTED (this is what "failed to verify certificate" means
+      // structurally: there was a certificate TO fail verifying, which only happens after a real
+      // connection). Never a REGRESSION on the network grant. src/sandbox.ts's own `trustd.agent`
+      // mach-lookup grant (gated on network-allow) is the shipped fix for exactly this signal — a
+      // recurrence THIS round means that grant is incomplete (some OTHER mach service this round's own
+      // evidence didn't surface), not that the network grant itself regressed.
+      console.log(
+        "        >>> FINDING: TLS certificate verification failed DOWNSTREAM of a successful connection — the network GRANT itself worked (TCP connected, TLS handshake started). This is the trustd mach-lookup gap (src/sandbox.ts's own network-gated grant is the shipped fix) — if this recurs, that grant is incomplete for some OTHER mach service; check the kernel-denial capture below for exactly which one, evidence-first, never guessed. <<<",
+      );
     } else if (classification === "network") {
       console.log("        >>> REGRESSION: gh had a real token and attempted the network, but the request was DENIED — the network grant is not working for a real gh client <<<");
     } else {

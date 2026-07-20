@@ -22,6 +22,13 @@
 //    message itself is not permission-shaped at all, so ordering relative to those specifically doesn't
 //    matter, but it must never fall through to "other" — a step's own verdict logic depends on it being
 //    named).
+// 4. gh-tls-trust-vs-network — round 3's own live finding: a network-GRANTED real gh request completed its
+//    TCP connection and started a TLS handshake (kernel-confirmed `deny(1) mach-lookup
+//    com.apple.trustd.agent`) — the OPPOSITE signal from a connection-level network deny, since a
+//    certificate to fail verifying only exists after a real connection succeeded. Checked BEFORE the
+//    network-signal list: an x509/certificate-verify failure is a strictly more specific signal, and
+//    folding it into `network` would make a step's own verdict logic read a WORKING grant as a REGRESSION
+//    — backwards.
 
 import { describe, expect, test } from "bun:test";
 import { classifyGhFailure } from "../scripts/repro-r4-vendor-cli-gh.ts";
@@ -37,6 +44,21 @@ describe("classifyGhFailure", () => {
 
   test("a plain connection-refused error classifies as network", () => {
     expect(classifyGhFailure("connection refused")).toBe("network");
+  });
+
+  // The exact shape of round 3's own live finding: TCP connected, TLS started, cert verification failed.
+  test("gh's own x509 certificate-verify failure classifies as gh-tls-trust, never network (round 3's own live finding)", () => {
+    expect(classifyGhFailure("cli member 'gh-api-with-net' exited 1: tls: failed to verify certificate: x509: OSStatus -26276")).toBe("gh-tls-trust");
+  });
+
+  test("a certificate-signed-by-unknown-authority message also classifies as gh-tls-trust", () => {
+    expect(classifyGhFailure("x509: certificate signed by unknown authority")).toBe("gh-tls-trust");
+  });
+
+  test("gh-tls-trust is checked before the network bucket — never misread as a blocked connection", () => {
+    const cls = classifyGhFailure("Get \"https://api.github.com/zen\": tls: failed to verify certificate: x509: certificate is not trusted");
+    expect(cls).toBe("gh-tls-trust");
+    expect(cls).not.toBe("network");
   });
 
   // The exact shape of round 1's own live finding: gh's own config.yml, denied.
@@ -94,9 +116,10 @@ describe("classifyGhFailure", () => {
     expect(classifyGhFailure("gh: unknown flag --bogus")).toBe("other");
   });
 
-  test("is case-insensitive for the network, gh-vendor-dir, and gh-auth-required orderings", () => {
+  test("is case-insensitive for the network, gh-vendor-dir, gh-auth-required, and gh-tls-trust orderings", () => {
     expect(classifyGhFailure("DIAL TCP: OPERATION NOT PERMITTED")).toBe("network");
     expect(classifyGhFailure("OPEN /USERS/CAS/.CONFIG/GH/CONFIG.YML: PERMISSION DENIED")).toBe("gh-vendor-dir-permission");
     expect(classifyGhFailure("PLEASE RUN: GH AUTH LOGIN")).toBe("gh-auth-required");
+    expect(classifyGhFailure("X509: FAILED TO VERIFY CERTIFICATE")).toBe("gh-tls-trust");
   });
 });
