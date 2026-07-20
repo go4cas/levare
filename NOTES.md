@@ -10918,3 +10918,184 @@ itself (forcing `sandboxDetection` as an option skips `detectSandbox()`, and the
 — the exact mechanism explaining why this bug survived four rounds of container-only verification), which
 is precisely why the pure string-level test above, not another end-to-end run, is this round's own real
 proof.
+
+# NOTES R4-VENDOR-CLI — validating R4 against a REAL vendor CLI (`gh`), not the member stub: a harness,
+# not yet a live verdict
+
+Every live-host round in the FIX-1 → FIX-14 saga above proved the sandbox against `bun` itself — the
+interpreter running a member stub script. FIX-5's own residual named the gap explicitly: "a real wrapped
+vendor CLI — Codex, Gemini — may read further sysctls or touch further kernel interfaces this round's own
+evidence never surfaced, since it was gathered against this repo's own fixture stub, not a third-party
+binary." This goal closes that gap for `gh` specifically. **This is a validation, not a build**: the
+default posture is that R4 already holds and `gh` runs clean under it — no production code was changed to
+get here, and none should be, unless live evidence names a specific, narrow gap.
+
+## What this round actually delivers, honestly
+
+**A repeatable harness (`scripts/repro-r4-vendor-cli-gh.ts`), sanity-checked in this container, NOT a live
+verdict.** This container is Linux (no working `sandbox-exec` anywhere, ever, per every prior round's own
+framing) and has no `gh` binary installed — both conditions the goal itself anticipated ("must run on a
+live host... degrade honestly in-container"). Run directly in this container, the script hits its own
+`process.platform !== "darwin"` guard immediately and exits cleanly, printing exactly why, rather than
+faking a pass — proven by direct execution, not merely asserted.
+
+## The harness, five steps
+
+Mirrors `scripts/repro-r4-sandbox-fix10-hang.ts`'s own structure and `LEVARE_SANDBOX_DEBUG=1` conventions,
+but drives a fundamentally different production entry point: `AdapterRunner.produceAsync()` end to end
+(the same real call chain FIX-13's own parity check drives — `prepare`, `withDispatchWorktreeAsync`,
+`sandboxWrap`, `wrapForSandbox`, `buildSandboxExecProfile`, the real spawn boundary) against a synthetic
+`kind: cli` agent whose `command` invokes the real `gh` binary, never a hand-rolled `sandbox-exec`
+invocation and never a mocked `CliSpawn`. Nothing is added to `fixtures/golden` — the synthetic agents are
+built in memory and `.set()` onto the loaded `Repo`'s own `agents` map, the identical technique
+`scripts/repro-r4-sandbox-fix10-hang.ts` already uses for its own parity-check project overrides — so
+"zero production code change" extends to "zero fixture change" too.
+
+The golden fixture already ships a `github` connector (`fixtures/golden/connectors/github.md`, `command:
+gh`, `env: [GITHUB_TOKEN]`) that no existing agent grants — this round is the first to actually exercise
+it. `env.ts#memberNetworkAllowed` is a whole-sandbox boolean (any granted connector flips network on for
+the ENTIRE spawn, never scoped to that connector's own endpoint — read directly from its own doc comment:
+"holds at least one granted connector is exactly holds a connector declaring a remote endpoint... there is
+no connector shape that names a purely-local capability"), so "member holds a connector declaring a remote
+endpoint" (the goal's own phrasing) and "member holds the `github` connector specifically" collapse to the
+identical grant for this test — no new connector needed, and this fact is recorded here because it means
+step 3 below is not proving "the `github` connector's own reach is granted", only "network is granted at
+all", which is the actual, current shape of the property this goal asks to validate.
+
+1a. **`gh auth status`, no connector (network denied).** The REAL proof step — chosen specifically because
+    `--version` alone would repeat FIX-5's own "weak canary" mistake (a fast-exit flag that skips the
+    startup/config-load path a real dispatch always takes). `gh auth status` genuinely resolves gh's own
+    config directory and reports "not logged in" without ever touching the network when unauthenticated.
+    Read the printed message and its heuristic classification, not the bare succeeded/failed label: gh
+    itself exits nonzero for "not logged in" (a clean, `gh`-authored message, classified `other`) — that
+    IS the expected, good outcome, proving gh's own startup survives the sandbox's filesystem confinement.
+    A `filesystem-permission`-classified failure instead would point at gh's own `~/.config/gh` read
+    hitting the operator-home deny — the exact EPERM-vs-ENOENT class FIX-9 found for git's `.gitconfig` —
+    named here as the ranked-first suspicion for any confusing failure, never assumed without live
+    evidence. A HANG (the 30s per-agent timeout firing) would be the genuinely alarming outcome.
+1b. **`gh --version`, no connector.** Kept as a secondary, weaker signal only — explicitly documented in
+    the script's own header as NOT independently proving 1a's claim.
+2.  **`gh api /zen`, no connector (network denied) — MUST fail.** A real, unauthenticated GET to a real
+    GitHub endpoint that needs no token (the documented public "zen" quote — chosen specifically so an
+    auth failure can never be confused with a network denial). The deny must bite a genuine network
+    client, not just a unit test's synthetic `(deny network*)` assertion.
+3.  **`gh api /zen`, WITH the `github` connector (network allowed) — informational, read against step 2.**
+    The differential pair: (2 denied, 3 succeeded) is the evidence the boundary is real; (2 denied, 3 also
+    denied) points at the live host's own connectivity, not the sandbox; (2 succeeded) is step 2's own
+    regression regardless of step 3.
+4.  **`cat <decoy file under the operator's real $HOME>`, WITH the `github` connector — MUST fail.** The
+    standing-seal recheck the user's own directive for this goal named explicitly (NOTES
+    R4-SANDBOX-FIX-8/FIX-12: a new grant must be re-checked against every existing seal in the same
+    round): the FIX-3/FIX-4 operator-home decoy test, run specifically against a network-GRANTED
+    gh-shaped dispatch, proving network reach and filesystem confinement are orthogonal grants that don't
+    leak into one another. The `.git/hooks` reseal (FIX-8/FIX-12) is NOT re-exercised here — every
+    dispatch in this script is deliberately repo-less (`storefront`/`repro`, the same shape FIX-14's own
+    informational check uses), so `dispatchGitWriteGrant` is never populated and the git-write reseal
+    never enters the profile at all; named as an explicit, honest scope boundary rather than silently
+    assumed covered.
+
+A best-effort macOS `log show` capture (step 6, darwin-only) runs after, gathering the same class of
+kernel-denial evidence a Conductor supplied by hand in FIX-3 through FIX-12, automatically — never treated
+as authoritative on its own (an empty result means either "nothing was denied" or "this host's `log show`
+needs elevated privileges", both named explicitly rather than conflated).
+
+Every failure is passed through `classifyGhFailure` (module scope, exported, pure string matching) — a
+heuristic distinguishing a network-shaped failure from a filesystem-permission-shaped one from `gh` simply
+missing, printed alongside the raw message, never in place of it. Ordered so network-specific patterns
+(`dial tcp`, `lookup `, `connection refused`, …) are checked BEFORE a bare `permission denied`/`eperm`/
+`operation not permitted` check: a sandboxed network deny surfacing through gh's own Go HTTP client
+typically reads as `dial tcp ... operation not permitted` — an EPERM-flavored string that would
+misclassify as a filesystem issue under naive ordering. Pinned by `tests/repro-r4-vendor-cli-gh.test.ts`
+(8 pure string-level tests, no live host needed — the same "closes the container-pass gap for good, for
+this class of bug" posture FIX-14's own `selectDispatchProfileText` regression test established),
+including the exact EPERM-flavored-network-string case that ordering exists to get right.
+
+## In-container sanity check (construction only — not enforcement)
+
+Per this saga's own established method (every prior round's "temporary, non-committed copy with the
+platform/primitive guards bypassed, a stand-in primitive"): a throwaway copy with the darwin guard
+bypassed, `sandboxDetection` forced to `{platform: "darwin", primitive: "sandbox-exec", level: "full"}`,
+and both `sandbox-exec` and `gh` pointed at small stub shell scripts (`sandbox-exec`'s stub drops `-f
+<profile>` and `exec`s the wrapped command directly — unconfined, the same "`/bin/echo`-as-bwrap" trick
+this codebase's own tests already use elsewhere, adapted to actually run the wrapped command rather than
+merely echo it) ran end to end without error and confirmed, by direct inspection of the printed profile
+text:
+
+- Step 2's generated profile ends in `(deny network*)`; step 3's (connector-granted) generated profile
+  ends in `(allow network*)` — the ONE line that differs between them, confirming `memberNetworkAllowed`
+  reaches the generated profile exactly as `env.ts`'s own doc comment claims.
+- Step 4's generated profile carries BOTH `(allow network*)` AND `(deny file-read* (subpath
+  "<operator's real HOME>"))` simultaneously — direct, printed proof that the two grants are structurally
+  independent lines in the SAME profile, never coupled.
+- `preflightCli`/`resolveArgv0`/`sandboxWrap`/`cliResultToDoc`/`author()` all execute without a single
+  uncaught exception across all five steps, for both a nonzero-exit case (1a) and successful cases (1b,
+  2/3/4 under the unconfined stub).
+
+**What this sanity check does NOT claim**, exactly per this saga's own recurring caveat: the stand-in
+`sandbox-exec` never actually enforces anything (steps 2 and 4 both print their own `>>> REGRESSION <<<`
+line under the stub, because an unconfined `exec` denies nothing) — this proves the harness's own
+CONSTRUCTION and CONTROL FLOW are correct, exactly as every prior round's own stand-in-primitive sanity
+check proved for the ladder script, never that gh actually behaves as expected under REAL Seatbelt
+enforcement. That is the one thing only a live macOS host with a genuine `gh` and a genuine
+`sandbox-exec` can confirm.
+
+## What gh might touch that the stub never did — named as a ranked-first suspicion, not asserted
+
+`gh`'s own state directory (`~/.config/gh` by default) sits under the operator's real, unscoped `$HOME`
+for every member in this script (none of them hold a `subscription`-authenticated connector, the only
+mechanism that scratch-scopes `HOME` — see `env.ts#scopeHome` — and a zero-grant member structurally
+cannot hold one, since `grantedConnectors().length > 0` is the SAME condition `memberNetworkAllowed` reads,
+making "network denied" and "HOME scoped" mutually exclusive under current production rules, a real,
+load-bearing fact worth stating plainly rather than worked around). Reading a config directory that is
+present-but-denied (EPERM) rather than genuinely absent (ENOENT) is the exact class of bug FIX-9 found for
+git's own `.gitconfig` — untested here because it requires gh's own real behavior under real Seatbelt
+enforcement, which only step 1a on a live host can show. If step 1a's own live run reports a
+`filesystem-permission`-classified failure rather than gh's own clean "not logged in" message, the
+evidence-first remedy (mirroring FIX-9's own `GIT_CONFIG_GLOBAL=/dev/null` precedent exactly) is an
+environment-level redirect — e.g. `GH_CONFIG_DIR` pointed at a scratch location already inside the
+sandbox's own granted `cwd` — never a filesystem grant widening the operator-home deny itself. Not applied
+preemptively: no live evidence exists yet that it is needed, and applying it without that evidence would
+be exactly the "convenience widening" the goal explicitly rules out.
+
+## Honest residuals
+
+- **No live macOS run has happened this round.** This session has no live macOS access at all — every
+  verdict (PASS/REGRESSION/FINDING) the script is designed to print for steps 1a through 4 is unproduced.
+  What exists is the harness itself, proven by construction (typecheck, the pure-string test suite, and
+  the stand-in-primitive sanity run above) to be ready to run and to print exactly the evidence a
+  Conductor needs to diagnose whatever it finds — the identical posture FIX-10's own first round shipped
+  (instrumentation and a ladder, explicitly not yet a diagnosis).
+- **Only `gh`, and only two of its subcommands, are validated by this script.** `auth status`, `--version`,
+  and `api /zen` are the full surface exercised — NOT `gh pr create`, `gh repo clone`, or any subcommand
+  that writes to the filesystem beyond its own config directory, uses a real authenticated token, or
+  shells out to a helper binary (`gh`'s own credential helper, `git` itself for `gh repo clone`). Every
+  other vendor CLI this codebase might wrap (Codex, Gemini, per FIX-5's own residual) remains completely
+  untested by this round.
+- **The `.git/hooks` reseal (FIX-8/FIX-12) is not re-exercised** — every dispatch here is deliberately
+  repo-less, so `dispatchGitWriteGrant` never populates and the reseal never enters the profile. A future
+  round validating a gh subcommand that DOES touch a real project checkout (`gh repo clone` into a
+  dispatch worktree, say) would need to re-run that specific recheck, not assume this round already covers
+  it.
+- **Step 3's own success/failure is inherently ambiguous without a paired step 2 result** (documented
+  directly in the script's own step-3 note) — a live host with no real internet reachability at all would
+  make step 3 fail for a reason unrelated to the sandbox, indistinguishable from a real regression without
+  reading it against step 2's own result first.
+
+## Verification
+
+`bun test` — full suite green (1192 pass, 6 skip, 0 fail — the 8 new `classifyGhFailure` tests in
+`tests/repro-r4-vendor-cli-gh.test.ts`, none platform-gated, none requiring a sandbox primitive). `bun run
+typecheck` → exit 0 (the new script is pulled into the `tsc` include graph transitively through its own
+test file's import, the same mechanism that already covers `scripts/repro-r4-sandbox-fix10-hang.ts`). `bun
+run deps:check` → `deps ok`. `bun run build` → succeeds (this round touches no `src/` file at all — zero
+production code change, exactly the goal's own ideal outcome). `bun run src/cli.ts validate fixtures/golden`
+→ `valid`, the same two pre-existing `SANDBOX_UNAVAILABLE` warnings, unchanged. `bun run src/cli.ts replay
+fixtures/golden --stubs` → oracle match, byte-for-byte. `bun run scripts/repro-r4-vendor-cli-gh.ts` in this
+container → exits cleanly on the darwin platform guard, printing exactly why. A temporary, non-committed
+copy (platform/primitive guards bypassed, stub `sandbox-exec`/`gh` binaries standing in) ran all five steps
+end to end without error, confirming the harness's own construction and control flow — never sandbox
+enforcement itself, which only the live host can confirm.
+
+**Bottom line: R4 has not regressed, and no code changed to reach this point — but this round does not
+claim R4 holds against a real `gh` either. That claim is exactly one live macOS run away, and the harness
+this round built is what that run needs.**
