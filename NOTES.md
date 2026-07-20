@@ -11685,3 +11685,91 @@ away: `export GITHUB_TOKEN=<a real PAT>` then `bun run scripts/repro-r4-vendor-c
 step 2 DENIED, step 3 a real gh success (not `gh-tls-trust` again), and the decoy still denied, R4 holds
 against real `gh` with these three narrow fixes. If step 3 still shows `gh-tls-trust`, that names precisely
 what to look for next — the raw kernel-log lines from THAT run, not another guess.**
+
+# NOTES R4-VENDOR-CLI, round 4 (live macOS run, RAW output supplied) — CLOSED: R4 holds against real `gh`
+
+The Conductor re-ran round 4 live with `GITHUB_TOKEN` exported and this time supplied the raw terminal
+output for all four steps, not a summary. Every step read exactly as this whole investigation's own three
+fixes predicted:
+
+- **Step 1a (`gh auth status`, no connector) — clean.** No `gh-vendor-dir-permission`. Round 1's fix
+  (`cliVendorScratchEnv`/`createCliVendorScratch`/`fullSandboxEnvRedirect`, `src/adapters.ts`) is
+  live-confirmed: `gh`'s own config/state/data/cache directories resolve to the granted scratch root, and
+  `gh` degrades cleanly instead of dying on a denied `~/.config/gh/config.yml` read.
+- **Step 2 (`gh api /zen` + raw TCP probe, no connector) — `RAW_TCP_CONNECT=DENIED`.** `gh` itself refused
+  locally at its own auth gate (structural and expected — round 3's own design-review conclusion, confirmed
+  from `gh`'s own source: no token, no code path to a socket at all). The sandbox's own network boundary is
+  proven at the raw-socket layer, exactly the ceiling that direction has, per that same review.
+- **Step 3 (`gh api /zen` + raw TCP probe, `github` connector, `GITHUB_TOKEN` present=true) — PASS.** `gh`
+  made a REAL authenticated request that reached the network, exit 0, `sandbox: full`. **No `x509`/TLS-trust
+  error this round** — round 4's own fix (`src/sandbox.ts`'s network-gated
+  `(allow mach-lookup (global-name "com.apple.trustd.agent"))`) closed the certificate-verification gap
+  round 3 found. The network GRANT is now proven against a REAL, authenticated `gh` HTTP client, TLS
+  included — the strongest evidence this harness can produce, exactly as round 3's design review predicted
+  it would be once the trustd gap closed.
+- **Step 4 (decoy, `github` connector) — denied, kernel-confirmed (`cat: Operation not permitted`).** The
+  operator-home seal holds under a network-granted AND trustd-granted gh-shaped dispatch. Filesystem
+  confinement and network reach remain orthogonal through all three fixes, re-verified a third time.
+
+## Both open ambiguities from prior rounds, resolved by this raw output — never carried forward again
+
+1. **"belongs to no team" — confirmed harmless, exactly as re-derived from the code and from a fresh
+   in-container re-run before this live result came back.** It prints on every step and gates nothing;
+   `AdapterRunner#assemble` catches the error internally and returns an empty context, and every step's own
+   real exit code in this round's raw output proves the dispatch continued straight through to a real
+   spawn regardless. The push-back against the "harness regression" diagnosis two rounds ago was correct,
+   confirmed now by the live evidence itself, not just by re-reading the code.
+2. **Round 3's "Killed: 9"** was the harness's OWN 30-second dispatch-level timeout wrapper killing the
+   secondary `/dev/tcp` corroboration probe on step 3 — not a sandbox-level kill, not a mach-lookup-denial
+   crash signature (the leading candidate NOTES had named, unconfirmed, pending exactly this evidence). This
+   round's own raw output shows the same shape resolved: the probe gets signal-killed while `gh` itself
+   succeeds cleanly — harness plumbing (the probe racing a slow-but-successful `gh` request against the
+   30s ceiling), not sandbox enforcement. Never a product concern; the probe was always corroboration-only,
+   never the primary verdict for step 3, precisely because of exactly this kind of noise.
+
+## The complete evidence trail, all three fixes, all evidence-first
+
+1. **Round 1** — `gh` dies reading its own denied `~/.config/gh/config.yml` (kernel-confirmed `deny(1)
+   file-read-data`), the FIX-9 EPERM-vs-ENOENT class recurring for a four-directory config shape. Fixed:
+   `cliVendorScratchEnv` redirect, gated on `"full"`-tier sandbox, applied generically to every `cli`
+   dispatch.
+2. **Round 2** — harness-only gap: `gh api` refuses any request without a resolved token, entirely in
+   userspace, unrelated to the sandbox. Fixed: a raw, gh-auth-independent TCP probe for the deny direction;
+   gh's own real outcome for the grant direction (round 3's own design review, confirmed from `gh`'s source
+   before any further live run spent on a mislabeled proof).
+3. **Round 3** — a network-granted real request reaches TLS but fails certificate verification (kernel-
+   confirmed `deny(1) mach-lookup com.apple.trustd.agent`) — the opposite of a blocked grant. Fixed: a
+   network-gated `trustd.agent` mach-lookup grant, named exactly as quoted from the kernel log, nothing
+   bundled speculatively.
+
+Every fix was the narrowest grant or harness correction the live evidence in hand justified. No fix was
+ever applied speculatively or ahead of live confirmation; two candidate mechanisms (`opendirectoryd.libinfo`/
+`mDNSResponder` mach-lookups; the "Killed: 9" cause) were named but deliberately left ungranted/uninvestigated
+pending evidence that either never arrived (the former — never needed, since round 4's own live run
+succeeded without them) or has now arrived and closed the question (the latter — harness timing, not
+sandbox enforcement).
+
+## Verification
+
+`bun test` — full suite green (1207 pass, 6 skip, 0 fail — unchanged from round 3's own fix; this round is
+purely the live confirmation, no further code change). `bun run typecheck` → exit 0. `bun run deps:check` →
+`deps ok`. `bun run build` → succeeds. `bun run src/cli.ts validate fixtures/golden` → `valid`, the same two
+pre-existing `SANDBOX_UNAVAILABLE` warnings, unchanged. `bun run src/cli.ts replay fixtures/golden --stubs`
+→ oracle match, byte-for-byte. Working tree clean — no uncommitted `src/` or script changes remain from this
+round; the round-4 result required none.
+
+**Bottom line, stated plainly per the goal's own explicit success criterion: R4 holds against real `gh`,**
+confirmed by a genuine live macOS run in both network directions simultaneously (deny at the raw-socket
+layer for a no-connector member; grant proven through a real, authenticated `gh` HTTP client, TLS included,
+for a connector-granted member) plus the operator-home seal holding orthogonally throughout. This did NOT
+happen with zero code change — the goal's own stated ideal — but every change that shipped was a real,
+evidence-first bug this validation surfaced (never a target sought out), each the narrowest grant or harness
+correction its own kernel-log/source evidence justified: `src/adapters.ts`'s vendor-CLI config/state/data/
+cache scratch redirect (round 1), and `src/sandbox.ts`'s network-gated TLS trust-evaluation mach-lookup
+grant (round 4/finding round 3). The harness itself (`scripts/repro-r4-vendor-cli-gh.ts`) required its own
+corrections along the way (the raw-TCP/gh-outcome asymmetric verdict split, three new `classifyGhFailure`
+buckets) — never production code, always diagnostic-script fixes to keep the harness's own claims honest
+about what each step actually proves. Every honest residual named in rounds 1-3 (generalization beyond
+`gh` to Codex/Gemini; the `.git/hooks` reseal not re-exercised by this repo-less harness; the connector/
+network coupling now recorded in `docs/current-gaps.md`) remains open and is NOT claimed closed by this
+round — this round closes exactly what its own goal asked for: `gh` specifically, validated live, holding.
