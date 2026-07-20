@@ -25,8 +25,9 @@
 // "blocked artifact" surfacing every existing caller (dagwalk.ts, board/gateops.ts) already gives an
 // AdapterError.
 
-import { existsSync, statSync, accessSync, mkdirSync, constants as fsConstants } from "node:fs";
+import { existsSync, statSync, accessSync, mkdirSync, mkdtempSync, rmSync, constants as fsConstants } from "node:fs";
 import { isAbsolute, dirname, join as pathJoin } from "node:path";
+import { tmpdir } from "node:os";
 import { normalizeReceipt } from "./receipts.ts";
 import { buildMemberEnv, teamOf, subscriptionConnector, scopeHome, memberNetworkAllowed } from "./env.ts";
 import { allowedTools } from "./guardrails.ts";
@@ -90,6 +91,17 @@ export interface InvokeRequest {
    * branch yet) — exactly `projectRepoPath`'s own no-worktree case.
    */
   dispatchGitWriteGrant?: { root: string; subpaths: string[] };
+  /**
+   * NOTES R4-VENDOR-CLI (live macOS gate: real `gh`, not the member stub): a fresh, per-dispatch scratch
+   * directory a wrapped vendor CLI's own config/state/data/cache directories get redirected into under a
+   * `"full"`-tier sandbox — set immediately before the real spawn (`runCli`/`runCliAsync`), cleaned up
+   * immediately after, mirroring `withHomeScope`'s own create-immediately-before/clean-up-immediately-
+   * after discipline. Distinct from `dispatchGitWriteGrant`: this is never git-specific — see
+   * `cliVendorScratchEnv`'s own doc for why a vendor CLI's OWN directories (never the operator's real
+   * ones) are what get created here. Undefined for a non-real spawn boundary (a test-injected `CliSpawn`
+   * double), exactly `dispatchGitWriteGrant`'s own no-worktree case.
+   */
+  cliVendorScratchDir?: string;
 }
 
 /** The native SDK boundary — synchronous, used by the phase-2 batch `Runner` (`levare replay`) and by
@@ -197,6 +209,76 @@ function resolveFeatureRepo(template: string | undefined, projectRepoPath: strin
 // command template already passes — a member needing git identity keeps working exactly as before.
 function gitConfigRedirectEnv(env: Record<string, string>): Record<string, string> {
   return { ...env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
+}
+
+// NOTES R4-VENDOR-CLI (live macOS gate: the first validation against a REAL vendor CLI, `gh`, never the
+// member stub): the SAME EPERM-vs-ENOENT class FIX-9 named above, recurring for a different tool with a
+// different failure shape. Kernel evidence from the live run: every `gh` invocation died identically at
+// `~/.config/gh/config.yml`, `deny(1) file-read-data` — `gh` treats a DENIED (present-but-forbidden)
+// config read as FATAL, before ever reaching the network, exactly like git's own `.gitconfig`. Unlike
+// git's global config (a single FILE `/dev/null` can stand in for), `gh`'s own resolution — read directly
+// from the library it vendors for this, `cli/go-gh`'s `pkg/config/config.go`, never guessed — is FOUR
+// DIRECTORIES, each gh itself may create/write into on first use (`os.MkdirAll`), so `/dev/null` cannot
+// stand in for any of them:
+//   - `GH_CONFIG_DIR` (`config.yml`, `hosts.yml` — the operator's own real GitHub auth tokens live in
+//     `hosts.yml` specifically, which is exactly why this must be a FRESH, EMPTY scratch directory, never
+//     a read grant on the operator's real one: granting real reads would pipe the operator's own
+//     credentials straight into the sandbox, the precise leak NOTES R4-SANDBOX-FIX-3/FIX-4's deny-user-
+//     data ruling exists to prevent. Auth for a sandboxed `gh` member comes through its connector's own
+//     `GITHUB_TOKEN` env var — `gh` itself documents `GH_TOKEN`/`GITHUB_TOKEN` as taking precedence over
+//     a stored login session, so this is the vendor-intended way to run `gh` without a local session, not
+//     a workaround.)
+//   - `XDG_STATE_HOME` (a `gh` subdir under it — `state.yml`, e.g. update-check bookkeeping)
+//   - `XDG_DATA_HOME` (a `gh` subdir)
+//   - `XDG_CACHE_HOME` (a `gh` subdir — its own FALLBACK, absent this redirect, resolves to
+//     `$TMPDIR/gh-cli-cache`, itself denied under this sandbox's own narrow xcrun-only temp-dir grant
+//     (FIX-11/FIX-12) — closed here PROACTIVELY: the live run's own kernel evidence confirmed
+//     `config.yml`/`hosts.yml`/a state file specifically, never independently confirmed the cache path,
+//     named honestly as such in NOTES rather than claimed as live-verified).
+// Applied generically to EVERY `"full"`-tier `kind: cli` dispatch, never gated on `argv[0] === "gh"`
+// specifically — mirroring `gitConfigRedirectEnv`'s own precedent (that redirect isn't gated on "is this
+// member git" either) and, per the XDG Base Directory spec being a general Unix convention many modern
+// CLIs honor (not only `gh` — FIX-5's own named residual, Codex/Gemini, may benefit too), though this is
+// NOT independently live-confirmed for any CLI other than `gh` and is named as such, not claimed proven.
+function cliVendorScratchEnv(scratchDir: string): Record<string, string> {
+  return {
+    GH_CONFIG_DIR: pathJoin(scratchDir, "gh-config"),
+    XDG_STATE_HOME: pathJoin(scratchDir, "xdg-state"),
+    XDG_DATA_HOME: pathJoin(scratchDir, "xdg-data"),
+    XDG_CACHE_HOME: pathJoin(scratchDir, "xdg-cache"),
+  };
+}
+
+// Combines the git redirect (FIX-9) and the vendor-CLI scratch redirect (R4-VENDOR-CLI) into the single
+// env layering `runCli`/`runCliAsync` apply under a `"full"`-tier sandbox — `vendorScratchDir` is
+// undefined only when `createCliVendorScratch` was never called (never for a real spawn boundary that
+// reached `"full"`; see both call sites), in which case this degrades to exactly `gitConfigRedirectEnv`'s
+// own prior behavior.
+function fullSandboxEnvRedirect(env: Record<string, string>, vendorScratchDir: string | undefined): Record<string, string> {
+  const withGit = gitConfigRedirectEnv(env);
+  return vendorScratchDir ? { ...withGit, ...cliVendorScratchEnv(vendorScratchDir) } : withGit;
+}
+
+// Creates the fresh, per-dispatch scratch directory `cliVendorScratchEnv` points a wrapped vendor CLI's
+// own config/state/data/cache directories into — mirrors `env.ts#scopeHome`'s own `mkdtempSync(tmpdir())`
+// scratch-resource lifecycle (created immediately before the spawn, removed in the caller's own
+// `finally`, never shared across dispatches). Only the ROOT directory is created here: each of the four
+// leaf subdirectories `cliVendorScratchEnv` names is created by the vendor CLI itself on first write
+// (`os.MkdirAll`, confirmed directly from `cli/go-gh`'s own source) — mirroring FIX-8's own
+// `dispatchGitWriteGrant`'s "create the root the grant needs, let the real workload populate the rest"
+// posture, never pre-guessing a vendor CLI's own internal directory layout beyond what it needs to exist.
+function createCliVendorScratch(): { dir: string; cleanup: () => void } {
+  const dir = mkdtempSync(pathJoin(tmpdir(), "levare-cli-vendor-"));
+  return {
+    dir,
+    cleanup: () => {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        /* best-effort — mirrors every other scratch-resource cleanup in this file */
+      }
+    },
+  };
 }
 
 // NOTES R4-SANDBOX-FIX-12: returns `root` alongside `subpaths` now (previously a flat array) — `sandboxWrap`
@@ -685,7 +767,12 @@ export function buildDispatchSandboxPolicy(
     readOnlyPaths,
     operatorHome,
     grantedHomeTargets,
-    writablePaths: req.dispatchGitWriteGrant?.subpaths ?? [],
+    // NOTES R4-VENDOR-CLI: the vendor-CLI scratch dir carries no reseal/deny-then-reallow complexity the
+    // way `gitWriteGrant`'s own subpaths do (nothing else in this profile ever claims this fresh,
+    // per-dispatch directory), so it needs no dedicated field — a plain `writablePaths` entry, exactly
+    // like `dispatchGitWriteGrant`'s own subpaths, is what both platforms' generators already handle
+    // generically.
+    writablePaths: [...(req.dispatchGitWriteGrant?.subpaths ?? []), ...(req.cliVendorScratchDir ? [req.cliVendorScratchDir] : [])],
     gitWriteGrant: req.dispatchGitWriteGrant,
     darwinXcrunTempDir: darwinTempDir,
   };
@@ -1103,10 +1190,17 @@ export class AdapterRunner implements MemberRunner {
     // failure mode this guards against.
     const real = this.spawn === bunSpawn;
     if (real) preflightCli(req.member, argv, cwd, req.env.PATH);
-    const wrapped: { argv: string[]; level?: SandboxLevel; cleanup?: () => void } = real ? this.sandboxWrap(argv, cwd, req) : { argv };
-    // NOTES R4-SANDBOX-FIX-9: only a "full"-tier sandbox denies (rather than merely not-attempting-to-
-    // confine) the operator's real HOME — see `gitConfigRedirectEnv`'s own doc.
-    const env = wrapped.level === "full" ? gitConfigRedirectEnv(req.env) : req.env;
+    // NOTES R4-VENDOR-CLI: created unconditionally whenever real (mirrors `scopeHome`'s own unconditional-
+    // creation-when-needed pattern) — the level isn't known until `sandboxWrap` below runs `detectSandbox()`
+    // internally, so there's no cheaper point to decide "will this actually be used." The cost (one
+    // `mkdtempSync`/`rmSync` pair) is trivial and matches every other scratch resource this file already
+    // creates per-dispatch regardless of final level.
+    const vendorScratch = real ? createCliVendorScratch() : undefined;
+    const policyReq = vendorScratch ? { ...req, cliVendorScratchDir: vendorScratch.dir } : req;
+    const wrapped: { argv: string[]; level?: SandboxLevel; cleanup?: () => void } = real ? this.sandboxWrap(argv, cwd, policyReq) : { argv };
+    // NOTES R4-SANDBOX-FIX-9 / R4-VENDOR-CLI: only a "full"-tier sandbox denies (rather than merely
+    // not-attempting-to-confine) the operator's real HOME — see `fullSandboxEnvRedirect`'s own doc.
+    const env = wrapped.level === "full" ? fullSandboxEnvRedirect(req.env, vendorScratch?.dir) : req.env;
     try {
       const result = this.spawn.run(wrapped.argv, { env, cwd, timeoutMs, stdin });
       if (real) AdapterRunner.logSpawnDebug(result);
@@ -1116,6 +1210,7 @@ export class AdapterRunner implements MemberRunner {
       return { ...this.cliResultToDoc(req.member, agent, wrapped.argv, result), sandbox: wrapped.level };
     } finally {
       wrapped.cleanup?.();
+      vendorScratch?.cleanup();
     }
   }
 
@@ -1125,14 +1220,17 @@ export class AdapterRunner implements MemberRunner {
     const { argv, cwd, timeoutMs, stdin } = this.cliInvocation(agent, req);
     const real = this.asyncSpawn === asyncBunSpawn;
     if (real) preflightCli(req.member, argv, cwd, req.env.PATH);
-    const wrapped: { argv: string[]; level?: SandboxLevel; cleanup?: () => void } = real ? this.sandboxWrap(argv, cwd, req) : { argv };
-    const env = wrapped.level === "full" ? gitConfigRedirectEnv(req.env) : req.env;
+    const vendorScratch = real ? createCliVendorScratch() : undefined;
+    const policyReq = vendorScratch ? { ...req, cliVendorScratchDir: vendorScratch.dir } : req;
+    const wrapped: { argv: string[]; level?: SandboxLevel; cleanup?: () => void } = real ? this.sandboxWrap(argv, cwd, policyReq) : { argv };
+    const env = wrapped.level === "full" ? fullSandboxEnvRedirect(req.env, vendorScratch?.dir) : req.env;
     try {
       const result = await this.asyncSpawn.run(wrapped.argv, { env, cwd, timeoutMs, stdin });
       if (real) AdapterRunner.logSpawnDebug(result);
       return { ...this.cliResultToDoc(req.member, agent, wrapped.argv, result), sandbox: wrapped.level };
     } finally {
       wrapped.cleanup?.();
+      vendorScratch?.cleanup();
     }
   }
 

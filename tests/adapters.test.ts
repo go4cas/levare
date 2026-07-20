@@ -1399,6 +1399,132 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
     });
   });
 
+  // NOTES R4-VENDOR-CLI (live macOS gate: the first validation against a REAL vendor CLI, `gh`, never the
+  // member stub): kernel evidence from the live run showed `gh` dying identically at
+  // `~/.config/gh/config.yml`, `deny(1) file-read-data` — the EPERM-vs-ENOENT class FIX-9 named above,
+  // recurring for a tool whose own config resolution (read directly from the library it vendors, `cli/
+  // go-gh`'s `pkg/config/config.go`) is four DIRECTORIES, not one file `/dev/null` could stand in for.
+  // Proven end to end via the SAME `fakeWorkingPrimitive` genuinely-executing stand-in the FIX-9 describe
+  // block above already uses — a real spawn boundary (`this.spawn === bunSpawn`) needs a functioning
+  // "primitive" to observe what the inner command's own process actually sees.
+  describe("a wrapped vendor CLI's config/state/data/cache dirs are redirected to a scratch dir under a full-tier sandbox (NOTES R4-VENDOR-CLI)", () => {
+    test("level: full → GH_CONFIG_DIR/XDG_STATE_HOME/XDG_DATA_HOME/XDG_CACHE_HOME are all set under the SAME scratch root, which is removed after the dispatch completes", async () => {
+      const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+      const primitiveBin = fakeWorkingPrimitive();
+      let capturedDir = "";
+      try {
+        const repo = repoWithRealStorefrontRepo(projectRepo);
+        const runner = new AdapterRunner(repo, {
+          pricing,
+          capabilities: [{ member: "finch", kind: "review" }],
+          native: nativeMock,
+          remote: remoteMock,
+          // The ROOT-existence check runs INSIDE the spawned child itself (`[ -d ... ]`) — the only point
+          // at which the scratch dir is guaranteed to still exist; by the time `produceAsync` returns,
+          // this file's own `finally` has already cleaned it up (proven separately, below).
+          cliCommand: () => [
+            "sh",
+            "-c",
+            'printf "ROOT=%s CONFIG=%s STATE=%s DATA=%s CACHE=%s" "$( [ -d "$(dirname "$GH_CONFIG_DIR")" ] && echo EXISTS || echo MISSING )" "$GH_CONFIG_DIR" "$XDG_STATE_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME"',
+          ],
+          sandboxDetection: { platform: "linux", primitive: "bubblewrap", level: "full", bin: primitiveBin },
+        });
+        const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+        const m = /ROOT=(\S+) CONFIG=(\S+) STATE=(\S+) DATA=(\S+) CACHE=(\S+)/.exec(doc);
+        expect(m).not.toBeNull();
+        const [, rootExists, configDir, stateHome, dataHome, cacheHome] = m!;
+        expect(rootExists).toBe("EXISTS"); // the scratch root exists WHILE the dispatch's own env pointed at it
+        // All four resolve under the identical scratch root — one directory created per dispatch, never
+        // four independent ones — and each is its own distinctly-named subdirectory (gh's own `Join(dir,
+        // "gh")` for the three XDG vars, so the leaf name a real `gh` would append is never pre-guessed
+        // here; only the ROOT this codebase creates and grants is asserted).
+        const root = dirname(configDir);
+        expect(dirname(stateHome)).toBe(root);
+        expect(dirname(dataHome)).toBe(root);
+        expect(dirname(cacheHome)).toBe(root);
+        expect(new Set([configDir, stateHome, dataHome, cacheHome]).size).toBe(4); // four distinct leaf dirs
+        capturedDir = root;
+      } finally {
+        rmSync(projectRepo, { recursive: true, force: true });
+        rmSync(dirname(primitiveBin), { recursive: true, force: true });
+      }
+      // Cleaned up in the dispatch's own `finally` — never left behind after the call returns.
+      expect(existsSync(capturedDir)).toBe(false);
+    });
+
+    test("level: none → none of the four vars are set at all — the redirect never fires without a full-tier sandbox", async () => {
+      const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+      try {
+        const repo = repoWithRealStorefrontRepo(projectRepo);
+        const runner = new AdapterRunner(repo, {
+          pricing,
+          capabilities: [{ member: "finch", kind: "review" }],
+          native: nativeMock,
+          remote: remoteMock,
+          cliCommand: () => ["sh", "-c", 'printf "CONFIG=%s STATE=%s DATA=%s CACHE=%s" "$GH_CONFIG_DIR" "$XDG_STATE_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME"'],
+          sandboxDetection: { platform: "linux", primitive: "none", level: "none" },
+        });
+        const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+        expect(doc).toContain("CONFIG= STATE= DATA= CACHE=");
+      } finally {
+        rmSync(projectRepo, { recursive: true, force: true });
+      }
+    });
+
+    test("two dispatches under a full-tier sandbox each get their OWN, distinct scratch root — never shared or reused", async () => {
+      const projectRepo = makeProjectRepoWithBranches(["checkout-flow", "cart-icon-fix"]);
+      const primitiveBin = fakeWorkingPrimitive();
+      try {
+        const repo = repoWithRealStorefrontRepo(projectRepo);
+        const runner = new AdapterRunner(repo, {
+          pricing,
+          capabilities: [{ member: "finch", kind: "review" }],
+          native: nativeMock,
+          remote: remoteMock,
+          cliCommand: () => ["sh", "-c", 'printf "CONFIG=%s" "$GH_CONFIG_DIR"'],
+          sandboxDetection: { platform: "linux", primitive: "bubblewrap", level: "full", bin: primitiveBin },
+        });
+        const [a, b] = await Promise.all([
+          runner.produceAsync("finch", "review", "checkout-flow", "storefront"),
+          runner.produceAsync("finch", "review", "cart-icon-fix", "storefront"),
+        ]);
+        const dirOf = (doc: string) => /CONFIG=(\S+)/.exec(doc)![1];
+        expect(dirOf(a.doc)).not.toBe(dirOf(b.doc));
+      } finally {
+        rmSync(projectRepo, { recursive: true, force: true });
+        rmSync(dirname(primitiveBin), { recursive: true, force: true });
+      }
+    });
+
+    // A "fs-only" (unshare) counterpart was attempted and dropped for the identical reason the FIX-9
+    // describe block above already documents: `unshareArgv`'s own wrapped command runs real `mount`
+    // calls this container's own unprivileged user cannot make succeed, unrelated to this fix.
+
+    // The three tests above prove the ENV VARS reach the spawned process — but `fakeWorkingPrimitive`
+    // never inspects whether the scratch dir was actually declared as a sandbox GRANT (it `exec`s the
+    // wrapped inner command directly, unconfined, so the paths would be trivially reachable even if
+    // `writablePaths` never carried it). This test closes that gap, mirroring the FIX-7/FIX-8
+    // `dispatchGitWriteGrant` "readOnlyPaths threaded into the wrapped argv" test's own `/bin/echo`-as-
+    // bwrap technique: a fake "bubblewrap" whose `bin` is really `/bin/echo` never runs anything real —
+    // it just echoes the COMPOSED argv back as the member's own stdout, so the actual `--bind` pair
+    // `bubblewrapArgv` generated is directly observable in the produced doc's own content.
+    test("the scratch root is threaded into the wrapped argv as a real --bind pair, never just an env-var claim", () => {
+      const repo = loadRepo(ROOT);
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        cliCommand: () => ["cat", "/dev/null"],
+        sandboxDetection: { platform: "linux", primitive: "bubblewrap", level: "full", bin: "/bin/echo" },
+      });
+      const { doc } = runner.produce("finch", "review", "checkout-flow", "storefront");
+      const m = /--bind (\/\S*levare-cli-vendor-\S+) (\/\S*levare-cli-vendor-\S+)/.exec(doc);
+      expect(m).not.toBeNull();
+      expect(m![1]).toBe(m![2]); // source === dest, exactly like every other writablePaths entry
+    });
+  });
+
   // NOTES R4-SANDBOX-FIX (macOS host verification): proves `sandboxWrap` actually threads the studio
   // root / interpreter directory into the wrapped argv's `readOnlyPaths`, without needing a real,
   // working bwrap/sandbox-exec to observe it — a fake "bubblewrap" whose `bin` is really `/bin/echo`
