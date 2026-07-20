@@ -2,7 +2,7 @@
 // matching, no live host required — the same "closes the container-pass gap for good, for this class of
 // bug" posture NOTES R4-SANDBOX-FIX-14's own `selectDispatchProfileText` regression test established.
 //
-// Two orderings matter, both pinned below:
+// Three orderings matter, all pinned below:
 // 1. network-vs-permission — a sandboxed network deny surfacing through gh's own Go HTTP client typically
 //    reads as "dial tcp ... operation not permitted" — an EPERM-flavored string that a naive
 //    "permission"/"eperm" check would misclassify as a filesystem issue if checked before the
@@ -15,6 +15,13 @@
 //    fallback) must classify as the MORE SPECIFIC `gh-vendor-dir-permission`, never the generic
 //    `filesystem-permission` bucket a step's own verdict logic would otherwise misread as an unrelated
 //    seal (e.g. the operator-home decoy) holding correctly.
+// 3. gh-auth-required — round 2's own live finding: `gh api` refuses to issue ANY request, even to a
+//    genuinely public/unauthenticated endpoint, without a resolved token — entirely in userspace, never
+//    touching the network. gh's own auth-login prompt shares no substring with the network-signal list,
+//    so this bucket is checked independently, before the generic permission-shaped checks (the auth
+//    message itself is not permission-shaped at all, so ordering relative to those specifically doesn't
+//    matter, but it must never fall through to "other" — a step's own verdict logic depends on it being
+//    named).
 
 import { describe, expect, test } from "bun:test";
 import { classifyGhFailure } from "../scripts/repro-r4-vendor-cli-gh.ts";
@@ -61,12 +68,35 @@ describe("classifyGhFailure", () => {
     expect(classifyGhFailure("agent 'gh-version-no-net': command 'gh' not found on PATH")).toBe("not-found");
   });
 
+  // Round 2's own live finding: gh's own auth-login prompt (exit 4), no resolved token, before ever
+  // attempting a socket. The exact shape reported live.
+  test("gh's own auth-login prompt classifies as gh-auth-required (round 2's own live finding)", () => {
+    expect(
+      classifyGhFailure(
+        "cli member 'gh-api-no-net' exited 4: To get started with GitHub CLI, please run:  gh auth login. Alternatively, populate the GH_TOKEN environment variable.",
+      ),
+    ).toBe("gh-auth-required");
+  });
+
+  test("a shorter/paraphrased auth-required message still classifies correctly via either signal independently", () => {
+    expect(classifyGhFailure("gh auth login required to continue")).toBe("gh-auth-required");
+    expect(classifyGhFailure("please populate the GH_TOKEN environment variable")).toBe("gh-auth-required");
+  });
+
+  test("gh-auth-required is checked independently of the network/permission buckets — never conflated with either", () => {
+    const authMsg = classifyGhFailure("To get started with GitHub CLI, please run:  gh auth login.");
+    expect(authMsg).not.toBe("network");
+    expect(authMsg).not.toBe("filesystem-permission");
+    expect(authMsg).not.toBe("gh-vendor-dir-permission");
+  });
+
   test("an unrecognized message classifies as other", () => {
     expect(classifyGhFailure("gh: unknown flag --bogus")).toBe("other");
   });
 
-  test("is case-insensitive for both the network and gh-vendor-dir orderings", () => {
+  test("is case-insensitive for the network, gh-vendor-dir, and gh-auth-required orderings", () => {
     expect(classifyGhFailure("DIAL TCP: OPERATION NOT PERMITTED")).toBe("network");
     expect(classifyGhFailure("OPEN /USERS/CAS/.CONFIG/GH/CONFIG.YML: PERMISSION DENIED")).toBe("gh-vendor-dir-permission");
+    expect(classifyGhFailure("PLEASE RUN: GH AUTH LOGIN")).toBe("gh-auth-required");
   });
 });

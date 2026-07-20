@@ -22,13 +22,22 @@
 // not one file `/dev/null` could stand in for. Fixed in `src/adapters.ts` (`cliVendorScratchEnv`/
 // `createCliVendorScratch`/`fullSandboxEnvRedirect`, applied generically to every `"full"`-tier `kind:
 // cli` dispatch — mirrors `gitConfigRedirectEnv`'s own precedent exactly, see that function's own doc for
-// the evidence and the full account); this is ROUND 2 of the SAME script, re-run against the fix, never
-// a new file — the goal's own "the established method — the Conductor runs it once" instruction. Every
-// step below is UNCHANGED in shape from round 1 (same commands, same expectations) — what changed is
-// production code, not the ladder, so a genuine before/after comparison is possible. `classifyGhFailure`
-// gained a new `gh-vendor-dir-permission` bucket specifically so a RECURRING config-load death (if the
-// fix is incomplete — gh may probe a path this round's own evidence didn't surface) is diagnosed AS
-// SUCH, never silently misread as a network result the way round 1's own verdict logic would have.
+// the evidence and the full account).
+//
+// ROUND 2 (live macOS run, re-run against the fix) confirmed the config fix WORKED — every step got past
+// config-load clean, kernel log showed no more `config.yml` denial — but surfaced a SECOND, independent
+// finding: `gh api` refuses to issue ANY request, even to the genuinely public/unauthenticated `/zen`
+// endpoint, without a resolved token — entirely in userspace, before ever attempting a socket. Steps 2 and
+// 3 both failed identically with gh's own auth-login prompt, zero differential, proving nothing about the
+// network boundary either way. This is a HARNESS gap (the original design assumed `/zen` was reachable
+// unauthenticated; it isn't, from `gh`'s own CLI, regardless of the target endpoint), never a product
+// finding — see `classifyGhFailure`'s own `gh-auth-required` bucket and `ghApiWithRawTcpProbe`'s own doc
+// for the fix: a raw, gh-auth-INDEPENDENT socket-connect probe appended to the same dispatch, plus a
+// `diagnoseMemberEnv` printout showing directly whether `GITHUB_TOKEN` reached each step's own env. This
+// is ROUND 3 of the SAME script (never a new file — the goal's own "the established method — the
+// Conductor runs it once" instruction). Steps 1a/1b/4 are UNCHANGED from round 1; steps 2/3 changed their
+// OWN command (adding the raw TCP probe) and verdict logic (now keyed on the probe, not gh's own exit
+// code) — everything else about them (which member, which connector grant) is unchanged.
 //
 // Five steps, each a REAL `AdapterRunner.produceAsync` dispatch of a synthetic `kind: cli` member whose
 // `command` invokes the real `gh` binary — never a bespoke, weaker probe (FIX-5's own "weak canary"
@@ -43,18 +52,20 @@
 //       round ever exercised.
 //   1b. `gh --version`  (member holds NO connector) — the fast-exit secondary signal, kept for extra
 //       coverage; on its own it would NOT prove step 1a's claim (see the weak-canary note above).
-//   2.  `gh api /zen`  (member holds NO connector — memberNetworkAllowed(repo, member) === false, i.e.
-//       "no connector declaring a remote endpoint") — a real, unauthenticated GET to a real GitHub
-//       endpoint (the documented public "zen" quote, chosen specifically because it needs no token —
-//       an auth failure here would read as a DIFFERENT, misleading signal than a network denial, which
-//       is exactly what this step exists to distinguish). MUST fail — the network deny must bite a real
-//       network client, not just a synthetic `(deny network*)` unit test.
-//   3.  `gh api /zen`  (member holds the golden fixture's own pre-existing `github` connector —
-//       `memberNetworkAllowed` is true) — the SAME command as step 2, varying only the grant. Expected
-//       to succeed IF this host has real internet reachability at all; see this step's own printed note
-//       on why a failure here is not automatically proof the sandbox is at fault (host-level
-//       connectivity and sandbox network denial can look identical from gh's own error text alone —
-//       step 2's own result is the differential signal a Conductor should read this step against).
+//   2.  `gh api /zen` + a raw TCP probe (member holds NO connector — memberNetworkAllowed(repo, member)
+//       === false, i.e. "no connector declaring a remote endpoint", and therefore no token either —
+//       structurally coupled under this codebase's real production model, see `ghApiWithRawTcpProbe`'s
+//       own doc for why that's not routed around). gh itself will refuse locally (`gh-auth-required`,
+//       expected); the step's own verdict comes from the RAW_TCP_CONNECT marker instead — MUST read
+//       DENIED, proving the sandbox's own network boundary bites a real socket attempt regardless of what
+//       gh's own business logic decides to do first.
+//   3.  `gh api /zen` + the SAME raw TCP probe (member holds the golden fixture's own pre-existing
+//       `github` connector — `memberNetworkAllowed` is true, and `GITHUB_TOKEN` should reach gh through
+//       it — REQUIRES `export GITHUB_TOKEN=<a real PAT>` in the Conductor's own shell before running, see
+//       this step's own header note for exactly why that name and not `GH_TOKEN`). Expected RAW_TCP_
+//       CONNECT=OK and a real gh success, IF this host has real internet reachability at all; read this
+//       step's own RAW_TCP_CONNECT against step 2's — see this step's own printed note for the full
+//       differential logic.
 //   4.  `cat <decoy file under the operator's real $HOME>`  (member holds the SAME `github` connector as
 //       step 3 — network-granted) — NOTES R4-SANDBOX-FIX-8/FIX-12's own standing instruction: a new
 //       reach (network, here) must be re-checked against every EXISTING seal in the same round, never
@@ -72,11 +83,11 @@
 // Every failure this script observes is passed through `classifyGhFailure` (module scope, exported —
 // pinned by `tests/repro-r4-vendor-cli-gh.test.ts`, pure string logic, no live host required) — a
 // HEURISTIC aid distinguishing a network-shaped failure from a `gh`-own-config/state/data/cache-directory
-// -shaped one (round 1's own finding, `gh-vendor-dir-permission` — checked BEFORE a step's own
-// must-fail/must-succeed verdict, since it means the step never reached what it meant to test at all) from
-// a generic filesystem-permission one (e.g. step 4's own decoy) from gh simply not being found, printed
-// alongside the raw message (never in place of it) so a Conductor reads the classifier's guess and the
-// ground truth together.
+// -shaped one (round 1's own finding, `gh-vendor-dir-permission`) from gh's own local auth-gate refusal
+// (round 2's own finding, `gh-auth-required`) from a generic filesystem-permission one (e.g. step 4's own
+// decoy) from gh simply not being found — each checked BEFORE a step's own verdict, since any of the first
+// two means the step never reached what it meant to test at all — printed alongside the raw message
+// (never in place of it) so a Conductor reads the classifier's guess and the ground truth together.
 //
 // Run on the live macOS host: `bun run scripts/repro-r4-vendor-cli-gh.ts`. Requires `sandbox-exec` (the
 // same darwin-only guard `scripts/repro-r4-sandbox-fix10-hang.ts` already uses) AND a real `gh` on
@@ -91,6 +102,7 @@ import { join } from "node:path";
 import { AdapterRunner, type NativeBoundary, type RemoteBoundary } from "../src/adapters.ts";
 import { loadRepo } from "../src/repo.ts";
 import { loadPricing } from "../src/pricing.ts";
+import { buildMemberEnv } from "../src/env.ts";
 import type { Repo } from "../src/repo.ts";
 import type { Pricing } from "../src/pricing.ts";
 import type { Agent } from "../src/types.ts";
@@ -122,7 +134,7 @@ const STEP_TIMEOUT_S = 30;
 // never silently folded into a generic label a verdict could misread as "the intended seal held." Every
 // caller must check for this bucket FIRST, before applying a step's own must-fail/must-succeed
 // expectation — see `runGhDispatch`'s own verdict logic below.
-export function classifyGhFailure(message: string): "network" | "gh-vendor-dir-permission" | "filesystem-permission" | "not-found" | "other" {
+export function classifyGhFailure(message: string): "network" | "gh-vendor-dir-permission" | "gh-auth-required" | "filesystem-permission" | "not-found" | "other" {
   const m = message.toLowerCase();
   const networkSignals = [
     "dial tcp",
@@ -141,6 +153,13 @@ export function classifyGhFailure(message: string): "network" | "gh-vendor-dir-p
   ];
   if (networkSignals.some((s) => m.includes(s))) return "network";
   if (m.includes("not found on path") || m.includes("command 'gh'")) return "not-found";
+  // NOTES R4-VENDOR-CLI (round 2 live finding): `gh api` refuses to issue ANY request — even to a
+  // genuinely public, unauthenticated endpoint like `/zen` — without a resolved token, entirely in
+  // userspace, before ever attempting a socket. This is gh's OWN business logic, unrelated to the
+  // sandbox's network boundary, and it produces a message shape (gh's own auth-login prompt) that shares
+  // no substring with the network-signal list above — checked here, before the generic buckets, so it is
+  // never conflated with either a real network deny OR a real success/failure of the network layer.
+  if (m.includes("gh auth login") || (m.includes("populate") && m.includes("token"))) return "gh-auth-required";
   const permissionShaped = m.includes("permission denied") || m.includes("eperm") || m.includes("operation not permitted");
   if (permissionShaped) {
     const ghVendorDirSignals = ["/.config/gh/", "config.yml", "hosts.yml", "state.yml", "/.local/state/gh", "/.local/share/gh", "/.cache/gh", "gh-cli-cache"];
@@ -168,6 +187,38 @@ function mkGhAgent(name: string, command: string[], connectors: string[] | undef
   };
 }
 
+// NOTES R4-VENDOR-CLI (round 2 live finding): `gh api /zen` alone cannot isolate "the sandbox denied the
+// network" from "gh refused locally, before ever attempting a socket, because no token was present" — gh
+// requires resolved auth for EVERY `gh api` call, even to a genuinely public/unauthenticated endpoint,
+// entirely in userspace. Appends a RAW TCP connect attempt (bash's own `/dev/tcp/HOST/PORT`, no `gh`
+// involved at all) to the SAME dispatch, so the sandbox's own network boundary gets an independent,
+// gh-auth-independent signal alongside gh's own result — `RAW_TCP_CONNECT=OK`/`DENIED`, echoed to BOTH
+// stdout (visible in a successful dispatch's own doc body) and stderr (visible in a failed dispatch's own
+// `diagnoseCliFailure` tail, and unconditionally in the `LEVARE_SANDBOX_DEBUG` raw spawn-result dump
+// either way). `bash`, not `sh`: `/dev/tcp` is a bash-specific feature, absent from a POSIX-strict `sh`/
+// `dash`; macOS ships `/bin/bash` (old 3.2, but `/dev/tcp` has been present since bash 2.04). No `timeout`
+// wrapper — GNU `timeout` is not guaranteed present on a fresh macOS install (the same reason
+// `scripts/repro-r4-sandbox-fix10-hang.ts` never uses it); the agent's own `STEP_TIMEOUT_S`-second
+// dispatch-level kill (enforced by production's own `asyncBunSpawn`, the same mechanism every other
+// timeout in this codebase relies on) is the real safety net against a hang.
+function ghApiWithRawTcpProbe(): string[] {
+  const script = ["gh api /zen", "gh_exit=$?", "if (exec 3<>/dev/tcp/api.github.com/443) 2>/dev/null; then tcp=OK; else tcp=DENIED; fi", 'echo "RAW_TCP_CONNECT=$tcp"', 'echo "RAW_TCP_CONNECT=$tcp" >&2', "exit $gh_exit"].join("; ");
+  return ["bash", "-c", script];
+}
+
+// NOTES R4-VENDOR-CLI (round 2, requirement 1): prints WHETHER `GH_TOKEN`/`GITHUB_TOKEN` reach this
+// member's own resolved env — NEVER the value — via the real, exported `buildMemberEnv` (env.ts), the
+// identical function `AdapterRunner#prepare` calls internally. This is what lets a live run show directly
+// whether the golden fixture's own `github` connector (`env: [GITHUB_TOKEN]` — NOT `GH_TOKEN`, named
+// explicitly since gh itself checks `GH_TOKEN` with HIGHER precedence than `GITHUB_TOKEN`, so exporting
+// the wrong name in the Conductor's own shell would silently fail this differently than expected) actually
+// resolved a real credential this run, before gh ever runs — never guessed at after the fact from gh's own
+// possibly-ambiguous error text.
+function diagnoseMemberEnv(repo: Repo, member: string): void {
+  const env = buildMemberEnv(repo, member);
+  console.log(`        member env diagnostic for '${member}': GH_TOKEN present=${"GH_TOKEN" in env} GITHUB_TOKEN present=${"GITHUB_TOKEN" in env} (values never printed, presence only)`);
+}
+
 type StepExpectation = "must-succeed" | "must-fail" | "informational";
 
 // Drives ONE real `AdapterRunner.produceAsync` dispatch — the identical production call chain FIX-13's
@@ -180,11 +231,20 @@ type StepExpectation = "must-succeed" | "must-fail" | "informational";
 // code's own `console.error` calls print the profile text, composed argv, cwd, and post-spawn raw result
 // (exitCode/signalCode/stdout+stderr byte counts, stderr text) directly to this process's real stderr,
 // interleaved in true chronological order with this function's own `console.log` step framing.
-async function runGhDispatch(repo: Repo, pricing: Pricing, label: string, agent: Agent, expect: StepExpectation, note: string): Promise<void> {
+// NOTES R4-VENDOR-CLI (round 2): `tcpExpect`, when set, means this step was built via
+// `ghApiWithRawTcpProbe()` and the FINAL verdict comes from the `RAW_TCP_CONNECT` marker specifically —
+// gh's own exit code/classification (including a fully-expected `gh-auth-required` on the no-connector
+// step) is printed as secondary context, never the primary verdict, for exactly these two steps. Every
+// other step (1a, 1b, 4) keeps the original `expect`-driven verdict, since gh's own outcome IS what those
+// steps mean to test.
+type TcpExpectation = "must-deny" | "informational";
+
+async function runGhDispatch(repo: Repo, pricing: Pricing, label: string, agent: Agent, expect: StepExpectation, note: string, tcpExpect?: TcpExpectation): Promise<void> {
   console.log("");
   console.log(`=== ${label} ===`);
   console.log(note);
   repo.agents.set(agent.name, agent);
+  diagnoseMemberEnv(repo, agent.name);
   const nativeMock: NativeBoundary = { invoke: () => ({ doc: "unused" }) };
   const remoteMock: RemoteBoundary = { call: () => ({ doc: "unused" }) };
   const runner = new AdapterRunner(repo, {
@@ -197,9 +257,11 @@ async function runGhDispatch(repo: Repo, pricing: Pricing, label: string, agent:
   let outcome: "succeeded" | "failed";
   let detail: string;
   let classification: ReturnType<typeof classifyGhFailure> | null = null;
+  let rawText = ""; // doc (success) or error message (failure) — searched below for the RAW_TCP_CONNECT marker.
   try {
     const { doc } = await runner.produceAsync(agent.name, "review", "repro", "storefront");
     outcome = "succeeded";
+    rawText = doc;
     const sandboxLine = /^sandbox: .+$/m.exec(doc)?.[0] ?? "sandbox: (not reported — non-cli path or sandbox level unknown)";
     const bodyStart = doc.indexOf("\n---\n\n");
     const bodyPreview = bodyStart === -1 ? "" : doc.slice(bodyStart + 6).trim().slice(0, 300);
@@ -207,21 +269,59 @@ async function runGhDispatch(repo: Repo, pricing: Pricing, label: string, agent:
   } catch (e) {
     outcome = "failed";
     const msg = e instanceof Error ? e.message : String(e);
+    rawText = msg;
     classification = classifyGhFailure(msg);
     detail = `(heuristic classification: ${classification}) ${msg}`;
   }
   const elapsed = Date.now() - start;
   console.log(`[${outcome.toUpperCase()}] in ${elapsed}ms — ${detail}`);
-  // NOTES R4-VENDOR-CLI (round 1's own lesson): a `gh-vendor-dir-permission` failure means gh died at its
-  // OWN config/state/data/cache load, before doing anything else this step meant to test — checked BEFORE
-  // the step's own `expect`, for EVERY step (not just the network-shaped ones), since this classification
-  // is itself a diagnostic finding orthogonal to whatever the step originally intended to prove. Printing
-  // a bare PASS/REGRESSION against `expect` here would be exactly round 1's own mistake repeating: a
-  // config-load death that happens to satisfy `must-fail` "looks like" a PASS unless this is checked
-  // first.
+  // NOTES R4-VENDOR-CLI (round 2): only present on steps built via `ghApiWithRawTcpProbe` — a raw,
+  // gh-auth-independent socket-connect attempt to api.github.com:443, echoed by the dispatch's own shell
+  // script. Surfaced as its OWN line, distinct from whatever gh itself reported, since this is the signal
+  // that actually answers "did the SANDBOX's network boundary bite," independent of gh's own auth gate.
+  const tcpMatch = /RAW_TCP_CONNECT=(OK|DENIED)/.exec(rawText);
+  if (tcpMatch) console.log(`        raw TCP connect to api.github.com:443 (bypassing gh's own auth gate entirely): ${tcpMatch[1]}`);
+
+  // A `gh-vendor-dir-permission` failure means gh died at its own config/state/data/cache load — ALWAYS a
+  // finding, on EVERY step, regardless of `tcpExpect` — checked first, unconditionally.
   if (outcome === "failed" && classification === "gh-vendor-dir-permission") {
     console.log(
-      "        >>> FINDING: gh died at its own config/state/data/cache directory load (EPERM), before reaching whatever this step meant to test. This step's own must-fail/must-succeed/informational meaning is INVALID this run — see NOTES R4-VENDOR-CLI's gh-vendor-scratch-dir redirect fix (src/adapters.ts#cliVendorScratchEnv). <<<",
+      "        >>> FINDING: gh died at its own config/state/data/cache directory load (EPERM), before reaching whatever this step meant to test. This step's own verdict is INVALID this run — see NOTES R4-VENDOR-CLI's gh-vendor-scratch-dir redirect fix (src/adapters.ts#cliVendorScratchEnv). <<<",
+    );
+    return;
+  }
+
+  if (tcpExpect) {
+    // The TCP marker is the PRIMARY verdict for these steps — gh's own auth outcome is secondary context.
+    if (!tcpMatch) {
+      console.log("        >>> HARNESS ERROR: no RAW_TCP_CONNECT marker found in this step's own output — the probe script itself may not have run (check for a HANG/timeout above). Cannot verdict the network boundary from this run. <<<");
+    } else if (tcpExpect === "must-deny") {
+      console.log(
+        tcpMatch[1] === "DENIED"
+          ? "        >>> PASS: raw TCP connect denied as expected — the sandbox's own network boundary bites a real socket attempt, independent of gh's own auth state <<<"
+          : "        >>> REGRESSION: raw TCP connect MUST be denied (no connector granted) but it SUCCEEDED <<<",
+      );
+    } else {
+      console.log(`        (informational — raw TCP connect: ${tcpMatch[1]}; read together with the paired step's own note above before concluding anything)`);
+    }
+    // Secondary context: gh's own auth outcome. A connector-holding step (a real token was expected) that
+    // still reports `gh-auth-required` is its OWN, separate finding (the token never reached gh) — but for
+    // a connector-less step (no token was ever expected), the identical classification is normal, not
+    // remarkable.
+    const tokenWasExpected = !!(agent.connectors && agent.connectors.length > 0);
+    if (outcome === "failed" && classification === "gh-auth-required") {
+      console.log(
+        tokenWasExpected
+          ? "        >>> FINDING: this step HOLDS a connector grant (GITHUB_TOKEN should have reached gh) but gh still reports no resolved token — check the 'member env diagnostic' line above; if GITHUB_TOKEN present=false, the export never reached this process (see this step pair's own header note for the exact var name required). <<<"
+          : "        (gh itself refused locally — auth-required, expected for a no-connector step, not a finding; the raw TCP verdict above is what this step actually asserts)",
+      );
+    }
+    return;
+  }
+
+  if (outcome === "failed" && classification === "gh-auth-required") {
+    console.log(
+      "        >>> FINDING: gh refused LOCALLY (no resolved token), before ever attempting a socket — this step's own verdict about the NETWORK boundary is INVALID from gh's own exit code/message alone. Check the 'member env diagnostic' line above: if GITHUB_TOKEN present=false for a step expected to hold one, the token never reached this dispatch. <<<",
     );
   } else if (expect === "must-succeed") {
     console.log(outcome === "succeeded" ? "        >>> PASS: succeeded as expected <<<" : "        >>> FINDING: this was expected to succeed but did not — diagnose from the evidence printed above, never guess <<<");
@@ -315,22 +415,56 @@ async function main() {
       "A fast-exit flag — completing here does NOT independently prove gh's real startup path survives the sandbox (NOTES R4-SANDBOX-FIX-5's own weak-canary lesson); read alongside step 1a, never in place of it.",
     );
 
+    // NOTES R4-VENDOR-CLI (round 2 live finding): `gh api /zen` alone cannot isolate a sandbox network
+    // deny from gh's own local auth-gate refusal (gh requires a resolved token for EVERY `gh api` call,
+    // even to this genuinely public/unauthenticated endpoint, entirely in userspace, before ever
+    // attempting a socket) — round 2's own live run showed BOTH steps 2 and 3 failing identically with
+    // gh's own auth-login prompt, zero differential, because no token reached EITHER dispatch.
+    //
+    // Checked and REJECTED: giving step 2 (the no-connector case) a token too, so auth is constant and
+    // only the network grant varies. Structurally impossible under this codebase's real production model
+    // — `env.ts#memberNetworkAllowed` and `buildMemberEnv`'s own connector-gated allowlist are the SAME
+    // `grantedConnectors(repo, member).length > 0` condition, so there is no way for a member to hold a
+    // connector's own secret while being network-denied. This is not an accident to route around: it is
+    // exactly the goal's own "no connector declaring a remote endpoint" ↔ "network denied" coupling, by
+    // design (env.ts's own doc: "there is no connector shape that names a purely-local capability").
+    //
+    // Fix, instead: `ghApiWithRawTcpProbe()` appends a raw, gh-auth-INDEPENDENT socket-connect attempt
+    // (`RAW_TCP_CONNECT=OK`/`DENIED`, printed by `runGhDispatch` as its own line) to the SAME dispatch —
+    // this is what actually answers "did the sandbox's own network boundary bite," regardless of whatever
+    // gh's own business logic decides to do first. Step 2 stays connector-less (no token, network denied,
+    // exactly the goal's own condition (a)) and is proven via RAW_TCP_CONNECT, never via gh's own exit
+    // code (which will legitimately be `gh-auth-required`, an EXPECTED, orthogonal outcome now that gh's
+    // own auth gate is understood, not a finding).
+    //
+    // REQUIRES a real credential exported in the Conductor's own shell before running this script, for
+    // STEP 3 specifically (step 2 deliberately has none — see above):
+    //   export GITHUB_TOKEN=<a real, minimally-scoped, read-only PAT>
+    // Exactly `GITHUB_TOKEN` — the golden fixture's own `github` connector (`fixtures/golden/connectors/
+    // github.md`) declares `env: [GITHUB_TOKEN]` only; `GH_TOKEN` (which gh itself checks with HIGHER
+    // precedence) is NOT in that list and will NOT be forwarded even if set — this is a pre-existing
+    // fixture detail, not something this goal's own scope changes speculatively. `diagnoseMemberEnv`
+    // (printed by `runGhDispatch`, above each step's own result) shows directly whether `GITHUB_TOKEN`
+    // reached each dispatch's own resolved env, so a missing-export mistake is visible immediately rather
+    // than inferred from gh's own possibly-ambiguous error text.
     await runGhDispatch(
       repo,
       pricing,
-      "2. gh api /zen — NO connector (memberNetworkAllowed === false)",
-      mkGhAgent("gh-api-no-net", ["gh", "api", "/zen"], undefined),
+      "2. gh api /zen + raw TCP probe — NO connector (memberNetworkAllowed === false, no token either — see this step's own note on why that's unavoidable and fine)",
+      mkGhAgent("gh-api-no-net", ghApiWithRawTcpProbe(), undefined),
       "must-fail",
-      "A real, unauthenticated GET to a real GitHub endpoint that needs no token (the public 'zen' quote) — the network deny must bite a genuine network client, not just a unit test's synthetic (deny network*) assertion.",
+      "member env diagnostic above should show GITHUB_TOKEN present=false (no connector granted here at all, by design) — gh itself WILL refuse locally (classified 'gh-auth-required', EXPECTED and fine, not a finding) since it has no token; what this step actually asserts is the RAW_TCP_CONNECT line: MUST read DENIED, proving the sandbox's own network boundary bites a real socket attempt regardless of gh's own auth state. If RAW_TCP_CONNECT reads OK, THAT is the real regression to chase — never gh's own exit code alone.",
+      "must-deny",
     );
 
     await runGhDispatch(
       repo,
       pricing,
-      "3. gh api /zen — WITH the golden fixture's own 'github' connector (memberNetworkAllowed === true)",
-      mkGhAgent("gh-api-with-net", ["gh", "api", "/zen"], ["github"]),
+      "3. gh api /zen + raw TCP probe — WITH the golden fixture's own 'github' connector (memberNetworkAllowed === true, and GITHUB_TOKEN should reach gh)",
+      mkGhAgent("gh-api-with-net", ghApiWithRawTcpProbe(), ["github"]),
       "informational",
-      "The SAME command as step 2, varying only the grant. Expected to SUCCEED if this host has real internet reachability. A failure here is NOT automatically proof the sandbox is at fault — host-level connectivity and a sandbox network deny can read identically from gh's own error text. Read this step's own result against step 2's: (2 denied, 3 succeeded) is the differential evidence that confirms the boundary is real; (2 denied, 3 also denied) points at host connectivity, not the sandbox; (2 succeeded) is itself the step-2 regression, independent of this step entirely.",
+      "member env diagnostic above should show GITHUB_TOKEN present=true — if false, the export above didn't reach this process/shell, or was named GH_TOKEN instead (see this pair's own header note); a config/token mismatch here is a HARNESS setup issue, not a sandbox finding. With a real token AND real host connectivity, expect RAW_TCP_CONNECT=OK and a real gh success (the /zen quote itself). Read RAW_TCP_CONNECT specifically (never gh's own exit code alone) against step 2's own RAW_TCP_CONNECT: (2 DENIED, 3 OK) is the differential evidence that confirms the sandbox's own network boundary is real; (2 DENIED, 3 also DENIED) points at this host's own connectivity, not the sandbox; (2 OK) is itself the step-2 regression, independent of this step.",
+      "informational",
     );
 
     await runGhDispatch(
@@ -353,12 +487,12 @@ async function main() {
   console.log("=== Summary ===");
   console.log("Every PASS/REGRESSION/FINDING verdict above is this run's own — read them in order. A");
   console.log("'gh-vendor-dir-permission' classification on ANY step means gh died at its own config/state/");
-  console.log("data/cache load — that step's own must-fail/must-succeed meaning is INVALID this run, and if");
-  console.log("it recurs after the R4-VENDOR-CLI fix (src/adapters.ts#cliVendorScratchEnv) already shipped,");
-  console.log("that is itself a NEW finding (the fix is incomplete for some path this round's evidence didn't");
-  console.log("cover) — never re-litigate the ALREADY-DIAGNOSED config.yml/hosts.yml/state.yml finding as if");
-  console.log("undiagnosed. Otherwise, read step 3 against step 2 as described in step 3's own note before");
-  console.log("concluding anything about the network boundary specifically. Record this run's outcome in NOTES");
+  console.log("data/cache load (round 1's own finding) — if it recurs after the shipped fix");
+  console.log("(src/adapters.ts#cliVendorScratchEnv), that is a NEW finding, the fix is incomplete for some");
+  console.log("path this round's evidence didn't cover. For steps 2/3 specifically, the verdict comes from the");
+  console.log("'raw TCP connect' line, never gh's own exit code alone (round 2's own finding: gh's own auth");
+  console.log("gate refuses any request without a token, unrelated to the sandbox) — read step 3's own TCP");
+  console.log("result against step 2's as described in step 3's own note. Record this run's outcome in NOTES");
   console.log("R4-VENDOR-CLI, naming any FURTHER code change ONLY if a REGRESSION or NEW finding above demands");
   console.log("one, with the narrowest grant the printed evidence actually justifies.");
 }
