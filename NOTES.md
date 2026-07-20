@@ -11059,12 +11059,20 @@ be exactly the "convenience widening" the goal explicitly rules out.
 
 ## Honest residuals
 
-- **No live macOS run has happened this round.** This session has no live macOS access at all — every
-  verdict (PASS/REGRESSION/FINDING) the script is designed to print for steps 1a through 4 is unproduced.
-  What exists is the harness itself, proven by construction (typecheck, the pure-string test suite, and
-  the stand-in-primitive sanity run above) to be ready to run and to print exactly the evidence a
-  Conductor needs to diagnose whatever it finds — the identical posture FIX-10's own first round shipped
-  (instrumentation and a ladder, explicitly not yet a diagnosis).
+- **No live macOS run has happened this round — by design, via this project's own standing gate, not a
+  gap this session failed to close.** Every live verdict in the FIX-1 → FIX-14 saga above came from the
+  Conductor running the ladder script BY HAND on their own Mac and pasting the output back — never from
+  CI, never from an automated remote host this session reaches on its own. This round follows the
+  identical convention: `bun run scripts/repro-r4-vendor-cli-gh.ts` is the exact command; run it on a
+  real macOS host with `gh` installed (`brew install gh` if needed — no `gh auth login` required, every
+  step is designed to run meaningfully whether or not the host is authenticated) and hand the FULL printed
+  output back for diagnosis. What exists THIS round is the harness itself, proven by construction
+  (typecheck, the 8-case pure-string test suite, and the stand-in-primitive sanity run above) to be ready
+  to run and to print exactly the evidence a Conductor needs — the identical posture FIX-10's own first
+  round shipped (instrumentation and a ladder, explicitly not yet a diagnosis). This repo's `ci.yml` does
+  run a `macos-latest` job on every push/PR to `main`, but wiring this harness into CI was deliberately
+  NOT done this round (Conductor's own ruling: the manual-paste gate stays manual; no CI minutes, no
+  workflow changes, for a validation script that isn't meant to run on every push).
 - **Only `gh`, and only two of its subcommands, are validated by this script.** `auth status`, `--version`,
   and `api /zen` are the full surface exercised — NOT `gh pr create`, `gh repo clone`, or any subcommand
   that writes to the filesystem beyond its own config directory, uses a real authenticated token, or
@@ -11097,5 +11105,6 @@ end to end without error, confirming the harness's own construction and control 
 enforcement itself, which only the live host can confirm.
 
 **Bottom line: R4 has not regressed, and no code changed to reach this point — but this round does not
-claim R4 holds against a real `gh` either. That claim is exactly one live macOS run away, and the harness
-this round built is what that run needs.**
+claim R4 holds against a real `gh` either. That claim is exactly one manual live-host run away, via this
+project's own standing gate: `bun run scripts/repro-r4-vendor-cli-gh.ts` on a real Mac with `gh` on PATH,
+output pasted back for diagnosis — the harness this round built is what that run needs.**
