@@ -31,13 +31,34 @@
 // 3 both failed identically with gh's own auth-login prompt, zero differential, proving nothing about the
 // network boundary either way. This is a HARNESS gap (the original design assumed `/zen` was reachable
 // unauthenticated; it isn't, from `gh`'s own CLI, regardless of the target endpoint), never a product
-// finding — see `classifyGhFailure`'s own `gh-auth-required` bucket and `ghApiWithRawTcpProbe`'s own doc
-// for the fix: a raw, gh-auth-INDEPENDENT socket-connect probe appended to the same dispatch, plus a
-// `diagnoseMemberEnv` printout showing directly whether `GITHUB_TOKEN` reached each step's own env. This
-// is ROUND 3 of the SAME script (never a new file — the goal's own "the established method — the
-// Conductor runs it once" instruction). Steps 1a/1b/4 are UNCHANGED from round 1; steps 2/3 changed their
-// OWN command (adding the raw TCP probe) and verdict logic (now keyed on the probe, not gh's own exit
-// code) — everything else about them (which member, which connector grant) is unchanged.
+// finding.
+//
+// ROUND 3 (design review, BEFORE any live run — the Conductor's own scrutiny caught a real weakness in
+// the first fix attempt): a bare raw-TCP-probe-as-primary-verdict for BOTH steps 2 and 3 would have
+// quietly swapped the subject of the proof — testing "does the sandbox block a bare socket" (never in
+// doubt; the unit tests already assert it) instead of the goal's own actual claim, "does the deny bite a
+// REAL gh request." Confirmed directly from gh's own source (`pkg/cmdutil/auth_check.go`'s `CheckAuth` +
+// `pkg/cmd/root/root.go`'s `PersistentPreRunE`): gh's auth gate checks token PRESENCE ONLY, never
+// validity, and runs UNCONDITIONALLY before any subcommand's own code — including any network attempt.
+// Two consequences, asymmetric, both now reflected honestly in the harness rather than papered over:
+//   - With a token PRESENT (step 3), gh's gate passes and it issues a REAL request through its own HTTP
+//     client — gh's OWN outcome is therefore a genuine, gh-level proof of the GRANT direction. The raw TCP
+//     probe there is corroborating context only, never the primary verdict.
+//   - With NO token (step 2, structural for a no-connector member — see `ghApiWithRawTcpProbe`'s own doc
+//     for why giving it one anyway is impossible under this codebase's real production model), gh's gate
+//     refuses BEFORE any subcommand code runs — there is NO way to observe gh's own network layer deny a
+//     request for this member shape, confirmed from source, not a harness gap to route around. The raw TCP
+//     probe is therefore the ONLY testable signal for the DENY direction, and is labeled honestly as a
+//     raw-socket-level proof, never dressed up as a gh-level one. This asymmetry — provable in the grant
+//     direction via gh itself, provable in the deny direction only at the socket layer — is itself an
+//     honest, documented conclusion (see NOTES R4-VENDOR-CLI and docs/current-gaps.md's own "Connector
+//     trust-tier taxonomy" entry for the underlying product-level reason: credential-grant and
+//     network-grant are welded at the connector level, by deliberate design, NOTES R4-SANDBOX v2 Ruling 2).
+// `classifyGhFailure` gained `gh-auth-required`; `diagnoseMemberEnv` prints, for every step, whether
+// `GH_TOKEN`/`GITHUB_TOKEN` reached that step's own resolved env (presence only). This is ROUND 3 of the
+// SAME script (never a new file — the goal's own "the established method — the Conductor runs it once"
+// instruction). Steps 1a/1b/4 are UNCHANGED from round 1; steps 2/3 changed their OWN command (adding the
+// raw TCP probe) and each now has its OWN, asymmetric verdict logic — see `NetworkTestRole`'s own doc.
 //
 // Five steps, each a REAL `AdapterRunner.produceAsync` dispatch of a synthetic `kind: cli` member whose
 // `command` invokes the real `gh` binary — never a bespoke, weaker probe (FIX-5's own "weak canary"
@@ -53,19 +74,17 @@
 //   1b. `gh --version`  (member holds NO connector) — the fast-exit secondary signal, kept for extra
 //       coverage; on its own it would NOT prove step 1a's claim (see the weak-canary note above).
 //   2.  `gh api /zen` + a raw TCP probe (member holds NO connector — memberNetworkAllowed(repo, member)
-//       === false, i.e. "no connector declaring a remote endpoint", and therefore no token either —
-//       structurally coupled under this codebase's real production model, see `ghApiWithRawTcpProbe`'s
-//       own doc for why that's not routed around). gh itself will refuse locally (`gh-auth-required`,
-//       expected); the step's own verdict comes from the RAW_TCP_CONNECT marker instead — MUST read
-//       DENIED, proving the sandbox's own network boundary bites a real socket attempt regardless of what
-//       gh's own business logic decides to do first.
+//       === false, and therefore structurally no token either). gh itself will refuse locally
+//       (`gh-auth-required`, expected — see the ROUND 3 note above for why this is unavoidable, not a
+//       finding). This step's own verdict comes SOLELY from the RAW_TCP_CONNECT marker — MUST read
+//       DENIED — labeled honestly as the only testable (raw-socket-level) proof of the deny direction.
 //   3.  `gh api /zen` + the SAME raw TCP probe (member holds the golden fixture's own pre-existing
 //       `github` connector — `memberNetworkAllowed` is true, and `GITHUB_TOKEN` should reach gh through
 //       it — REQUIRES `export GITHUB_TOKEN=<a real PAT>` in the Conductor's own shell before running, see
-//       this step's own header note for exactly why that name and not `GH_TOKEN`). Expected RAW_TCP_
-//       CONNECT=OK and a real gh success, IF this host has real internet reachability at all; read this
-//       step's own RAW_TCP_CONNECT against step 2's — see this step's own printed note for the full
-//       differential logic.
+//       this step's own header note for exactly why that name and not `GH_TOKEN`). This step's own
+//       verdict comes from gh's OWN outcome (a real, authenticated request through gh's own HTTP client)
+//       — PASS on a real gh success, REGRESSION if gh had a token and was network-denied anyway. The raw
+//       TCP line is corroboration only here, never the primary signal.
 //   4.  `cat <decoy file under the operator's real $HOME>`  (member holds the SAME `github` connector as
 //       step 3 — network-granted) — NOTES R4-SANDBOX-FIX-8/FIX-12's own standing instruction: a new
 //       reach (network, here) must be re-checked against every EXISTING seal in the same round, never
@@ -231,15 +250,27 @@ type StepExpectation = "must-succeed" | "must-fail" | "informational";
 // code's own `console.error` calls print the profile text, composed argv, cwd, and post-spawn raw result
 // (exitCode/signalCode/stdout+stderr byte counts, stderr text) directly to this process's real stderr,
 // interleaved in true chronological order with this function's own `console.log` step framing.
-// NOTES R4-VENDOR-CLI (round 2): `tcpExpect`, when set, means this step was built via
-// `ghApiWithRawTcpProbe()` and the FINAL verdict comes from the `RAW_TCP_CONNECT` marker specifically —
-// gh's own exit code/classification (including a fully-expected `gh-auth-required` on the no-connector
-// step) is printed as secondary context, never the primary verdict, for exactly these two steps. Every
-// other step (1a, 1b, 4) keeps the original `expect`-driven verdict, since gh's own outcome IS what those
-// steps mean to test.
-type TcpExpectation = "must-deny" | "informational";
+// NOTES R4-VENDOR-CLI (round 3, refined per the Conductor's own design review before the live run): the
+// two `ghApiWithRawTcpProbe()` steps do NOT prove the same thing, and must not share one verdict shape.
+// Confirmed directly from gh's own source (`pkg/cmdutil/auth_check.go`'s `CheckAuth` + `pkg/cmd/root/
+// root.go`'s `PersistentPreRunE`): gh's own auth gate checks TOKEN PRESENCE ONLY (`HasEnvToken()` or
+// configured hosts — never validity) and runs UNCONDITIONALLY, for every command including `api`, BEFORE
+// that command's own `RunE` ever executes.
+//   - "grant-via-gh" (step 3, connector held, a real token exported): with a token PRESENT, gh's auth gate
+//     passes and `gh api /zen` proceeds to build a REAL `http.Client` and issue a REAL request — gh's OWN
+//     outcome (succeeded, or failed with a `network`-classified deny) is what this step actually proves;
+//     `RAW_TCP_CONNECT` is corroborating context only, never the primary verdict here.
+//   - "deny-via-tcp-only" (step 2, no connector, structurally no token): gh's auth gate deterministically
+//     refuses BEFORE any subcommand code runs — there is NO way to observe gh's own network layer deny a
+//     request for this member shape, full stop, not a harness gap to route around (confirmed from gh's
+//     own source, not merely inferred from one live run). `RAW_TCP_CONNECT` is therefore the ONLY testable
+//     signal for the deny direction, and is labeled honestly as a raw-socket-level proof, never dressed up
+//     as a gh-level one.
+// Every other step (1a, 1b, 4) keeps the original `expect`-driven verdict, since gh's own outcome IS what
+// those steps mean to test.
+type NetworkTestRole = "deny-via-tcp-only" | "grant-via-gh";
 
-async function runGhDispatch(repo: Repo, pricing: Pricing, label: string, agent: Agent, expect: StepExpectation, note: string, tcpExpect?: TcpExpectation): Promise<void> {
+async function runGhDispatch(repo: Repo, pricing: Pricing, label: string, agent: Agent, expect: StepExpectation, note: string, networkTest?: NetworkTestRole): Promise<void> {
   console.log("");
   console.log(`=== ${label} ===`);
   console.log(note);
@@ -283,7 +314,7 @@ async function runGhDispatch(repo: Repo, pricing: Pricing, label: string, agent:
   if (tcpMatch) console.log(`        raw TCP connect to api.github.com:443 (bypassing gh's own auth gate entirely): ${tcpMatch[1]}`);
 
   // A `gh-vendor-dir-permission` failure means gh died at its own config/state/data/cache load — ALWAYS a
-  // finding, on EVERY step, regardless of `tcpExpect` — checked first, unconditionally.
+  // finding, on EVERY step, regardless of `networkTest` — checked first, unconditionally.
   if (outcome === "failed" && classification === "gh-vendor-dir-permission") {
     console.log(
       "        >>> FINDING: gh died at its own config/state/data/cache directory load (EPERM), before reaching whatever this step meant to test. This step's own verdict is INVALID this run — see NOTES R4-VENDOR-CLI's gh-vendor-scratch-dir redirect fix (src/adapters.ts#cliVendorScratchEnv). <<<",
@@ -291,30 +322,43 @@ async function runGhDispatch(repo: Repo, pricing: Pricing, label: string, agent:
     return;
   }
 
-  if (tcpExpect) {
-    // The TCP marker is the PRIMARY verdict for these steps — gh's own auth outcome is secondary context.
+  if (networkTest === "deny-via-tcp-only") {
+    // gh's own deny is structurally unobservable for a no-connector member (confirmed from gh's own
+    // source — see this function's own header doc) — RAW_TCP_CONNECT is the ONLY testable signal, and the
+    // verdict comes from it alone, never from gh's own exit code.
+    console.log(
+      "        (structural note: gh's own auth gate makes a gh-LEVEL network-deny proof impossible for a no-connector member — confirmed from gh's own source, not a harness gap. The line below is a raw-socket-level proof of the sandbox's network boundary, never a claim about gh's own HTTP client specifically.)",
+    );
     if (!tcpMatch) {
       console.log("        >>> HARNESS ERROR: no RAW_TCP_CONNECT marker found in this step's own output — the probe script itself may not have run (check for a HANG/timeout above). Cannot verdict the network boundary from this run. <<<");
-    } else if (tcpExpect === "must-deny") {
+    } else {
       console.log(
         tcpMatch[1] === "DENIED"
-          ? "        >>> PASS: raw TCP connect denied as expected — the sandbox's own network boundary bites a real socket attempt, independent of gh's own auth state <<<"
+          ? "        >>> PASS: raw TCP connect denied as expected — the sandbox's own network boundary bites a real socket attempt <<<"
           : "        >>> REGRESSION: raw TCP connect MUST be denied (no connector granted) but it SUCCEEDED <<<",
       );
-    } else {
-      console.log(`        (informational — raw TCP connect: ${tcpMatch[1]}; read together with the paired step's own note above before concluding anything)`);
     }
-    // Secondary context: gh's own auth outcome. A connector-holding step (a real token was expected) that
-    // still reports `gh-auth-required` is its OWN, separate finding (the token never reached gh) — but for
-    // a connector-less step (no token was ever expected), the identical classification is normal, not
-    // remarkable.
-    const tokenWasExpected = !!(agent.connectors && agent.connectors.length > 0);
+    if (outcome === "failed" && classification === "gh-auth-required") {
+      console.log("        (gh itself refused locally — auth-required, expected and structural for a no-connector member, not a finding; see the raw TCP verdict above for what this step actually asserts)");
+    }
+    return;
+  }
+
+  if (networkTest === "grant-via-gh") {
+    // gh's OWN outcome is the PRIMARY verdict here — with a token present, gh's auth gate passes and it
+    // issues a REAL request through its own HTTP client (confirmed from gh's own source — see this
+    // function's own header doc). RAW_TCP_CONNECT is corroborating context only.
+    if (tcpMatch) console.log(`        (corroborating context only — gh's own outcome below is this step's real proof)`);
     if (outcome === "failed" && classification === "gh-auth-required") {
       console.log(
-        tokenWasExpected
-          ? "        >>> FINDING: this step HOLDS a connector grant (GITHUB_TOKEN should have reached gh) but gh still reports no resolved token — check the 'member env diagnostic' line above; if GITHUB_TOKEN present=false, the export never reached this process (see this step pair's own header note for the exact var name required). <<<"
-          : "        (gh itself refused locally — auth-required, expected for a no-connector step, not a finding; the raw TCP verdict above is what this step actually asserts)",
+        "        >>> FINDING: this step HOLDS a connector grant (GITHUB_TOKEN should have reached gh) but gh still reports no resolved token — check the 'member env diagnostic' line above; if GITHUB_TOKEN present=false, the export never reached this process (see this step pair's own header note for the exact var name required). <<<",
       );
+    } else if (outcome === "succeeded") {
+      console.log("        >>> PASS: gh itself reached the network with a real, authenticated request — the network GRANT works against a real gh client <<<");
+    } else if (classification === "network") {
+      console.log("        >>> REGRESSION: gh had a real token and attempted the network, but the request was DENIED — the network grant is not working for a real gh client <<<");
+    } else {
+      console.log("        >>> FINDING: gh failed for a reason other than auth-required or a network deny — diagnose from the evidence above before concluding anything about the network boundary <<<");
     }
     return;
   }
@@ -453,8 +497,8 @@ async function main() {
       "2. gh api /zen + raw TCP probe — NO connector (memberNetworkAllowed === false, no token either — see this step's own note on why that's unavoidable and fine)",
       mkGhAgent("gh-api-no-net", ghApiWithRawTcpProbe(), undefined),
       "must-fail",
-      "member env diagnostic above should show GITHUB_TOKEN present=false (no connector granted here at all, by design) — gh itself WILL refuse locally (classified 'gh-auth-required', EXPECTED and fine, not a finding) since it has no token; what this step actually asserts is the RAW_TCP_CONNECT line: MUST read DENIED, proving the sandbox's own network boundary bites a real socket attempt regardless of gh's own auth state. If RAW_TCP_CONNECT reads OK, THAT is the real regression to chase — never gh's own exit code alone.",
-      "must-deny",
+      "gh's own auth gate checks token PRESENCE ONLY and runs UNCONDITIONALLY before any subcommand's own logic (confirmed from gh's own source: pkg/cmdutil/auth_check.go + pkg/cmd/root/root.go) — a gh-LEVEL network-deny proof is therefore STRUCTURALLY IMPOSSIBLE for this no-connector member shape, not a harness gap. member env diagnostic above should show GITHUB_TOKEN present=false (by design); gh itself WILL refuse locally (classified 'gh-auth-required', expected, not a finding). This step's real assertion is the RAW_TCP_CONNECT line — a raw-socket-level proof of the sandbox's network boundary, MUST read DENIED — never gh's own exit code.",
+      "deny-via-tcp-only",
     );
 
     await runGhDispatch(
@@ -463,8 +507,8 @@ async function main() {
       "3. gh api /zen + raw TCP probe — WITH the golden fixture's own 'github' connector (memberNetworkAllowed === true, and GITHUB_TOKEN should reach gh)",
       mkGhAgent("gh-api-with-net", ghApiWithRawTcpProbe(), ["github"]),
       "informational",
-      "member env diagnostic above should show GITHUB_TOKEN present=true — if false, the export above didn't reach this process/shell, or was named GH_TOKEN instead (see this pair's own header note); a config/token mismatch here is a HARNESS setup issue, not a sandbox finding. With a real token AND real host connectivity, expect RAW_TCP_CONNECT=OK and a real gh success (the /zen quote itself). Read RAW_TCP_CONNECT specifically (never gh's own exit code alone) against step 2's own RAW_TCP_CONNECT: (2 DENIED, 3 OK) is the differential evidence that confirms the sandbox's own network boundary is real; (2 DENIED, 3 also DENIED) points at this host's own connectivity, not the sandbox; (2 OK) is itself the step-2 regression, independent of this step.",
-      "informational",
+      "member env diagnostic above should show GITHUB_TOKEN present=true — if false, the export above didn't reach this process/shell, or was named GH_TOKEN instead (see this pair's own header note); a config/token mismatch here is a HARNESS setup issue, not a sandbox finding. With a token PRESENT (gh's own auth gate checks presence only, never validity — confirmed from gh's own source), gh proceeds to a REAL authenticated request — gh's OWN outcome below is this step's real proof, never the raw TCP line (corroboration only). Read step 2's structural note first: the grant direction (this step) is the only direction gh itself can prove; the deny direction (step 2) can only ever be proven at the raw-socket layer.",
+      "grant-via-gh",
     );
 
     await runGhDispatch(
@@ -489,12 +533,14 @@ async function main() {
   console.log("'gh-vendor-dir-permission' classification on ANY step means gh died at its own config/state/");
   console.log("data/cache load (round 1's own finding) — if it recurs after the shipped fix");
   console.log("(src/adapters.ts#cliVendorScratchEnv), that is a NEW finding, the fix is incomplete for some");
-  console.log("path this round's evidence didn't cover. For steps 2/3 specifically, the verdict comes from the");
-  console.log("'raw TCP connect' line, never gh's own exit code alone (round 2's own finding: gh's own auth");
-  console.log("gate refuses any request without a token, unrelated to the sandbox) — read step 3's own TCP");
-  console.log("result against step 2's as described in step 3's own note. Record this run's outcome in NOTES");
-  console.log("R4-VENDOR-CLI, naming any FURTHER code change ONLY if a REGRESSION or NEW finding above demands");
-  console.log("one, with the narrowest grant the printed evidence actually justifies.");
+  console.log("path this round's evidence didn't cover. Steps 2 and 3 are ASYMMETRIC, by design, confirmed");
+  console.log("from gh's own source (see NetworkTestRole's own doc): step 2's verdict comes SOLELY from its");
+  console.log("own 'raw TCP connect' line (a gh-level deny-proof is structurally impossible for a no-connector");
+  console.log("member); step 3's verdict comes from gh's OWN outcome (a real, authenticated request), with");
+  console.log("its own TCP line as corroboration only. Never read step 2's TCP result as if it were a gh-level");
+  console.log("proof, and never read step 3's TCP result as primary over gh's own PASS/REGRESSION. Record this");
+  console.log("run's outcome in NOTES R4-VENDOR-CLI, naming any FURTHER code change ONLY if a REGRESSION or");
+  console.log("NEW finding above demands one, with the narrowest grant the printed evidence actually justifies.");
 }
 
 // Guarded so a future test file can import `classifyGhFailure` without triggering a full run — the same
