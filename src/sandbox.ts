@@ -830,6 +830,28 @@ export function buildSandboxExecProfile(policy: SandboxPolicy): string {
       ...gitSubpaths.map((p) => `(allow file-write* (subpath ${sbxq(p)}))`),
       '(allow file-read* (subpath "/dev"))',
       '(allow file-write* (subpath "/dev"))',
+      // NOTES R4-VENDOR-CLI (live macOS gate, round 3: the first network-granted real vendor-CLI HTTPS
+      // request this whole R4-SANDBOX investigation has ever attempted): `(allow network*)` alone is not
+      // sufficient for a real TLS/HTTPS client. Live evidence: a network-granted `gh api` request
+      // completed its TCP connection and STARTED a TLS handshake (`gh`'s own reported error was a
+      // downstream `x509: failed to verify certificate`, not a connection-level failure) but could not
+      // complete it — kernel-confirmed `deny(1) mach-lookup com.apple.trustd.agent`. macOS certificate
+      // trust evaluation for TLS is not done in-process; it round-trips through `trustd` (the system trust
+      // daemon) over a mach service, and this profile's own `(deny default)` denies mach-lookup for
+      // anything not explicitly allowed — exactly the same class of gap `com.apple.bsd.dirhelper` above
+      // closed for `confstr`, recurring for TLS certificate verification specifically. Gated on
+      // `policy.allowNetwork`, unlike `dirhelper`/`sysctl-read` above (which are unconditional for every
+      // dispatch): a member with no network grant must not gain trust-evaluation reach it has no use for
+      // and no connector declared — this is deliberately the ONLY new grant network-allow adds beyond the
+      // blanket `(allow network*)` itself, keeping the deny direction (a no-connector member) completely
+      // unaffected (re-verified live: the operator-home decoy still denied under this same grant — network
+      // reach and filesystem confinement remain orthogonal). Named exactly as quoted from the live kernel
+      // log — `com.apple.trustd.agent` — never guessed at or bundled with other mach services (e.g.
+      // `opendirectoryd.libinfo`/`mDNSResponder`, also observed denied alongside it in the same log) whose
+      // own load-bearing-ness for a working request is not yet independently confirmed by evidence; if a
+      // subsequent live run shows a TLS request still failing with a DIFFERENT mach-lookup denial, the fix
+      // is to name and add that EXACT service, evidence-first, never to preemptively widen this grant.
+      policy.allowNetwork ? '(allow mach-lookup (global-name "com.apple.trustd.agent"))' : "",
       policy.allowNetwork ? "(allow network*)" : "(deny network*)",
     ].filter(Boolean),
   );

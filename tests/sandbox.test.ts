@@ -557,6 +557,34 @@ describe("buildSandboxExecProfile — deny-list model (NOTES R4-SANDBOX-FIX-3)",
     expect(profile).toContain('(allow mach-lookup (global-name "com.apple.bsd.dirhelper"))');
   });
 
+  // NOTES R4-VENDOR-CLI (live macOS gate, round 3): a network-granted real `gh api` HTTPS request
+  // completed its TCP connection and started a TLS handshake but failed at certificate verification —
+  // kernel-confirmed `deny(1) mach-lookup com.apple.trustd.agent`. macOS TLS trust evaluation round-trips
+  // through the system `trustd` daemon over a mach service; `(allow network*)` alone never covers it.
+  // UNLIKE `dirhelper`/`sysctl-read` above, this grant is gated on `allowNetwork` — a member with no
+  // network reach has no use for trust-evaluation reach either, and must not gain it.
+  test("the trustd.agent mach-lookup is allowed ONLY when the network is granted", () => {
+    const granted = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: true });
+    expect(granted).toContain('(allow mach-lookup (global-name "com.apple.trustd.agent"))');
+    expect(granted).toContain("(allow network*)");
+
+    const denied = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false });
+    expect(denied).not.toContain("com.apple.trustd.agent");
+    expect(denied).toContain("(deny network*)");
+  });
+
+  // NOTES R4-VENDOR-CLI (ruling A, requirement 3): the trustd grant must not weaken the OTHER standing
+  // seal — a network-granted, trustd-granted member still gets the operator's real HOME denied. Network
+  // reach and filesystem confinement stay orthogonal grants, re-verified with this specific new grant in
+  // the mix (mirrors the FIX-3/FIX-4 operator-home decoy property this whole investigation keeps re-
+  // checking whenever a new reach is added — NOTES R4-SANDBOX-FIX-8/FIX-12's own standing instruction).
+  test("the trustd grant coexists with the operator-home deny — network and filesystem remain orthogonal", () => {
+    const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: true, operatorHome: "/Users/cas" });
+    expect(profile).toContain('(allow mach-lookup (global-name "com.apple.trustd.agent"))');
+    expect(profile).toContain("(allow network*)");
+    expect(profile).toContain('(deny file-read* (subpath "/Users/cas"))');
+  });
+
   test("denies default, allows broad OS read, denies default and only re-opens what this dispatch needs", () => {
     const profile = buildSandboxExecProfile({ cwd: "/a/b", home: "/c/d", allowNetwork: false });
     expect(profile).toContain("(deny default)");
