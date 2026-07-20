@@ -422,29 +422,28 @@ async function main() {
     return text.replace(/#"(?:[^"\\]|\\.)*"/g, "#<PATH>").replace(/"(?:[^"\\]|\\.)*"/g, "<PATH>");
   }
 
-  // NOTES R4-SANDBOX-FIX-14 (round 2 — live host): FIX-14's first pass fixed ONE silent degradation path
-  // (the hard-coded `main` branch name) but the live gate STILL reported REGRESSION afterward — the
-  // production dispatch's own profile still carried no git-write section even though the work branch
-  // demonstrably existed. The structural skeleton diff below is a PROXY for "did this dispatch build a
-  // worktree" — proxies can be right for the wrong reason, or wrong for a reason the diff itself can't
-  // name. Two DIRECT, non-proxy checks replace guessing from the skeleton alone:
-  //
-  //  (a) BEFORE dispatching: `diagnoseDispatchRepoCondition` calls the EXACT exported functions
-  //      `AdapterRunner#resolveDispatchRepo` calls internally (`resolveProjectRepoPath`, `workBranchName`,
-  //      `branchExists` — never a hand-rolled re-implementation that could itself drift) against the
-  //      fixture this section built, and fails LOUDLY, naming exactly which of the adapter's own two
-  //      conditions isn't met, if either isn't. This is pure git/fs logic with ZERO sandbox-primitive
-  //      dependency — it runs and means the same thing on ANY host, this container included, closing the
-  //      "container-pass didn't predict host-pass" gap the first FIX-14 pass still had (its own only
-  //      verifiable-in-container signal required a stand-in `sandbox-exec` primitive).
-  //  (b) AFTER dispatching: `captureProductionSkeleton` also reports whether the dispatch's own
-  //      `wrapForSandbox` debug output named a `levare-dispatchwt-*` cwd — the OBSERVABLE fact of "a
-  //      per-dispatch worktree was actually used for this spawn," read from the adapter's own real output,
-  //      never inferred from whether the profile TEXT happens to contain a particular line.
-  //
-  // If (a) passes but (b) doesn't, that pinpoints the divergence inside `withDispatchWorktreeAsync`/
-  // `createDispatchWorktree`'s own dispatch-time behavior specifically — new information no prior round
-  // had, rather than another guess.
+  // NOTES R4-SANDBOX-FIX-14 (round 3 — live host): round 2's own instrumentation isolated the gap
+  // precisely — the fixture satisfied `resolveDispatchRepo`'s own precondition (verified directly,
+  // immediately pre-dispatch), yet the ACTUAL dispatch still declined the worktree, with no way to see
+  // WHERE the divergence happened. `adapters.ts#withDispatchWorktree{,Async}` now prints its own
+  // decision — "dispatch worktree created for '<member>' at '<path>' ..." or "dispatch worktree declined
+  // for '<member>': <reason>" — under `LEVARE_SANDBOX_DEBUG=1`, for EVERY dispatch, unconditionally (this
+  // line fires from plain decision logic inside `prepare()`/`withDispatchWorktree{,Async}`, never gated
+  // on a live sandbox primitive — see `tests/adapters.test.ts`'s own three new regression tests pinning
+  // this). The parity step now keys directly on THAT line — the adapter's own stated decision — rather
+  // than inferring the decision from profile-text shape a second time.
+  function profileSkeleton(text: string): string {
+    // Regex literals first (they also match the quoted-string pattern below) — both collapse every
+    // path-specific literal to a single placeholder, leaving only the RULE STRUCTURE to compare.
+    return text.replace(/#"(?:[^"\\]|\\.)*"/g, "#<PATH>").replace(/"(?:[^"\\]|\\.)*"/g, "<PATH>");
+  }
+
+  // Mirrors `AdapterRunner#resolveDispatchRepo`'s own condition via the EXACT exported functions it
+  // calls internally (`resolveProjectRepoPath`, `workBranchName`, `branchExists`) — pure git/fs logic,
+  // zero sandbox-primitive dependency, meaning the same thing on this container as on a live darwin host.
+  // Used as a pre-dispatch sanity check on the fixture this section builds (never as the parity verdict
+  // itself — that now comes from the adapter's own decision line below, per this round's own lesson that
+  // even an independently-correct precondition check can't stand in for observing the real decision).
   function diagnoseDispatchRepoCondition(
     repo: ReturnType<typeof loadRepo>,
     project: string,
@@ -466,18 +465,19 @@ async function main() {
     return { ok: true, repoPath, branch };
   }
 
+  type WorktreeDecision = { kind: "created"; detail: string } | { kind: "declined"; reason: string };
+
   // Drives a real `AdapterRunner.produceAsync()` dispatch of finch/review against `repo`'s `project`/
-  // `unit`, capturing the darwin sandbox-exec profile text AND the `cwd:` line `wrapForSandbox` prints
-  // under `LEVARE_SANDBOX_DEBUG=1` (a failed dispatch still prints both — built and logged BEFORE the
-  // spawn itself runs, so the dispatch's own success/failure is irrelevant here). `worktreeCwd` is the
-  // DIRECT, observable signal that a per-dispatch worktree was actually used (the cwd names a
-  // `levare-dispatchwt-*` scratch path — see `merge.ts#createDispatchWorktree`'s own `mkdtempSync` prefix)
-  // — `null` when the dispatch spawned in some other cwd (the repo-less, no-worktree case). `skeleton` is
-  // `null` only when this host's own detected primitive never reaches the real sandbox-exec debug print
-  // (e.g. this container's own honest `none` detection). Shared between the repo-bearing (primary) and
-  // repo-less (informational) checks below — the only thing that differs between them is which
-  // `repo`/`project` is passed in.
-  async function captureProductionSkeleton(repo: ReturnType<typeof loadRepo>, project: string, unit: string): Promise<{ skeleton: string | null; worktreeCwd: string | null }> {
+  // `unit`, capturing (1) the adapter's own `dispatch worktree created/declined` decision line — the
+  // AUTHORITATIVE signal this round's own fix keys on — and (2) the darwin sandbox-exec profile text,
+  // when this host's own detected primitive reaches that far, for the structural equality check. Both are
+  // read from `LEVARE_SANDBOX_DEBUG=1` output; a failed dispatch still prints both — built and logged
+  // BEFORE the spawn itself runs, so the dispatch's own success/failure is irrelevant here. `decision` is
+  // `null` only if NEITHER a created nor a declined line was captured at all (a setup error in this
+  // capture harness itself, never a legitimate outcome — `withDispatchWorktree{,Async}` always prints
+  // exactly one). Shared between the repo-bearing (primary) and repo-less (informational) checks below —
+  // the only thing that differs between them is which `repo`/`project` is passed in.
+  async function captureProductionDispatch(repo: ReturnType<typeof loadRepo>, project: string, unit: string): Promise<{ skeleton: string | null; decision: WorktreeDecision | null }> {
     const nativeMock: NativeBoundary = { invoke: () => ({ doc: "unused" }) };
     const remoteMock: RemoteBoundary = { call: () => ({ doc: "unused" }) };
     const pricing = loadPricing("fixtures/golden");
@@ -498,23 +498,28 @@ async function main() {
       });
       await runner.produceAsync("finch", "review", unit, project);
     } catch (e) {
-      console.log(`(dispatch itself reported: ${e instanceof Error ? e.message : String(e)} — expected/irrelevant, only its own printed profile text matters here)`);
+      console.log(`(dispatch itself reported: ${e instanceof Error ? e.message : String(e)} — expected/irrelevant, only its own printed debug lines matter here)`);
     } finally {
       console.error = origConsoleError;
       if (priorDebug === undefined) delete process.env.LEVARE_SANDBOX_DEBUG;
       else process.env.LEVARE_SANDBOX_DEBUG = priorDebug;
     }
-    const cwdLine = capturedLines.find((l) => l.startsWith("[levare:sandbox-debug] cwd: "));
-    const cwdValue = cwdLine ? cwdLine.slice("[levare:sandbox-debug] cwd: ".length) : null;
-    const worktreeCwd = cwdValue && cwdValue.includes("levare-dispatchwt-") ? cwdValue : null;
+    const createdLine = capturedLines.find((l) => l.startsWith("[levare:sandbox-debug] dispatch worktree created for"));
+    const declinedLine = capturedLines.find((l) => l.startsWith("[levare:sandbox-debug] dispatch worktree declined for"));
+    const decision: WorktreeDecision | null = createdLine
+      ? { kind: "created", detail: createdLine.slice("[levare:sandbox-debug] ".length) }
+      : declinedLine
+        ? { kind: "declined", reason: declinedLine.slice("[levare:sandbox-debug] ".length) }
+        : null;
     const profileTextLine = capturedLines.find((l) => l.startsWith("[levare:sandbox-debug] darwin sandbox-exec profile text:"));
-    if (!profileTextLine) return { skeleton: null, worktreeCwd };
-    return { skeleton: profileSkeleton(profileTextLine.slice(profileTextLine.indexOf("\n") + 1)), worktreeCwd };
+    const skeleton = profileTextLine ? profileSkeleton(profileTextLine.slice(profileTextLine.indexOf("\n") + 1)) : null;
+    return { skeleton, decision };
   }
 
   const ladderSkeleton = profileSkeleton(profile);
 
-  // --- Primary check: REPO-BEARING vs REPO-BEARING, asserted for structural EQUALITY. ---
+  // --- Primary check: REPO-BEARING vs REPO-BEARING, asserted for structural EQUALITY — gated on the
+  // adapter's OWN "created" decision, never inferred a second time. ---
   const parityProjectRepo = mkdtempSync(join(tmpdir(), "levare-fix13-parity-proj-"));
   git(parityProjectRepo, ["init", "-q"]);
   writeFileSync(join(parityProjectRepo, "README.md"), "hello\n");
@@ -537,34 +542,32 @@ async function main() {
   const storefront = parityRepo.projects.get("storefront")!;
   parityRepo.projects.set("storefront", { ...storefront, repo: parityProjectRepo });
 
-  // Direct pre-dispatch condition check (a) — see this section's own header comment. Runs with zero
-  // sandbox dependency; verifiable in this container exactly as meaningfully as on a live darwin host.
+  // Pre-dispatch sanity check (never the verdict itself — see this section's own header comment). Runs
+  // with zero sandbox dependency; verifiable in this container exactly as meaningfully as on a live
+  // darwin host.
   const parityCondition = diagnoseDispatchRepoCondition(parityRepo, "storefront", "parity-unit");
   if (!parityCondition.ok) {
     throw new Error(`parity check setup failed — the fixture does not satisfy AdapterRunner#resolveDispatchRepo's own condition: ${parityCondition.reason}`);
   }
   console.log(`parity fixture satisfies resolveDispatchRepo's own condition: repoPath=${parityCondition.repoPath} branch=${parityCondition.branch}`);
 
-  const production = await captureProductionSkeleton(parityRepo, "storefront", "parity-unit");
+  const production = await captureProductionDispatch(parityRepo, "storefront", "parity-unit");
   rmSync(parityProjectRepo, { recursive: true, force: true });
 
-  if (production.skeleton === null) {
-    console.log("PARITY CHECK SKIPPED — no 'darwin sandbox-exec profile text:' line captured (this host's own detected primitive may not be sandbox-exec, or the dispatch never reached the real spawn boundary).");
-  } else if (!production.worktreeCwd) {
-    // Direct post-dispatch check (b): the precondition above held (repoPath resolved, branch existed) —
-    // yet no `levare-dispatchwt-*` cwd was observed for the ACTUAL dispatch. This is a NEW, more precise
-    // finding than a bare structural diff: the divergence is inside `withDispatchWorktreeAsync`/
-    // `createDispatchWorktree`'s own dispatch-time behavior, not the branch/repo-path precondition — never
-    // silently folded into a generic "structures differ" message.
-    console.log(
-      ">>> REGRESSION: the fixture satisfied resolveDispatchRepo's own condition (repoPath and branch both verified immediately above), yet the ACTUAL dispatch's own debug output shows no 'levare-dispatchwt-*' worktree cwd — withDispatchWorktreeAsync/createDispatchWorktree diverged from its own precondition at dispatch time <<<",
-    );
-    console.log("--- production skeleton (no git-write section expected here, since no worktree was used) ---");
-    console.log(production.skeleton);
+  if (!production.decision) {
+    console.log("PARITY CHECK SETUP ERROR — neither a 'dispatch worktree created' nor 'declined' line was captured at all; the LEVARE_SANDBOX_DEBUG capture itself is broken, not the adapter's own decision.");
+  } else if (production.decision.kind === "declined") {
+    // The adapter's OWN stated reason, quoted verbatim — never re-derived or paraphrased. The
+    // pre-dispatch condition above held, so a decline here means `withDispatchWorktreeAsync`/
+    // `createDispatchWorktree` diverged from `resolveDispatchRepo`'s own precondition at dispatch time —
+    // exactly the gap this round's own instrumentation exists to name instead of guess at.
+    console.log(`>>> REGRESSION: the adapter itself declined the worktree despite the fixture satisfying resolveDispatchRepo's own precondition (verified immediately above). Reason (quoted verbatim): "${production.decision.reason}" <<<`);
+  } else if (production.skeleton === null) {
+    console.log(`PARITY CHECK PARTIAL — worktree WAS created (${production.decision.detail}), but no darwin sandbox-exec profile text was captured (this host's own detected primitive may not be sandbox-exec) — structural equality not checked this run.`);
   } else if (ladderSkeleton === production.skeleton) {
-    console.log(`>>> PASS: the ladder's own profile and a REAL, repo-bearing production dispatch's own profile (worktree cwd: ${production.worktreeCwd}) are structurally identical <<<`);
+    console.log(`>>> PASS: worktree created (${production.decision.detail}); the ladder's own profile and production's own profile are structurally identical <<<`);
   } else {
-    console.log(">>> REGRESSION: both dispatches used a real per-dispatch worktree, but the ladder's own profile and the production dispatch's own profile DIFFER in structure <<<");
+    console.log(`>>> REGRESSION: worktree created (${production.decision.detail}), but the ladder's own profile and production's own profile DIFFER in structure <<<`);
     console.log("--- ladder skeleton ---");
     console.log(ladderSkeleton);
     console.log("--- production skeleton ---");
@@ -574,11 +577,10 @@ async function main() {
   // --- Secondary check (NOTES R4-SANDBOX-FIX-14): INFORMATIONAL, never a regression gate. Dispatches
   // against the golden fixture's own `storefront` project UNTOUCHED — deliberately repo-less (`repo:` is
   // a placeholder SSH URL never actually cloned locally, per NOTES MERGE-1) — and pins the EXPECTED
-  // shape difference (a per-dispatch worktree cwd present for the ladder/primary check above, absent
-  // here) rather than leaving that shape untested. If this ever stops differing the way it's expected to,
-  // that means the repo-less DETECTION itself broke (`resolveProjectRepoPath` started treating this
-  // placeholder as a real checkout) — a real bug, but a different one than the primary check above guards
-  // against, so it is named and printed distinctly rather than folded into "REGRESSION".
+  // decision (declined, naming the missing repo resolution) rather than leaving that shape untested. If
+  // this ever stops declining the way it's expected to, that means the repo-less DETECTION itself broke —
+  // a real bug, but a different one than the primary check above guards against, so it is named and
+  // printed distinctly rather than folded into "REGRESSION".
   console.log("");
   console.log("=== Repo-less dispatch shape check (NOTES R4-SANDBOX-FIX-14, informational — not a regression gate) ===");
   const repolessRepo = loadRepo("fixtures/golden");
@@ -588,17 +590,13 @@ async function main() {
       ? `(unexpected: the untouched golden fixture's own 'storefront' satisfies resolveDispatchRepo's own condition — repoPath=${repolessCondition.repoPath} branch=${repolessCondition.branch})`
       : `golden fixture's own 'storefront' correctly does NOT satisfy resolveDispatchRepo's own condition: ${repolessCondition.reason}`,
   );
-  const repoless = await captureProductionSkeleton(repolessRepo, "storefront", "repro");
-  if (repoless.skeleton === null) {
-    console.log("INFORMATIONAL CHECK SKIPPED — no profile text captured (same host-primitive caveat as the primary check above).");
-  } else if (!repolessCondition.ok && !repoless.worktreeCwd) {
-    console.log(">>> PASS (expected shape difference): the ladder's own repo-bearing profile used a per-dispatch worktree; the repo-less dispatch's own profile correctly used none <<<");
+  const repoless = await captureProductionDispatch(repolessRepo, "storefront", "repro");
+  if (!repoless.decision) {
+    console.log("INFORMATIONAL CHECK SETUP ERROR — neither a 'dispatch worktree created' nor 'declined' line was captured at all.");
+  } else if (repoless.decision.kind === "declined") {
+    console.log(`>>> PASS (expected decision): the repo-less dispatch correctly declined the worktree. Reason (quoted verbatim): "${repoless.decision.reason}" <<<`);
   } else {
-    console.log(
-      `>>> UNEXPECTED SHAPE: this pinned expectation no longer holds (repolessCondition.ok=${repolessCondition.ok}, repoless.worktreeCwd=${repoless.worktreeCwd ?? "null"}) — the repo-less DETECTION itself may have changed <<<`,
-    );
-    console.log("--- repo-less skeleton ---");
-    console.log(repoless.skeleton);
+    console.log(`>>> UNEXPECTED SHAPE: this pinned expectation no longer holds — the repo-less dispatch CREATED a worktree (${repoless.decision.detail}); the repo-less DETECTION itself may have changed <<<`);
   }
 }
 
