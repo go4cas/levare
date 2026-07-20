@@ -10591,6 +10591,15 @@ regression.
 
 ## Round 2 (live host) — a SECOND, different degradation path to no-worktree, and the proxy that hid it
 
+**CORRECTED by round 4 (below): the "declined worktree" finding this round reports was itself a capture
+artifact, not a real product divergence.** The dispatch DID create a worktree; the check's own
+`cwd:`-line lookup below (item 2) picked `detectSandbox()`'s own PROBE's cwd instead of the dispatch's,
+because both print an identically-shaped `cwd:` line and the lookup selected by ORDER (first match) rather
+than by IDENTITY. `withDispatchWorktreeAsync` never diverged from its own precondition at any point in
+this investigation. The section below is kept verbatim as the historical record of this round's own
+(reasonable, evidence-following, and ultimately still useful — see item 1, which stands unaffected) work;
+read it with that correction in mind. Full story: round 4's own section, after round 3.
+
 The live gate's next confirmation run STILL printed `>>> REGRESSION <<<` after the fix above shipped — the
 production dispatch's own profile still carried no git-write section (skeleton running straight from the
 xcrun regex grants to the `/dev` grants, no deny-root, no four re-allows), while the ladder's own profile
@@ -10666,6 +10675,17 @@ repeating it a third time.
 
 ## Round 3 (live host) — the gap round 2 isolated, a symlink audit that came back clean, and the fix
 ## that stops the SILENCE regardless of which guard turns out to be responsible
+
+**CORRECTED by round 4 (below): the "gap" this round set out to explain never existed** — round 2's own
+"declined worktree" finding was a capture artifact (see round 2's own correction above), so there was
+never a real divergence between `resolveDispatchRepo`'s precondition and `withDispatchWorktreeAsync`'s own
+decision. In hindsight, the symlink audit's own clean result (below) was not an incomplete investigation —
+it correctly found nothing, because there was nothing there to find. The audit itself, and everything it
+established about `resolveProjectRepoPath`/`createDispatchWorktree`'s real behavior under a symlinked
+path, stands as accurate, useful, independently-verified information regardless. The decision-line
+observability fix (items 1 and the regression tests) also stands — real product observability, valuable on
+its own terms, kept in round 4 unchanged. Read this section as the historical record of the investigation
+that led there.
 
 Round 2's own instrumentation fired exactly as designed and did its job: the live gate confirmed the
 parity fixture SATISFIES `resolveDispatchRepo`'s own precondition (`repoPath` and `branch` both verified
@@ -10769,3 +10789,132 @@ all (this container's own real, honest `none` detection), the primary check corr
 PARTIAL — worktree WAS created (...)`, and the informational check still prints its full PASS (declined,
 as expected) — both confirming the worktree-decision signal is genuinely platform-independent, not another
 proxy that merely looks convincing in this container.
+
+## Round 4 (live host) — the FINAL conviction: the entire parity saga was one capture bug, never a product
+## divergence
+
+The live gate's next run supplied the missing piece: the adapter's own decision line (round 3's fix)
+printed `dispatch worktree created for 'finch' at .../levare-dispatchwt-5P802a` — **the dispatch was
+correct.** Yet the parity check STILL reported the profiles DIFFER, and the printed "production skeleton"
+had no git-write section at all and matched EXACTLY the shape of `sandbox.ts#detectSandbox`'s own
+DETECTION PROBE (three read subpaths, one write, the xcrun regex pair, `/dev` — never the dispatch's own
+worktree-scoped grants).
+
+### Root cause, finally named
+
+`detectSandbox()` PROBES the sandbox primitive before `sandboxWrap` ever wraps a real dispatch —
+`probeSandboxExec` (`src/sandbox.ts`) writes its OWN throwaway profile to a `levare-sandbox-probe-*/
+probe.sb` scratch file and prints the IDENTICAL `LEVARE_SANDBOX_DEBUG` line shapes a real dispatch's own
+wrap prints (`darwin sandbox-exec profile written to: ...`, `darwin sandbox-exec profile text:\n...`,
+`cwd: ...`) — **by design**, so a Conductor comparing the probe's own block against a real dispatch's
+block moments later can catch a divergence between them at a glance (this is documented directly in
+`probeSandboxExec`'s own header comment, predating this entire investigation). On a live host where the
+probe genuinely runs (a real, working `sandbox-exec`), its block is emitted strictly BEFORE the
+dispatch's own — `detectSandbox()` runs to completion, as part of `sandboxWrap`, before `wrapForSandbox`
+ever calls `sandboxExecArgv` for the actual spawn.
+
+The parity ladder's own `captureProductionDispatch` (formerly `captureProductionSkeleton`) selected the
+production profile text with a bare `capturedLines.find((l) => l.startsWith(".../profile text:"))` —
+**first match wins.** On a live host, that is unconditionally the PROBE's own block, never the dispatch's.
+Every "structural REGRESSION" this saga reported (round 1, round 3) was this: the ladder's own
+(dispatch-worktree-bearing) profile compared against the PROBE's profile — which has no git-write grant
+because the probe never dispatches against any project, worktree, or git-write grant at all; it is testing
+"does this primitive basically work," nothing more. **The two generators never disagreed once, in any
+round of this investigation.**
+
+This also retroactively explains round 2's own "declined worktree" finding, corrected in place above: that
+check read the FIRST `cwd:` line in the captured stream — which is the PROBE's own `cwd: <scratchDir>`
+line (`probeSandboxExec` prints one too, for the identical reason), not the dispatch's `cwd: <policy.cwd>`
+line printed later by `wrapForSandbox`. The "divergence" round 2 isolated, round 3 built an entire
+observability fix in response to, and the symlink audit went looking for the mechanism of — never existed.
+`withDispatchWorktreeAsync` has been correct, and silent about nothing that mattered, this entire time.
+
+**Why the in-container stand-in runs never caught it, across four rounds:** every in-container sanity
+check in this saga (rounds 1 through 3) forced `sandboxDetection` as an `AdapterRunner` option specifically
+to get a "sandbox-exec" code path to exercise on Linux (`this.opts.sandboxDetection ?? detectSandbox()` —
+supplying the option SKIPS `detectSandbox()`, and therefore skips the probe, ENTIRELY). Every container run
+this saga ever performed structurally could not reproduce the probe-then-dispatch ordering, by the exact
+mechanism used to make the stand-in possible at all. This is not a container-vs-host GAP in the sense the
+earlier rounds framed it (an environment difference to close) — it is a plain SELECTION BUG that happened
+to only manifest when the thing being selected FROM had more than one candidate in it, which only a live
+host with a real, working primitive ever produced.
+
+### The fix — select by IDENTITY, never by ORDER
+
+`scripts/repro-r4-sandbox-fix10-hang.ts` gains a new exported, pure function,
+`selectDispatchProfileText(lines: string[]): string | null` (module scope, alongside `profileSkeleton`,
+also now module-scope and exported): it locates the `written to:` line containing the dispatch's own
+`levare-sandbox-profile-*` scratch-dir prefix — NEVER the probe's `levare-sandbox-probe-*` (two distinct
+`mkdtempSync` prefixes, never a substring of one another) — and reads the `profile text:` line immediately
+following it (both are printed as two consecutive `debugLine` calls at the same call site, in both
+`sandboxExecArgv` and `probeSandboxExec`, so "the very next captured line" is a reliable pairing once the
+correct `written to:` line is identified). `captureProductionDispatch` now calls this instead of a bare
+`.find()`. The `created`/`declined` DECISION line itself needed no fix — it is emitted only by
+`withDispatchWorktree{,Async}`, which the probe never calls, so no ordering ambiguity ever existed for it
+(consistent with the live host's own report: the decision line was already correct).
+
+**Regression test** (`tests/repro-r4-sandbox-fix10-hang.test.ts`, new file, mirroring the existing
+`tests/cheatsheets.test.ts` precedent of testing an exported function straight out of `scripts/`): feeds
+`selectDispatchProfileText` a synthetic captured-line stream containing BOTH a probe block and a dispatch
+block, IN THAT ORDER — the exact live-host shape — and asserts it returns the dispatch's own text, never
+the probe's; a second test proves the reverse ordering also works (order-independence, not just
+"probe-first" luck); a third explicitly demonstrates what the OLD naive `.find()` would have selected
+(the probe's block) side-by-side with what the fix selects, so the regression this guards against is
+visible in the test itself, not just asserted indirectly. Pure string-level — no filesystem, no git, no
+sandbox primitive — runs identically in this container and on a live darwin host, closing the
+"container-pass didn't predict host-pass" gap for good, for this specific class of bug: a capture that
+selects by position can be pinned by a test that never needs a live primitive to construct the position
+ambiguity, only a string.
+
+`scripts/repro-r4-sandbox-fix10-hang.ts`'s own `await main()` is now guarded behind `if (import.meta.main)`
+(the same pattern `scripts/generate-cheatsheets.ts` already established for `tests/cheatsheets.test.ts`),
+so the test file can import `profileSkeleton`/`selectDispatchProfileText` without triggering a full ladder
+run.
+
+### The general lesson (requirement 4's own instruction, stated plainly)
+
+**A capture that selects by POSITION breaks the moment new instrumentation adds output ahead of it.**
+Every round of this saga added MORE debug output to chase the previous round's own finding (round 3 added
+the decision line; the probe itself predates this investigation but was never accounted for by the
+capture). Each addition was individually correct and individually useful — the bug was never in what got
+printed, only in how the ladder SELECTED from what had accumulated. A `.find()` over an ever-growing stream
+of debug lines is a landmine that detonates only when a second matching block appears ahead of the first —
+which a probe, added for an unrelated and legitimate reason years before this investigation began, was
+always capable of producing on any host where it actually ran. The fix generalizes: identify the SOURCE of
+a captured line (a scratch-dir prefix, a decision-line's own unique text, anything the emitting code
+control uniquely), never its POSITION in the stream. This is FIX-13's own "a probe that exercises a
+narrower code path than production proves nothing about what production does" lesson wearing yet another
+coat — this time, ironically, the probe in question is the literal, actual `detectSandbox()` probe this
+codebase has always had, not a metaphor for one.
+
+### What actually happened, end to end, now that it's understood
+
+The ladder's own profile and a real production dispatch's own profile have been structurally identical
+this entire saga. FIX-13's original parity check design was correct from the start (repo-bearing fixture,
+strict equality, informational repo-less pin). Round 1's branch-hardcoding fix was a real, independent,
+worthwhile robustness improvement (the parity fixture's OWN setup is more correct now regardless). Round
+3's decision-line observability is a real, independent, worthwhile production improvement (a silent
+decline is still a legitimate class of production risk worth guarding against, even though this specific
+saga never actually triggered one). Nothing in the PRODUCT (`adapters.ts`, `merge.ts`, `sandbox.ts`) needed
+any correctness fix this entire time — every "regression" was the parity harness comparing the wrong two
+things, wearing three different disguises across three rounds, all traceable to one root habit: selecting
+captured debug output by position instead of by identity.
+
+## Verification (round 4)
+
+`bun test` — full suite green (1184 pass, up from 1178 — six new pure string-level tests in the new
+`tests/repro-r4-sandbox-fix10-hang.test.ts`, none platform-gated, none requiring a sandbox primitive). `bun
+run typecheck` → exit 0. `bun run deps:check` → `deps ok`. `bun run build` → succeeds. `bun run src/cli.ts
+validate fixtures/golden` → `valid`, the same two pre-existing `SANDBOX_UNAVAILABLE` warnings, unchanged.
+`bun run src/cli.ts replay fixtures/golden --stubs` → oracle match, byte-for-byte. The new
+`selectDispatchProfileText` regression tests pass, directly proving (not merely asserting) the fix: fed a
+synthetic stream with a probe block before a dispatch block (the live-host shape), the OLD naive `.find()`
+selects the probe's own text (`PROBE-ONLY-MARKER`) while the fixed `selectDispatchProfileText` selects the
+dispatch's own text (`DISPATCH-MARKER`) from the identical input — the regression made directly observable
+in the test, not just indirectly implied. The rebuilt ladder, via a temporary non-committed copy (platform/
+primitive guards bypassed, `/bin/echo` standing in for `sandbox-exec`), still runs end to end without error
+and both parity checks still print PASS — the stand-in path cannot exercise the specific probe-ordering bug
+itself (forcing `sandboxDetection` as an option skips `detectSandbox()`, and therefore the probe, entirely
+— the exact mechanism explaining why this bug survived four rounds of container-only verification), which
+is precisely why the pure string-level test above, not another end-to-end run, is this round's own real
+proof.
