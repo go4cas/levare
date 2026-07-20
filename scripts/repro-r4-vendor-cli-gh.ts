@@ -13,7 +13,22 @@
 // holds and `gh` runs clean under it — prove that first; only a genuine live failure earns a fix, and
 // any fix must be the narrowest grant the evidence justifies, never a convenience widening (NOTES
 // R4-SANDBOX-FIX-8/FIX-12's own standing lesson: a new grant must be re-checked against every existing
-// seal in the SAME round, never assumed independent of them — step 5 below is exactly that recheck).
+// seal in the SAME round, never assumed independent of them — step 4 below is exactly that recheck).
+//
+// ROUND 1 (live macOS run) found exactly that kind of genuine failure — not in R4 itself, but in `gh`'s
+// own startup: every step died identically at `~/.config/gh/config.yml`, kernel-confirmed `deny(1)
+// file-read-data`, the EPERM-vs-ENOENT class NOTES R4-SANDBOX-FIX-9 already named for git's own
+// `.gitconfig`, recurring for a tool whose own config/state/data/cache resolution is FOUR directories,
+// not one file `/dev/null` could stand in for. Fixed in `src/adapters.ts` (`cliVendorScratchEnv`/
+// `createCliVendorScratch`/`fullSandboxEnvRedirect`, applied generically to every `"full"`-tier `kind:
+// cli` dispatch — mirrors `gitConfigRedirectEnv`'s own precedent exactly, see that function's own doc for
+// the evidence and the full account); this is ROUND 2 of the SAME script, re-run against the fix, never
+// a new file — the goal's own "the established method — the Conductor runs it once" instruction. Every
+// step below is UNCHANGED in shape from round 1 (same commands, same expectations) — what changed is
+// production code, not the ladder, so a genuine before/after comparison is possible. `classifyGhFailure`
+// gained a new `gh-vendor-dir-permission` bucket specifically so a RECURRING config-load death (if the
+// fix is incomplete — gh may probe a path this round's own evidence didn't surface) is diagnosed AS
+// SUCH, never silently misread as a network result the way round 1's own verdict logic would have.
 //
 // Five steps, each a REAL `AdapterRunner.produceAsync` dispatch of a synthetic `kind: cli` member whose
 // `command` invokes the real `gh` binary — never a bespoke, weaker probe (FIX-5's own "weak canary"
@@ -56,9 +71,12 @@
 //
 // Every failure this script observes is passed through `classifyGhFailure` (module scope, exported —
 // pinned by `tests/repro-r4-vendor-cli-gh.test.ts`, pure string logic, no live host required) — a
-// HEURISTIC aid distinguishing a network-shaped failure from a filesystem-permission-shaped one from
-// gh simply not being found, printed alongside the raw message (never in place of it) so a Conductor
-// reads the classifier's guess and the ground truth together.
+// HEURISTIC aid distinguishing a network-shaped failure from a `gh`-own-config/state/data/cache-directory
+// -shaped one (round 1's own finding, `gh-vendor-dir-permission` — checked BEFORE a step's own
+// must-fail/must-succeed verdict, since it means the step never reached what it meant to test at all) from
+// a generic filesystem-permission one (e.g. step 4's own decoy) from gh simply not being found, printed
+// alongside the raw message (never in place of it) so a Conductor reads the classifier's guess and the
+// ground truth together.
 //
 // Run on the live macOS host: `bun run scripts/repro-r4-vendor-cli-gh.ts`. Requires `sandbox-exec` (the
 // same darwin-only guard `scripts/repro-r4-sandbox-fix10-hang.ts` already uses) AND a real `gh` on
@@ -87,7 +105,24 @@ const STEP_TIMEOUT_S = 30;
 // typically reads as "dial tcp ... operation not permitted" — an EPERM-flavored string that would
 // otherwise misclassify as a bare filesystem permission issue if "permission"/"eperm" were checked
 // first. Never authoritative on its own — every caller prints the raw message alongside this label.
-export function classifyGhFailure(message: string): "network" | "filesystem-permission" | "not-found" | "other" {
+//
+// NOTES R4-VENDOR-CLI (live macOS run, round 1): the FIRST live run of this harness surfaced a REAL
+// finding — every step died identically at `~/.config/gh/config.yml`, `deny(1) file-read-data` (kernel
+// evidence), because gh treats a DENIED (present-but-forbidden) config read as FATAL, before ever
+// reaching the network — the same EPERM-vs-ENOENT class NOTES R4-SANDBOX-FIX-9 found for git's own
+// `.gitconfig`. That failure is EPERM-shaped and mentions no network keyword at all, so round 1's
+// classifier correctly bucketed it as `filesystem-permission` — but round 1's own VERDICT logic still
+// printed a bare PASS/REGRESSION against the `must-fail`/informational network expectation, which was
+// WRONG: gh never reached the network layer at all, so nothing about the network boundary was actually
+// exercised that run. `gh-vendor-dir-permission` is a NEW, more specific bucket — a permission-shaped
+// failure whose message ALSO names one of gh's own config/state/data/cache paths (confirmed against
+// `cli/go-gh`'s own `pkg/config/config.go`: `GH_CONFIG_DIR`'s `config.yml`/`hosts.yml`,
+// `XDG_STATE_HOME`'s `state.yml`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`'s own `$TMPDIR/gh-cli-cache`
+// fallback) — checked BEFORE the generic `filesystem-permission` bucket so this exact class of finding is
+// never silently folded into a generic label a verdict could misread as "the intended seal held." Every
+// caller must check for this bucket FIRST, before applying a step's own must-fail/must-succeed
+// expectation — see `runGhDispatch`'s own verdict logic below.
+export function classifyGhFailure(message: string): "network" | "gh-vendor-dir-permission" | "filesystem-permission" | "not-found" | "other" {
   const m = message.toLowerCase();
   const networkSignals = [
     "dial tcp",
@@ -106,7 +141,12 @@ export function classifyGhFailure(message: string): "network" | "filesystem-perm
   ];
   if (networkSignals.some((s) => m.includes(s))) return "network";
   if (m.includes("not found on path") || m.includes("command 'gh'")) return "not-found";
-  if (m.includes("permission denied") || m.includes("eperm") || m.includes("operation not permitted")) return "filesystem-permission";
+  const permissionShaped = m.includes("permission denied") || m.includes("eperm") || m.includes("operation not permitted");
+  if (permissionShaped) {
+    const ghVendorDirSignals = ["/.config/gh/", "config.yml", "hosts.yml", "state.yml", "/.local/state/gh", "/.local/share/gh", "/.cache/gh", "gh-cli-cache"];
+    if (ghVendorDirSignals.some((s) => m.includes(s))) return "gh-vendor-dir-permission";
+    return "filesystem-permission";
+  }
   return "other";
 }
 
@@ -156,6 +196,7 @@ async function runGhDispatch(repo: Repo, pricing: Pricing, label: string, agent:
   const start = Date.now();
   let outcome: "succeeded" | "failed";
   let detail: string;
+  let classification: ReturnType<typeof classifyGhFailure> | null = null;
   try {
     const { doc } = await runner.produceAsync(agent.name, "review", "repro", "storefront");
     outcome = "succeeded";
@@ -166,12 +207,23 @@ async function runGhDispatch(repo: Repo, pricing: Pricing, label: string, agent:
   } catch (e) {
     outcome = "failed";
     const msg = e instanceof Error ? e.message : String(e);
-    const cls = classifyGhFailure(msg);
-    detail = `(heuristic classification: ${cls}) ${msg}`;
+    classification = classifyGhFailure(msg);
+    detail = `(heuristic classification: ${classification}) ${msg}`;
   }
   const elapsed = Date.now() - start;
   console.log(`[${outcome.toUpperCase()}] in ${elapsed}ms — ${detail}`);
-  if (expect === "must-succeed") {
+  // NOTES R4-VENDOR-CLI (round 1's own lesson): a `gh-vendor-dir-permission` failure means gh died at its
+  // OWN config/state/data/cache load, before doing anything else this step meant to test — checked BEFORE
+  // the step's own `expect`, for EVERY step (not just the network-shaped ones), since this classification
+  // is itself a diagnostic finding orthogonal to whatever the step originally intended to prove. Printing
+  // a bare PASS/REGRESSION against `expect` here would be exactly round 1's own mistake repeating: a
+  // config-load death that happens to satisfy `must-fail` "looks like" a PASS unless this is checked
+  // first.
+  if (outcome === "failed" && classification === "gh-vendor-dir-permission") {
+    console.log(
+      "        >>> FINDING: gh died at its own config/state/data/cache directory load (EPERM), before reaching whatever this step meant to test. This step's own must-fail/must-succeed/informational meaning is INVALID this run — see NOTES R4-VENDOR-CLI's gh-vendor-scratch-dir redirect fix (src/adapters.ts#cliVendorScratchEnv). <<<",
+    );
+  } else if (expect === "must-succeed") {
     console.log(outcome === "succeeded" ? "        >>> PASS: succeeded as expected <<<" : "        >>> FINDING: this was expected to succeed but did not — diagnose from the evidence printed above, never guess <<<");
   } else if (expect === "must-fail") {
     console.log(outcome === "failed" ? "        >>> PASS: denied/failed as expected <<<" : "        >>> REGRESSION: this MUST fail (network denied / operator-home denied) but it SUCCEEDED <<<");
@@ -251,7 +303,7 @@ async function main() {
       "1a. gh auth status — NO connector (network denied), gh's own real startup/config-load path",
       mkGhAgent("gh-auth-status-no-net", ["gh", "auth", "status"], undefined),
       "informational",
-      "gh itself exits NONZERO for 'not logged in' (confirmed against the real gh CLI's own documented behavior), so [FAILED] here is the EXPECTED, GOOD outcome — read the printed message and its heuristic classification, not the bare [SUCCEEDED]/[FAILED] label: a clean gh-authored message ('You are not logged into any GitHub hosts', classified 'other') is gh's own startup surviving the sandbox's filesystem confinement WITHOUT ever reaching the network; a 'filesystem-permission'-classified message instead would point at gh's own config-directory read hitting the operator-home deny — the same EPERM-vs-ENOENT class NOTES R4-SANDBOX-FIX-9 found for git's .gitconfig — named here as the ranked-first suspicion for any confusing failure, never assumed in advance. A HANG (this agent's own 30s timeout firing) would be the genuinely alarming outcome.",
+      "gh itself exits NONZERO for 'not logged in' (confirmed against the real gh CLI's own documented behavior), so [FAILED] here is the EXPECTED, GOOD outcome — read the printed message and its heuristic classification, not the bare [SUCCEEDED]/[FAILED] label: a clean gh-authored message ('You are not logged into any GitHub hosts', classified 'other') is gh's own startup surviving the sandbox's filesystem confinement WITHOUT ever reaching the network. ROUND 1's own live run confirmed the ranked-first suspicion this note originally named: gh died reading its own DENIED config directory (kernel-confirmed `deny(1) file-read-data` on `~/.config/gh/config.yml`), classified 'gh-vendor-dir-permission' — the same EPERM-vs-ENOENT class NOTES R4-SANDBOX-FIX-9 found for git's .gitconfig. Fixed in src/adapters.ts (see cliVendorScratchEnv's own doc); this round re-runs the IDENTICAL step to confirm the fix. A recurrence of 'gh-vendor-dir-permission' this round means the fix is INCOMPLETE — gh probed a path this round's own evidence didn't cover — never assume it's fully closed just because it was diagnosed once. A HANG (this agent's own 30s timeout firing) would be the genuinely alarming outcome.",
     );
 
     await runGhDispatch(
@@ -299,11 +351,16 @@ async function main() {
 
   console.log("");
   console.log("=== Summary ===");
-  console.log("Every PASS/REGRESSION/FINDING verdict above is this run's own — read them in order, and read");
-  console.log("step 3 against step 2 as described in step 3's own note before concluding anything about the");
-  console.log("network boundary specifically. Record this run's outcome in NOTES R4-VENDOR-CLI, naming any");
-  console.log("code change ONLY if a REGRESSION or FINDING above demands one, with the narrowest grant the");
-  console.log("printed evidence (profile text / kernel denial / raw spawn result, all above) actually justifies.");
+  console.log("Every PASS/REGRESSION/FINDING verdict above is this run's own — read them in order. A");
+  console.log("'gh-vendor-dir-permission' classification on ANY step means gh died at its own config/state/");
+  console.log("data/cache load — that step's own must-fail/must-succeed meaning is INVALID this run, and if");
+  console.log("it recurs after the R4-VENDOR-CLI fix (src/adapters.ts#cliVendorScratchEnv) already shipped,");
+  console.log("that is itself a NEW finding (the fix is incomplete for some path this round's evidence didn't");
+  console.log("cover) — never re-litigate the ALREADY-DIAGNOSED config.yml/hosts.yml/state.yml finding as if");
+  console.log("undiagnosed. Otherwise, read step 3 against step 2 as described in step 3's own note before");
+  console.log("concluding anything about the network boundary specifically. Record this run's outcome in NOTES");
+  console.log("R4-VENDOR-CLI, naming any FURTHER code change ONLY if a REGRESSION or NEW finding above demands");
+  console.log("one, with the narrowest grant the printed evidence actually justifies.");
 }
 
 // Guarded so a future test file can import `classifyGhFailure` without triggering a full run — the same
