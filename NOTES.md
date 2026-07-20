@@ -11455,3 +11455,116 @@ second time. Fixed with a gh-auth-independent raw TCP probe and direct token-pre
 further `src/` change. R4's network boundary itself has STILL not been validly exercised by a live run —
 that is exactly one more manual run away, this time with `export GITHUB_TOKEN=<...>` set beforehand, via
 this project's own standing gate.**
+
+# NOTES R4-VENDOR-CLI, round 3 design review (BEFORE the live run) — the Conductor caught a real weakness
+# in the first fix attempt, corrected before spending a live run on it
+
+Before running round 3 live, the Conductor reviewed the fix and raised a precise objection: keying BOTH
+steps 2 and 3 on the raw `/dev/tcp` probe tests whether the sandbox blocks a bare socket — never in doubt,
+already asserted by the unit tests — not the goal's own actual claim, that `(deny network*)` bites `gh`'s
+OWN real request. A green TCP differential would have been real evidence, but weaker than the harness's own
+labeling implied. This section records the investigation that followed, BEFORE the live run it saved from
+being wasted on a mislabeled proof.
+
+## What the evidence actually shows, sourced directly from `gh`'s own code, not inferred from one live run
+
+Fetched and read directly (`cli/cli`, `pkg/cmdutil/auth_check.go` + `pkg/cmd/root/root.go`):
+
+```go
+// pkg/cmdutil/auth_check.go
+func CheckAuth(cfg gh.Config) bool {
+    if cfg.Authentication().HasEnvToken() { return true }
+    if len(cfg.Authentication().Hosts()) > 0 { return true }
+    return false
+}
+```
+```go
+// pkg/cmd/root/root.go, PersistentPreRunE (runs for every command unless explicitly annotated exempt —
+// api is not exempt)
+if cmdutil.IsAuthCheckEnabled(cmd) && !cmdutil.CheckAuth(cfg) {
+    ...
+    fmt.Fprint(io.ErrOut, authHelp())   // "To get started with GitHub CLI, please run: gh auth login..."
+    return &AuthError{}
+}
+```
+
+Two facts, both load-bearing:
+1. `CheckAuth` checks token **presence** (`HasEnvToken()`) or configured hosts — **never validity**. Any
+   nonempty `GH_TOKEN`/`GITHUB_TOKEN`, even one that would fail against GitHub's real API, satisfies it.
+2. This check runs in Cobra's `PersistentPreRunE` — **before** any subcommand's own `RunE`, for every
+   command including `api`. There is no code path in which `gh api` reaches its own HTTP-client
+   construction, let alone attempts a socket, without first passing this gate.
+
+## Answering the Conductor's three questions, each confirmed from the above, not merely argued
+
+**Q1 — is there a gh subcommand that hits the network without auth, making token-present-throughout the
+honest test?** Not needed — the existing choice (`gh api /zen`) already becomes exactly that test once a
+token is PRESENT (regardless of validity): `CheckAuth` passes, `gh api` proceeds to its own `RunE`, builds a
+real `http.Client`, and issues a real HTTPS request. No command change needed — only the VERDICT WEIGHTING
+needed correcting (see below).
+
+**Q3 — is the deny-direction asymmetry structural?** Yes, confirmed from source, not just from round 2's
+one live run: for a member with no token (structural for a no-connector member — see the next paragraph),
+`CheckAuth` deterministically returns `false` and `PersistentPreRunE` refuses BEFORE any subcommand code
+runs. There is no live host, no token, no future harness redesign that can make `gh api`'s OWN network
+layer observably deny a request for that member shape — the auth gate stands unconditionally in front of
+it. **The deny direction can only ever be proven at the raw-socket layer; the grant direction can be proven
+at the real gh-HTTP-client layer.** This is the honest ceiling, recorded here rather than papered over.
+
+**Q2 — is "connector-grant implies network-grant" (which is WHY step 2 can't simply be given a token
+too) intended or incidental?** Confirmed intended: `env.ts#memberNetworkAllowed`'s own doc comment states
+the reasoning directly (quoted in full in that file) — a deliberate simplification recorded as NOTES
+R4-SANDBOX v2, Ruling 2, not an accidental coupling. But its downstream consequence — **levare cannot
+express "may hold this connector's credential, must not reach the network" for a `kind: cli` member** — had
+never been named as its own tradeoff until this review. Recorded as a new paragraph under
+`docs/current-gaps.md`'s existing "Connector trust-tier taxonomy" entry (the same underlying "no finer
+tier than holds-it-or-doesn't" gap, viewed from the network-reach axis).
+
+## The fix — asymmetric verdicts, matching the asymmetric evidence
+
+`scripts/repro-r4-vendor-cli-gh.ts`'s own `tcpExpect` parameter (round 3's first draft) is replaced with
+`NetworkTestRole`, two values, each with its OWN verdict shape — corrected BEFORE any live run consumed
+this design:
+- **`"deny-via-tcp-only"` (step 2):** the verdict comes SOLELY from `RAW_TCP_CONNECT`, printed with an
+  explicit structural note ("a gh-LEVEL network-deny proof is... impossible for a no-connector member —
+  confirmed from gh's own source, not a harness gap") so the printed verdict can never be mistaken for a
+  claim about `gh`'s own HTTP client.
+- **`"grant-via-gh"` (step 3):** the verdict comes from `gh`'s OWN outcome — PASS on a real `gh` success
+  (a real authenticated request actually reached the network), REGRESSION if `gh` had a token and was
+  denied anyway (network-classified failure), FINDING if the token never reached `gh` at all
+  (`gh-auth-required` despite holding the connector). `RAW_TCP_CONNECT` prints as corroboration only,
+  explicitly labeled as such, never driving the verdict.
+
+No change to `classifyGhFailure`'s own bucket set (round 2's `gh-auth-required` already covers this) — only
+the verdict-printing logic in `runGhDispatch` changed, plus the header/summary text, plus this step-pair's
+own printed notes, all rewritten to state the asymmetry plainly rather than imply a shared proof shape.
+
+## In-container sanity check (construction and control-flow only)
+
+The SAME stub `gh`/`sandbox-exec` technique used for round 3's first draft (auth-gate-shaped stub, run both
+with and without `GITHUB_TOKEN` exported) re-run against the corrected verdict logic. Confirmed directly:
+step 2 now prints the structural note, then its own TCP-only verdict, unchanged in mechanism from before;
+step 3 now prints "(corroborating context only — gh's own outcome below is this step's real proof)" followed
+by `>>> PASS: gh itself reached the network with a real, authenticated request...` — driven by the STUB
+`gh`'s own reported success, not by the TCP marker, confirming the reweighting actually took effect and
+isn't just a label change with the same underlying logic.
+
+## Verification
+
+`bun test` — full suite green (1202 pass, 6 skip, 0 fail, unchanged from the pre-review count — this
+correction touches only `scripts/repro-r4-vendor-cli-gh.ts`'s own verdict-printing logic and
+`docs/current-gaps.md`, no `classifyGhFailure` bucket change, so no new/changed pure-string test cases were
+needed). `bun run typecheck` → exit 0. `bun run deps:check` → `deps ok`. `bun run build` → succeeds. `bun
+run src/cli.ts validate fixtures/golden` → `valid`, unchanged. `bun run src/cli.ts replay fixtures/golden
+--stubs` → oracle match, byte-for-byte (re-confirmed after this section's edits). `bun run
+scripts/repro-r4-vendor-cli-gh.ts` in this container → exits cleanly on the darwin platform guard,
+unchanged. The in-container sanity check above ran successfully both ways (token absent, token present),
+confirming the corrected verdict logic end to end.
+
+**Bottom line: caught and fixed before the live run, at zero cost of a wasted round. Step 3 is now a
+genuine gh-level proof of the network GRANT direction — the strongest evidence this harness can produce.
+Step 2 is honestly labeled as a raw-socket-level proof of the DENY direction only — the strongest evidence
+that direction CAN produce against this member shape, a structural ceiling confirmed from gh's own source,
+not a harness limitation to keep chasing. R4's network boundary is still exactly one live run away —
+`export GITHUB_TOKEN=<a real PAT>` then `bun run scripts/repro-r4-vendor-cli-gh.ts`, unchanged from the
+prior instruction — but this time the run's own output means what its own labels say it means.**

@@ -253,6 +253,22 @@ own guidance — "prefer `auth: env`, grant `auth: subscription` only to trusted
 advisory prose in a doctor warning, not an enforced taxonomy. Building the rest is capability-layer
 work, not yet started.
 
+**A related, more specific gap, named directly by NOTES R4-VENDOR-CLI's own live validation of a real `gh`
+dispatch:** `env.ts#memberNetworkAllowed` derives a `kind: cli` member's sandboxed network reach from the
+SAME condition `buildMemberEnv`'s own connector-gated allowlist uses — `grantedConnectors(repo,
+member).length > 0`. This is a DELIBERATE simplification (NOTES R4-SANDBOX v2, Ruling 2 — recorded
+directly in `memberNetworkAllowed`'s own doc comment: "every connector this codebase has IS levare's own
+declared way of naming an external reach... there is no connector shape that names a purely-local
+capability"), not an accidental coupling. Its consequence, confirmed by construction rather than merely
+inferred: **levare cannot express "may hold this connector's credential, must not reach the network" for a
+`kind: cli` member** — credential-scope and network-scope are welded at the connector-grant level. (Scoped
+to `cli` specifically: Ruling 2 wraps only the two `cli` spawn paths; a `native`/`remote` member holding a
+connector never goes through this sandbox mechanism at all, so the coupling doesn't reach them.) This is
+the same underlying "no finer tier than holds-the-connector-or-doesn't" gap named above, viewed from the
+network-reach axis rather than the read/write axis — closing it would need a THIRD, independent dimension
+(a per-connector or per-grant network flag, separate from both `effects` and from mere possession), not yet
+designed or started.
+
 ## Per-member subscription-credential scoping
 
 A subscription-authenticated CLI (the motivating case: `codex login` writing a session to
