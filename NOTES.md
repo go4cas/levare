@@ -10663,3 +10663,109 @@ unverified, as with every darwin-specific claim in this whole investigation, is 
 round's own instrumentation is built specifically so the NEXT live run either passes for real or names
 exactly which of the adapter's two preconditions still doesn't hold, closing the guessing loop instead of
 repeating it a third time.
+
+## Round 3 (live host) — the gap round 2 isolated, a symlink audit that came back clean, and the fix
+## that stops the SILENCE regardless of which guard turns out to be responsible
+
+Round 2's own instrumentation fired exactly as designed and did its job: the live gate confirmed the
+parity fixture SATISFIES `resolveDispatchRepo`'s own precondition (`repoPath` and `branch` both verified
+directly, immediately pre-dispatch, printed in the run's own output) — yet the ACTUAL dispatch's debug
+output showed no `levare-dispatchwt-*` worktree cwd. **This is no longer a harness-only question.** A
+dispatch that can silently decline a worktree while its own precondition holds is a production
+correctness risk, not just a parity-check nuisance: declining means a member's commits land against the
+studio's SHARED tree instead of an isolated scratch worktree, in production exactly as much as in this
+ladder.
+
+### The audit (requirement 2 — ranked-first-suspicion checked, not confirmed)
+
+The live host's own `TMPDIR` sits behind a symlink (`/var/folders/... → /private/var/folders/...`, the
+exact class of asymmetry this codebase has hit and fixed before — see the FIX-11-era `sandbox.ts#canon`
+canonicalization work). The ranked-first suspicion: if any comparison in the `resolveDispatchRepo` →
+`createDispatchWorktree` path canonicalizes one side and leaves the other raw, the mismatch could silently
+decline the worktree. Checked directly, using this codebase's own established in-container reproduction
+technique (a REAL symlink standing in for `/var/folders`, exactly as `tests/sandbox.test.ts`'s own
+symlink-canonicalization tests already do):
+
+- `resolveProjectRepoPath`'s own self-referential exclusion (`realpathSync(resolved) === realpathSync(
+  studioRoot)`) already canonicalizes BOTH sides before comparing — no raw-vs-canonical asymmetry
+  possible there BY CONSTRUCTION.
+- `branchExists` (a `git rev-parse --verify` under the raw, uncanonicalized `repoPath`) resolved correctly
+  against a project repo reached through a real symlink in a direct reproduction.
+- `createDispatchWorktree(repoPath, branch)`, called with the RAW symlinked `repoPath`, **succeeded** in
+  the same reproduction (`git worktree add` completed; `resolveWorktreeGitDir` read back a valid pointer).
+  Notably, the `gitDir` it returned came out in CANONICAL form (`/priv-target-.../...`) even though
+  `repoPath` was the symlinked spelling (`/pub-varfolders-.../...`) — git itself canonicalizes the
+  worktree admin pointer it writes, regardless of the spelling it was invoked with. This asymmetry exists
+  (repoPath raw, gitDir canonical) but did not cause a FAILURE in this reproduction — `dispatchGitWriteGrant`
+  only ever reads `worktreeGitDir` (canonical), never compares it back against `repoPath`, so the
+  asymmetry has no comparison point to break.
+
+**This audit did not reproduce a decline.** The ranked-first suspicion is checked, not confirmed — the
+specific symlink mechanism named did not break `createDispatchWorktree` in this container's own
+reproduction of it. This does NOT prove the live host's own divergence has a different cause; it means
+this round could not name the cause with the same confidence round 1's (branch-hardcoding) diagnosis had,
+and — per this file's own recurring lesson (never guess a second time without a way to confirm it) — this
+round does not claim a specific named mechanism it cannot back up.
+
+### The fix (requirements 1, 3, 4 — stop the silence, regardless of which guard is responsible)
+
+Since the precise mechanism isn't pinned, the fix ships the part that's unambiguously correct regardless
+of what it turns out to be: **the decision itself is no longer silent.**
+`adapters.ts#AdapterRunner.withDispatchWorktree`/`withDispatchWorktreeAsync` now call a new
+`logWorktreeDebug` helper (gated on the SAME `LEVARE_SANDBOX_DEBUG=1` env var every other sandbox-debug
+line in this codebase already uses) that prints, for EVERY dispatch:
+
+- `dispatch worktree created for '<member>' at '<path>' (gitDir '<gitDir>') for branch '<branch>' in
+  '<repoPath>'` — when a worktree was built, or
+- `dispatch worktree declined for '<member>': <reason>` — naming which of THREE guards fired: no
+  repo-bearing project resolved (`resolveDispatchRepo` found no `repoPath`), the work branch doesn't exist
+  (`repoPath` resolved but `branchExists` failed), or `createDispatchWorktree` itself failed (with git's
+  own stderr).
+
+This line fires from plain decision logic inside `prepare()`/`withDispatchWorktree{,Async}` — it has ZERO
+dependency on a live sandbox primitive, unlike the profile-text comparison the parity check also runs.
+Three new regression tests in `tests/adapters.test.ts` (NOTES R4-SANDBOX-FIX-14 round 3, in the existing
+"per-dispatch worktree isolation" describe block) pin this directly: a repo-bearing dispatch prints
+"created" with the resolved paths, a repo-less dispatch prints "declined" naming the missing project
+resolution, and a repo-bearing-but-branchless dispatch prints "declined" naming the missing work branch —
+none gated on `hostSandbox.level`, since this is plain decision logic, exercised identically on every
+platform including this container.
+
+The parity ladder (`scripts/repro-r4-sandbox-fix10-hang.ts`) now KEYS directly on this line (requirement
+4): `captureProductionDispatch` (renamed from `captureProductionSkeleton`) reads the adapter's own
+`created`/`declined` line as the AUTHORITATIVE signal, replacing round 2's `cwd:`-line inference. A decline
+fails the primary check quoting the adapter's own reason VERBATIM, never re-derived or paraphrased; only a
+`created` decision proceeds to the structural-equality comparison. The informational (repo-less) check is
+symmetric: it now expects and quotes a `declined` line naming the missing repo resolution, rather than
+inferring absence from profile-text shape. Verified in this container BOTH with the stand-in `/bin/echo`
+primitive (full run, both checks print PASS, `production.decision.detail` shows the real created-worktree
+line) AND — importantly — WITHOUT any stand-in at all: on this container's own honest `none` detection, the
+primary check now prints `PARITY CHECK PARTIAL — worktree WAS created (...)` — the worktree-decision half
+of the check is fully meaningful here with ZERO platform-specific trickery, closing the "container-pass
+doesn't predict host-pass" gap for the piece that matters most this round, even though the profile-text
+half still legitimately needs a real (or stood-in) `sandbox-exec` to run at all.
+
+### What this round does NOT claim
+
+This round does NOT claim to have found or fixed the live host's own specific root cause for why
+`withDispatchWorktreeAsync` declined a worktree its own precondition satisfied — the symlink audit above
+came back clean for the mechanism it tested, and no live macOS access exists in this container to test
+further mechanisms (git version differences, a live macOS `/var/folders` behavior this container's own
+symlink stand-in doesn't fully replicate, or something else entirely). What it DOES claim: the decision is
+no longer silent in either the ladder or in production, and the NEXT live run will either pass for real
+(worktree created, profiles match) or print the adapter's own `declined` reason in plain text — turning
+whatever happens next into a NAMED finding instead of a fourth round of guessing.
+
+## Verification (round 3)
+
+`bun test` — full suite green (1178 pass, up from 1175 — three new regression tests pinning the
+worktree-decision debug line, none platform-gated). `bun run typecheck` → exit 0. `bun run deps:check` →
+`deps ok`. `bun run build` → succeeds. `bun run src/cli.ts validate fixtures/golden` → `valid`, the same
+two pre-existing `SANDBOX_UNAVAILABLE` warnings, unchanged. `bun run src/cli.ts replay fixtures/golden
+--stubs` → oracle match, byte-for-byte. The rebuilt ladder, via a temporary non-committed copy (platform/
+primitive guards bypassed): with the `/bin/echo` stand-in primitive, both the primary and informational
+checks print PASS, quoting the adapter's own `created`/`declined` decision lines; WITHOUT any stand-in at
+all (this container's own real, honest `none` detection), the primary check correctly prints `PARITY CHECK
+PARTIAL — worktree WAS created (...)`, and the informational check still prints its full PASS (declined,
+as expected) — both confirming the worktree-decision signal is genuinely platform-independent, not another
+proxy that merely looks convincing in this container.
