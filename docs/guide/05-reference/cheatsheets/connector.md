@@ -10,6 +10,7 @@ An external system a member can be granted.
 | `kind` | enum | ✅ | — | `mcp` · `cli` |
 | `server` | string | — | — | — |
 | `command` | string | — | — | — |
+| `argv` | string[] | — | — | — |
 | `env` | string[] | — | — | — |
 | `scope` | string | — | — | — |
 | `auth` | enum | — | — | `env` · `subscription` |

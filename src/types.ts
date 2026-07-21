@@ -94,7 +94,20 @@ export interface Agent {
   cwd?: string;
   timeout?: number;
   result?: string;
+  /** remote: the `kind: mcp` connector this member calls (its registry `name`, PRD Amendment 3 ruling
+   * R5) — validated against the connector registry by validate.ts, resolved and dispatched for real by
+   * adapters.ts#createAsyncStdioRemoteBoundary (NOTES MCP-1B). */
   server?: string;
+  /** remote: the MCP tool name this member invokes on `server`'s connector via `tools/call` — the
+   * member's declared intent → server-call mapping ruling R5 asks for. Required for kind: remote. */
+  tool?: string;
+  /**
+   * remote: the static `tools/call` arguments template — each value substitutes `{task}` with the
+   * assembled §6 context (mirrors adapters.ts#defaultCliCommand's own `{task}` substitution for a cli
+   * member's argv). There is no separate "propose params" step for a remote member (ruling R2: one
+   * dispatch, one call, one artifact) — this is where the member's declared intent is expressed.
+   */
+  params?: Record<string, string>;
   skills?: string[];
   tools?: string[];
   knowledge?: string[];
@@ -147,6 +160,15 @@ export interface Connector {
   kind: "mcp" | "cli";
   server?: string;
   command?: string;
+  /**
+   * NOTES MCP-1B (PRD Amendment 3, ruling R1/R5): the real stdio spawn command for a `kind: mcp`
+   * connector — argv only, never a shell string (mirrors mcp-client.ts#StdioMcpServerCommand.argv and
+   * this file's own `Agent.command`'s non-shell-split guarantee). Absent/empty means this connector has
+   * no working stdio path yet — an HTTP/SSE server (ruling R1's deferred phase 2, which spawns nothing
+   * locally and so never declares one) or simply not yet configured — env.ts#remoteAgentImplemented is
+   * the single place that draws this line for validate/doctor/registry's honesty warnings.
+   */
+  argv?: string[];
   env: string[];
   scope?: string;
   auth: ConnectorAuth;

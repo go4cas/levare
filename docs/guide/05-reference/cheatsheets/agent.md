@@ -20,6 +20,8 @@ A member: what it can produce, and how to invoke it.
 | `timeout` | number | — | — | — |
 | `result` | string | — | — | — |
 | `server` | string | — | — | — |
+| `tool` | string | — | — | — |
+| `params` | map (arbitrary key → string) | — | ✅ | — |
 | `connectors` | string[] | — | — | — |
 | `style` | map | ✅ | — | — |
 | `style.avatar` | string | ✅ | — | — |

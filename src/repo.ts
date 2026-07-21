@@ -140,6 +140,10 @@ function toConnector(d: Record<string, YamlValue>): Connector {
     kind: d.kind as Connector["kind"],
     server: optStr(d.server),
     command: optStr(d.command),
+    // NOTES MCP-1B: the real stdio spawn argv for a kind: mcp connector; undefined for every
+    // connector that doesn't declare one (a kind: cli connector, or a kind: mcp connector without a
+    // working stdio path yet).
+    argv: d.argv !== undefined ? strArr(d.argv) : undefined,
     env: strArr(d.env),
     scope: optStr(d.scope),
     // NOTES C13: defaults to "env" — unchanged behaviour for every connector defined before this
@@ -185,6 +189,10 @@ function toAgent(d: Record<string, YamlValue>, body: string): Agent {
     timeout: typeof d.timeout === "number" ? d.timeout : undefined,
     result: optStr(d.result),
     server: optStr(d.server),
+    // NOTES MCP-1B: remote-only — which MCP tool this member calls, and its tools/call arguments
+    // template (`{task}`-substituted at dispatch, see adapters.ts#createAsyncStdioRemoteBoundary).
+    tool: optStr(d.tool),
+    params: d.params !== undefined && d.params !== null ? (d.params as Record<string, string>) : undefined,
     skills: d.skills ? strArr(d.skills) : undefined,
     tools: d.tools ? strArr(d.tools) : undefined,
     knowledge: d.knowledge ? strArr(d.knowledge) : undefined,
