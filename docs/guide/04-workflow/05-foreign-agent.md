@@ -172,6 +172,37 @@ registry can see them. When a vendor hands you guardrails, use them, and make th
 and what credentials they hold. It does **not** yet constrain what a wrapped foreign CLI can do to the
 machine it runs on. See [Operations](../06-operations.md).)
 
+## What sandboxing means for a vendor CLI's own auth
+
+On a host where levare's OS-level sandbox is available (Operations, above), a `cli` member's process
+is confined by the operating system as well as by what levare hands it — and that confinement changes
+how the vendor CLI itself behaves, live-validated against a real one (`gh`, not a stub):
+
+- **A sandboxed member's vendor config directory is its own scratch space, not yours.** A CLI's
+  config/state/cache locations (`~/.config/<tool>` and friends) are redirected to a fresh, per-dispatch
+  directory rather than denied outright, the same technique levare already uses for `git`'s own config.
+  The member starts every run with a clean slate — it never sees your `~/.config/gh` (or `~/.codex`, or
+  wherever else a CLI keeps its own state).
+- **That means it never inherits a login you made yourself.** If you're logged into `gh` on your own
+  machine, a sandboxed `gh` member doesn't see that session — its config directory is scratch, not
+  yours. Working auth for a sandboxed member has to come through its **connector's** credential in the
+  environment instead — `GITHUB_TOKEN`, in `gh`'s case, which the CLI itself checks ahead of a stored
+  session by design. This is what the connector above is for; a sandboxed member has no other way in.
+- **A network-granted member can make real requests, TLS included; one without a network-granting
+  connector cannot reach the network at all.** Holding at least one connector flips network on for the
+  member's whole process — a real HTTPS client, certificate verification and all, works end to end. A
+  member holding no connector that grants network is denied at the raw socket, before any
+  application-level auth logic even runs.
+- **Credential and network reach are the same grant, not two.** Both come from the identical condition
+  — does this member hold a connector — so a `cli` member can't hold a credential while staying offline
+  today; there's no connector shape that names a purely local capability. This is a deliberate stance,
+  not an oversight — see [Current gaps](../../current-gaps.md)'s connector trust-tier taxonomy entry for
+  why, and what would change it.
+
+None of this is levare talking to the CLI — it's the OS sandbox wrapping the process, so it only
+applies on a host where [Operations](../06-operations.md) reports a working sandbox primitive. Where
+none exists, the member runs unconfined and none of the above kicks in.
+
 ---
 
 Next: **[4.6 · Your first loop](06-first-loop.md)** — where the two of them argue.
