@@ -7,29 +7,61 @@ in your browser.
 
 ## Prerequisites
 
-- **[Bun](https://bun.sh)** — levare runs on Bun.
 - **git** — not optional. Without it, levare cannot verify that an approved artifact hasn't been
   tampered with, and it has no audit log. It will tell you so.
+- **[Bun](https://bun.sh)** — only if you're building from source or contributing. The released
+  binary is self-contained and doesn't need it.
 
 That's all, for now. Running actual agents needs more, and [Operations](06-operations.md) covers it.
 
 ## Install
 
+The quickest path — downloads the release binary for your platform, verifies its checksum against
+`SHA256SUMS`, and puts it on your `PATH`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/go4cas/levare/main/scripts/install.sh | sh
+```
+
+Two overrides, if you need them:
+
+- `LEVARE_VERSION=v1.2.3 curl ... | sh` — pin to a specific release instead of the latest one.
+- `LEVARE_BIN_DIR=/usr/local/bin curl ... | sh` — install somewhere other than `~/.local/bin` (needs
+  write access to that directory, e.g. via `sudo`).
+
+If the install directory isn't on your `PATH`, the installer warns you rather than fixing it for
+you — add it to your shell profile.
+
+### Installing by hand
+
+If you'd rather not pipe a script into `sh`: from the [releases page](https://github.com/go4cas/levare/releases),
+download the binary for your platform (`levare-darwin-arm64`, `levare-darwin-x64`, `levare-linux-x64`,
+or `levare-linux-arm64`) and the `SHA256SUMS` file alongside it, verify, then install:
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing   # macOS: shasum -a 256 -c
+chmod +x levare-<platform>
+mv levare-<platform> /usr/local/bin/levare
+levare --version    # confirms the binary and the exact commit it was built from
+```
+
+### Building from source — for contributors
+
+If you're working on levare itself rather than just running it, clone the source repo instead of
+installing a release:
+
 ```sh
 git clone https://github.com/go4cas/levare.git
 cd levare
 bun install
+bun run build          # produces dist/levare, a self-contained compiled binary
 ```
 
-The `levare` executable is in the repo root — a small Bun entry script, not a compiled binary yet.
-Put it on your `PATH` so you can call it from anywhere:
+Or skip compiling and run the dev entry point straight from source: `./levare --version`. This is the
+levare **source** repo, not your studio — see [3 · Concepts](03-concepts.md) for that distinction.
 
-```sh
-ln -s "$(pwd)/levare" /usr/local/bin/levare
-```
-
-Or skip the symlink and call it by its full path (`~/levare/levare …`). The rest of these docs write
-it as `levare`.
+The rest of these docs write the binary as `levare`; whichever path you took, make sure it's on your
+`PATH` so you can call it from anywhere.
 
 ## Scaffold a studio
 

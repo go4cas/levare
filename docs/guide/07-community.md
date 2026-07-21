@@ -6,20 +6,18 @@ levare is built to be run by one person, and shared as text.
 
 ## Getting levare
 
-Two paths, for two kinds of person.
-
-**Download a binary.** Each release publishes standalone binaries for macOS and Linux (arm64 and x64)
-on the [releases page](https://github.com/go4cas/levare/releases), with a `SHA256SUMS` file to verify
-against. Download the one for your platform, check it, make it executable, put it on your `PATH`:
+**The installer.** One line, for macOS or Linux (arm64 or x64):
 
 ```sh
-# verify (macOS uses shasum; Linux uses sha256sum)
-shasum -a 256 -c SHA256SUMS --ignore-missing
-chmod +x levare-darwin-arm64
-mv levare-darwin-arm64 /usr/local/bin/levare
+curl -fsSL https://raw.githubusercontent.com/go4cas/levare/main/scripts/install.sh | sh
 ```
 
-**Build from source.** If you have [Bun](https://bun.sh) and want the source:
+It detects your platform, downloads the matching release binary and `SHA256SUMS`, refuses to install
+on a checksum mismatch, and puts `levare` on `~/.local/bin` — see [2 · Quickstart](02-quickstart.md#install)
+for the overrides (`LEVARE_VERSION`, `LEVARE_BIN_DIR`) and the by-hand alternative if you'd rather not
+pipe a script into `sh`.
+
+**Build from source**, if you're contributing to levare itself rather than just running it:
 
 ```sh
 git clone https://github.com/go4cas/levare.git
