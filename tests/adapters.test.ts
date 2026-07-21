@@ -766,23 +766,49 @@ function baseReq(agent: Agent, extra: Partial<InvokeRequest> = {}): InvokeReques
   return { agent, member: agent.name, kind: "spec", unit: "u1", project: "p1", context: "THE-TASK-CONTEXT", env: { PATH: process.env.PATH ?? "" }, tools: [], ...extra };
 }
 
-describe("remote adapter — real stdio MCP boundary (NOTES MCP-1B)", () => {
-  test("invokes the declared tool with {task}-substituted params and turns the text content into the doc", async () => {
-    const connector = fakeServerConnector("normal");
-    const agent = { name: "echo", server: "everything", tool: "noop", params: { message: "hi {task} bye" }, connectors: ["everything"] };
-    const repo = remoteTestRepo(agent, connector);
-    const boundary = createAsyncStdioRemoteBoundary(repo);
-    const { doc } = await boundary.call(baseReq(repo.agents.get("echo")!));
-    expect(doc).toBe(`called noop with ${JSON.stringify({ message: "hi THE-TASK-CONTEXT bye" })}`);
-  });
+// NOTES MCP-1C regression guard: every test in this describe block (and its sandboxed-real-spawn
+// sibling below) that actually spawns the real fake-mcp-server.ts process — as opposed to rejecting
+// synchronously before ever reaching connectStdioMcpServer — gets an explicit, tight bun:test timeout.
+// This dispatch completed in well under 150ms in every measured run (real or worktree-isolated, 1b and
+// 1c alike); without an explicit ceiling here, a future regression that makes the real spawn boundary
+// stall (a bad cwd/env/argv composition, a scoped HOME the spawned server can't start under, ...) would
+// only ever be caught by bun:test's own default per-test timeout — several seconds later than "well
+// under 150ms", and possibly not caught by CI's own outer timeout at all if it's not tight enough to
+// fail loudly. 5s is generous margin over the observed ~100ms while still turning a stall into a fast,
+// unambiguous test FAILURE rather than a multi-second-or-worse silent stall.
+const REAL_SPAWN_TEST_TIMEOUT_MS = 5000;
+// A wider ceiling for the `test.skipIf(hostSandbox.level !== "full")` proofs below — these only ever run
+// on a live host with a REAL bwrap/sandbox-exec primitive, where the primitive's own overhead (writing a
+// darwin profile to a temp file, an extra process wrapper) is real, unlike the always-run tests above
+// (which this container's own "none" level lets pass through unwrapped). Still a hard ceiling, not
+// unbounded — a genuine stall must fail loudly here too, just with margin for real sandboxing cost.
+const REAL_SPAWN_SANDBOXED_TEST_TIMEOUT_MS = 15000;
 
-  test("a tool reporting isError: true is a hard AdapterError", async () => {
-    const connector = fakeServerConnector("tool-error");
-    const agent = { name: "echo", server: "everything", tool: "noop", params: {}, connectors: ["everything"] };
-    const repo = remoteTestRepo(agent, connector);
-    const boundary = createAsyncStdioRemoteBoundary(repo);
-    await expect(boundary.call(baseReq(repo.agents.get("echo")!))).rejects.toThrow(AdapterError);
-  });
+describe("remote adapter — real stdio MCP boundary (NOTES MCP-1B)", () => {
+  test(
+    "invokes the declared tool with {task}-substituted params and turns the text content into the doc",
+    async () => {
+      const connector = fakeServerConnector("normal");
+      const agent = { name: "echo", server: "everything", tool: "noop", params: { message: "hi {task} bye" }, connectors: ["everything"] };
+      const repo = remoteTestRepo(agent, connector);
+      const boundary = createAsyncStdioRemoteBoundary(repo);
+      const { doc } = await boundary.call(baseReq(repo.agents.get("echo")!));
+      expect(doc).toBe(`called noop with ${JSON.stringify({ message: "hi THE-TASK-CONTEXT bye" })}`);
+    },
+    REAL_SPAWN_TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "a tool reporting isError: true is a hard AdapterError",
+    async () => {
+      const connector = fakeServerConnector("tool-error");
+      const agent = { name: "echo", server: "everything", tool: "noop", params: {}, connectors: ["everything"] };
+      const repo = remoteTestRepo(agent, connector);
+      const boundary = createAsyncStdioRemoteBoundary(repo);
+      await expect(boundary.call(baseReq(repo.agents.get("echo")!))).rejects.toThrow(AdapterError);
+    },
+    REAL_SPAWN_TEST_TIMEOUT_MS,
+  );
 
   test("an unknown connector is a hard AdapterError", async () => {
     const agent = { name: "echo", server: "ghost", tool: "noop" };
@@ -823,25 +849,29 @@ describe("remote adapter — real stdio MCP boundary (NOTES MCP-1B)", () => {
     await expect(boundary.call(baseReq(repo.agents.get("echo")!))).rejects.toThrow(/declares no 'tool'/);
   });
 
-  test("AdapterRunner.produceAsync routes kind: remote through asyncRemote when supplied, never the sync mock", async () => {
-    const connector = fakeServerConnector("normal");
-    const repo = loadRepo(ROOT);
-    repo.agents.set("echo", { ...repo.agents.get("lyra")!, name: "echo", kind: "remote", model: undefined, server: "everything", tool: "noop", params: { message: "{task}" }, connectors: ["everything"] });
-    repo.connectors.set("everything", connector);
-    repo.teams.get("kestrel")!.members.push("echo");
-    const runner = new AdapterRunner(repo, {
-      pricing,
-      capabilities: [{ member: "echo", kind: "spec" }],
-      native: nativeMock,
-      remote: { call: () => { throw new Error("sync mock must not be called by produceAsync when asyncRemote is supplied"); } },
-      asyncRemote: createAsyncStdioRemoteBoundary(repo),
-    });
-    const { doc, receipt } = await runner.produceAsync("echo", "spec", "checkout-flow", "storefront");
-    expect(doc).toContain("kind: spec");
-    expect(doc).toContain("produced_by: kestrel/echo");
-    expect(doc).toContain("called noop with");
-    expect(receipt.unreported).toBe(true);
-  });
+  test(
+    "AdapterRunner.produceAsync routes kind: remote through asyncRemote when supplied, never the sync mock",
+    async () => {
+      const connector = fakeServerConnector("normal");
+      const repo = loadRepo(ROOT);
+      repo.agents.set("echo", { ...repo.agents.get("lyra")!, name: "echo", kind: "remote", model: undefined, server: "everything", tool: "noop", params: { message: "{task}" }, connectors: ["everything"] });
+      repo.connectors.set("everything", connector);
+      repo.teams.get("kestrel")!.members.push("echo");
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "echo", kind: "spec" }],
+        native: nativeMock,
+        remote: { call: () => { throw new Error("sync mock must not be called by produceAsync when asyncRemote is supplied"); } },
+        asyncRemote: createAsyncStdioRemoteBoundary(repo),
+      });
+      const { doc, receipt } = await runner.produceAsync("echo", "spec", "checkout-flow", "storefront");
+      expect(doc).toContain("kind: spec");
+      expect(doc).toContain("produced_by: kestrel/echo");
+      expect(doc).toContain("called noop with");
+      expect(receipt.unreported).toBe(true);
+    },
+    REAL_SPAWN_TEST_TIMEOUT_MS,
+  );
 });
 
 // NOTES MCP-1C (PRD Amendment 3, ruling R3, the Conductor's own confinement-fork ruling) — the spawned
@@ -857,63 +887,75 @@ describe("remote adapter — real stdio MCP boundary (NOTES MCP-1B)", () => {
 describe("remote adapter — sandboxed real spawn (NOTES MCP-1C, PRD Amendment 3 ruling R3)", () => {
   const hostSandbox = detectSandbox();
 
-  test("the real boundary records a 'sandbox:' enforcement level on the produced artifact, mirroring cli (Ruling 2/R3) — whichever level THIS host actually has", async () => {
-    const connector = fakeServerConnector("normal");
-    const repo = loadRepo(ROOT);
-    repo.agents.set("echo", { ...repo.agents.get("lyra")!, name: "echo", kind: "remote", model: undefined, server: "everything", tool: "noop", params: { message: "{task}" }, connectors: ["everything"] });
-    repo.connectors.set("everything", connector);
-    repo.teams.get("kestrel")!.members.push("echo");
-    const runner = new AdapterRunner(repo, {
-      pricing,
-      capabilities: [{ member: "echo", kind: "spec" }],
-      native: nativeMock,
-      remote: remoteMock,
-      asyncRemote: createAsyncStdioRemoteBoundary(repo),
-    });
-    const { doc } = await runner.produceAsync("echo", "spec", "checkout-flow", "storefront");
-    expect(doc).toMatch(/^sandbox: (full|fs-only|none)$/m);
-  });
+  test(
+    "the real boundary records a 'sandbox:' enforcement level on the produced artifact, mirroring cli (Ruling 2/R3) — whichever level THIS host actually has",
+    async () => {
+      const connector = fakeServerConnector("normal");
+      const repo = loadRepo(ROOT);
+      repo.agents.set("echo", { ...repo.agents.get("lyra")!, name: "echo", kind: "remote", model: undefined, server: "everything", tool: "noop", params: { message: "{task}" }, connectors: ["everything"] });
+      repo.connectors.set("everything", connector);
+      repo.teams.get("kestrel")!.members.push("echo");
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "echo", kind: "spec" }],
+        native: nativeMock,
+        remote: remoteMock,
+        asyncRemote: createAsyncStdioRemoteBoundary(repo),
+      });
+      const { doc } = await runner.produceAsync("echo", "spec", "checkout-flow", "storefront");
+      expect(doc).toMatch(/^sandbox: (full|fs-only|none)$/m);
+    },
+    REAL_SPAWN_TEST_TIMEOUT_MS,
+  );
 
-  test("an injected (test-double) connect never gets sandboxed — no scratch cwd, argv never wrapped, sandboxing only ever touches the real spawn boundary", async () => {
-    const connector = fakeServerConnector("normal");
-    const agent = { name: "echo", server: "everything", tool: "noop", params: {}, connectors: ["everything"] };
-    const repo = remoteTestRepo(agent, connector);
-    let seenCwd: string | undefined | "unset" = "unset";
-    const boundary = createAsyncStdioRemoteBoundary(repo, {
-      connect: async (command, opts) => {
-        seenCwd = command.cwd;
-        expect(command.argv).toEqual(connector.argv!); // never bwrap/sandbox-exec-wrapped
-        return connectStdioMcpServer(command, opts);
-      },
-    });
-    const { doc, sandbox } = await boundary.call(baseReq(repo.agents.get("echo")!));
-    expect(seenCwd).toBeUndefined(); // no per-dispatch scratch cwd was ever created
-    expect(sandbox).toBeUndefined();
-    expect(doc).toBe(`called noop with ${JSON.stringify({})}`);
-  });
+  test(
+    "an injected (test-double) connect never gets sandboxed — no scratch cwd, argv never wrapped, sandboxing only ever touches the real spawn boundary",
+    async () => {
+      const connector = fakeServerConnector("normal");
+      const agent = { name: "echo", server: "everything", tool: "noop", params: {}, connectors: ["everything"] };
+      const repo = remoteTestRepo(agent, connector);
+      let seenCwd: string | undefined | "unset" = "unset";
+      const boundary = createAsyncStdioRemoteBoundary(repo, {
+        connect: async (command, opts) => {
+          seenCwd = command.cwd;
+          expect(command.argv).toEqual(connector.argv!); // never bwrap/sandbox-exec-wrapped
+          return connectStdioMcpServer(command, opts);
+        },
+      });
+      const { doc, sandbox } = await boundary.call(baseReq(repo.agents.get("echo")!));
+      expect(seenCwd).toBeUndefined(); // no per-dispatch scratch cwd was ever created
+      expect(sandbox).toBeUndefined();
+      expect(doc).toBe(`called noop with ${JSON.stringify({})}`);
+    },
+    REAL_SPAWN_TEST_TIMEOUT_MS,
+  );
 
-  test("LEVARE_SANDBOX_DEBUG=1 prints the detection/wrap debug blocks for a real remote dispatch, mirroring cli", async () => {
-    const connector = fakeServerConnector("normal");
-    const agent = { name: "echo", server: "everything", tool: "noop", params: {}, connectors: ["everything"] };
-    const repo = remoteTestRepo(agent, connector);
-    const prior = process.env.LEVARE_SANDBOX_DEBUG;
-    const origError = console.error;
-    const lines: string[] = [];
-    console.error = (...args: unknown[]) => {
-      lines.push(args.map(String).join(" "));
-    };
-    try {
-      process.env.LEVARE_SANDBOX_DEBUG = "1";
-      const boundary = createAsyncStdioRemoteBoundary(repo);
-      await boundary.call(baseReq(repo.agents.get("echo")!));
-      expect(lines.some((l) => l.includes("level:"))).toBe(true);
-      expect(lines.some((l) => l.includes("remote dispatch for 'echo'"))).toBe(true);
-    } finally {
-      console.error = origError;
-      if (prior === undefined) delete process.env.LEVARE_SANDBOX_DEBUG;
-      else process.env.LEVARE_SANDBOX_DEBUG = prior;
-    }
-  });
+  test(
+    "LEVARE_SANDBOX_DEBUG=1 prints the detection/wrap debug blocks for a real remote dispatch, mirroring cli",
+    async () => {
+      const connector = fakeServerConnector("normal");
+      const agent = { name: "echo", server: "everything", tool: "noop", params: {}, connectors: ["everything"] };
+      const repo = remoteTestRepo(agent, connector);
+      const prior = process.env.LEVARE_SANDBOX_DEBUG;
+      const origError = console.error;
+      const lines: string[] = [];
+      console.error = (...args: unknown[]) => {
+        lines.push(args.map(String).join(" "));
+      };
+      try {
+        process.env.LEVARE_SANDBOX_DEBUG = "1";
+        const boundary = createAsyncStdioRemoteBoundary(repo);
+        await boundary.call(baseReq(repo.agents.get("echo")!));
+        expect(lines.some((l) => l.includes("level:"))).toBe(true);
+        expect(lines.some((l) => l.includes("remote dispatch for 'echo'"))).toBe(true);
+      } finally {
+        console.error = origError;
+        if (prior === undefined) delete process.env.LEVARE_SANDBOX_DEBUG;
+        else process.env.LEVARE_SANDBOX_DEBUG = prior;
+      }
+    },
+    REAL_SPAWN_TEST_TIMEOUT_MS,
+  );
 
   // NOTES MCP-1C: the decoy-deny proof's own MCP shape — an MCP tool call has no shell, so unlike the
   // cli decoy proof (a bare `cat <decoy>`), this drives the fake server's own "read-home-file" tool
@@ -936,6 +978,7 @@ describe("remote adapter — sandboxed real spawn (NOTES MCP-1C, PRD Amendment 3
         rmSync(decoyDir, { recursive: true, force: true });
       }
     },
+    REAL_SPAWN_SANDBOXED_TEST_TIMEOUT_MS,
   );
 
   // NOTES MCP-1C: the ruling's own centerpiece — a connector's `home:` (env.ts#scopeHomeForConnector,
@@ -961,6 +1004,7 @@ describe("remote adapter — sandboxed real spawn (NOTES MCP-1C, PRD Amendment 3
         rmSync(decoyDir, { recursive: true, force: true });
       }
     },
+    REAL_SPAWN_SANDBOXED_TEST_TIMEOUT_MS,
   );
 
   // NOTES MCP-1C: the studio-root-read grant — `buildRemoteSandboxPolicy`'s own `readOnlyPaths` always
@@ -969,16 +1013,20 @@ describe("remote adapter — sandboxed real spawn (NOTES MCP-1C, PRD Amendment 3
   // above's synthetic `/tmp/synthetic-remote-boundary`, which never needs to resolve to anything real)
   // so the read genuinely exercises the grant rather than vacuously succeeding on a path bwrap/
   // sandbox-exec never even tried to resolve.
-  test.skipIf(hostSandbox.level !== "full")("studio-root proof: the studio root is readable through the MCP tool call, same as a cli member's own read-only grant", async () => {
-    const root = realpathSync(ROOT);
-    const path = join(root, "teams", "kestrel.md");
-    const connector = fakeServerConnector("normal");
-    const agent = { name: "echo", server: "everything", tool: "read-abs-file", params: { path }, connectors: ["everything"] };
-    const repo = remoteTestRepo(agent, connector, root);
-    const boundary = createAsyncStdioRemoteBoundary(repo);
-    const { doc } = await boundary.call(baseReq(repo.agents.get("echo")!));
-    expect(doc).toContain("name: kestrel");
-  });
+  test.skipIf(hostSandbox.level !== "full")(
+    "studio-root proof: the studio root is readable through the MCP tool call, same as a cli member's own read-only grant",
+    async () => {
+      const root = realpathSync(ROOT);
+      const path = join(root, "teams", "kestrel.md");
+      const connector = fakeServerConnector("normal");
+      const agent = { name: "echo", server: "everything", tool: "read-abs-file", params: { path }, connectors: ["everything"] };
+      const repo = remoteTestRepo(agent, connector, root);
+      const boundary = createAsyncStdioRemoteBoundary(repo);
+      const { doc } = await boundary.call(baseReq(repo.agents.get("echo")!));
+      expect(doc).toContain("name: kestrel");
+    },
+    REAL_SPAWN_SANDBOXED_TEST_TIMEOUT_MS,
+  );
 });
 
 describe("dispatch errors", () => {
