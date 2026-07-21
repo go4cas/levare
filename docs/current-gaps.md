@@ -241,33 +241,53 @@ name (those paths aren't known at profile-build time). If a future round ever ne
 grant back toward a broader shape, cross-dispatch write isolation must be independently re-examined at
 that point, not assumed to still hold by extension of the git-write reseal.
 
-## Connector trust-tier taxonomy
+## Connector trust-tier taxonomy — three recorded decisions, not open gaps (NOTES TAXONOMY-DECISIONS, 2026-07-21)
 
 A connector now declares `role: model | tool` (NOTES C15) — what FUNCTION it serves — and, since NOTES
 CAP-A, `effects: read | write` — whether a grant lets a member merely read through it or only propose
-against it. That narrows this gap (a read-only tool connector and a state-mutating one are now
-distinguishable, and the latter is gated by default) but does not close it: there is still no team-
-scoped grant system beyond whichever agents happen to be granted a connector, and no finer tier within
-`effects: write` itself (e.g. "may propose against production, may not against staging"). NOTES C13's
-own guidance — "prefer `auth: env`, grant `auth: subscription` only to trusted members" — remains
-advisory prose in a doctor warning, not an enforced taxonomy. Building the rest is capability-layer
-work, not yet started.
+against it, with a `write` connector's `gate: proposal | trusted` on top. Three further dimensions this
+entry used to name as unfinished work were put to the Conductor directly; each resolved to a deliberate
+design stance with its own rationale, not deferred work. Read NOTES TAXONOMY-DECISIONS for the full
+rulings; the decisions themselves:
 
-**A related, more specific gap, named directly by NOTES R4-VENDOR-CLI's own live validation of a real `gh`
-dispatch:** `env.ts#memberNetworkAllowed` derives a `kind: cli` member's sandboxed network reach from the
-SAME condition `buildMemberEnv`'s own connector-gated allowlist uses — `grantedConnectors(repo,
-member).length > 0`. This is a DELIBERATE simplification (NOTES R4-SANDBOX v2, Ruling 2 — recorded
-directly in `memberNetworkAllowed`'s own doc comment: "every connector this codebase has IS levare's own
-declared way of naming an external reach... there is no connector shape that names a purely-local
-capability"), not an accidental coupling. Its consequence, confirmed by construction rather than merely
-inferred: **levare cannot express "may hold this connector's credential, must not reach the network" for a
-`kind: cli` member** — credential-scope and network-scope are welded at the connector-grant level. (Scoped
-to `cli` specifically: Ruling 2 wraps only the two `cli` spawn paths; a `native`/`remote` member holding a
-connector never goes through this sandbox mechanism at all, so the coupling doesn't reach them.) This is
-the same underlying "no finer tier than holds-the-connector-or-doesn't" gap named above, viewed from the
-network-reach axis rather than the read/write axis — closing it would need a THIRD, independent dimension
-(a per-connector or per-grant network flag, separate from both `effects` and from mere possession), not yet
-designed or started.
+**1. Credential-vs-network coupling — formalized as an intended invariant, not a gap to close.**
+`env.ts#memberNetworkAllowed` derives a `kind: cli` member's sandboxed network reach from the SAME
+condition `buildMemberEnv`'s own connector-gated allowlist uses — `grantedConnectors(repo,
+member).length > 0`. First surfaced as a live finding by NOTES R4-VENDOR-CLI's validation against a real
+`gh` dispatch, and re-confirmed holding through that investigation's round 4 close-out. Its consequence,
+confirmed by construction: **levare cannot express "may hold this connector's credential, must not reach
+the network" for a `kind: cli` member** — credential-scope and network-scope are welded at the
+connector-grant level. (Scoped to `cli` specifically: NOTES R4-SANDBOX v2 Ruling 2 wraps only the two
+`cli` spawn paths; a `native`/`remote` member holding a connector never goes through this sandbox
+mechanism, so the coupling doesn't reach them.) **The Conductor's ruling: this is not a missing third
+dimension awaiting construction, because levare has no connector shape that names a purely-local
+capability in the first place** — Ruling 2's own reasoning is that every connector IS levare's declared
+way of naming an external reach; "hold a credential but deny network" would require inventing a connector
+TYPE that doesn't exist today, not adding a flag to the one that does. What WOULD motivate building a real
+third axis: a credentialed-but-offline CLI member — a local-only decrypt or license-check tool that
+authenticates but never phones home, or a belt-and-braces dry-run mode that should hold a live credential
+without being allowed to use it over the network. No such member exists in this codebase today, and the
+dimension is intentionally not built until one does.
+
+**2. Write-tiers within `effects: write` — out of scope for current scope, not deferred.** NOTES CAP-A
+gives every write connector exactly one gate (`proposal` or `trusted`); there is no tier concept beneath
+that anywhere in the model — no "may propose against production, may not against staging" distinction.
+**The Conductor's ruling: a single write-target does not justify inventing a tier** — there is nothing
+concrete in the current model to draw such a boundary against. This stays deferred until a second,
+genuinely distinct write-target exists in a real connector, at which point the split can be drawn from an
+actual case instead of guessed in the abstract. Not a gap; a scoping decision.
+
+**3. Team-scoped grants — per-agent grants are the ruled design at current scale.** There is no team- or
+role-level grant system beyond whichever individual agents happen to be granted a connector — a grant is,
+and remains, per-agent. **The Conductor's ruling: this is the right shape at the scale levare studios
+operate at today, not an unbuilt feature** — revisitable if a studio grows past the point where per-member
+grant lists are ergonomic to author and audit, but that's a future trigger condition, not a current gap.
+This decision is also the answer to "who may hold the grant" in "Per-member subscription-credential
+scoping" below — see that entry for the linkage.
+
+NOTES C13's own guidance — "prefer `auth: env`, grant `auth: subscription` only to trusted members" —
+remains advisory prose in a doctor warning, not an enforced taxonomy; that stays true independent of the
+three rulings above; nothing here promotes it to enforcement.
 
 ## Per-member subscription-credential scoping
 
@@ -277,10 +297,13 @@ this precisely and NOTES CAP-B (the capability layer, part B, above) narrows it 
 boundary: a connector declaring `home: [".codex"]` gives a granted member's spawned process a per-run
 scratch `HOME` symlinking only that path — the operator's other dotfiles (`~/.ssh`, `~/.aws`, anything
 not named) are never visible to that member's process at all, and a decoy-file test proves it. What
-`home:` does **not** fix, and cannot: it scopes *what a granted member's process can see on disk*, never
-*who is allowed to hold the grant in the first place* — **any** member granted this SAME connector can
-still use the live login, symlink or not; only the real `codex login`/`codex logout` revokes it. `levare
-doctor` and the registry card both still say so plainly (now conditioned on whether `home:` is
+`home:` does **not** fix, and cannot: it scopes *what a granted member's process can see on disk* — it
+never touched *who is allowed to hold the grant in the first place*, and that question is now decided,
+not open: **"Connector trust-tier taxonomy" above's decision 3 rules the grant unit is, and stays, the
+individual agent** — per-agent grants, no team-scoped flow. What remains a real, un-fixable-by-`home:`
+residual is narrower than "who may hold it": **any** member holding that already-decided per-agent grant
+can still use the live login, symlink or not; only the real `codex login`/`codex logout` revokes it.
+`levare doctor` and the registry card both still say so plainly (now conditioned on whether `home:` is
 declared), rather than let a scoped grant read as a per-member-revocable one. A connector declaring no
 `home:` at all gets the pre-CAP-B behaviour unchanged — the member's process sees the operator's entire
 real `HOME` — and a new warning (`SUBSCRIPTION_NO_HOME`) names that gap explicitly.

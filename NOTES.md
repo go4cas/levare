@@ -11773,3 +11773,56 @@ about what each step actually proves. Every honest residual named in rounds 1-3 
 `gh` to Codex/Gemini; the `.git/hooks` reseal not re-exercised by this repo-less harness; the connector/
 network coupling now recorded in `docs/current-gaps.md`) remains open and is NOT claimed closed by this
 round — this round closes exactly what its own goal asked for: `gh` specifically, validated live, holding.
+
+# NOTES TAXONOMY-DECISIONS (2026-07-21) — connector trust-tier taxonomy: three Conductor rulings, zero code change
+
+A documentation-only goal: `docs/current-gaps.md`'s "Connector trust-tier taxonomy" entry named three
+dimensions the schema doesn't model — credential/network coupling, write-tiers, team-scoped grants — as if
+each were unfinished work. The Conductor was asked to rule on all three directly. Each resolved to a
+deliberate design stance with its own rationale, not a gap awaiting a future round; this entry records the
+rulings, `docs/current-gaps.md` itself was rewritten to read as decisions rather than a wish list. No
+`src/` change of any kind — the schema, `env.ts#memberNetworkAllowed`, `buildMemberEnv`, and every other
+production code path this touches are exactly as they were.
+
+## Ruling 1 — credential-vs-network coupling is an intended invariant, not a gap
+
+The coupling itself was first surfaced as a live finding by NOTES R4-VENDOR-CLI (`env.ts#memberNetworkAllowed`
+deriving a `kind: cli` member's network reach from the same condition `buildMemberEnv`'s connector-gated
+allowlist uses) and re-confirmed holding through R4-VENDOR-CLI's own round 4 close-out, which explicitly
+carried the coupling forward as "recorded in `docs/current-gaps.md`," not claimed closed. The Conductor's
+ruling: it isn't a third dimension waiting to be built, because levare has no connector shape that names a
+purely-local capability at all — NOTES R4-SANDBOX v2 Ruling 2's own reasoning already establishes that
+every connector IS levare's declared way of naming an external reach. "Hold a credential, deny the
+network" would require inventing a new connector TYPE, not adding a flag to the existing one, and nothing
+in this codebase motivates that invention today. **Recorded for a future round, not started:** the shape of
+case that WOULD justify a real third axis — a credentialed-but-offline CLI member (a local-only decrypt or
+license-check tool that authenticates but never phones home), or a belt-and-braces dry-run mode that should
+hold a live credential without being allowed to use it over the network. No such member exists in this
+codebase; the dimension stays intentionally unbuilt until one does.
+
+## Ruling 2 — write-tiers within `effects: write` are out of scope, not deferred
+
+NOTES CAP-A gives every write connector exactly one gate (`proposal` or `trusted`) with nothing beneath
+it — no staging-vs-production or any other multi-target distinction. The Conductor's ruling: a single
+write-target doesn't justify inventing a tier concept; there is nothing concrete in the current model to
+draw the boundary against. This stays deferred until a second, genuinely distinct write-target exists in a
+real connector, at which point the tier split can be drawn from an actual case rather than guessed in the
+abstract.
+
+## Ruling 3 — per-agent grants are the ruled design at current scale
+
+A connector grant is, and remains, per-agent: whichever individual members a studio author names are the
+ones holding it, with no team- or role-level grant flow above that. The Conductor's ruling: this is the
+right shape at the scale levare studios run at today, not an unbuilt feature — revisitable if a studio
+grows past the point where per-member grant lists are ergonomic to author and audit, but that's a future
+trigger condition, not a current gap. **This also answers "who may hold the grant"** in
+`docs/current-gaps.md`'s "Per-member subscription-credential scoping" entry: the grant unit is, and stays,
+the individual agent. That entry's own residual narrows accordingly — it was never "no policy exists," it's
+"any member holding that already-decided per-agent grant shares the one live credential, `home:` scoping
+or not, revocable only outside levare."
+
+## Verification
+
+Documentation-only change: `git diff` touches only `docs/current-gaps.md` and `NOTES.md`. `bun test`,
+`bun run typecheck`, and `bun run build` were not run because no `src/` file changed — nothing in those
+paths could regress from a doc edit.
