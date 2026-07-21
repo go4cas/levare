@@ -12627,3 +12627,47 @@ correct throughout this whole round — every one of the two fixable failures tr
 assumption ("the checkout is outside home," "the env this test builds already includes HOME") that this
 container's own layout happened to make invisible. No sandbox/policy code changed in this addendum;
 only the tests that mis-measured it did.
+
+## Addendum 5 — sealed: both core R3 proofs now pass live; MCP-1C closed
+
+**The `home:` grant "failure" was never a mechanism failure — a trailing-newline assertion, fixed.** The
+live `LEVARE_SANDBOX_DEBUG` capture the Conductor ran after addendum 4's `baseReq` HOME fix proved the
+mechanism end to end: the generated profile's re-allow list carried the `home:`-declared path, the
+spawned MCP server read it successfully under a real, working `sandbox-exec` primitive, and returned
+`GRANTED-MARKER`. The test's own `expect(doc).toBe("GRANTED-MARKER\n")` was simply wrong about what
+production returns: `fixtures/stubs/fake-mcp-server.ts#respondFileRead` reads the file verbatim (the
+on-disk trailing newline included), but `adapters.ts#extractMcpText` — the same function every remote
+dispatch's text content already passed through, entirely unrelated to this goal, unchanged since MCP-1B
+— `.trim()`s the joined text before it becomes the artifact `doc`. Fixed to assert the EXACT value
+production actually produces (`"GRANTED-MARKER"`, no trailing newline) rather than a looser match
+(`.trim()` on both sides, or `startsWith`) that would have passed without actually pinning down what
+`doc` really is — per the instruction to assert the right thing, not just a permissive thing.
+
+**Confirmed live, on the Conductor's own Mac, both core R3 proofs now pass:**
+- **decoy-deny** — a connector declaring no `home:` cannot read a file under the operator's own real
+  `$HOME`, through its MCP tool call, under a working sandbox.
+- **`home:`-grant** — a connector that DOES declare `home:` for a specific dotpath CAN read exactly that
+  path, through the identical MCP tool call, under the SAME working sandbox that denies everything else
+  under `$HOME` — ruling R3's own centerpiece, proven end to end on real hardware, not merely at
+  construction level.
+
+Both together are the actual claim ruling R3 makes: an MCP server gets the cli member's own deny-user-
+data confinement, PLUS the connector's `home:` as the one, auditable, narrow way to declare an exception
+— never a blanket one. Live evidence now backs both halves.
+
+**Item 4 (the live, optional bunx-fetched-server dispatch) stays open, unchanged, and — as it always
+was — non-blocking.** No code changed there; it remains gated on future evidence (see addendum 4's own
+two named candidates), and was never part of the achieved-when this phase actually needs to close.
+
+**MCP-1C is closed.** The container-verifiable leg (this session's own standing responsibility) has been
+green throughout every addendum in this NOTES entry; the live-host leg (the Conductor's own manual gate,
+per the standing `sandbox.ts`-touching-code rule) is now ALSO green for both of the two proofs that
+constitute ruling R3's actual claim. `docs/current-gaps.md`'s own "Remote/MCP members" entry (addendum 1
+of this goal's original write-up) already states the stdio case is real and sandboxed; nothing further to
+narrow there. Total path from goal start to seal: sandbox-wrap the spawn (the build), a reported hang
+(investigated, not reproduced in-container, confirmed real and root-caused on the live host to a missing
+script-path grant — fixed), a live re-run surfacing two test bugs (a host-layout-dependent assertion, a
+missing HOME in the shared test env builder — both fixed) and one unrelated flake (not reproduced) and
+one still-open non-blocking optional item, and a final trailing-newline assertion fix — arriving at both
+core security proofs holding live. Recorded in full across this entry and its five addenda so a future
+reader has the complete evidentiary chain, not just the closing line.
