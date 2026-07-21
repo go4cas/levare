@@ -1057,4 +1057,80 @@ describe("kind: remote — legal, valid, and warned about (NOTES MCP-1B)", () =>
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // NOTES MCP-1C (PRD Amendment 3, ruling R3): a FULLY implemented remote agent (a real, granted,
+  // stdio kind: mcp connector — the exact shape "carries NO remote warning" above proves) now spawns a
+  // real process levare itself sandboxes — so it earns the SAME SANDBOX_UNAVAILABLE telling a `kind:
+  // cli` agent already gets, mirroring validate.ts#validateAgentSandboxWarning's own cli-only warning
+  // one level up, in the tree-wide remote-implementation pass (validateAgentRemoteImplementation).
+  describe("SANDBOX_UNAVAILABLE for a fully implemented remote agent (NOTES MCP-1C)", () => {
+    const NONE_DETECTION = { platform: "linux", primitive: "none", level: "none" } as const;
+
+    function implementedRemoteDir(): string {
+      const dir = mkdtempSync(join(tmpdir(), "levare-remote-sandbox-"));
+      mkdirSync(join(dir, "agents"), { recursive: true });
+      mkdirSync(join(dir, "connectors"), { recursive: true });
+      writeFileSync(
+        join(dir, "agents", "echo.md"),
+        ["---", "name: echo", "kind: remote", "produces: [report]", "server: everything", "tool: echo", "connectors: [everything]", "style:", "  avatar: Ec", "---", "", "A remote member.", ""].join(
+          "\n",
+        ),
+      );
+      writeFileSync(
+        join(dir, "connectors", "everything.md"),
+        ["---", "name: everything", "kind: mcp", 'argv: ["bunx", "-y", "@modelcontextprotocol/server-everything", "stdio"]', "env: [EVERYTHING_TOKEN]", "role: tool", "---", "", "An mcp connector.", ""].join(
+          "\n",
+        ),
+      );
+      return dir;
+    }
+
+    test("fires when sandbox.level is 'none' and the remote agent is fully implemented", () => {
+      const dir = implementedRemoteDir();
+      try {
+        const r = validatePath(dir, undefined, NONE_DETECTION);
+        expect(r.ok).toBe(true);
+        expect(r.warnings.map((w) => w.code)).toContain("SANDBOX_UNAVAILABLE");
+        const w = r.warnings.find((w) => w.code === "SANDBOX_UNAVAILABLE")!;
+        expect(w.message).toContain("echo");
+        expect(w.message).toContain("kind: remote");
+        expect(w.message).toContain("spawned MCP server process runs unconfined");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("never fires for a NOT-implemented remote agent — REMOTE_NOT_IMPLEMENTED already told the whole story", () => {
+      const dir = mkdtempSync(join(tmpdir(), "levare-remote-sandbox-unimpl-"));
+      try {
+        mkdirSync(join(dir, "agents"), { recursive: true });
+        writeFileSync(join(dir, "agents", "echo.md"), remoteAgentDoc());
+        const r = validatePath(dir, undefined, NONE_DETECTION);
+        expect(r.warnings.map((w) => w.code)).toContain("REMOTE_NOT_IMPLEMENTED");
+        expect(r.warnings.map((w) => w.code)).not.toContain("SANDBOX_UNAVAILABLE");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("never fires when no sandbox detection is passed — never assumed", () => {
+      const dir = implementedRemoteDir();
+      try {
+        const r = validatePath(dir);
+        expect(r.warnings.map((w) => w.code)).not.toContain("SANDBOX_UNAVAILABLE");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("never fires when sandbox.level is a working primitive", () => {
+      const dir = implementedRemoteDir();
+      try {
+        const r = validatePath(dir, undefined, { platform: "linux", primitive: "bubblewrap", level: "full", bin: "/usr/bin/bwrap" });
+        expect(r.warnings.map((w) => w.code)).not.toContain("SANDBOX_UNAVAILABLE");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
 });

@@ -1175,9 +1175,18 @@ describe("doctor.ts: sandbox status line + the sibling warning (NOTES R4-SANDBOX
 
   test("prints none plainly and names every cli agent left unconfined", () => {
     const out = formatDoctor([], undefined, undefined, undefined, undefined, undefined, NONE, ["finch", "rook"]);
-    expect(out).toContain("sandbox: none — unconfined cli spawns");
+    expect(out).toContain("sandbox: none — unconfined cli/remote spawns");
     expect(out).toContain("finch, rook");
     expect(out).toContain("bubblewrap, unshare");
+  });
+
+  // NOTES MCP-1C: `sandboxedAgents` (formerly `cliAgents`) now also carries a `kind: remote` agent
+  // backed by a real, granted, stdio MCP connector — ruling R3 gives it the identical confinement, so
+  // it earns the identical "left unconfined" telling when this host has no working primitive.
+  test("names a remote agent left unconfined alongside cli agents, when both are passed in sandboxedAgents", () => {
+    const out = formatDoctor([], undefined, undefined, undefined, undefined, undefined, NONE, ["finch", "wren"]);
+    expect(out).toContain("sandbox: none — unconfined cli/remote spawns");
+    expect(out).toContain("finch, wren");
   });
 
   test("no cli agents in the studio → the none status still prints, but no per-agent warning line", () => {

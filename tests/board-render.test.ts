@@ -428,6 +428,52 @@ describe("registry screen", () => {
     expect(html).not.toContain("no working stdio MCP connector yet");
   });
 
+  // NOTES MCP-1C (PRD Amendment 3, ruling R3): the SAME "no working OS-level sandbox primitive" callout
+  // a `kind: cli` agent's card already carries now also fires for a fully-implemented `kind: remote`
+  // agent — its spawn goes through the identical sandbox wrap. An UNimplemented remote agent (no real
+  // connector to spawn at all) must never carry it — there is nothing for this host's sandbox state to
+  // be a fact ABOUT in that case.
+  test("a `kind: remote` agent backed by a real, granted connector carries the sandbox-unavailable callout when this host has no working primitive; an unimplemented one does not", () => {
+    const implementedAgent = {
+      name: "echo",
+      kind: "remote",
+      produces: ["report"],
+      server: "everything",
+      tool: "echo",
+      connectors: ["everything"],
+      style: { avatar: "Ec" },
+    } as unknown as import("../src/types.ts").Agent;
+    const connector = {
+      name: "everything",
+      kind: "mcp",
+      argv: ["bunx", "-y", "@modelcontextprotocol/server-everything", "stdio"],
+      env: [],
+      auth: "env",
+      role: "tool",
+      effects: "read",
+      gate: "proposal",
+    } as unknown as import("../src/types.ts").Connector;
+    const implementedRepo: Repo = {
+      root: "/tmp/synthetic-remote-sandbox",
+      teams: new Map(),
+      types: new Map(),
+      projects: new Map(),
+      agents: new Map([[implementedAgent.name, implementedAgent]]),
+      connectors: new Map([[connector.name, connector]]),
+      units: [],
+      artifacts: new Map(),
+      studio: {},
+    };
+    const noneDetection = { platform: "linux", primitive: "none", level: "none" } as const;
+    const implementedHtml = renderRegistry(implementedRepo, "/tmp/synthetic-remote-sandbox", "agents", undefined, undefined, new Date(), noneDetection);
+    expect(implementedHtml).toContain("no working OS-level sandbox primitive was found on this host");
+
+    const unimplementedAgent = { ...implementedAgent, connectors: undefined } as unknown as import("../src/types.ts").Agent;
+    const unimplementedRepo: Repo = { ...implementedRepo, agents: new Map([[unimplementedAgent.name, unimplementedAgent]]) };
+    const unimplementedHtml = renderRegistry(unimplementedRepo, "/tmp/synthetic-remote-sandbox", "agents", undefined, undefined, new Date(), noneDetection);
+    expect(unimplementedHtml).not.toContain("no working OS-level sandbox primitive was found on this host");
+  });
+
   // UI3: "Edit source" no longer reveals an inline, card-cramped textarea — each card carries only
   // the trigger (data-edit-open, naming the entity's path/name/kind) and a HIDDEN <textarea
   // class="rawmd-source"> holding the on-disk raw markdown, which app.js copies into the ONE shared

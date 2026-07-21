@@ -130,12 +130,14 @@ export function diagnose(connectors: Connector[], env: EnvProbe, probe: CliProbe
  * `sandbox` below, is a coarser boundary than `tools:` describes); doctor repeats
  * `validateAgentCliToolsWarning`'s own telling.
  *
- * `sandbox`, when given (NOTES R4-SANDBOX, v2 Ruling 2): the OS-level sandbox primitive actually
- * detected on THIS host, right now — printed alongside `orchestrator`/`versionInfo` since it's the same
- * kind of "what does this machine actually offer" fact. A `level: "none"` result also gets the sibling
- * warning to `CLI_TOOLS_NOT_ENFORCEABLE`/`remoteAgents` above, once per `kind: cli` agent in the studio
- * (`cliAgents`) — a studio with no cli agents at all has nothing this warning is FOR, so it stays quiet
- * even on a host with no working primitive.
+ * `sandbox`, when given (NOTES R4-SANDBOX, v2 Ruling 2 / NOTES MCP-1C, ruling R3): the OS-level sandbox
+ * primitive actually detected on THIS host, right now — printed alongside `orchestrator`/`versionInfo`
+ * since it's the same kind of "what does this machine actually offer" fact. A `level: "none"` result
+ * also gets the sibling warning to `CLI_TOOLS_NOT_ENFORCEABLE`/`remoteAgents` above, once per member
+ * whose spawn actually goes through this sandbox — every `kind: cli` agent, PLUS every `kind: remote`
+ * agent backed by a real, granted, stdio MCP connector (ruling R3 gives it the identical confinement) —
+ * named in `sandboxedAgents` — a studio with none of those has nothing this warning is FOR, so it stays
+ * quiet even on a host with no working primitive.
  *
  * NOTES R4-SANDBOX-FIX-3 (round 3): `full` does NOT mean the same shape of confinement on every
  * `primitive` — Linux `bubblewrap` builds an allow-list from an empty root (nothing reachable unless
@@ -151,7 +153,7 @@ export function formatDoctor(
   remoteAgents?: string[],
   cliToolAgents?: string[],
   sandbox?: SandboxDetection,
-  cliAgents?: string[],
+  sandboxedAgents?: string[],
 ): string {
   const out: string[] = [];
   if (versionInfo) {
@@ -168,10 +170,10 @@ export function formatDoctor(
   }
   if (sandbox) {
     const model = sandboxModelNote(sandbox.primitive);
-    out.push(`sandbox: ${sandbox.level === "none" ? "none — unconfined cli spawns" : `${sandbox.level} (${sandbox.primitive}${model ? ` — ${model}` : ""})`}`);
-    if (sandbox.level === "none" && cliAgents && cliAgents.length > 0) {
+    out.push(`sandbox: ${sandbox.level === "none" ? "none — unconfined cli/remote spawns" : `${sandbox.level} (${sandbox.primitive}${model ? ` — ${model}` : ""})`}`);
+    if (sandbox.level === "none" && sandboxedAgents && sandboxedAgents.length > 0) {
       out.push(
-        `⚠ no working OS-level sandbox primitive found on this host (tried: ${sandbox.platform === "linux" ? "bubblewrap, unshare" : sandbox.platform === "darwin" ? "sandbox-exec" : "none available for this platform"}) — these cli members run unconfined beyond env/HOME scoping: ${cliAgents.join(", ")}`,
+        `⚠ no working OS-level sandbox primitive found on this host (tried: ${sandbox.platform === "linux" ? "bubblewrap, unshare" : sandbox.platform === "darwin" ? "sandbox-exec" : "none available for this platform"}) — these members run unconfined beyond env/HOME scoping: ${sandboxedAgents.join(", ")}`,
       );
     }
     out.push("");
@@ -226,7 +228,7 @@ export function runDoctor(
   remoteAgents?: string[],
   cliToolAgents?: string[],
   sandbox?: SandboxDetection,
-  cliAgents?: string[],
+  sandboxedAgents?: string[],
 ): string {
-  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo, promptCheck, remoteAgents, cliToolAgents, sandbox, cliAgents);
+  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo, promptCheck, remoteAgents, cliToolAgents, sandbox, sandboxedAgents);
 }

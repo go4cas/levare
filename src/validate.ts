@@ -338,8 +338,10 @@ const CONNECTOR_SCHEMA: Schema = {
     // (required-ness here would reject an absent `actions:` on a perfectly valid effects: read
     // connector, the same reasoning `env`'s own required-ness is auth-mode-conditional, not schema-fixed).
     actions: { type: "action-map", required: false },
-    // NOTES CAP-B: dotpaths under $HOME the vendor CLI needs (e.g. [".codex"]) — meaningful for
-    // auth: subscription connectors; see env.ts#scopeHome and Connector.home's own doc (types.ts).
+    // NOTES CAP-B / NOTES MCP-1C: dotpaths under $HOME this connector's backend needs (e.g. [".codex"],
+    // or [".npm"] for an MCP server) — originally auth: subscription only, generalized by ruling R3 to
+    // any kind: mcp connector's own declared reach; see env.ts#scopeHomeForConnector and Connector.home's
+    // own doc (types.ts).
     home: { type: "str[]", required: false },
   },
 };
@@ -478,7 +480,7 @@ export function validatePath(target: string, overlay?: OverlayFile, sandbox?: Sa
     validateAgentContextScope(target, errors, overlay);
     validateEnvNotTracked(target, errors);
     validateKnownModels(target, errors, overlay);
-    validateAgentRemoteImplementation(target, warnings, overlay);
+    validateAgentRemoteImplementation(target, warnings, overlay, sandbox);
   }
 
   // Cross-artifact checks over everything discovered.
@@ -992,7 +994,17 @@ function validateAgentVariant(data: Record<string, YamlValue>, file: string, err
 // (needs the connector registry + team grants to resolve), so it only runs when `root` is a directory
 // (mirrors validateProposalArtifact's own "no root, no cross-entity check" fail-open posture) — a
 // single-file validate (no root) emits no remote warning at all, same as that check.
-function validateAgentRemoteImplementation(root: string, warnings: ValidationWarning[], overlay?: OverlayFile): void {
+//
+// NOTES MCP-1C (PRD Amendment 3, ruling R3): a FULLY implemented remote agent (`reason === null` below)
+// now spawns a real OS process (adapters.ts#createAsyncStdioRemoteBoundary) that goes through the exact
+// same sandbox wrap a `kind: cli` agent's spawn does — so it earns the exact same `SANDBOX_UNAVAILABLE`
+// telling `validateAgentSandboxWarning` already gives a `kind: cli` agent when `sandbox.level === "none"`.
+// Emitted HERE, in this tree-wide pass, rather than duplicating `validateAgentSandboxWarning`'s own
+// per-file connector resolution: this function has already done the exact work (resolved `server:` to a
+// real, granted, stdio `kind: mcp` connector) that deciding "is this remote agent even a real spawn"
+// requires, and re-deriving it a second time from bare frontmatter would risk the two checks silently
+// disagreeing about which remote agents are "real" as the resolution logic evolves.
+function validateAgentRemoteImplementation(root: string, warnings: ValidationWarning[], overlay?: OverlayFile, sandbox?: SandboxDetection): void {
   const agentsDir = join(root, "agents");
   if (!existsSync(agentsDir)) return;
 
@@ -1065,6 +1077,16 @@ function validateAgentRemoteImplementation(root: string, warnings: ValidationWar
         message: `agent '${agentName}' declares kind: remote — ${reason}; this member will not produce real work until it does (only a real, granted, stdio kind: mcp connector is implemented — PRD Amendment 3 ruling R5)`,
         file,
       });
+    } else if (sandbox && sandbox.level === "none") {
+      // NOTES MCP-1C: this branch is reached ONLY for a fully implemented remote agent — a real,
+      // granted, stdio kind: mcp connector, exactly the case adapters.ts#createAsyncStdioRemoteBoundary
+      // spawns for real and sandbox-wraps (ruling R3). Sibling to validateAgentSandboxWarning's own
+      // per-`kind: cli` telling, same code, same "see levare doctor" pointer.
+      warnings.push({
+        code: "SANDBOX_UNAVAILABLE",
+        message: `agent '${agentName}' declares kind: remote with a real, granted, stdio MCP connector but no working OS-level sandbox primitive was found on this host (tried: ${sandboxPrimitivesTried(sandbox)}) — its spawned MCP server process runs unconfined beyond env/HOME scoping; see 'levare doctor' for what was tried`,
+        file,
+      });
     }
   }
 }
@@ -1119,6 +1141,13 @@ function validateAgentCliToolsWarning(data: Record<string, YamlValue>, file: str
 // a caller with no detection result has nothing honest to say about this host. Fires per `kind: cli`
 // agent (mirroring CLI_TOOLS_NOT_ENFORCEABLE's own per-file scope), not once per studio — a studio with
 // several cli agents sees the gap named against each one, exactly as it would for tools:.
+//
+// NOTES MCP-1C: `kind: remote` deliberately does NOT go through THIS function (it only ever checks
+// `data.kind !== "cli"`) — a remote agent's SANDBOX_UNAVAILABLE telling lives in
+// `validateAgentRemoteImplementation` instead, which has already resolved whether `server:` names a
+// real, granted, stdio connector (the only remote shape that spawns anything for this warning to be
+// about) as part of its own REMOTE_NOT_IMPLEMENTED check — see that function's own doc for why the
+// telling lives there rather than being re-derived a second time here from bare per-file frontmatter.
 function validateAgentSandboxWarning(data: Record<string, YamlValue>, file: string, warnings: ValidationWarning[], sandbox?: SandboxDetection): void {
   if (data.kind !== "cli" || !sandbox || sandbox.level !== "none") return;
   const name = typeof data.name === "string" ? data.name : basename(file, ".md");

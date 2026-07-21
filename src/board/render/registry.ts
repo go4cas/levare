@@ -155,11 +155,13 @@ export function renderRegistry(
               "tools: on a cli member is not enforceable by levare at the per-tool level — the OS sandbox (when available) narrows the member's overall reach but does not distinguish between individual named tools — encode the constraint in the connector/command via the vendor's own flags.",
             )
           : "";
-      // NOTES R4-SANDBOX (v2, Ruling 2): sibling to the tools: warning above — when no working OS
-      // sandbox primitive exists on the host serving this board, a cli member's spawn runs unconfined
-      // beyond env/HOME scoping, told plainly rather than left implied by the sandbox's own absence.
+      // NOTES R4-SANDBOX (v2, Ruling 2) / NOTES MCP-1C (ruling R3): sibling to the tools: warning above
+      // — when no working OS sandbox primitive exists on the host serving this board, a cli member's
+      // spawn, OR a remote member backed by a real, granted, stdio MCP connector (ruling R3 gives it the
+      // identical confinement), runs unconfined beyond env/HOME scoping, told plainly rather than left
+      // implied by the sandbox's own absence.
       const sandboxWarning =
-        a.kind === "cli" && sandbox.level === "none"
+        (a.kind === "cli" || (a.kind === "remote" && remoteAgentImplemented(repo, a))) && sandbox.level === "none"
           ? callout("warning", "no working OS-level sandbox primitive was found on this host — this member's process runs unconfined beyond env/HOME scoping; see 'levare doctor' for what was tried.")
           : "";
       const inner = `<div class="card__h">Context recipe</div><div class="recipe">${recipe || '<span style="color:var(--fg-mute)">none declared</span>'}</div>

@@ -128,10 +128,13 @@ export function runDoctorCmd(rest: string[]): number {
     // NOTES CAP-B: every `kind: cli` agent that also declares `tools:` — legal, but not enforceable by
     // levare (see validate.ts#validateAgentCliToolsWarning, the same warning repeated here).
     const cliToolAgents = [...repo.agents.values()].filter((a) => a.kind === "cli" && (a.tools?.length ?? 0) > 0).map((a) => a.name);
-    // NOTES R4-SANDBOX: every `kind: cli` agent in the studio — named in the sandbox-unavailable
-    // warning below when no working primitive was found on this host, mirroring cliToolAgents' own
-    // per-agent naming.
+    // NOTES R4-SANDBOX / NOTES MCP-1C: every member whose spawn actually goes through the OS sandbox —
+    // every `kind: cli` agent, PLUS every `kind: remote` agent backed by a real, granted, stdio MCP
+    // connector (ruling R3 gives it the identical confinement, adapters.ts#createAsyncStdioRemoteBoundary)
+    // — named in the sandbox-unavailable warning below when no working primitive was found on this host.
     const cliAgents = [...repo.agents.values()].filter((a) => a.kind === "cli").map((a) => a.name);
+    const remoteImplementedAgents = [...repo.agents.values()].filter((a) => a.kind === "remote" && remoteAgentImplemented(repo, a)).map((a) => a.name);
+    const sandboxedAgents = [...cliAgents, ...remoteImplementedAgents];
     process.stdout.write(
       runDoctor(
         [...repo.connectors.values()],
@@ -144,7 +147,7 @@ export function runDoctorCmd(rest: string[]): number {
         remoteAgents,
         cliToolAgents,
         detectSandbox(),
-        cliAgents,
+        sandboxedAgents,
       ),
     );
     return 0;
