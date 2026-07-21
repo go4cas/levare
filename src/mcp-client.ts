@@ -1,28 +1,29 @@
-// MCP Phase 1a (PRD Amendment 3, ruling R5 — docs/prd-amendment-3.md §5): a real stdio MCP client.
+// MCP Phase 1a/1b (PRD Amendment 3, ruling R5 — docs/prd-amendment-3.md §5): a real stdio MCP client.
 // Spawns a local MCP server process, speaks JSON-RPC 2.0 over its stdin/stdout, completes the
-// `initialize` handshake, sends `notifications/initialized`, and lists whatever the negotiated
-// capabilities advertise (`tools/list`, `resources/list`). Handshake and discovery ONLY — this
-// module never calls a tool or reads a resource; that is Phase 1b (invocation to artifact), a
-// deliberately separate, later goal (ruling R5's own staged design).
+// `initialize` handshake, sends `notifications/initialized`, lists whatever the negotiated
+// capabilities advertise (`tools/list`, `resources/list`), and — since Phase 1b — invokes a named tool
+// (`tools/call`, `callTool` below). Phase 1a proved handshake and discovery only; Phase 1b closes the
+// remaining step (invocation) so `adapters.ts#createAsyncStdioRemoteBoundary` can turn a real tool
+// response into a real artifact.
 //
 // UNSANDBOXED (ruling R3 names Phase 1c as the sandbox wrap): the process spawned here runs with
-// this module's own inherited environment and no OS-level confinement at all — no scoped HOME, no
-// filesystem/network restriction, nothing R4 already gives a `kind: cli` member's spawn. That is a
-// real, honest gap for anything beyond a trusted reference server run by a developer/test, not a
-// production posture; nothing in this module, `validate`, or `doctor` may claim otherwise until
-// Phase 1c actually wraps this spawn (see NOTES MCP-1A).
+// this module's own inherited environment (or, when the caller supplies `command.env`, EXACTLY that —
+// see `connectStdioMcpServer`'s own env-replacement comment) and no OS-level confinement at all — no
+// scoped HOME, no filesystem/network restriction, nothing R4 already gives a `kind: cli` member's
+// spawn. That is a real, honest gap for anything beyond a trusted reference server run by a
+// developer/test, not a production posture; nothing in this module, `validate`, or `doctor` may claim
+// otherwise until Phase 1c actually wraps this spawn (see NOTES MCP-1A/MCP-1B).
 //
-// This is the "new sibling" ruling R5 names for `RemoteBoundary` (adapters.ts) — deliberately NOT
-// wired behind that interface yet. `RemoteBoundary.call(req): { doc: string }` is synchronous,
-// matching the mocked fixture every dispatch path still uses (invariant 10's standing remote
-// deferral, NOTES REV1 finding 3): a real stdio MCP session is an inherently async, multi-turn
-// exchange over a long-lived child process (spawn once, write a request line, await the matched
-// response line, tolerate the server's own unsolicited notifications arriving in between) — there is
-// no correct synchronous encoding of that exchange. Reconciling the two (most likely an
-// `AsyncRemoteBoundary`, mirroring the `AsyncNativeBoundary`/`AsyncCliSpawn` precedent NOTES F5/F8
-// already established) is Phase 1b's concern, once there is a real call to make. This module is
-// proven standalone instead, directly against a real reference server
-// (tests/mcp-handshake.test.ts), never through the adapter/dispatch machinery.
+// This is the "new sibling" ruling R5 names for `RemoteBoundary` (adapters.ts): `RemoteBoundary.call
+// (req): { doc: string }` is synchronous, matching the mocked fixture every dispatch path used through
+// Phase 1a — a real stdio MCP session is an inherently async, multi-turn exchange over a long-lived
+// child process (spawn once, write a request line, await the matched response line, tolerate the
+// server's own unsolicited notifications arriving in between), so there is no correct synchronous
+// encoding of it. Phase 1b reconciles this via `AsyncRemoteBoundary` (adapters.ts), mirroring the
+// `AsyncNativeBoundary`/`AsyncCliSpawn` precedent NOTES F5/F8 already established — this module stays a
+// standalone protocol client either way, proven directly against a real reference server
+// (tests/mcp-handshake.test.ts) and, since Phase 1b, through the adapter/dispatch machinery too
+// (tests/mcp-remote-e2e.test.ts).
 
 export class McpProtocolError extends Error {}
 
@@ -70,6 +71,23 @@ export interface McpResource {
   description?: string;
 }
 
+// NOTES MCP-1B (Phase 1b, ruling R5): a `tools/call` response's content is a list of typed blocks per
+// the MCP spec (text/image/resource/...); Phase 1b's own artifact-production path only ever reads the
+// text blocks (`callTool`'s own caller, adapters.ts#createAsyncStdioRemoteBoundary) — other block types
+// pass through unread rather than being rejected, since a well-behaved tool may legitimately mix them.
+export interface McpToolCallContentBlock {
+  type: string;
+  text?: string;
+  [key: string]: unknown;
+}
+
+export interface McpToolCallResult {
+  content: McpToolCallContentBlock[];
+  // `true` when the tool itself reports a failure (per the MCP spec, distinct from a JSON-RPC error —
+  // the call succeeded, but the TOOL failed) — the caller's own concern to surface, never swallowed here.
+  isError?: boolean;
+}
+
 // The exact spawn template levare resolves a `kind: mcp` connector's declared stdio command to —
 // argv only, never a shell string (mirrors adapters.ts#defaultCliCommand's identical
 // non-shell-split guarantee: `argv[0]` plus its arguments, handed to a shell-less spawn).
@@ -90,6 +108,15 @@ export interface McpSession {
   listTools(): Promise<McpTool[]>;
   /** `[]` when the negotiated capabilities never advertised `resources` — never sent as a probe. */
   listResources(): Promise<McpResource[]>;
+  /**
+   * NOTES MCP-1B (Phase 1b, ruling R5) — invoke exactly one server tool by name, `tools/call`. Unlike
+   * `listTools`/`listResources`, this is never short-circuited on the negotiated `tools` capability: a
+   * caller that names a tool has already decided it exists (adapters.ts's own dispatch validates the
+   * agent/connector declaration before ever reaching here) — a server that genuinely has no such tool,
+   * or advertises no `tools` capability at all, reports that as its own JSON-RPC error, surfaced as
+   * `McpProtocolError` exactly like any other malformed/error response.
+   */
+  callTool(name: string, args: Record<string, unknown>): Promise<McpToolCallResult>;
   close(): Promise<void>;
 }
 
@@ -114,7 +141,16 @@ export async function connectStdioMcpServer(command: StdioMcpServerCommand, opts
   try {
     proc = Bun.spawn([bin, ...args], {
       cwd: command.cwd,
-      env: command.env ? { ...process.env, ...command.env } : process.env,
+      // NOTES MCP-1B: when `command.env` is given, it is the WHOLE spawn environment, never merged
+      // OVER `process.env` — the same "env is replaced wholesale, that is the allowlist guarantee"
+      // contract adapters.ts's own CliSpawn boundaries give a `kind: cli` member's spawn. Phase 1a never
+      // exercised this path (its own tests/scripts pass no `env:` at all, relying on the `undefined` ->
+      // `process.env` branch below for a dev-tool run) — Phase 1b's real member dispatch is what makes
+      // this matter: `req.env` here is already `buildMemberEnv`'s allowlisted output, and merging it
+      // OVER the full host `process.env` would leak every var levare deliberately withheld straight into
+      // the spawned MCP server's process, defeating invariant 11 for exactly the call site this
+      // connects.
+      env: command.env ?? process.env,
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
@@ -266,6 +302,13 @@ export async function connectStdioMcpServer(command: StdioMcpServerCommand, opts
       if (!("resources" in capabilities)) return [];
       const result = await request<{ resources?: McpResource[] }>("resources/list", {});
       return result.resources ?? [];
+    },
+    async callTool(name: string, args: Record<string, unknown>) {
+      const result = await request<McpToolCallResult>("tools/call", { name, arguments: args });
+      if (!result || !Array.isArray(result.content)) {
+        throw new McpProtocolError(`mcp server '${bin}' returned a malformed tools/call result for '${name}': ${JSON.stringify(result)}`);
+      }
+      return result;
     },
     close,
   };

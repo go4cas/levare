@@ -8,7 +8,13 @@
 //
 //   fake-mcp-server.ts <mode>
 //
-// Modes: normal | malformed | error | no-capabilities | hang
+// Modes: normal | malformed | error | no-capabilities | hang | tool-error
+//
+// NOTES MCP-1B: "normal" (and every mode reaching handleLine's default tools/call branch) answers
+// tools/call generically — echoes the call's own arguments back as text, deterministic and
+// argument-visible, so a caller can assert both that the call happened AND what it was called with.
+// "tool-error" answers with `isError: true` instead, for adapters.ts#createAsyncStdioRemoteBoundary's
+// own isError handling.
 
 const mode = process.argv[2] ?? "normal";
 
@@ -39,13 +45,22 @@ function handleLine(line: string): void {
   if (msg.method === "notifications/initialized") return; // no response expected
   if (msg.method === "tools/list") return send({ jsonrpc: "2.0", id: msg.id, result: { tools: [{ name: "noop", description: "does nothing" }] } });
   if (msg.method === "resources/list") return send({ jsonrpc: "2.0", id: msg.id, result: { resources: [{ uri: "fake://one", name: "one" }] } });
+  if (msg.method === "tools/call") return handleToolCall(msg.id!, msg.params as { name: string; arguments?: Record<string, unknown> });
   fail(`unexpected method in mode '${mode}': ${msg.method}`);
+}
+
+function handleToolCall(id: number, params: { name: string; arguments?: Record<string, unknown> }): void {
+  if (mode === "tool-error") {
+    send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `tool '${params.name}' failed` }], isError: true } });
+    return;
+  }
+  send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `called ${params.name} with ${JSON.stringify(params.arguments ?? {})}` }] } });
 }
 
 function handleInitialize(id: number): void {
   if (mode === "hang") {
     return; // deliberately never responds — exercises src/mcp-client.ts's request timeout path
-  } else if (mode === "normal") {
+  } else if (mode === "normal" || mode === "tool-error") {
     send({
       jsonrpc: "2.0",
       id,
