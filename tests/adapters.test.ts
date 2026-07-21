@@ -761,9 +761,16 @@ function remoteTestRepo(agent: Partial<Agent> & { name: string }, connector?: Co
 }
 
 function baseReq(agent: Agent, extra: Partial<InvokeRequest> = {}): InvokeRequest {
-  // PATH is always present in a real dispatch (buildMemberEnv's own baseline) — the spawned server
-  // needs it to resolve "bun" on PATH exactly like any other spawn boundary in this codebase.
-  return { agent, member: agent.name, kind: "spec", unit: "u1", project: "p1", context: "THE-TASK-CONTEXT", env: { PATH: process.env.PATH ?? "" }, tools: [], ...extra };
+  // PATH and HOME are both always present in a real dispatch (buildMemberEnv's own ENV_BASELINE,
+  // env.ts) — the spawned server needs PATH to resolve "bun" on PATH exactly like any other spawn
+  // boundary in this codebase, and HOME because `scopeHomeForConnector` (NOTES MCP-1C) can only ever
+  // scope FROM a real HOME (`!realHome` short-circuits to a no-op otherwise) and a live server's own
+  // startup routinely reads its own HOME regardless of scoping. Live-macOS finding (NOTES MCP-1C
+  // addendum 4): omitting HOME here left the spawned fake server with no HOME at all, so its own
+  // `read-home-file` tool's `join(process.env.HOME, dotpath)` silently degraded to "no path given"
+  // before ever attempting a read — a test-setup bug that happened to still produce an isError either
+  // way, masking whether the sandbox itself was actually doing the denying.
+  return { agent, member: agent.name, kind: "spec", unit: "u1", project: "p1", context: "THE-TASK-CONTEXT", env: { PATH: process.env.PATH ?? "", HOME: homedir() }, tools: [], ...extra };
 }
 
 // NOTES MCP-1C regression guard: every test in this describe block (and its sandboxed-real-spawn
@@ -1039,19 +1046,49 @@ describe("remote adapter — sandboxed real spawn (NOTES MCP-1C, PRD Amendment 3
       expect((policy.readOnlyPaths ?? []).some((p) => p.includes("@modelcontextprotocol"))).toBe(false);
     });
 
-    test("the darwin profile TEXT re-allows the script's directory narrowly, while STILL denying the operator's home broadly — the decoy proof survives this grant", () => {
-      const scriptDir = realpathSync(dirname(FAKE_MCP_SERVER));
-      const operatorHome = realpathSync(homedir());
-      const policy = { ...policyForArgv(["bun", FAKE_MCP_SERVER, "normal"]), operatorHome };
-      const text = buildSandboxExecProfile(policy);
-      // The script's own directory is a narrow, explicit re-allow...
-      expect(text).toContain(`(allow file-read* (subpath "${scriptDir}"))`);
-      // ...but the operator's real HOME is still broadly DENIED — this is an ADDITIVE grant, never a
-      // widening of the deny-user-data model itself. (`scriptDir` lives under this repo's own checkout,
-      // never under `homedir()` in this container, so this is a genuine assertion, not a tautology —
-      // the fix must never make these two paths coincide for a real studio.)
-      expect(scriptDir.startsWith(operatorHome)).toBe(false);
-      expect(text).toContain(`(deny file-read* (subpath "${operatorHome}"))`);
+    // NOTES MCP-1C addendum 4 (live-macOS finding on the FIRST version of this test): the original
+    // version of this test asserted `scriptDir.startsWith(operatorHome)` is false, on the theory that a
+    // studio's own checkout never lives under the operator's real HOME — TRUE in this dev container
+    // (checked out under `/workspaces/levare`), FALSE on a real macOS host where a studio routinely
+    // lives under `~/source/...` or similar. That made the assertion itself host-layout-dependent — a
+    // tautology that happened to hold here and fail on exactly the kind of host ruling R3 exists to
+    // protect. Fixed by never depending on where THIS repo's own checkout happens to live: both
+    // `operatorHome` and the script's own directory are SYNTHETIC, freshly created under `os.tmpdir()`
+    // for this test alone, deliberately non-nested either direction — the property under test (a narrow,
+    // additive script-path grant coexisting with a broad, unrelated home-deny, and a decoy elsewhere
+    // under that synthetic home staying outside every re-allow) no longer depends on any host's real
+    // filesystem layout at all.
+    test("the darwin profile TEXT re-allows the script's directory narrowly, while STILL denying a synthetic operator home broadly — a decoy elsewhere under that home is covered by no re-allow", () => {
+      const syntheticHome = mkdtempSync(join(tmpdir(), "levare-mcp-1c-synthetic-home-"));
+      const syntheticScriptDir = mkdtempSync(join(tmpdir(), "levare-mcp-1c-synthetic-script-"));
+      try {
+        const scriptPath = join(syntheticScriptDir, "server.js");
+        writeFileSync(scriptPath, "// synthetic MCP server script for this test only\n");
+        const decoyUnderHome = join(syntheticHome, "some-other-file.txt");
+        writeFileSync(decoyUnderHome, "SECRET — must never be covered by the script's own narrow grant\n");
+
+        const scriptDirCanon = realpathSync(syntheticScriptDir);
+        const homeCanon = realpathSync(syntheticHome);
+        const decoyCanon = realpathSync(decoyUnderHome);
+        // Sanity: the two roots genuinely don't overlap — never a tautology regardless of where either
+        // synthetic path landed under the OS's own tmpdir.
+        expect(scriptDirCanon.startsWith(homeCanon)).toBe(false);
+        expect(homeCanon.startsWith(scriptDirCanon)).toBe(false);
+
+        const policy = { ...policyForArgv(["bun", scriptPath, "normal"]), operatorHome: homeCanon };
+        const text = buildSandboxExecProfile(policy);
+        // The script's own directory is a narrow, explicit re-allow...
+        expect(text).toContain(`(allow file-read* (subpath "${scriptDirCanon}"))`);
+        // ...the synthetic home is still broadly DENIED — this is an ADDITIVE grant, never a widening of
+        // the deny-user-data model itself...
+        expect(text).toContain(`(deny file-read* (subpath "${homeCanon}"))`);
+        // ...and the decoy living elsewhere under that same home is named by NO re-allow rule anywhere in
+        // the profile — the security property stated directly, not inferred from path-string comparisons.
+        expect(text).not.toContain(`"${decoyCanon}"`);
+      } finally {
+        rmSync(syntheticHome, { recursive: true, force: true });
+        rmSync(syntheticScriptDir, { recursive: true, force: true });
+      }
     });
   });
 
@@ -1084,6 +1121,13 @@ describe("remote adapter — sandboxed real spawn (NOTES MCP-1C, PRD Amendment 3
   // SPECIFIC real-HOME path it legitimately needs, an auditable per-connector grant rather than a
   // blanket exception. Same decoy file, same dotpath, only difference from the test above is that THIS
   // connector declares `home: [dotpath's own parent dir]` — must now succeed.
+  //
+  // NOTES MCP-1C addendum 4 (live-macOS finding): this test's own `params: { dotpath }` was always
+  // correct — the live failure ("no path/dotpath given") traced to `baseReq`'s own missing `HOME`
+  // (fixed above): `scopeHomeForConnector` can only ever scope FROM a real HOME, so the spawned fixture
+  // process received no `HOME` at all, and its own `read-home-file` tool's `join(process.env.HOME,
+  // dotpath)` silently degraded to "no path given" before ever attempting a read. The `home:` grant
+  // itself was never broken — the live profile capture showed the re-allow present the whole time.
   test.skipIf(hostSandbox.level !== "full")(
     "home: grant proof: a connector declaring home: CAN read the exact path it declared, through its MCP tool call, under the same working sandbox that denies everything else under HOME",
     async () => {
