@@ -159,7 +159,20 @@ async function runRemoteDispatch(repo: Repo, pricing: Pricing, label: string, ag
   }
 }
 
-function captureKernelDenials(windowSeconds: number): void {
+// NOTES MCP-1C addendum 2 (a real, live-macOS finding this over-narrow filter itself caused to be
+// missed on the first diagnosis attempt): the ORIGINAL filter here — `\bbun\b|\bnode\b|\bnpm\b|\bnpx\b|
+// Sandbox:` — hid the actual denial. The `log show` PREDICATE already restricts every captured line to
+// one containing "deny" (real confinement noise, not everything on the system); this SECOND, client-side
+// filter exists only to trim that down to what's relevant, and it was too narrow — a `deny(1) file-
+// read-data <path>` line naming the exact denied path is exactly the evidence a hang needs, whether or
+// not the log's own process-name field happens to spell out "bun"/"node"/literal "Sandbox:" (the actual
+// macOS format for this varies — `(Sandbox)`, a PID, or no process token at all is just as plausible).
+// Widened to ALSO match any line mentioning the operator's own home directory or the studio root
+// (`homeDir`/`repoRoot`, threaded in by the caller, known exactly at capture time) — a denial naming
+// either path IS the finding, regardless of which subsystem/process worded the log line. `file-read`
+// added too, since that's the operation class every R4-SANDBOX-FIX/R4-VENDOR-CLI/MCP-1C finding so far
+// has actually been.
+function captureKernelDenials(windowSeconds: number, homeDir: string, repoRoot: string): void {
   console.log("");
   console.log("=== Best-effort kernel-denial capture (macOS unified log) ===");
   if (process.platform !== "darwin") {
@@ -173,15 +186,22 @@ function captureKernelDenials(windowSeconds: number): void {
       timeout: 8000,
     });
     const out = r.stdout ? new TextDecoder().decode(r.stdout) : "";
+    const homeLower = homeDir.toLowerCase();
+    const repoLower = repoRoot.toLowerCase();
     const relevant = out
       .split("\n")
-      .filter((l) => /\bbun\b|\bnode\b|\bnpm\b|\bnpx\b|Sandbox:/i.test(l))
-      .slice(-40);
+      .filter((l) => {
+        const lower = l.toLowerCase();
+        return /\bbun\b|\bnode\b|\bnpm\b|\bnpx\b|sandbox|file-read/i.test(l) || lower.includes(homeLower) || lower.includes(repoLower);
+      })
+      .slice(-80);
     if (relevant.length) {
-      console.log(`${relevant.length} matching line(s) (last 40 shown):`);
+      console.log(`${relevant.length} matching line(s) (last 80 shown):`);
       for (const l of relevant) console.log(`  ${l}`);
     } else {
-      console.log("no lines mentioning 'bun'/'node'/'npm'/'npx'/'Sandbox:' found in the captured window — either nothing was denied, or this host's `log show` needs elevated privileges for the relevant subsystem (not distinguishable from here).");
+      console.log(
+        `no lines mentioning bun/node/npm/npx/sandbox/file-read, '${homeDir}', or '${repoRoot}' found in the captured window — either nothing was denied, or this host's own 'log show' needs elevated privileges for the relevant subsystem (not distinguishable from here).`,
+      );
     }
   } catch (e) {
     console.log(`(log show unavailable/failed: ${e instanceof Error ? e.message : String(e)} — not a finding about the sandbox itself, just about this capture)`);
@@ -261,7 +281,7 @@ async function main() {
     else process.env.LEVARE_SANDBOX_DEBUG = priorDebug;
   }
 
-  captureKernelDenials(120);
+  captureKernelDenials(120, realpathSync(homedir()), realpathSync("fixtures/golden"));
 
   console.log("");
   console.log("=== Summary ===");
