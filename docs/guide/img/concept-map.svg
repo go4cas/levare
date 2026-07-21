@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 410" width="680" height="410" role="img" aria-labelledby="t d">
 <title id="t">How levare's concepts relate</title>
-<desc id="d">A studio is a git repository. Projects contain work units, which produce artifacts, which raise gates. Teams contain agents, who author the artifacts. Types define units; skills, knowledge, and connectors feed agents.</desc>
+<desc id="d">A studio is a git repository. Projects contain work units, which produce artifacts, which raise gates. Teams contain agents, who author the artifacts. Types define units; skills, knowledge, and connectors feed agents. Evals score a work-unit type's output.</desc>
 <style>
   .th{font:500 14px 'Hanken Grotesk',system-ui,sans-serif}
   .ts{font:400 11px 'IBM Plex Mono',ui-monospace,monospace}
@@ -46,6 +46,11 @@
 <text class="th" x="100" y="225" text-anchor="middle">type</text></g>
 <path d="M148 200 L232 158" class="arr" marker-end="url(#a)" fill="none"/>
 <text class="lbl" x="150" y="178">defines</text>
+
+<g class="d"><rect x="50" y="290" width="100" height="38" rx="6" stroke-width="1"/>
+<text class="ts" x="100" y="314" text-anchor="middle">eval</text></g>
+<line x1="100" y1="290" x2="100" y2="244" class="arr" marker-end="url(#a)"/>
+<text class="lbl" x="112" y="268">scores</text>
 
 <g class="m"><rect x="200" y="200" width="120" height="40" rx="6" stroke-width="1"/>
 <text class="th" x="260" y="225" text-anchor="middle">team</text></g>

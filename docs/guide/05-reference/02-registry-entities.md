@@ -153,4 +153,34 @@ absent file or field means "no studio-level declaration," and callers fall back 
 
 ---
 
+## Eval — `evals/<name>.md`
+
+A rubric scoring a work-unit type's output — golden criteria you write down once and judge future
+work against, rather than re-deciding "is this good?" from scratch every time.
+
+| Field | Required | Default | Notes |
+|---|---|---|---|
+| `name` | ✅ | — | Must match the filename |
+| `unit` | — | — | The work-unit `type` this eval scores (`inception` · `feature` · `fix` · `spike` · `research`) |
+| `rubric` | — | — | The criteria to judge that type's terminal artifact against, one string per criterion |
+
+**Body:** not used — only the frontmatter is read; the body is stored but never rendered or consumed.
+
+```yaml
+# evals/feature-shipped-code.md
+name: feature-shipped-code
+unit: feature
+rubric:
+  - "Tests exist for the new behaviour and pass"
+  - "No unrelated files changed"
+  - "Matches the approved spec it consumes"
+```
+
+`evals/` is loaded alongside `skills/` and `knowledge/` for the registry screen (`extra.ts`); it isn't
+one of the entities the Runner's own DAG walk reads to decide what runs next — an eval doesn't gate a
+flow or bind a member the way `produces:` does. It's a durable, versioned rubric for judging a type's
+output, living beside the studio's other definitions instead of in someone's head.
+
+---
+
 Next: **[5.3 · The CLI](03-cli.md)**

@@ -9,14 +9,15 @@ stops making sense.
 
 ## The whole picture
 
-![How levare's concepts relate: projects have work units, which have artifacts, which raise gates. Teams have agents, who author artifacts. Types define units; skills, knowledge, and connectors feed agents.](img/concept-map.png)
+![How levare's concepts relate: projects have work units, which have artifacts, which raise gates. Teams have agents, who author artifacts. Types define units; skills, knowledge, and connectors feed agents. Evals score a work-unit type's output.](img/concept-map.png)
 
 Read it in two lines:
 
 - **The work:** a *project* has *work units*; a unit produces *artifacts*; an artifact raises a *gate*
   — and a gate is where you come in.
 - **The workers:** a *team* has *agents*; an agent *authors* the artifacts. *Types* define what a unit
-  is expected to produce. *Skills*, *knowledge*, and *connectors* are what an agent is given.
+  is expected to produce, and *evals* score what it actually produced. *Skills*, *knowledge*, and
+  *connectors* are what an agent is given.
 
 Every one of those boxes is a markdown file in your studio. Nothing else exists.
 
@@ -63,6 +64,14 @@ where it gates:
 The distinction that matters most: **an inception unit produces the documents every later unit must
 cite.** A project's constitution isn't a folder convention — it's the artifacts that later work
 `consumes`. Legislation cites the constitution.
+
+### Evals: rubrics for a type's output
+
+An **eval** lives at `evals/<name>.md` and declares a `rubric` — the criteria a unit of a given `type`
+should be judged against. It's not wired into the Runner's own DAG walk the way `produces:` is; it
+doesn't gate a flow or bind a member. It's a durable, versioned answer to "what does *good* look like
+for this type of work," written down once instead of re-decided from scratch at every gate. See
+[5.2 Registry entities](05-reference/02-registry-entities.md#eval--evalsnamemd) for its fields.
 
 ---
 
