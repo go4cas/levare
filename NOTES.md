@@ -11826,3 +11826,123 @@ or not, revocable only outside levare."
 Documentation-only change: `git diff` touches only `docs/current-gaps.md` and `NOTES.md`. `bun test`,
 `bun run typecheck`, and `bun run build` were not run because no `src/` file changed — nothing in those
 paths could regress from a doc edit.
+
+# NOTES MCP-1A (2026-07-21) — a real stdio MCP client: handshake and discovery, nothing more
+
+PRD Amendment 3, ruling R5 (`docs/prd-amendment-3.md` §5) stages the MCP client into three
+independently-verifiable phases. This goal is Phase 1a: prove levare can spawn a real stdio MCP
+server and *speak* MCP at all — `initialize`, capability negotiation, `initialized`, then list what
+the server offers. **No artifact production. No tool call. No resource read.** That is Phase 1b's
+goal, not this one, and nothing here should be read as having started it.
+
+## What was built
+
+`src/mcp-client.ts` — a new, standalone module, never wired into `adapters.ts`'s dispatch switch:
+
+- `connectStdioMcpServer(command, opts)` spawns `command.argv` (`Bun.spawn`, `stdin`/`stdout`/
+  `stderr` all `"pipe"`), speaks newline-delimited JSON-RPC 2.0 over stdin/stdout (one message per
+  line — confirmed against the real reference server below, not assumed from the spec alone), sends
+  `initialize` with `{ protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "levare",
+  version: "0.0.1" } }`, validates the response shape (`protocolVersion`/`serverInfo.name`/
+  `capabilities` must all be present and correctly typed — a malformed response throws
+  `McpProtocolError` and kills the process rather than limping on with guessed defaults), then sends
+  `notifications/initialized`.
+- The returned `McpSession` exposes `listTools()`/`listResources()` — each is a no-op returning `[]`
+  when the NEGOTIATED capabilities never declared that key (never sent as a blind probe against a
+  server that didn't advertise it), matching the goal's "per what the server's capabilities
+  advertise" instruction.
+- Request/response correlation by numeric `id`; any server-sent line without a matching pending `id`
+  (an unsolicited notification, e.g. `notifications/tools/list_changed`, observed live below) is
+  silently ignored — there is nothing in Phase 1a's scope that needs to act on one.
+- Per-request timeout (default 30s) that rejects with a clear message (including a bounded stderr
+  tail) and `close()` — idempotent, ends stdin, SIGTERM then SIGKILL after a 2s grace window if the
+  process is still alive.
+
+Why this is NOT wired behind the existing `RemoteBoundary` interface (adapters.ts) despite ruling R5
+calling it "a real implementation behind the same interface": `RemoteBoundary.call(req): { doc:
+string }` is synchronous, matching the mocked fixture every dispatch path (`AdapterRunner#produce`/
+`#produceAsync`) still calls synchronously (`this.opts.remote.call(req2).doc`, not even `await`ed in
+the async path). A real stdio MCP session is inherently an async, multi-turn exchange over a
+long-lived child process — there is no correct synchronous encoding of "write a request line, await
+the matched response line, tolerate unsolicited notifications arriving in between." Forcing a sync
+`call()` today would mean either blocking the whole process on hand-rolled synchronous pipe I/O (a
+much worse foundation than an honest async client) or building a fake sync facade that lies about
+what's happening underneath. Reconciling the real client with the dispatch switch — almost certainly
+via an `AsyncRemoteBoundary`, mirroring the `AsyncNativeBoundary`/`AsyncCliSpawn` precedent NOTES F5/
+F8 already established for exactly this sync/async split — is Phase 1b's concern, once there is a
+real `call()` (tool invocation → artifact) to make. This module is proven standalone instead (below),
+never through the adapter/dispatch machinery, and the mock `RemoteBoundary` in `adapters.ts`/
+`tests/adapters.test.ts` is untouched — every dispatch path is exactly as mocked as it was.
+
+Unsandboxed, honestly (ruling R3 names Phase 1c as the sandbox wrap): the process spawned by
+`connectStdioMcpServer` runs with this module's own inherited environment, no scoped `HOME`, no
+filesystem confinement, no network restriction — none of what R4 already gives a `kind: cli` member's
+spawn. `src/mcp-client.ts`'s own header states this plainly. Nothing in `validate`/`doctor` claims
+otherwise: REV1 finding 3's `REMOTE_NOT_IMPLEMENTED` warning (`src/validate.ts`, `src/doctor.ts`) is
+untouched by this goal — a `kind: remote` agent still gets the same honest "not yet implemented"
+telling, because the dispatch switch still routes it to the mock, exactly as before.
+
+## What a real handshake against a real server actually returned
+
+Proven against `@modelcontextprotocol/server-everything` (the MCP project's own reference/demo
+server), spawned live via `bunx` (this sandbox has no `npx`; `bunx` is Bun's equivalent and is what
+`tests/mcp-handshake.test.ts` resolves to when `npx` is absent — `Bun.which("npx") ?? Bun.which
+("bunx")`). Manually probed first (a throwaway script, not committed) to ground the wire format in
+observed bytes rather than spec-reading alone; the actual `initialize` response received:
+
+```
+protocolVersion: "2024-11-05"   (round-tripped exactly what levare requested)
+serverInfo: { name: "mcp-servers/everything", title: "Everything Reference Server", version: "2.0.0" }
+capabilities: { tools: {listChanged:true}, prompts: {...}, resources: {subscribe:true,listChanged:true},
+                 logging: {}, tasks: {...}, completions: {} }
+```
+
+followed by an unsolicited `{"method":"notifications/tools/list_changed",...}` line BEFORE the
+`tools/list` response — confirmed the client must tolerate a notification arriving interleaved with a
+pending request's own response, which is exactly what `handleLine`'s "no matching pending id → ignore"
+rule does. `tools/list` returned 14 real tools (`echo`, `get-sum`, `get-env`, `trigger-long-running-
+operation`, `simulate-research-query`, …); `resources/list` returned 7 real `demo://resource/...`
+documents. Both non-empty, both real — the negotiated capability set and the discovery listing the
+goal asks the acceptance test to assert.
+
+`tests/mcp-handshake.test.ts` codifies this as the acceptance test: gated by actually ATTEMPTING the
+live handshake at module load (not merely checking `npx`/`bunx` resolves on PATH — confirmed during
+this goal that `Bun.which("bunx")` resolves even against a deliberately emptied `PATH`, since `bunx`
+is a name-triggered alias of the `bun` binary itself, not a separate PATH-dependent tool; only a real
+attempt distinguishes "no runner" from "runner exists but the registry is unreachable"). The skip
+reason is folded directly into the visible test name (mirroring `tests/orchestrator-sdk-live.test.ts`
+'s `hasAnthropicCredentials()` gate, the existing precedent for host-dependent live tests in this
+suite) so a run that skips still says honestly why, never a silent, unexplained absence — never a
+vacuous pass.
+
+`tests/mcp-client.test.ts` covers the edge cases a well-behaved live reference server has no reason to
+exercise, offline, against a small deterministic fake stdio server (`fixtures/stubs/fake-mcp-server
+.ts`, mirroring `fixtures/stubs/member-stub.ts`'s existing precedent for a fixture-owned fake
+process): a malformed `initialize` result (missing `serverInfo`), a JSON-RPC error object, a server
+whose capabilities declare neither `tools` nor `resources` (asserting the client never sends the
+corresponding `list` request at all, not merely that it returns `[]`), a request timeout, an
+unspawnable binary, and `close()` idempotency.
+
+## Verification
+
+`bun test` — 1216 pass, 6 skip (unchanged pre-existing skips), 0 fail, across 91 files (up from 89;
++7 new tests in `tests/mcp-client.test.ts`, +1 live acceptance test in `tests/mcp-handshake.test.ts`,
+both passing live in this environment — `bunx` and npm registry access are both available here, so
+the live test ran for real rather than skipping). `bunx tsc --noEmit` → exit 0. `bun run deps:check`
+→ `deps ok` (no new dependency — `src/mcp-client.ts` uses only `Bun.spawn` and the JSON-RPC messages
+are hand-typed, no MCP SDK package added). `bun run build` → succeeds. `bun run src/cli.ts validate
+fixtures/golden` → `valid`, the same two pre-existing `SANDBOX_UNAVAILABLE` warnings, unchanged (no
+fixture agent declares `kind: remote`, so the `REMOTE_NOT_IMPLEMENTED` warning path is untouched).
+`bun run src/cli.ts replay fixtures/golden --stubs` → oracle match, byte-for-byte (this goal never
+touches the Runner, the dispatch switch, or any golden-fixture entity).
+
+## Stated plainly, per the goal's own instruction
+
+**Phase 1a is handshake-and-discovery only.** It proves levare can spawn a real stdio MCP server and
+complete a real JSON-RPC `initialize`/`initialized` exchange, and can list a real server's tools and
+resources. It runs **UNSANDBOXED** — Phase 1c (ruling R3) is what wraps this spawn in the R4 sandbox,
+and neither `validate` nor `doctor` claims any confinement here that doesn't exist. It produces **no
+artifact** — `RemoteBoundary` stays exactly as mocked as it was before this goal; `src/mcp-client.ts`
+is a new, standalone sibling module, not yet reachable from any dispatch path. Phase 1b (invocation to
+artifact — mapping a remote member's declared intent to a real server call, invoking it, turning the
+result into a gated artifact, and closing the mock) is separate, later work.
