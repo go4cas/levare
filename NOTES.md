@@ -12377,3 +12377,50 @@ own decoy-must-still-deny check after any such grant is added, exactly the R4-VE
 in `validate`/`doctor`/the registry/this NOTES entry claims the live-host leg already ran — only that the
 in-container leg is green and the harness that closes it is built, hand-runnable, and itself verified to
 degrade honestly rather than pass vacuously.
+
+## Addendum — a reported hang, investigated, not reproduced; a regression guard added regardless
+
+A review pass reported: the MCP-1B real-stdio-boundary test ("invokes the declared tool with {task}-
+substituted params...") passes in 112ms at 1b (bb7975c) and hangs past 20s at 1c, theorized as
+`scopeHomeForConnector` scoping HOME out from under the spawned server's own startup needs.
+
+**Investigated, could not reproduce, after:** 15 repeated runs of the single test (69–134ms every time,
+no outlier); the whole `tests/adapters.test.ts` file, repeatedly (consistently ~5s, 86 pass/8 skip/0
+fail); the full suite, twice (1237 pass/9 skip/0 fail both times); and — the rigorous form of the
+requested bisection — two independent `git worktree` checkouts, one at `bb7975c` (1b) and one at the
+actual 1c tip, each run fresh and standalone: both completed the named test in under 100ms, no hang
+either side.
+
+**The specific theorized cause does not apply to this test.** The connector this test constructs
+(`fakeServerConnector("normal")`) declares no `home:` — `scopeHomeForConnector`'s own first check
+(`!dotpaths`) short-circuits to a no-op before ever reading `env.HOME`, so the env handed to the spawn is
+`req.env` unchanged, byte-identical between 1b and 1c for this test (`baseReq` sets ONLY `PATH`, no
+`HOME` at all, in both versions — nothing to scope, nothing scoped). The one real, confirmed behavioral
+delta 1c introduces for this test is `cwd`: a fresh `mkdtempSync` scratch dir, versus 1b's inherited
+process cwd. That delta is exercised directly by this test (`fakeServerConnector`'s own argv is an
+ABSOLUTE path specifically because of it — see the "adapters: sandbox-wrap..." commit) and passes
+cleanly, repeatedly, in isolation. The report's own supporting evidence ("bunx ... comes up fine
+standalone") is about a DIFFERENT server entirely — this test never invokes `bunx`, it spawns this
+repo's own trivial `fixtures/stubs/fake-mcp-server.ts` fixture via `bun`.
+
+**Standing possibility, not ruled out:** an environment this container doesn't reproduce (a different bun
+version, a slower/more contended filesystem under `os.tmpdir()`, a CI runner under memory pressure) could
+still behave differently — `mkdtempSync`/a cold `bun <script>.ts` invocation are exactly the kind of
+operation that can stall on a sufficiently degraded disk. Nothing in this investigation proves that can't
+happen elsewhere, only that it doesn't happen here, repeatably, by the most direct bisection available.
+
+**Guard added regardless, independent of reproduction:** every test in
+`tests/adapters.test.ts` that spawns the real fake server process now carries an explicit bun:test
+timeout (5s for the always-run cases, 15s for the `skipIf(full)` proofs, which carry real sandboxing
+overhead on a live host) — see the "tests: tight completion ceilings..." commit. A future stall in the
+real spawn path now fails fast and loud, on any host, rather than riding out to whatever timeout bun:test
+or CI would otherwise apply by default. If the reported hang recurs on a host that CAN reproduce it, this
+guard turns it into a clean, fast, named test FAILURE — the evidence a future investigation would need,
+rather than an ambiguous multi-second stall.
+
+**On the "this pre-solves a live finding" framing:** the HOME-scoping-vs-server-startup tension is real
+and worth having open eyes for on the live-host run — R4-VENDOR-CLI's own gh-config-EPERM finding is
+exactly this class of thing — but it is a `home:`-DECLARED-connector question, not a not-`home:`-declared
+one: this investigation's own evidence is that the NOT-scoped case (what this specific test exercises) is
+unaffected. The live host's own step 3 (`scripts/repro-mcp-1c-sandbox.ts`, the `home:`-grant proof)
+remains the right place to watch for this class of finding, exactly as already recorded above.
