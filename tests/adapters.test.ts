@@ -948,6 +948,56 @@ describe("remote adapter — sandboxed real spawn (NOTES MCP-1C, PRD Amendment 3
         await boundary.call(baseReq(repo.agents.get("echo")!));
         expect(lines.some((l) => l.includes("level:"))).toBe(true);
         expect(lines.some((l) => l.includes("remote dispatch for 'echo'"))).toBe(true);
+        // NOTES MCP-1C addendum (a reported live-macOS hang in exactly this dispatch path): the explicit
+        // "about to spawn" marker prints BEFORE the one call that can actually hang — this is the last
+        // line a Conductor's own stalled terminal would show, naming exactly what argv/cwd was about to
+        // run.
+        expect(lines.some((l) => l.startsWith("[levare:sandbox-debug] spawning now: argv="))).toBe(true);
+      } finally {
+        console.error = origError;
+        if (prior === undefined) delete process.env.LEVARE_SANDBOX_DEBUG;
+        else process.env.LEVARE_SANDBOX_DEBUG = prior;
+      }
+    },
+    REAL_SPAWN_TEST_TIMEOUT_MS,
+  );
+
+  // NOTES MCP-1C addendum — a reported live-macOS hang in exactly this dispatch path (a real remote
+  // spawn wrapped for real, under a working sandbox-exec primitive): this test isolates whether the
+  // WIRING itself (detection → policy → wrapForSandbox's bubblewrap branch → the actual spawn/handshake)
+  // can hang independent of a genuine OS-level denial, which only a REAL primitive can produce.
+  // `sandboxDetection` (StdioRemoteBoundaryOptions, added for this investigation) forces the SAME code
+  // path a live macOS host takes through `wrapForSandbox`'s bubblewrap branch specifically, backed by
+  // `fakeWorkingPrimitive()` (this file's own pre-existing cli-test helper) — a shell script that
+  // genuinely EXECs whatever follows `--`, so composed argv actually reaches and runs the fake MCP
+  // server, on THIS container, without depending on a real bwrap being able to create a namespace here.
+  // If THIS test hung, the bug would be in this codebase's OWN composition/dispatch code — it doesn't,
+  // which narrows the live-host mystery to genuine kernel-level confinement denying something the
+  // fixture server needs at startup, not a deadlock in adapters.ts/mcp-client.ts's own control flow.
+  test(
+    "a dispatch through a REAL (if fake) working sandbox primitive completes without hanging, and its own composed argv/spawn marker appear in LEVARE_SANDBOX_DEBUG output before the spawn",
+    async () => {
+      const connector = fakeServerConnector("normal");
+      const agent = { name: "echo", server: "everything", tool: "noop", params: {}, connectors: ["everything"] };
+      const repo = remoteTestRepo(agent, connector);
+      const prior = process.env.LEVARE_SANDBOX_DEBUG;
+      const origError = console.error;
+      const lines: string[] = [];
+      console.error = (...args: unknown[]) => {
+        lines.push(args.map(String).join(" "));
+      };
+      try {
+        process.env.LEVARE_SANDBOX_DEBUG = "1";
+        const boundary = createAsyncStdioRemoteBoundary(repo, {
+          sandboxDetection: { platform: "linux", primitive: "bubblewrap", level: "full", bin: fakeWorkingPrimitive() },
+        });
+        const { doc, sandbox } = await boundary.call(baseReq(repo.agents.get("echo")!));
+        expect(doc).toBe(`called noop with ${JSON.stringify({})}`);
+        expect(sandbox).toBe("full");
+        const captured = lines.join("\n");
+        expect(captured).toContain("--tmpfs"); // genuinely composed bwrap argv, not a stand-in object
+        expect(captured).toContain("--die-with-parent");
+        expect(captured).toContain("spawning now: argv=");
       } finally {
         console.error = origError;
         if (prior === undefined) delete process.env.LEVARE_SANDBOX_DEBUG;

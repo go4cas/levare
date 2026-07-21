@@ -387,6 +387,15 @@ export interface StdioRemoteBoundaryOptions {
   /** Test-only override for the connect/request timeout ceiling — default derives from the agent's own
    * `timeout:` (falls back to the same 600s default `defaultCliCommand`'s cli timeout uses). */
   timeoutMs?: number;
+  /** NOTES MCP-1C (parity with `AdapterRunnerOptions.sandboxDetection`): test-only override of the OS
+   * sandbox primitive detection — default a real, freshly-probed `detectSandbox()` on every real
+   * dispatch (never cached, never assumed — see sandbox.ts's own header). Production call sites never
+   * set this. Exists so a test can drive the remote boundary through a WORKING (if fake) wrap — e.g. the
+   * bwrap-shaped `fakeWorkingPrimitive()` helper `tests/adapters.test.ts`'s own cli tests already use —
+   * without depending on this host's REAL bubblewrap/sandbox-exec actually functioning, proving the
+   * wrap/debug-instrumentation plumbing itself is correct independent of whether a live OS primitive
+   * happens to work here. */
+  sandboxDetection?: SandboxDetection;
 }
 
 // NOTES MCP-1B: {task} substitution only — mirrors adapters.ts#defaultCliCommand's own {task}
@@ -484,14 +493,36 @@ export function createAsyncStdioRemoteBoundary(repo: Repo, opts: StdioRemoteBoun
       const spawnEnv = scopedHome?.env ?? req.env;
       let wrapped: { argv: string[]; level?: SandboxLevel; cleanup?: () => void } = { argv: connector.argv };
       if (real && scratchDir) {
-        const detection = detectSandbox();
+        // NOTES MCP-1C (a reported live-macOS hang in exactly this path — see NOTES MCP-1C's own
+        // addendum): `detection` is test-injectable so a container without a working primitive can still
+        // drive this code path through a fake-but-functioning one (see `StdioRemoteBoundaryOptions.
+        // sandboxDetection`'s own doc) — production never sets it, so this is always the real, fresh,
+        // un-cached probe there, exactly like `AdapterRunner#sandboxWrap`'s own identical line.
+        const detection = opts.sandboxDetection ?? detectSandbox();
         logRemoteSandboxDebug(`level: ${detection.level} (primitive: ${detection.primitive})`);
         const policy = buildRemoteSandboxPolicy(repo, req, connector, scratchDir, spawnEnv);
+        // `wrapForSandbox` itself prints (under the SAME LEVARE_SANDBOX_DEBUG=1 gate) the composed
+        // argv/cwd/home for every tier, and — for `sandbox-exec` specifically — the darwin profile's own
+        // text and the temp file it was written to (sandbox.ts#sandboxExecArgv), BEFORE this call
+        // returns, i.e. strictly before `connect()` below is ever reached. This is the exact "print the
+        // profile a hung process is dying under" instrumentation a live macOS hang needs — reused
+        // verbatim from the identical machinery a `cli` dispatch's own wrap already relies on, never a
+        // second, remote-specific implementation of the same printing.
         wrapped = wrapForSandbox(connector.argv, policy, detection);
         logRemoteSandboxDebug(
           `remote dispatch for '${req.member}' via connector '${serverName}': scratch cwd '${scratchDir}', home ${scopedHome?.skipped.length ? `scoped (skipped: ${scopedHome.skipped.join(", ")})` : connector.home?.length ? "scoped" : "unscoped (connector declares no home:)"}, sandbox level '${wrapped.level}'`,
         );
       }
+
+      // NOTES MCP-1C: the explicit "about to spawn" marker — deliberately the LAST debug line before the
+      // one call that can actually hang, so a Conductor reading a stalled run's own stderr can tell
+      // apart "setup (detection/policy/wrap) never finished" from "setup finished; the spawn itself, or
+      // the handshake immediately after it, is what's stuck" — the latter being exactly what a genuine
+      // kernel-level denial during a real MCP server's own startup would look like (a blocked process
+      // waiting on a denied resource, never exiting, rather than crashing outright — the R4-VENDOR-CLI
+      // config-EPERM class manifesting as a hang instead of a fatal exit for a well-behaved server that
+      // retries/waits rather than aborting).
+      logRemoteSandboxDebug(`spawning now: argv=${JSON.stringify(wrapped.argv)} cwd=${scratchDir ?? "(inherited)"}`);
 
       let session: Awaited<ReturnType<typeof connect>>;
       try {
