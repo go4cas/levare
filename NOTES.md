@@ -12474,3 +12474,76 @@ tests in `tests/adapters.test.ts`) still holds after any such grant, exactly the
 
 **Do not weaken the sandbox to make the test pass** — unchanged instruction, restated because it's the
 one failure mode this whole addendum exists to prevent.
+
+## Addendum 3 — the root cause: a remote connector's own script path was never granted; fixed
+
+Diagnosed from the live macOS `LEVARE_SANDBOX_DEBUG` profile itself (addendum 2's own instrumentation
+doing exactly its job): the composed argv was `bun /Users/cas/source/levare/fixtures/stubs/fake-mcp-
+server.ts normal`. The generated profile granted `bun`'s own resolved install tree
+(`resolveArgv0("bun", ...)` → `~/.bun/bin`/`~/.bun`) but never the SCRIPT PATH bun was told to load —
+`buildRemoteSandboxPolicy`'s `readOnlyPaths` only ever resolved `connector.argv[0]` (the interpreter),
+never scanned the REST of argv for a local script the interpreter also needs to read. `bun` spawned
+under the sandbox, tried to read the very file it was told to execute, was denied (`deny file-read-data`
+on the script path — the original kernel-log filter missed this line for reasons named in Addendum 2 and
+fixed below), and HUNG at module-load rather than exiting — bun's own loader blocks on a denied read
+rather than erroring cleanly, the same "blocked process, not a crash" signature this whole R4 saga keeps
+finding for a startup-time denial (FIX-10/FIX-11's own xcrun-retry chain, now recurring one layer up for
+an interpreter's own script load).
+
+**A real product gap, not a test artifact — this is why `cli` never surfaced it:** a `kind: cli` command
+template's `argv[0]` is almost always the actual binary being run directly (`gh`, `codex`, an absolute
+Homebrew/system-PATH install) — `resolveArgv0`'s own install-tree grant already covers everything that
+binary needs to load itself. A `kind: mcp` connector commonly takes a DIFFERENT shape: an interpreter
+(`bun`, `node`, `python3`) plus a LOCAL SCRIPT the connector author wrote (this repo's own
+`fixtures/stubs/fake-mcp-server.ts` is exactly that shape, and any real studio author writing their own
+MCP server would hit the identical gap). A `bunx`/`npx`-fetched package (`["bunx", "-y", "@scope/pkg",
+"stdio"]`) never hit this, because there's no LOCAL file for the interpreter to load — everything it
+touches resolves through its own cache/install tree, already covered. The gap is specifically:
+interpreter + first-party local script.
+
+**The fix (`src/adapters.ts#argvScriptReadOnlyPaths`, called only from `buildRemoteSandboxPolicy`):**
+scans every `connector.argv` element AFTER `argv[0]` for an ABSOLUTE path to a real, EXISTING FILE on
+disk, and grants exactly its own directory, read-only — the same `subpath` granularity every other
+`readOnlyPaths` entry already gets, canonicalized by `buildSandboxExecProfile`'s own pre-existing
+`canon()` pass (no new symlink handling needed — reused, not rebuilt). A flag (`-y`), a mode string
+(`normal`), or a bunx/npx package name (`@modelcontextprotocol/server-everything`) never resolves as an
+existing absolute path, so a well-formed connector can never get a spurious grant from this scan — it
+only ever fires for a genuine local-script argument. `buildDispatchSandboxPolicy` (cli) is deliberately
+UNTOUCHED: no evidence anywhere in this codebase of a `cli` command template taking the interpreter-plus-
+local-script shape, so widening cli's own policy would be a convenience grant with no evidence behind it
+— exactly what this whole investigation's own standing discipline forbids.
+
+**Reproduced at construction level, verified against a real regression, before claiming the fix.** This
+container still has no working primitive to reproduce the live DENIAL/HANG itself — but the generated
+POLICY and PROFILE TEXT are directly inspectable regardless of host capability, the same "exercised only
+by construction, never live" posture `sandbox.ts`'s own pure profile tests already take. Three new tests
+(`tests/adapters.test.ts`, `describe("buildRemoteSandboxPolicy grants the connector's own script path")`):
+1. an interpreter+local-script connector's `readOnlyPaths` includes the script's own directory — manually
+   reverted the fix and confirmed this test FAILS (`Expected to contain: ".../fixtures/stubs", Received:
+   [...no such entry...]`), then restored the fix and confirmed it passes — the regression this addendum
+   closes, proven to actually catch the regression, not merely assert a shape;
+2. a `bunx`/`npx` package-name connector (no local script at all) gets nothing extra from the scan — the
+   over-grant guard;
+3. the darwin profile TEXT re-allows the script's own directory narrowly while the operator's real HOME
+   is STILL denied broadly — the decoy-deny guarantee (item 2's own "re-run the decoy proof" instruction,
+   satisfied at construction level; the LIVE decoy-deny/home:-grant proofs in
+   `scripts/repro-mcp-1c-sandbox.ts`/the `test.skipIf(hostSandbox.level !== "full")` suite remain the
+   Conductor's own live-host confirmation, unaffected by this fix's own narrow scope).
+
+**The kernel-denial filter itself was part of the problem, fixed alongside the finding it hid**
+(`scripts/repro-mcp-1c-sandbox.ts#captureKernelDenials`): the original client-side filter (`\bbun\b|
+\bnode\b|\bnpm\b|\bnpx\b|Sandbox:`) filtered OUT the very line naming the denied script path, because
+macOS's own kernel-log format for the process/subsystem field doesn't reliably spell any of those tokens
+literally. Widened to ALSO match any line mentioning the operator's own home directory or the studio root
+(threaded in by the caller, known exactly at capture time — `realpathSync(homedir())`/
+`realpathSync("fixtures/golden")`) or the generic `file-read` operation class, on top of the original
+process-name/`sandbox` tokens (broadened from a literal `Sandbox:` colon-match to a bare `sandbox`
+substring, to also catch a `(Sandbox)` parenthesized form). A denial naming either path IS the finding,
+regardless of which subsystem worded the log line — never require guessing the exact vocabulary a kernel
+log entry uses before a Conductor can even see it.
+
+**Next Mac run:** re-run the specific hanging test (or the harness) with `LEVARE_SANDBOX_DEBUG=1` —
+expect it to complete in well under a second, matching 1b's own ~112ms, with `sandbox: full` recorded on
+the produced artifact this time (not a fallthrough to `none`). If it still hangs, the widened kernel-log
+capture should now surface whatever the NEXT denied resource is — diagnose it the identical evidence-
+first way, never guessed ahead of the log.
