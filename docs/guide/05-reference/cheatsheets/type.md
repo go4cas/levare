@@ -1,18 +1,25 @@
+---
+title: Type
+parent: Cheatsheets
+grand_parent: Reference
+nav_order: 3
+---
+
 # Type — `types/<name>.md`
 
 A work-unit template: what a unit of this type is expected to produce, and where it gates.
 
 ## Fields
 
-| Field | Type | Required | Nullable | Enum values |
-|---|---|---|---|---|
-| `name` | string | ✅ | — | — |
-| `glyph` | string | ✅ | — | — |
-| `expects` | string[] | ✅ | — | — |
-| `gates` | string[] | ✅ | — | — |
-| `output` | string | — | — | — |
-| `timebox` | string | — | ✅ | — |
-| `promotable_to` | string | — | ✅ | — |
+| Field | Type | Required | Nullable | Enum values | Description |
+|---|---|---|---|---|---|
+| `name` | string | ✅ | — | — | The work-unit type's name. |
+| `glyph` | string | ✅ | — | — | A short display glyph for this type. |
+| `expects` | string[] | ✅ | — | — | Artifact kinds a unit of this type is expected to produce. |
+| `gates` | string[] | ✅ | — | — | Where this type gates in the flow. |
+| `output` | string | — | — | — | A human-readable description of this type's expected output. |
+| `timebox` | string | — | ✅ | — | Spike/timebox duration for units of this type, Runner-enforced. |
+| `promotable_to` | string | — | ✅ | — | The knowledge kind a research report of this type promotes to through a gate. |
 
 ## Minimal valid skeleton
 

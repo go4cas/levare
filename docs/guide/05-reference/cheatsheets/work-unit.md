@@ -1,20 +1,27 @@
+---
+title: Work Unit
+parent: Cheatsheets
+grand_parent: Reference
+nav_order: 11
+---
+
 # Work Unit — `work/<project>/<unit>/unit.md`
 
 A unit of work — the project/type/status/team declaration a flow walk runs against.
 
 ## Fields
 
-| Field | Type | Required | Nullable | Enum values |
-|---|---|---|---|---|
-| `type` | enum | ✅ | — | `inception` · `feature` · `fix` · `spike` · `research` |
-| `status` | enum | ✅ | — | `active` · `paused` · `blocked` · `shipped` · `abandoned` |
-| `project` | string | — | — | — |
-| `unit` | string | — | — | — |
-| `after` | string[] | — | — | — |
-| `team` | string | — | — | — |
-| `timebox` | string | — | ✅ | — |
-| `budget` | number | — | ✅ | — |
-| `blocked_reason` | string | — | ✅ | — |
+| Field | Type | Required | Nullable | Enum values | Description |
+|---|---|---|---|---|---|
+| `type` | enum | ✅ | — | `inception` · `feature` · `fix` · `spike` · `research` | The work-unit type template this unit follows — what it's expected to produce and where it gates. |
+| `status` | enum | ✅ | — | `active` · `paused` · `blocked` · `shipped` · `abandoned` | Where this unit stands: active, paused, blocked, shipped, or abandoned. |
+| `project` | string | — | — | — | The project this unit belongs to. |
+| `unit` | string | — | — | — | This unit's own identifier. |
+| `after` | string[] | — | — | — | Start-gate condition — this unit is invisible to the walk until every named condition is met. |
+| `team` | string | — | — | — | Explicit team override — required when more than one team in the studio could produce a kind this unit's type expects, so levare never has to guess which is responsible. |
+| `timebox` | string | — | ✅ | — | Spike/timebox duration, Runner-enforced. |
+| `budget` | number | — | ✅ | — | USD budget — crossing the ledger sum raises a budget gate. |
+| `blocked_reason` | string | — | ✅ | — | Why this unit is blocked, when status is blocked — written by the walk when it cannot bind a flow step to a member, so the block explains itself instead of silently doing nothing. |
 
 ## Minimal valid skeleton
 

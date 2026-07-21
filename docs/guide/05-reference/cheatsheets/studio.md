@@ -1,12 +1,19 @@
+---
+title: Studio
+parent: Cheatsheets
+grand_parent: Reference
+nav_order: 12
+---
+
 # Studio — `studio.md`
 
 The root-level studio singleton — settings that apply across the whole studio.
 
 ## Fields
 
-| Field | Type | Required | Nullable | Enum values |
-|---|---|---|---|---|
-| `orchestrator_model` | string | — | — | — |
+| Field | Type | Required | Nullable | Enum values | Description |
+|---|---|---|---|---|---|
+| `orchestrator_model` | string | — | — | — | The Orchestrator's declared model — the registry field that replaces LEVARE_ORCHESTRATOR_MODEL as the source of truth (the env var remains a runtime override). |
 
 ## Minimal valid skeleton
 

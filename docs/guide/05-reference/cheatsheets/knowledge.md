@@ -1,13 +1,20 @@
+---
+title: Knowledge
+parent: Cheatsheets
+grand_parent: Reference
+nav_order: 6
+---
+
 # Knowledge — `knowledge/<name>.md`
 
 A reference document injected into member context by name.
 
 ## Fields
 
-| Field | Type | Required | Nullable | Enum values |
-|---|---|---|---|---|
-| `name` | string | ✅ | — | — |
-| `tags` | string[] | — | — | — |
+| Field | Type | Required | Nullable | Enum values | Description |
+|---|---|---|---|---|---|
+| `name` | string | ✅ | — | — | The knowledge document's name, referenced by name from an agent's or team's knowledge: list. |
+| `tags` | string[] | — | — | — | Tags for organizing/filtering knowledge documents. |
 
 ## Minimal valid skeleton
 

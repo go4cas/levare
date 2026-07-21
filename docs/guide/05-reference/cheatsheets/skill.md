@@ -1,14 +1,21 @@
+---
+title: Skill
+parent: Cheatsheets
+grand_parent: Reference
+nav_order: 8
+---
+
 # Skill — `skills/<name>.md`
 
 Reusable instructions a member's context can include by name.
 
 ## Fields
 
-| Field | Type | Required | Nullable | Enum values |
-|---|---|---|---|---|
-| `name` | string | ✅ | — | — |
-| `description` | string | — | — | — |
-| `scripts` | string[] | — | — | — |
+| Field | Type | Required | Nullable | Enum values | Description |
+|---|---|---|---|---|---|
+| `name` | string | ✅ | — | — | The skill's name, referenced by name from an agent's or team's skills: list. |
+| `description` | string | — | — | — | A human-readable summary of what this skill does. |
+| `scripts` | string[] | — | — | — | Scripts this skill bundles. |
 
 ## Minimal valid skeleton
 

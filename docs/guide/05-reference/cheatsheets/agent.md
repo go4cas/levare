@@ -1,30 +1,44 @@
+---
+title: Agent
+parent: Cheatsheets
+grand_parent: Reference
+nav_order: 2
+---
+
 # Agent — `agents/<name>.md`
 
 A member: what it can produce, and how to invoke it.
 
 ## Fields
 
-| Field | Type | Required | Nullable | Enum values |
-|---|---|---|---|---|
-| `name` | string | ✅ | — | — |
-| `kind` | enum | ✅ | — | `native` · `cli` · `remote` |
-| `produces` | string[] | ✅ | — | — |
-| `model` | string | — | — | — |
-| `skills` | string[] | — | — | — |
-| `tools` | string[] | — | — | — |
-| `knowledge` | string[] | — | — | — |
-| `command` | string[] | — | — | — |
-| `context_via` | enum | — | — | `arg` · `stdin` |
-| `context_artifacts` | enum | — | — | `paths` · `inline` |
-| `cwd` | string | — | — | — |
-| `timeout` | number | — | — | — |
-| `result` | string | — | — | — |
-| `server` | string | — | — | — |
-| `tool` | string | — | — | — |
-| `params` | map (arbitrary key → string) | — | ✅ | — |
-| `connectors` | string[] | — | — | — |
-| `style` | map | ✅ | — | — |
-| `style.avatar` | string | ✅ | — | — |
+| Field | Type | Required | Nullable | Enum values | Description |
+|---|---|---|---|---|---|
+| `name` | string | ✅ | — | — | The member's name. |
+| `kind` | enum | ✅ | — | `native` · `cli` · `remote` | How this member is invoked: native (the built-in Claude Agent SDK), cli (a wrapped vendor CLI), or remote (an MCP tool call). |
+| `produces` | string[] | ✅ | — | — | The artifact kinds this member can produce — the studio's capability declaration. A member that produces nothing can bind to no flow step, so no team it belongs to can run. |
+| `model` | string | — | — | — | native: the model this member uses. cli: also settable, but only reaches the vendor if command includes a {model} placeholder. |
+| `skills` | string[] | — | — | — | native: reusable instruction sets (by name) included in this member's context. |
+| `tools` | string[] | — | — | *(40 known values — see below)* | native: the SDK-level tool allowlist for this member, validated against the Claude Agent SDK's own tool vocabulary — see SDK_TOOL_NAMES below. Distinct from remote's singular tool: this is a set of SDK tool names, not an MCP tool choice. |
+| `knowledge` | string[] | — | — | — | Knowledge documents (by name) injected into this member's context. |
+| `command` | string[] | — | — | — | cli: the argv template as a structured array — each element is exactly one argv slot; a {placeholder} substitutes in place, never a shell string to split. |
+| `context_via` | enum | — | — | `arg` · `stdin` | cli: how this member receives its assembled context — arg (default, substitutes {task} in the command template) or stdin (the full context is written to the child's stdin instead). Ignored for native/remote. |
+| `context_artifacts` | enum | — | — | `paths` · `inline` | How this member receives consumed artifacts: paths (default — root-relative paths only, for a member with filesystem access to the studio) or inline (the full text of every consumed artifact, for a member that cannot reach the studio filesystem). |
+| `cwd` | string | — | — | — | cli: the working directory this member's process spawns in. |
+| `timeout` | number | — | — | — | cli: the spawn timeout, in seconds. |
+| `result` | string | — | — | — | cli: required for kind: cli — how the member's result is read back. |
+| `server` | string | — | — | — | remote: the kind: mcp connector (by name) this member calls. |
+| `tool` | string | — | — | — | remote: the singular MCP tool this member invokes on server's connector via tools/call — the member's declared intent → server-call mapping. Distinct from native's tools: this names one chosen MCP tool, not an SDK vocabulary allowlist. |
+| `params` | map (arbitrary key → string) | — | ✅ | — | remote: the static tools/call arguments template — each value substitutes {task} with the assembled context. |
+| `connectors` | string[] | — | — | — | Per-agent connector grants, unioned with the team's grants for env scoping. |
+| `style` | map | ✅ | — | — | Display settings for this member. |
+| `style.avatar` | string | ✅ | — | — | The member's display avatar. |
+
+<details markdown="block">
+<summary><code>tools</code> — 40 valid values</summary>
+
+`Agent` · `Artifact` · `AskUserQuestion` · `Bash` · `ClaudeDesign` · `CronCreate` · `CronDelete` · `CronList` · `Edit` · `EnterPlanMode` · `EnterWorktree` · `ExitPlanMode` · `ExitWorktree` · `Glob` · `Grep` · `ListMcpResources` · `Mcp` · `Monitor` · `NotebookEdit` · `Projects` · `PushNotification` · `Read` · `ReadMcpResource` · `ReadMcpResourceDir` · `REPL` · `RemoteTrigger` · `ReportFindings` · `ScheduleWakeup` · `ShowOnboardingRolePicker` · `TaskCreate` · `TaskGet` · `TaskList` · `TaskOutput` · `TaskStop` · `TaskUpdate` · `TodoWrite` · `WebFetch` · `WebSearch` · `Workflow` · `Write`
+
+</details>
 
 ## Minimal valid skeleton
 

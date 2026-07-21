@@ -82,6 +82,17 @@ export interface FieldSpec {
   nullable?: boolean;
   enum?: string[];
   fields?: Record<string, FieldSpec>; // for type: "map"
+  // One-line, human-readable field meaning — required on every field so a generated cheatsheet's
+  // Description column can never silently go blank. Sourced from this same file's/types.ts's own doc
+  // comments (the authoritative account of what a field means), not invented separately — the docs:
+  // generate step (scripts/generate-cheatsheets.ts) reads this, never a second copy of the prose.
+  description: string;
+  // Known, validated string vocabulary for a "str[]"/"str" field whose legal values are fixed but
+  // enforced by a semantic check rather than this schema's own `enum`/`type` (e.g. agent `tools:`
+  // against SDK_TOOL_NAMES, validateAgentTools below) — surfaced in a generated cheatsheet exactly
+  // like `enum` is, so a studio author can discover the vocabulary from the docs instead of from an
+  // UNKNOWN_TOOL error.
+  vocabulary?: readonly string[];
 }
 export interface Schema {
   name: string;
@@ -99,52 +110,79 @@ const STATUS_ENUM = ["draft", "in-review", "approved", "rejected", "superseded",
 export const ARTIFACT_SCHEMA: Schema = {
   name: "artifact",
   fields: {
-    kind: { type: "str", required: true },
-    id: { type: "str", required: true },
-    unit: { type: "str", required: true },
-    project: { type: "str", required: true },
-    status: { type: "enum", required: true, enum: STATUS_ENUM },
-    produced_by: { type: "str", required: true },
-    consumes: { type: "str[]", required: true },
-    supersedes: { type: "str", required: true, nullable: true },
-    approved_by: { type: "str", required: true, nullable: true },
+    kind: { type: "str", required: true, description: "The artifact kind (e.g. spec, review) — which work-unit-type step this satisfies." },
+    id: { type: "str", required: true, description: "This artifact's identifier, unique within its unit." },
+    unit: { type: "str", required: true, description: "The work unit this artifact belongs to." },
+    project: { type: "str", required: true, description: "The project this artifact belongs to." },
+    status: {
+      type: "enum",
+      required: true,
+      enum: STATUS_ENUM,
+      description: "Where this artifact stands in review (§6): draft, in-review, approved, rejected, superseded, blocked, or skipped.",
+    },
+    produced_by: { type: "str", required: true, description: "The member (agent) that produced this artifact." },
+    consumes: { type: "str[]", required: true, description: "Other artifacts this one was produced from." },
+    supersedes: { type: "str", required: true, nullable: true, description: "The artifact id this one replaces, or null if it supersedes nothing." },
+    approved_by: { type: "str", required: true, nullable: true, description: "Who approved this artifact at its gate, or null if not yet approved." },
     // A7: the commit whose content the Conductor approved — recorded at gate resolution so the
     // immutability check can diff against that ref rather than HEAD, closing the committed-mutation
     // gap. Optional/nullable: pre-A7 artifacts carry none and fall back to the HEAD diff.
-    approved_commit: { type: "str", required: false, nullable: true },
-    created: { type: "date", required: true },
-    files: { type: "str[]", required: true },
+    approved_commit: {
+      type: "str",
+      required: false,
+      nullable: true,
+      description: "The commit whose content was approved at gate resolution, so the immutability check can diff against that ref rather than HEAD. Absent on pre-A7 artifacts, which fall back to the HEAD diff.",
+    },
+    created: { type: "date", required: true, description: "The date this artifact was created." },
+    files: { type: "str[]", required: true, description: "Paths to the files that make up this artifact." },
     usage: {
       type: "map",
       required: false,
       nullable: true,
+      description: "Cost/usage receipt for the member run that produced this artifact.",
       fields: {
-        model: { type: "str", nullable: true },
-        tokens_in: { type: "num", nullable: true },
-        tokens_out: { type: "num", nullable: true },
-        usd: { type: "num", nullable: true },
-        wall_clock_s: { type: "num", nullable: true },
+        model: { type: "str", nullable: true, description: "The model used, or null if not reported." },
+        tokens_in: { type: "num", nullable: true, description: "Input tokens reported, or null if unreported." },
+        tokens_out: { type: "num", nullable: true, description: "Output tokens reported, or null if unreported." },
+        usd: { type: "num", nullable: true, description: "Estimated USD cost, or null if unreported or not applicable (e.g. a subscription-authenticated member — see plan below)." },
+        wall_clock_s: { type: "num", nullable: true, description: "Wall-clock seconds the run took, or null if not timed." },
         // NOTES C13: set only when the member's receipt came from an auth: subscription connector —
         // names the plan covering the cost, since usd above is always null for these.
-        plan: { type: "str", required: false, nullable: true },
+        plan: {
+          type: "str",
+          required: false,
+          nullable: true,
+          description: "The subscription plan covering the cost, set only when the member's receipt came from an auth: subscription connector — usd above is always null for these.",
+        },
       },
     },
     // NOTES CAP-A: reserved for kind: proposal — validateProposalArtifact below enforces presence/
     // shape/cross-entity checks conditionally on kind, the same "shape-only here, semantics below"
     // split validateConnectorAuth already uses for auth/env.
-    connector: { type: "str", required: false, nullable: true },
-    action: { type: "str", required: false, nullable: true },
-    params: { type: "str-map", required: false, nullable: true },
+    connector: { type: "str", required: false, nullable: true, description: "Reserved for kind: proposal — the connector this proposal targets." },
+    action: { type: "str", required: false, nullable: true, description: "Reserved for kind: proposal — one of the target connector's declared actions." },
+    params: { type: "str-map", required: false, nullable: true, description: "Reserved for kind: proposal — params covering every placeholder in the action's argv template." },
     execution: {
       type: "map",
       required: false,
       nullable: true,
+      description: "Reserved for kind: proposal — the on-approval execution record, set by levare itself on gate approval, never authored by a member.",
       fields: {
-        executed_at: { type: "str", required: true },
-        status: { type: "enum", required: true, enum: ["ok", "failed", "skipped"] },
-        exit: { type: "num", required: false, nullable: true },
-        output_digest: { type: "str", required: false, nullable: true },
-        warning: { type: "str", required: false, nullable: true },
+        executed_at: { type: "str", required: true, description: "When this execution ran." },
+        status: {
+          type: "enum",
+          required: true,
+          enum: ["ok", "failed", "skipped"],
+          description: "ok (ran successfully), failed (a real non-zero-exit or timed-out execution), or skipped (the honest mcp-not-implemented case — never pretend a call happened).",
+        },
+        exit: { type: "num", required: false, nullable: true, description: "The process exit code, or null if not applicable." },
+        output_digest: {
+          type: "str",
+          required: false,
+          nullable: true,
+          description: "A hash of stdout+stderr, not the raw bytes — never grows a commit unbounded and never risks echoing a secret the connector's output happened to include.",
+        },
+        warning: { type: "str", required: false, nullable: true, description: "A human-readable warning about the execution, or null." },
       },
     },
     // NOTES MERGE-1 (PRD Amendment 2, M1/M2): reserved for `kind: merge` — the trial-merge report a
@@ -156,18 +194,28 @@ export const ARTIFACT_SCHEMA: Schema = {
       type: "map",
       required: false,
       nullable: true,
+      description: "Reserved for kind: merge — the trial-merge report, written by levare when the gate opens and rewritten in place by the recheck verb.",
       fields: {
-        branch: { type: "str", required: true },
-        target: { type: "str", required: true },
-        commits_ahead: { type: "num", required: true },
-        diffstat: { type: "str", required: true },
-        conflicted: { type: "bool", required: true },
-        conflicts: { type: "str[]", required: true },
-        guardrail_violations: { type: "str[]", required: true },
+        branch: { type: "str", required: true, description: "The work branch being merged." },
+        target: { type: "str", required: true, description: "The branch it merges into." },
+        commits_ahead: { type: "num", required: true, description: "How many commits the work branch is ahead of target." },
+        diffstat: { type: "str", required: true, description: "A summary of the diff between branch and target." },
+        conflicted: { type: "bool", required: true, description: "Whether the trial merge found conflicts — true makes the gate unapprovable until resolved." },
+        conflicts: { type: "str[]", required: true, description: "The files with conflicts, when conflicted is true." },
+        guardrail_violations: {
+          type: "str[]",
+          required: true,
+          description: "Guardrail violations this diff triggered at gate-open time — advisory here; the binding check re-runs against the diff at execution time.",
+        },
         // NOTES SEC-V11 F2: the exact work-branch SHA this trial evaluated — optional (a hand-built
         // pre-F2 merge artifact, or a trial that errored before resolving the branch, carries none) so
         // this stays additive, never a breaking schema change for existing on-disk artifacts.
-        branch_sha: { type: "str", required: false, nullable: true },
+        branch_sha: {
+          type: "str",
+          required: false,
+          nullable: true,
+          description: "The exact work-branch SHA this trial evaluated — verified unchanged before the merge lands. Absent on pre-F2 artifacts or a trial that errored before resolving the branch.",
+        },
       },
     },
     // NOTES MERGE-1 (M4/M5): reserved for `kind: merge` — set by levare only once a merge gate's
@@ -176,59 +224,91 @@ export const ARTIFACT_SCHEMA: Schema = {
       type: "map",
       required: false,
       nullable: true,
+      description: "Reserved for kind: merge — set by levare only once a merge gate's approval actually executed a clean merge (and, where declared, a successful push). A failed merge writes nothing here at all.",
       fields: {
-        executed_at: { type: "str", required: true },
-        merge_commit: { type: "str", required: true },
-        pushed: { type: "bool", required: true, nullable: true },
+        executed_at: { type: "str", required: true, description: "When the merge executed." },
+        merge_commit: { type: "str", required: true, description: "The resulting merge commit SHA." },
+        pushed: { type: "bool", required: true, nullable: true, description: "Whether the merge also landed on the project's remote — null when the project declares no remote:." },
       },
     },
     // NOTES R4-SANDBOX (v2, Ruling 2): the OS-sandbox enforcement level a `kind: cli` member's spawn
     // actually ran under, when it produced this artifact — independent of `usage`/`unreported` (see
     // adapters.ts#author). Absent for native/remote (never wrapped) and for any artifact predating this
     // ruling.
-    sandbox: { type: "enum", required: false, nullable: true, enum: ["full", "fs-only", "none"] },
+    sandbox: {
+      type: "enum",
+      required: false,
+      nullable: true,
+      enum: ["full", "fs-only", "none"],
+      description: "The OS-level sandbox a kind: cli (or fully-implemented kind: remote) member's spawn actually ran under: full (filesystem and network confined), fs-only (filesystem-only fallback), or none (no working primitive found — the spawn ran unconfined). Absent for native members and pre-this-ruling artifacts.",
+    },
   },
 };
 
 export const WORK_UNIT_SCHEMA: Schema = {
   name: "work-unit",
   fields: {
-    type: { type: "enum", required: true, enum: ["inception", "feature", "fix", "spike", "research"] },
-    status: { type: "enum", required: true, enum: ["active", "paused", "blocked", "shipped", "abandoned"] },
-    project: { type: "str", required: false },
-    unit: { type: "str", required: false },
-    after: { type: "str[]", required: false },
+    type: {
+      type: "enum",
+      required: true,
+      enum: ["inception", "feature", "fix", "spike", "research"],
+      description: "The work-unit type template this unit follows — what it's expected to produce and where it gates.",
+    },
+    status: {
+      type: "enum",
+      required: true,
+      enum: ["active", "paused", "blocked", "shipped", "abandoned"],
+      description: "Where this unit stands: active, paused, blocked, shipped, or abandoned.",
+    },
+    project: { type: "str", required: false, description: "The project this unit belongs to." },
+    unit: { type: "str", required: false, description: "This unit's own identifier." },
+    after: { type: "str[]", required: false, description: "Start-gate condition — this unit is invisible to the walk until every named condition is met." },
     // Ruling C12/F10 defect 2: disambiguates which team is responsible when more than one team in the
     // studio produces a kind this unit's type expects — see validateResponsibleTeam below.
-    team: { type: "str", required: false },
-    timebox: { type: "str", required: false, nullable: true },
-    budget: { type: "num", required: false, nullable: true },
+    team: {
+      type: "str",
+      required: false,
+      description: "Explicit team override — required when more than one team in the studio could produce a kind this unit's type expects, so levare never has to guess which is responsible.",
+    },
+    timebox: { type: "str", required: false, nullable: true, description: "Spike/timebox duration, Runner-enforced." },
+    budget: { type: "num", required: false, nullable: true, description: "USD budget — crossing the ledger sum raises a budget gate." },
     // Why a `blocked` unit is blocked (NOTES F1) — e.g. an unbindable flow step. Recorded on disk so
     // the block is visible and explains itself, never a unit that silently does nothing.
-    blocked_reason: { type: "str", required: false, nullable: true },
+    blocked_reason: {
+      type: "str",
+      required: false,
+      nullable: true,
+      description: "Why this unit is blocked, when status is blocked — written by the walk when it cannot bind a flow step to a member, so the block explains itself instead of silently doing nothing.",
+    },
   },
 };
 
 const TEAM_SCHEMA: Schema = {
   name: "team",
   fields: {
-    name: { type: "str", required: true },
-    consumes: { type: "str[]", required: true },
-    produces: { type: "str[]", required: true },
-    members: { type: "str[]", required: true },
-    flow: { type: "flow", required: true },
-    style: { type: "map", required: true, fields: { color: { type: "str", required: true } } },
+    name: { type: "str", required: true, description: "The team's name." },
+    consumes: { type: "str[]", required: true, description: "Artifact kinds this team consumes as input." },
+    produces: { type: "str[]", required: true, description: "Artifact kinds this team can produce." },
+    members: { type: "str[]", required: true, description: "The agents (members) that belong to this team." },
+    flow: { type: "flow", required: true, description: "The declarative sequence of step/gate/loop entries the Runner executes." },
+    style: {
+      type: "map",
+      required: true,
+      description: "Display settings for this team.",
+      fields: { color: { type: "str", required: true, description: "The team's display color." } },
+    },
     guardrails: {
       type: "map",
       required: false,
+      description: "Guardrails constraining this team's diffs and branches.",
       fields: {
-        protected_paths: { type: "str[]" },
-        protected_branches: { type: "str[]" },
-        never: { type: "str[]" },
+        protected_paths: { type: "str[]", description: "File paths (matched against diff contents) this team must never touch — a different namespace from protected_branches, never cross-matched." },
+        protected_branches: { type: "str[]", description: "Branch refs this team must never touch — a different namespace from protected_paths, never cross-matched." },
+        never: { type: "str[]", description: "Actions this team must never take." },
       },
     },
-    knowledge: { type: "str[]", required: false },
-    connectors: { type: "str[]", required: false },
+    knowledge: { type: "str[]", required: false, description: "Knowledge documents (by name) injected into every member's context." },
+    connectors: { type: "str[]", required: false, description: "Connector grants — the Runner injects each named connector's env into this team's members." },
   },
   // `mode:` (the `mode: led` escape hatch) was cut in PRD v1.1 (invariant 7 restated: exactly one LLM
   // orchestrator, declarative `flow` executed by the Runner, no escape hatch). A team still declaring
@@ -241,134 +321,235 @@ const TEAM_SCHEMA: Schema = {
 const AGENT_SCHEMA: Schema = {
   name: "agent",
   fields: {
-    name: { type: "str", required: true },
-    kind: { type: "enum", required: true, enum: ["native", "cli", "remote"] },
+    name: { type: "str", required: true, description: "The member's name." },
+    kind: {
+      type: "enum",
+      required: true,
+      enum: ["native", "cli", "remote"],
+      description: "How this member is invoked: native (the built-in Claude Agent SDK), cli (a wrapped vendor CLI), or remote (an MCP tool call).",
+    },
     // The kinds this member can produce — the studio's capability declaration (NOTES F1). Required:
     // a member that declares nothing it produces can bind to no flow step, so no team it belongs to
     // can run. This is the field whose absence made every real studio structurally unrunnable.
-    produces: { type: "str[]", required: true },
+    produces: {
+      type: "str[]",
+      required: true,
+      description: "The artifact kinds this member can produce — the studio's capability declaration. A member that produces nothing can bind to no flow step, so no team it belongs to can run.",
+    },
     // native
-    model: { type: "str", required: false },
-    skills: { type: "str[]", required: false },
-    tools: { type: "str[]", required: false },
-    knowledge: { type: "str[]", required: false },
+    model: {
+      type: "str",
+      required: false,
+      description: "native: the model this member uses. cli: also settable, but only reaches the vendor if command includes a {model} placeholder.",
+    },
+    skills: { type: "str[]", required: false, description: "native: reusable instruction sets (by name) included in this member's context." },
+    tools: {
+      type: "str[]",
+      required: false,
+      description: "native: the SDK-level tool allowlist for this member, validated against the Claude Agent SDK's own tool vocabulary — see SDK_TOOL_NAMES below. Distinct from remote's singular tool: this is a set of SDK tool names, not an MCP tool choice.",
+      vocabulary: SDK_TOOL_NAMES,
+    },
+    knowledge: { type: "str[]", required: false, description: "Knowledge documents (by name) injected into this member's context." },
     // cli — argv template as a structured array; each element is one argv slot (§5, no shell split).
-    command: { type: "str[]", required: false },
+    command: {
+      type: "str[]",
+      required: false,
+      description: "cli: the argv template as a structured array — each element is exactly one argv slot; a {placeholder} substitutes in place, never a shell string to split.",
+    },
     // How a cli member receives its assembled context (NOTES F7): `{task}` substitution (default) or
     // the child's stdin. Ignored for native/remote.
-    context_via: { type: "enum", required: false, enum: ["arg", "stdin"] },
+    context_via: {
+      type: "enum",
+      required: false,
+      enum: ["arg", "stdin"],
+      description: "cli: how this member receives its assembled context — arg (default, substitutes {task} in the command template) or stdin (the full context is written to the child's stdin instead). Ignored for native/remote.",
+    },
     // How this member receives consumed artifacts (§6 recipe item 7, ruling C9): `paths` (default,
     // unchanged behaviour) or `inline` (full text) — see validateAgentContextScope below for the
     // corresponding cwd-outside-studio definition error.
-    context_artifacts: { type: "enum", required: false, enum: ["paths", "inline"] },
-    cwd: { type: "str", required: false },
-    timeout: { type: "num", required: false },
-    result: { type: "str", required: false },
+    context_artifacts: {
+      type: "enum",
+      required: false,
+      enum: ["paths", "inline"],
+      description: "How this member receives consumed artifacts: paths (default — root-relative paths only, for a member with filesystem access to the studio) or inline (the full text of every consumed artifact, for a member that cannot reach the studio filesystem).",
+    },
+    cwd: { type: "str", required: false, description: "cli: the working directory this member's process spawns in." },
+    timeout: { type: "num", required: false, description: "cli: the spawn timeout, in seconds." },
+    result: { type: "str", required: false, description: "cli: required for kind: cli — how the member's result is read back." },
     // remote
-    server: { type: "str", required: false },
+    server: { type: "str", required: false, description: "remote: the kind: mcp connector (by name) this member calls." },
     // NOTES MCP-1B: which MCP tool this member calls, and its tools/call arguments template
     // ({task}-substituted at dispatch — see adapters.ts#createAsyncStdioRemoteBoundary).
-    tool: { type: "str", required: false },
-    params: { type: "str-map", required: false, nullable: true },
+    tool: {
+      type: "str",
+      required: false,
+      description: "remote: the singular MCP tool this member invokes on server's connector via tools/call — the member's declared intent → server-call mapping. Distinct from native's tools: this names one chosen MCP tool, not an SDK vocabulary allowlist.",
+    },
+    params: {
+      type: "str-map",
+      required: false,
+      nullable: true,
+      description: "remote: the static tools/call arguments template — each value substitutes {task} with the assembled context.",
+    },
     // env scoping (§6): connectors granted to this agent, unioned with its team's grants.
-    connectors: { type: "str[]", required: false },
-    style: { type: "map", required: true, fields: { avatar: { type: "str", required: true } } },
+    connectors: { type: "str[]", required: false, description: "Per-agent connector grants, unioned with the team's grants for env scoping." },
+    style: {
+      type: "map",
+      required: true,
+      description: "Display settings for this member.",
+      fields: { avatar: { type: "str", required: true, description: "The member's display avatar." } },
+    },
   },
 };
 
 const TYPE_SCHEMA: Schema = {
   name: "type",
   fields: {
-    name: { type: "str", required: true },
-    glyph: { type: "str", required: true },
-    expects: { type: "str[]", required: true },
-    gates: { type: "str[]", required: true },
-    output: { type: "str", required: false },
-    timebox: { type: "str", required: false, nullable: true },
-    promotable_to: { type: "str", required: false, nullable: true },
+    name: { type: "str", required: true, description: "The work-unit type's name." },
+    glyph: { type: "str", required: true, description: "A short display glyph for this type." },
+    expects: { type: "str[]", required: true, description: "Artifact kinds a unit of this type is expected to produce." },
+    gates: { type: "str[]", required: true, description: "Where this type gates in the flow." },
+    output: { type: "str", required: false, description: "A human-readable description of this type's expected output." },
+    timebox: { type: "str", required: false, nullable: true, description: "Spike/timebox duration for units of this type, Runner-enforced." },
+    promotable_to: {
+      type: "str",
+      required: false,
+      nullable: true,
+      description: "The knowledge kind a research report of this type promotes to through a gate.",
+    },
   },
 };
 
 const PROJECT_SCHEMA: Schema = {
   name: "project",
   fields: {
-    name: { type: "str", required: true },
-    repo: { type: "str", required: true },
-    remote: { type: "str", required: true, nullable: true },
-    default_branch: { type: "str", required: true },
-    deploy: { type: "str", required: true, nullable: true },
-    pace: { type: "enum", required: true, enum: ["auto", "step"] },
-    overrides: { type: "map", required: false },
+    name: { type: "str", required: true, description: "The project's name." },
+    repo: { type: "str", required: true, description: "Path to the project's product repo." },
+    remote: { type: "str", required: true, nullable: true, description: "The git remote to push merges to, or null if this project declares none." },
+    default_branch: { type: "str", required: true, description: "The branch merges land on." },
+    deploy: { type: "str", required: true, nullable: true, description: "How this project deploys, or null if undeclared." },
+    pace: {
+      type: "enum",
+      required: true,
+      enum: ["auto", "step"],
+      description: "auto (the daemon advances the score by itself between gates) or step (advances only on explicit Conductor action).",
+    },
+    overrides: { type: "map", required: false, description: "One-level merge over team defaults, scoped to this project." },
   },
 };
 
 const CONNECTOR_SCHEMA: Schema = {
   name: "connector",
   fields: {
-    name: { type: "str", required: true },
-    kind: { type: "enum", required: true, enum: ["mcp", "cli"] },
-    server: { type: "str", required: false },
-    command: { type: "str", required: false },
+    name: { type: "str", required: true, description: "The connector's name." },
+    kind: {
+      type: "enum",
+      required: true,
+      enum: ["mcp", "cli"],
+      description: "The transport: mcp (a Model Context Protocol server) or cli (a wrapped command).",
+    },
+    server: { type: "str", required: false, description: "mcp: the server identifier." },
+    command: { type: "str", required: false, description: "cli: the command this connector wraps." },
     // NOTES MCP-1B (PRD Amendment 3, ruling R1): the real stdio spawn argv for a kind: mcp connector —
     // see Connector.argv's own doc (types.ts). Absent/empty is a legal, still-honest declaration (an
     // HTTP/SSE server, or simply not configured yet); env.ts#remoteAgentImplemented is where that gets
     // narrowed into a warning for any remote agent that actually references this connector.
-    argv: { type: "str[]", required: false },
+    argv: {
+      type: "str[]",
+      required: false,
+      description: "mcp: the real stdio spawn command, argv only, never a shell string. Absent/empty means this connector has no working stdio path yet — an HTTP/SSE server, or simply not configured.",
+    },
     // Required-ness of `env` is auth-mode-dependent (NOTES C13) — enforced by validateConnectorAuth
     // below, not by this shape-only schema, since "required" here would reject a bare-absent `env:`
     // on an `auth: subscription` connector even though that's the correct shape for one.
-    env: { type: "str[]", required: false },
-    scope: { type: "str", required: false },
+    env: {
+      type: "str[]",
+      required: false,
+      description: "The env var NAMES a granted member receives — values never live in the repo. Required for auth: env connectors; must be empty for auth: subscription connectors.",
+    },
+    scope: { type: "str", required: false, description: "The scope this connector's credential is limited to." },
     // NOTES C13: how this connector's backend authenticates. Defaults to "env" when absent — the
     // original, unchanged behaviour.
-    auth: { type: "enum", required: false, enum: ["env", "subscription"] },
-    plan: { type: "str", required: false },
+    auth: {
+      type: "enum",
+      required: false,
+      enum: ["env", "subscription"],
+      description: "How this connector's backend authenticates: env (default — levare's allowlist injects exactly the named vars, and that grant IS the enforcement) or subscription (the backend authenticates from its own stored credentials, e.g. `codex login`; env must be empty).",
+    },
+    plan: {
+      type: "str",
+      required: false,
+      description: "Human-readable note on the subscription plan in use — required in practice for auth: subscription connectors, so receipts and doctor can name what's covering the cost.",
+    },
     // NOTES C15: this connector's FUNCTION — model access vs. tool/service access — distinct from
     // `kind` (the transport) and never confused with `type` (reserved for domain templates). Defaults
     // to "tool" when absent, the common case.
-    role: { type: "enum", required: false, enum: ["model", "tool"] },
+    role: {
+      type: "enum",
+      required: false,
+      enum: ["model", "tool"],
+      description: "This connector's function: model (grants model access, e.g. codex) or tool (default — grants tool/service capabilities, e.g. github, linear). Distinct from kind (the transport).",
+    },
     // NOTES CAP-A: whether a grant lets a member merely read through this connector (default) or
     // write through it — a write connector's env is withheld from members (env.ts), never injected.
-    effects: { type: "enum", required: false, enum: ["read", "write"] },
+    effects: {
+      type: "enum",
+      required: false,
+      enum: ["read", "write"],
+      description: "Whether a grant lets a member merely read through this connector (default) or write through it — a side-effecting action against the outside world. A write connector's env is withheld from members; only levare's own execution step (on gate approval) reads it.",
+    },
     // NOTES CAP-A: only meaningful when effects: write — validateConnectorEffects below rejects it on
     // an effects: read connector rather than silently ignoring it.
-    gate: { type: "enum", required: false, enum: ["proposal", "trusted"] },
+    gate: {
+      type: "enum",
+      required: false,
+      enum: ["proposal", "trusted"],
+      description: "Only meaningful when effects: write. proposal (default) — the grant is 'may draft a proposal', never 'holds the credential'. trusted — the declared, visible opt-out that injects exactly as an effects: read connector always has.",
+    },
     // NOTES CAP-A: action name → argv template, declared here so a member can never supply raw argv —
     // required (non-empty) for an effects: write connector, enforced by validateConnectorEffects below
     // (required-ness here would reject an absent `actions:` on a perfectly valid effects: read
     // connector, the same reasoning `env`'s own required-ness is auth-mode-conditional, not schema-fixed).
-    actions: { type: "action-map", required: false },
+    actions: {
+      type: "action-map",
+      required: false,
+      description: "Required (non-empty) for effects: write connectors — the declared action vocabulary: action name → argv template array with {placeholder} slots. A member proposing against this connector names an action and fills placeholders with params:, never raw argv.",
+    },
     // NOTES CAP-B / NOTES MCP-1C: dotpaths under $HOME this connector's backend needs (e.g. [".codex"],
     // or [".npm"] for an MCP server) — originally auth: subscription only, generalized by ruling R3 to
     // any kind: mcp connector's own declared reach; see env.ts#scopeHomeForConnector and Connector.home's
     // own doc (types.ts).
-    home: { type: "str[]", required: false },
+    home: {
+      type: "str[]",
+      required: false,
+      description: "Dotpaths under $HOME this connector's own backend actually needs (e.g. [\".codex\"]) — the one, auditable, per-connector way to declare a real-HOME path a spawned process needs, symlinked into a scratch $HOME rather than left unscoped.",
+    },
   },
 };
 
 const KNOWLEDGE_SCHEMA: Schema = {
   name: "knowledge",
   fields: {
-    name: { type: "str", required: true },
-    tags: { type: "str[]", required: false },
+    name: { type: "str", required: true, description: "The knowledge document's name, referenced by name from an agent's or team's knowledge: list." },
+    tags: { type: "str[]", required: false, description: "Tags for organizing/filtering knowledge documents." },
   },
 };
 
 const EVAL_SCHEMA: Schema = {
   name: "eval",
   fields: {
-    name: { type: "str", required: true },
-    unit: { type: "str", required: false },
-    rubric: { type: "str[]", required: false },
+    name: { type: "str", required: true, description: "The eval's name." },
+    unit: { type: "str", required: false, description: "The work-unit type this eval scores." },
+    rubric: { type: "str[]", required: false, description: "The scoring rubric's criteria." },
   },
 };
 
 const SKILL_SCHEMA: Schema = {
   name: "skill",
   fields: {
-    name: { type: "str", required: true },
-    description: { type: "str", required: false },
-    scripts: { type: "str[]", required: false },
+    name: { type: "str", required: true, description: "The skill's name, referenced by name from an agent's or team's skills: list." },
+    description: { type: "str", required: false, description: "A human-readable summary of what this skill does." },
+    scripts: { type: "str[]", required: false, description: "Scripts this skill bundles." },
   },
 };
 
@@ -379,16 +560,20 @@ const SKILL_SCHEMA: Schema = {
 export const STUDIO_SCHEMA: Schema = {
   name: "studio",
   fields: {
-    orchestrator_model: { type: "str", required: false },
+    orchestrator_model: {
+      type: "str",
+      required: false,
+      description: "The Orchestrator's declared model — the registry field that replaces LEVARE_ORCHESTRATOR_MODEL as the source of truth (the env var remains a runtime override).",
+    },
   },
 };
 
 const IDEA_SCHEMA: Schema = {
   name: "idea",
   fields: {
-    name: { type: "str", required: true },
-    pitch: { type: "str", required: false },
-    tags: { type: "str[]", required: false },
+    name: { type: "str", required: true, description: "The idea's name." },
+    pitch: { type: "str", required: false, description: "The one-sentence pitch — used on promotion to a project." },
+    tags: { type: "str[]", required: false, description: "Tags for organizing/filtering ideas." },
   },
 };
 

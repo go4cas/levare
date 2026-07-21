@@ -4,10 +4,15 @@
 // src/validate.ts). Run via `bun run docs:generate`.
 //
 // Single source of truth: everything in a cheatsheet's field table and skeleton is computed from the
-// schema. The only hand-authored content is the two one-line maps below (DESCRIPTIONS, BODY_PURPOSE) —
-// exactly what the schema cannot express (editorial prose). tests/cheatsheets.test.ts asserts the
-// committed files are byte-identical to a fresh regeneration (drift) and that every generated skeleton
-// actually passes the real validator in a scratch studio (NOTES DOCS1).
+// schema — including each row's Description (FieldSpec.description) and any surfaced vocabulary
+// (FieldSpec.vocabulary, e.g. agent `tools:` against SDK_TOOL_NAMES), both sourced from the schema's
+// own doc comments in src/validate.ts/src/types.ts, never invented here. The only hand-authored
+// content is the two one-line maps below (DESCRIPTIONS, BODY_PURPOSE) — exactly what the schema cannot
+// express (editorial prose). Nav front-matter (title/parent/grand_parent/has_children/nav_order, for
+// just-the-docs' sidebar) is likewise computed here, never hand-added to a generated file.
+// tests/cheatsheets.test.ts asserts the committed files are byte-identical to a fresh regeneration
+// (drift) and that every generated skeleton actually passes the real validator in a scratch studio
+// (NOTES DOCS1).
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -164,16 +169,46 @@ function flattenFields(fields: Record<string, FieldSpec>, prefix = ""): Row[] {
   return rows;
 }
 
+// A field's Description cell must never be empty (FieldSpec.description is a required TypeScript
+// field precisely so this can't happen) — but a description written for a table cell must also never
+// contain a literal `|`, which would silently break the row. Caught here, loudly, rather than shipping
+// a mangled table.
+function tableCell(text: string, field: string): string {
+  if (text.includes("|")) throw new Error(`generate-cheatsheets: description for '${field}' contains '|', which breaks a markdown table cell`);
+  return text;
+}
+
+function enumCell(spec: FieldSpec): string {
+  if (spec.enum) return spec.enum.map((v) => `\`${v}\``).join(" · ");
+  if (spec.vocabulary) return `*(${spec.vocabulary.length} known values — see below)*`;
+  return "—";
+}
+
 function fieldTable(schema: Schema): string {
   const rows = flattenFields(schema.fields);
-  const lines = ["| Field | Type | Required | Nullable | Enum values |", "|---|---|---|---|---|"];
+  const lines = ["| Field | Type | Required | Nullable | Enum values | Description |", "|---|---|---|---|---|---|"];
   for (const { field, spec } of rows) {
     const required = spec.required ? "✅" : "—";
     const nullable = spec.nullable ? "✅" : "—";
-    const enumValues = spec.enum ? spec.enum.map((v) => `\`${v}\``).join(" · ") : "—";
-    lines.push(`| \`${field}\` | ${humanType(spec)} | ${required} | ${nullable} | ${enumValues} |`);
+    lines.push(`| \`${field}\` | ${humanType(spec)} | ${required} | ${nullable} | ${enumCell(spec)} | ${tableCell(spec.description, field)} |`);
   }
   return lines.join("\n");
+}
+
+// A field whose legal values are a fixed, validated vocabulary that isn't expressible as this
+// schema's own `enum` type (agent `tools:` against SDK_TOOL_NAMES today — a str[] checked element-wise
+// by validateAgentTools, not a scalar enum) gets its vocabulary spelled out here instead of leaving a
+// studio author to discover it from an UNKNOWN_TOOL error. Collapsed (`<details>`) since a vocabulary
+// can run to dozens of names — `markdown="block"` is kramdown's own opt-in for parsing markdown
+// (the backtick code spans) inside a raw HTML block, which it otherwise leaves as literal text.
+function vocabularySections(schema: Schema): string {
+  const rows = flattenFields(schema.fields).filter((r) => r.spec.vocabulary && r.spec.vocabulary.length > 0);
+  if (rows.length === 0) return "";
+  const sections = rows.map(({ field, spec }) => {
+    const values = spec.vocabulary!.map((v) => `\`${v}\``).join(" · ");
+    return `<details markdown="block">\n<summary><code>${field}</code> — ${spec.vocabulary!.length} valid values</summary>\n\n${values}\n\n</details>`;
+  });
+  return "\n" + sections.join("\n\n") + "\n";
 }
 
 function removedFieldsSection(schema: Schema): string {
@@ -355,21 +390,37 @@ function titleCase(schemaName: string): string {
     .join(" ");
 }
 
-export function renderCheatsheet(entity: EntityDef, skeleton: Record<string, YamlValue>): string {
+// just-the-docs nav wiring for a per-entity cheatsheet page (PART 1 of the goal: cheatsheets are
+// GENERATOR OUTPUT, so their nav front-matter — same as their Description column and surfaced
+// vocabulary — is computed here, never hand-added). Nests two deep: grand_parent: Reference,
+// parent: Cheatsheets. `navOrder` is the entity's 1-based position in ENTITIES, the same order the
+// index below links them in, so the sidebar and the index page can never disagree about ordering.
+function navFrontMatter(entity: EntityDef, navOrder: number): string {
+  return `---
+title: ${titleCase(entity.schema.name)}
+parent: Cheatsheets
+grand_parent: Reference
+nav_order: ${navOrder}
+---
+
+`;
+}
+
+export function renderCheatsheet(entity: EntityDef, skeleton: Record<string, YamlValue>, navOrder: number): string {
   const { schema } = entity;
   const description = DESCRIPTIONS[schema.name];
   const bodyPurpose = BODY_PURPOSE[schema.name];
   if (description === undefined) throw new Error(`generate-cheatsheets: no DESCRIPTIONS entry for schema '${schema.name}'`);
   if (bodyPurpose === undefined) throw new Error(`generate-cheatsheets: no BODY_PURPOSE entry for schema '${schema.name}'`);
 
-  return `# ${titleCase(schema.name)} — \`${entity.pathHint}\`
+  return `${navFrontMatter(entity, navOrder)}# ${titleCase(schema.name)} — \`${entity.pathHint}\`
 
 ${description}
 
 ## Fields
 
 ${fieldTable(schema)}
-${removedFieldsSection(schema)}
+${vocabularySections(schema)}${removedFieldsSection(schema)}
 ## Minimal valid skeleton
 
 \`\`\`markdown
@@ -394,6 +445,13 @@ Do not edit by hand — run \`bun run docs:generate\`.
 
 export const INDEX_FILENAME = "README.md";
 
+// The index page's position among its just-the-docs siblings under docs/guide/05-reference/ — those
+// pages are hand-authored (01-artifact-contract, 02-registry-entities, 03-cli, 04-constitution) and so
+// carry their own nav_order outside this script's domain; this generator only needs to keep its own
+// page's slot (3, between "registry entities" and "the CLI" — matching where 05-reference/README.md's
+// own table already links it) consistent with them.
+const CHEATSHEETS_NAV_ORDER = 3;
+
 export function renderIndex(entities: EntityDef[]): string {
   const rows = entities.map((entity) => {
     const { schema } = entity;
@@ -402,7 +460,14 @@ export function renderIndex(entities: EntityDef[]): string {
     return `| [${titleCase(schema.name)}](${schema.name}.md) | ${description} |`;
   });
 
-  return `# Cheatsheets
+  return `---
+title: Cheatsheets
+parent: Reference
+nav_order: ${CHEATSHEETS_NAV_ORDER}
+has_children: true
+---
+
+# Cheatsheets
 
 One generated page per registry entity, plus the artifact contract and the work-unit shape: a field
 table, enum values, and a copy-pasteable skeleton that actually validates — computed straight from the
@@ -426,10 +491,10 @@ export function generateAll(): Map<string, string> {
   const scratchRoot = mkdtempSync(join(tmpdir(), "levare-cheatsheets-"));
   try {
     const out = new Map<string, string>();
-    for (const entity of ENTITIES) {
+    ENTITIES.forEach((entity, i) => {
       const skeleton = healSkeleton(entity, scratchRoot);
-      out.set(`${entity.schema.name}.md`, renderCheatsheet(entity, skeleton));
-    }
+      out.set(`${entity.schema.name}.md`, renderCheatsheet(entity, skeleton, i + 1));
+    });
     out.set(INDEX_FILENAME, renderIndex(ENTITIES));
     return out;
   } finally {

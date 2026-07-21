@@ -1,24 +1,31 @@
+---
+title: Team
+parent: Cheatsheets
+grand_parent: Reference
+nav_order: 1
+---
+
 # Team — `teams/<name>.md`
 
 A group with a job — what it consumes, what it produces, its members, and its flow.
 
 ## Fields
 
-| Field | Type | Required | Nullable | Enum values |
-|---|---|---|---|---|
-| `name` | string | ✅ | — | — |
-| `consumes` | string[] | ✅ | — | — |
-| `produces` | string[] | ✅ | — | — |
-| `members` | string[] | ✅ | — | — |
-| `flow` | flow list (`step` / `gate` / `loop` entries) | ✅ | — | — |
-| `style` | map | ✅ | — | — |
-| `style.color` | string | ✅ | — | — |
-| `guardrails` | map | — | — | — |
-| `guardrails.protected_paths` | string[] | — | — | — |
-| `guardrails.protected_branches` | string[] | — | — | — |
-| `guardrails.never` | string[] | — | — | — |
-| `knowledge` | string[] | — | — | — |
-| `connectors` | string[] | — | — | — |
+| Field | Type | Required | Nullable | Enum values | Description |
+|---|---|---|---|---|---|
+| `name` | string | ✅ | — | — | The team's name. |
+| `consumes` | string[] | ✅ | — | — | Artifact kinds this team consumes as input. |
+| `produces` | string[] | ✅ | — | — | Artifact kinds this team can produce. |
+| `members` | string[] | ✅ | — | — | The agents (members) that belong to this team. |
+| `flow` | flow list (`step` / `gate` / `loop` entries) | ✅ | — | — | The declarative sequence of step/gate/loop entries the Runner executes. |
+| `style` | map | ✅ | — | — | Display settings for this team. |
+| `style.color` | string | ✅ | — | — | The team's display color. |
+| `guardrails` | map | — | — | — | Guardrails constraining this team's diffs and branches. |
+| `guardrails.protected_paths` | string[] | — | — | — | File paths (matched against diff contents) this team must never touch — a different namespace from protected_branches, never cross-matched. |
+| `guardrails.protected_branches` | string[] | — | — | — | Branch refs this team must never touch — a different namespace from protected_paths, never cross-matched. |
+| `guardrails.never` | string[] | — | — | — | Actions this team must never take. |
+| `knowledge` | string[] | — | — | — | Knowledge documents (by name) injected into every member's context. |
+| `connectors` | string[] | — | — | — | Connector grants — the Runner injects each named connector's env into this team's members. |
 
 ### Removed fields
 

@@ -1,18 +1,25 @@
+---
+title: Project
+parent: Cheatsheets
+grand_parent: Reference
+nav_order: 4
+---
+
 # Project — `projects/<name>.md`
 
 A pointer at a product repo, and its constitution.
 
 ## Fields
 
-| Field | Type | Required | Nullable | Enum values |
-|---|---|---|---|---|
-| `name` | string | ✅ | — | — |
-| `repo` | string | ✅ | — | — |
-| `remote` | string | ✅ | ✅ | — |
-| `default_branch` | string | ✅ | — | — |
-| `deploy` | string | ✅ | ✅ | — |
-| `pace` | enum | ✅ | — | `auto` · `step` |
-| `overrides` | map | — | — | — |
+| Field | Type | Required | Nullable | Enum values | Description |
+|---|---|---|---|---|---|
+| `name` | string | ✅ | — | — | The project's name. |
+| `repo` | string | ✅ | — | — | Path to the project's product repo. |
+| `remote` | string | ✅ | ✅ | — | The git remote to push merges to, or null if this project declares none. |
+| `default_branch` | string | ✅ | — | — | The branch merges land on. |
+| `deploy` | string | ✅ | ✅ | — | How this project deploys, or null if undeclared. |
+| `pace` | enum | ✅ | — | `auto` · `step` | auto (the daemon advances the score by itself between gates) or step (advances only on explicit Conductor action). |
+| `overrides` | map | — | — | — | One-level merge over team defaults, scoped to this project. |
 
 ## Minimal valid skeleton
 

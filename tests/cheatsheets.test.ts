@@ -6,6 +6,11 @@
 //      naming exactly that.
 //   2. HONESTY: every generated skeleton, written into a real scratch studio, passes the REAL
 //      validator (validatePath) — a cheatsheet whose own example is invalid is worse than none.
+//
+// A third block below (NOTES DOCS2, part of the just-the-docs migration) covers the generator's two
+// newer responsibilities the byte-drift check already guards mechanically but doesn't name: emitting
+// just-the-docs nav front-matter for the cheatsheets folder (never hand-edited, same rule as the field
+// tables), and surfacing a field's Description/known-vocabulary in the field reference.
 
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
@@ -19,6 +24,7 @@ import {
   WORK_UNIT_SCHEMA,
   validatePath,
 } from "../src/validate.ts";
+import { SDK_TOOL_NAMES } from "../src/sdk-transport.ts";
 
 describe("cheatsheet generation", () => {
   test("committed cheatsheets are byte-identical to a fresh regeneration (no drift)", () => {
@@ -125,5 +131,74 @@ describe("cheatsheet skeletons validate for real", () => {
     expect(md).toContain("name: example");
     expect(md).toContain("tags: []");
     expect(md).toContain("nested: null");
+  });
+});
+
+// NOTES DOCS2 (just-the-docs migration): the cheatsheets folder nests under Reference in the sidebar
+// (grand_parent: Reference / parent: Cheatsheets for each entity page, parent: Reference / has_children
+// for the folder index) — asserted here on the FRESH regeneration, not the committed files, so this
+// suite still fails on the actual generator behavior even if someone breaks the drift check itself.
+describe("cheatsheet nav front-matter (just-the-docs)", () => {
+  test("the folder index declares itself a Reference child with children of its own", () => {
+    const fresh = generateAll();
+    const index = fresh.get(INDEX_FILENAME)!;
+    expect(index.startsWith("---\n")).toBe(true);
+    expect(index).toContain("\ntitle: Cheatsheets\n");
+    expect(index).toContain("\nparent: Reference\n");
+    expect(index).toContain("\nhas_children: true\n");
+  });
+
+  test("every entity page declares itself a Cheatsheets grandchild of Reference, with a distinct nav_order", () => {
+    const fresh = generateAll();
+    const navOrders = new Set<number>();
+    for (const [name, content] of fresh) {
+      if (name === INDEX_FILENAME) continue;
+      expect(content.startsWith("---\n")).toBe(true);
+      expect(content).toContain("\nparent: Cheatsheets\n");
+      expect(content).toContain("\ngrand_parent: Reference\n");
+      const m = content.match(/\nnav_order: (\d+)\n/);
+      expect(m).not.toBeNull();
+      const navOrder = Number(m![1]);
+      expect(navOrders.has(navOrder)).toBe(false); // every entity page gets its own slot
+      navOrders.add(navOrder);
+    }
+  });
+});
+
+describe("cheatsheet field reference (Description column, surfaced vocabulary)", () => {
+  test("every generated field table carries a non-empty Description column", () => {
+    const fresh = generateAll();
+    for (const [name, content] of fresh) {
+      if (name === INDEX_FILENAME) continue;
+      expect(content).toContain("| Field | Type | Required | Nullable | Enum values | Description |");
+      const rows = content.split("\n").filter((line) => line.startsWith("| `"));
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) {
+        const cells = row.split("|").map((c) => c.trim());
+        // cells: ["", field, type, required, nullable, enum, description, ""]
+        const description = cells[6];
+        expect(description, `${name}: row '${row}' has an empty Description cell`).not.toBe("");
+      }
+    }
+  });
+
+  test("agent.md surfaces the full SDK_TOOL_NAMES vocabulary for the tools field, not just an error message", () => {
+    const fresh = generateAll();
+    const agent = fresh.get("agent.md")!;
+    expect(agent).toContain(`${SDK_TOOL_NAMES.length} known values`);
+    expect(agent).toContain(`${SDK_TOOL_NAMES.length} valid values`);
+    for (const toolName of SDK_TOOL_NAMES) expect(agent).toContain(`\`${toolName}\``);
+  });
+
+  test("agent.md's tools and tool fields are each described for their own agent kind (native vs. remote), not conflated", () => {
+    const fresh = generateAll();
+    const agent = fresh.get("agent.md")!;
+    const toolsRow = agent.split("\n").find((l) => l.startsWith("| `tools` "));
+    const toolRow = agent.split("\n").find((l) => l.startsWith("| `tool` "));
+    expect(toolsRow).toBeDefined();
+    expect(toolRow).toBeDefined();
+    expect(toolsRow).not.toEqual(toolRow);
+    expect(toolsRow!.toLowerCase()).toContain("native");
+    expect(toolRow!.toLowerCase()).toContain("remote");
   });
 });

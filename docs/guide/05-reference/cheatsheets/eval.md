@@ -1,14 +1,21 @@
+---
+title: Eval
+parent: Cheatsheets
+grand_parent: Reference
+nav_order: 7
+---
+
 # Eval — `evals/<name>.md`
 
 A rubric scoring a work-unit type's output.
 
 ## Fields
 
-| Field | Type | Required | Nullable | Enum values |
-|---|---|---|---|---|
-| `name` | string | ✅ | — | — |
-| `unit` | string | — | — | — |
-| `rubric` | string[] | — | — | — |
+| Field | Type | Required | Nullable | Enum values | Description |
+|---|---|---|---|---|---|
+| `name` | string | ✅ | — | — | The eval's name. |
+| `unit` | string | — | — | — | The work-unit type this eval scores. |
+| `rubric` | string[] | — | — | — | The scoring rubric's criteria. |
 
 ## Minimal valid skeleton
 

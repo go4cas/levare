@@ -1,25 +1,32 @@
+---
+title: Connector
+parent: Cheatsheets
+grand_parent: Reference
+nav_order: 5
+---
+
 # Connector — `connectors/<name>.md`
 
 An external system a member can be granted.
 
 ## Fields
 
-| Field | Type | Required | Nullable | Enum values |
-|---|---|---|---|---|
-| `name` | string | ✅ | — | — |
-| `kind` | enum | ✅ | — | `mcp` · `cli` |
-| `server` | string | — | — | — |
-| `command` | string | — | — | — |
-| `argv` | string[] | — | — | — |
-| `env` | string[] | — | — | — |
-| `scope` | string | — | — | — |
-| `auth` | enum | — | — | `env` · `subscription` |
-| `plan` | string | — | — | — |
-| `role` | enum | — | — | `model` · `tool` |
-| `effects` | enum | — | — | `read` · `write` |
-| `gate` | enum | — | — | `proposal` · `trusted` |
-| `actions` | map (action name → argv template array) | — | — | — |
-| `home` | string[] | — | — | — |
+| Field | Type | Required | Nullable | Enum values | Description |
+|---|---|---|---|---|---|
+| `name` | string | ✅ | — | — | The connector's name. |
+| `kind` | enum | ✅ | — | `mcp` · `cli` | The transport: mcp (a Model Context Protocol server) or cli (a wrapped command). |
+| `server` | string | — | — | — | mcp: the server identifier. |
+| `command` | string | — | — | — | cli: the command this connector wraps. |
+| `argv` | string[] | — | — | — | mcp: the real stdio spawn command, argv only, never a shell string. Absent/empty means this connector has no working stdio path yet — an HTTP/SSE server, or simply not configured. |
+| `env` | string[] | — | — | — | The env var NAMES a granted member receives — values never live in the repo. Required for auth: env connectors; must be empty for auth: subscription connectors. |
+| `scope` | string | — | — | — | The scope this connector's credential is limited to. |
+| `auth` | enum | — | — | `env` · `subscription` | How this connector's backend authenticates: env (default — levare's allowlist injects exactly the named vars, and that grant IS the enforcement) or subscription (the backend authenticates from its own stored credentials, e.g. `codex login`; env must be empty). |
+| `plan` | string | — | — | — | Human-readable note on the subscription plan in use — required in practice for auth: subscription connectors, so receipts and doctor can name what's covering the cost. |
+| `role` | enum | — | — | `model` · `tool` | This connector's function: model (grants model access, e.g. codex) or tool (default — grants tool/service capabilities, e.g. github, linear). Distinct from kind (the transport). |
+| `effects` | enum | — | — | `read` · `write` | Whether a grant lets a member merely read through this connector (default) or write through it — a side-effecting action against the outside world. A write connector's env is withheld from members; only levare's own execution step (on gate approval) reads it. |
+| `gate` | enum | — | — | `proposal` · `trusted` | Only meaningful when effects: write. proposal (default) — the grant is 'may draft a proposal', never 'holds the credential'. trusted — the declared, visible opt-out that injects exactly as an effects: read connector always has. |
+| `actions` | map (action name → argv template array) | — | — | — | Required (non-empty) for effects: write connectors — the declared action vocabulary: action name → argv template array with {placeholder} slots. A member proposing against this connector names an action and fills placeholders with params:, never raw argv. |
+| `home` | string[] | — | — | — | Dotpaths under $HOME this connector's own backend actually needs (e.g. [".codex"]) — the one, auditable, per-connector way to declare a real-HOME path a spawned process needs, symlinked into a scratch $HOME rather than left unscoped. |
 
 ## Minimal valid skeleton
 

@@ -1,3 +1,10 @@
+---
+title: Cheatsheets
+parent: Reference
+nav_order: 3
+has_children: true
+---
+
 # Cheatsheets
 
 One generated page per registry entity, plus the artifact contract and the work-unit shape: a field

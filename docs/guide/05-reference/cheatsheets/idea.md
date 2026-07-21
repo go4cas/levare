@@ -1,14 +1,21 @@
+---
+title: Idea
+parent: Cheatsheets
+grand_parent: Reference
+nav_order: 9
+---
+
 # Idea — `ideas/<name>.md`
 
 A captured pitch with no project yet.
 
 ## Fields
 
-| Field | Type | Required | Nullable | Enum values |
-|---|---|---|---|---|
-| `name` | string | ✅ | — | — |
-| `pitch` | string | — | — | — |
-| `tags` | string[] | — | — | — |
+| Field | Type | Required | Nullable | Enum values | Description |
+|---|---|---|---|---|---|
+| `name` | string | ✅ | — | — | The idea's name. |
+| `pitch` | string | — | — | — | The one-sentence pitch — used on promotion to a project. |
+| `tags` | string[] | — | — | — | Tags for organizing/filtering ideas. |
 
 ## Minimal valid skeleton
 
