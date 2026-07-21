@@ -391,13 +391,41 @@ describe("registry screen", () => {
     }
     const remoteHtml = renderRegistry(agentKindRepo("remote"), "/tmp/synthetic-remote-agent", "agents");
     expect(remoteHtml).toContain('notice notice--warning');
-    expect(remoteHtml).toContain("remote members are not yet implemented");
+    expect(remoteHtml).toContain("no working stdio MCP connector yet");
 
     const nativeHtml = renderRegistry(agentKindRepo("native"), "/tmp/synthetic-remote-agent", "agents");
-    expect(nativeHtml).not.toContain("remote members are not yet implemented");
+    expect(nativeHtml).not.toContain("no working stdio MCP connector yet");
 
     const cliHtml = renderRegistry(agentKindRepo("cli"), "/tmp/synthetic-remote-agent", "agents");
-    expect(cliHtml).not.toContain("remote members are not yet implemented");
+    expect(cliHtml).not.toContain("no working stdio MCP connector yet");
+  });
+
+  // NOTES MCP-1B: a remote agent backed by a real, granted, stdio kind: mcp connector carries no
+  // warning at all — the dividing line env.ts#remoteAgentImplemented draws.
+  test("a `kind: remote` agent backed by a real, granted, stdio connector carries no warning callout", () => {
+    const a = {
+      name: "echo",
+      kind: "remote",
+      produces: ["report"],
+      server: "everything",
+      tool: "echo",
+      connectors: ["everything"],
+      style: { avatar: "Ec" },
+    } as unknown as import("../src/types.ts").Agent;
+    const connector = { name: "everything", kind: "mcp", argv: ["bunx", "-y", "@modelcontextprotocol/server-everything", "stdio"], env: [], auth: "env", role: "tool", effects: "read", gate: "proposal" } as unknown as import("../src/types.ts").Connector;
+    const repo: Repo = {
+      root: "/tmp/synthetic-remote-implemented",
+      teams: new Map(),
+      types: new Map(),
+      projects: new Map(),
+      agents: new Map([[a.name, a]]),
+      connectors: new Map([[connector.name, connector]]),
+      units: [],
+      artifacts: new Map(),
+      studio: {},
+    };
+    const html = renderRegistry(repo, "/tmp/synthetic-remote-implemented", "agents");
+    expect(html).not.toContain("no working stdio MCP connector yet");
   });
 
   // UI3: "Edit source" no longer reveals an inline, card-cramped textarea — each card carries only

@@ -948,12 +948,34 @@ describe("C15: connector role", () => {
   });
 });
 
-// NOTES REV1 finding 3: `kind: remote` validates cleanly — it's a legal declaration — but
-// adapters.ts's `RemoteBoundary` is a documented mock in every path today (no live MCP call exists).
-// `levare validate` must warn, never reject, and never stay silent about the gap.
-describe("kind: remote — legal, valid, and warned about (NOTES REV1 finding 3)", () => {
-  test("a remote agent validates ok, with a REMOTE_NOT_IMPLEMENTED warning naming it", () => {
+// NOTES MCP-1B (narrowed from REV1 finding 3): `kind: remote` validates cleanly — it's a legal
+// declaration — but only produces real work through a real, granted, stdio `kind: mcp` connector.
+// `levare validate` must warn, never reject, and never stay silent about the gap; a working stdio
+// connector, granted, gets NO such warning at all.
+describe("kind: remote — legal, valid, and warned about (NOTES MCP-1B)", () => {
+  function remoteAgentDoc(server = "echo-mcp"): string {
+    return ["---", "name: echo", "kind: remote", "produces: [report]", `server: ${server}`, "tool: echo", "style:", "  avatar: Ec", "---", "", "A remote member.", ""].join("\n");
+  }
+
+  test("a remote agent naming an unknown connector validates ok, with a REMOTE_NOT_IMPLEMENTED warning naming it", () => {
     const dir = mkdtempSync(join(tmpdir(), "levare-remote-agent-"));
+    try {
+      mkdirSync(join(dir, "agents"), { recursive: true });
+      writeFileSync(join(dir, "agents", "echo.md"), remoteAgentDoc());
+      const r = validatePath(dir);
+      expect(r.ok).toBe(true);
+      expect(r.errors).toEqual([]);
+      expect(r.warnings.map((w) => w.code)).toContain("REMOTE_NOT_IMPLEMENTED");
+      const w = r.warnings.find((w) => w.code === "REMOTE_NOT_IMPLEMENTED")!;
+      expect(w.message).toContain("echo");
+      expect(w.message).toContain("not a known connector");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a remote agent missing 'tool' is a MISSING_FIELD error, not merely a warning", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-remote-notool-"));
     try {
       mkdirSync(join(dir, "agents"), { recursive: true });
       writeFileSync(
@@ -961,12 +983,43 @@ describe("kind: remote — legal, valid, and warned about (NOTES REV1 finding 3)
         ["---", "name: echo", "kind: remote", "produces: [report]", "server: echo-mcp", "style:", "  avatar: Ec", "---", "", "A remote member.", ""].join("\n"),
       );
       const r = validatePath(dir);
+      expect(r.ok).toBe(false);
+      expect(r.errors.map((e) => e.code)).toContain("MISSING_FIELD");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a remote agent backed by a real, granted, stdio kind: mcp connector carries NO remote warning", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-remote-implemented-"));
+    try {
+      mkdirSync(join(dir, "agents"), { recursive: true });
+      mkdirSync(join(dir, "connectors"), { recursive: true });
+      // Agent-level `connectors:` grant, so the cross-entity grant check passes too.
+      writeFileSync(
+        join(dir, "agents", "echo.md"),
+        ["---", "name: echo", "kind: remote", "produces: [report]", "server: everything", "tool: echo", "connectors: [everything]", "style:", "  avatar: Ec", "---", "", "A remote member.", ""].join(
+          "\n",
+        ),
+      );
+      writeFileSync(
+        join(dir, "connectors", "everything.md"),
+        [
+          "---",
+          "name: everything",
+          "kind: mcp",
+          'argv: ["bunx", "-y", "@modelcontextprotocol/server-everything", "stdio"]',
+          "env: [EVERYTHING_TOKEN]",
+          "role: tool",
+          "---",
+          "",
+          "An mcp connector.",
+          "",
+        ].join("\n"),
+      );
+      const r = validatePath(dir);
       expect(r.ok).toBe(true);
-      expect(r.errors).toEqual([]);
-      expect(r.warnings.map((w) => w.code)).toContain("REMOTE_NOT_IMPLEMENTED");
-      const w = r.warnings.find((w) => w.code === "REMOTE_NOT_IMPLEMENTED")!;
-      expect(w.message).toContain("echo");
-      expect(w.message).toContain("not yet implemented");
+      expect(r.warnings.map((w) => w.code)).not.toContain("REMOTE_NOT_IMPLEMENTED");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -992,17 +1045,14 @@ describe("kind: remote — legal, valid, and warned about (NOTES REV1 finding 3)
     const dir = mkdtempSync(join(tmpdir(), "levare-remote-cli-"));
     try {
       mkdirSync(join(dir, "agents"), { recursive: true });
-      writeFileSync(
-        join(dir, "agents", "echo.md"),
-        ["---", "name: echo", "kind: remote", "produces: [report]", "server: echo-mcp", "style:", "  avatar: Ec", "---", "", "A remote member.", ""].join("\n"),
-      );
+      writeFileSync(join(dir, "agents", "echo.md"), remoteAgentDoc());
       const p = Bun.spawnSync(["./levare", "validate", dir], { env: process.env });
       expect(p.exitCode).toBe(0);
       const out = p.stdout.toString();
       expect(out).toContain("valid");
       expect(out).toContain("warning");
       expect(out).toContain("REMOTE_NOT_IMPLEMENTED");
-      expect(out).toContain("not yet implemented");
+      expect(out).toContain("not a known connector");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

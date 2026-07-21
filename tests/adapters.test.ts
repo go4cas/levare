@@ -4,9 +4,11 @@ import { spawnSync } from "node:child_process";
 import { tmpdir, homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { loadRepo } from "../src/repo.ts";
+import type { Repo } from "../src/repo.ts";
 import { assembleContext } from "../src/context.ts";
 import { loadPricing } from "../src/pricing.ts";
-import { AdapterRunner, AdapterError, type CliSpawn, type InvokeRequest, type NativeBoundary, type RemoteBoundary, type SpawnResult } from "../src/adapters.ts";
+import { AdapterRunner, AdapterError, createAsyncStdioRemoteBoundary, type CliSpawn, type InvokeRequest, type NativeBoundary, type RemoteBoundary, type SpawnResult } from "../src/adapters.ts";
+import type { Agent, Connector } from "../src/types.ts";
 import { render } from "../fixtures/stubs/member-stub.ts";
 import { detectSandbox } from "../src/sandbox.ts";
 import { createDispatchWorktree } from "../src/merge.ts";
@@ -708,6 +710,124 @@ describe("remote adapter (mocked MCP)", () => {
     // self-reported usage block.
     expect(receipt.unreported).toBe(true);
     expect(receipt.usd).toBe(null);
+  });
+});
+
+// NOTES MCP-1B (PRD Amendment 3, rulings R2/R4/R5) — the REAL stdio remote boundary, proven offline
+// against the deterministic fake stdio MCP server (fixtures/stubs/fake-mcp-server.ts, Phase 1a's own
+// fixture, now extended with a generic tools/call handler). This is the plumbing proof (repo/connector
+// resolution, the granted check, {task} substitution, isError/no-text handling) that doesn't need a
+// network; the real-server, real-artifact, real-gate proof lives in tests/mcp-remote-e2e.test.ts.
+describe("remote adapter — real stdio MCP boundary (NOTES MCP-1B)", () => {
+  function fakeServerConnector(mode: string, overrides: Partial<Connector> = {}): Connector {
+    return {
+      name: "everything",
+      kind: "mcp",
+      argv: ["bun", "fixtures/stubs/fake-mcp-server.ts", mode],
+      env: [],
+      auth: "env",
+      role: "tool",
+      effects: "read",
+      gate: "proposal",
+      ...overrides,
+    };
+  }
+
+  function remoteTestRepo(agent: Partial<Agent> & { name: string }, connector?: Connector): Repo {
+    const fullAgent = { kind: "remote", produces: [], style: { avatar: "" }, body: "", ...agent } as Agent;
+    return {
+      root: "/tmp/synthetic-remote-boundary",
+      teams: new Map(),
+      types: new Map(),
+      projects: new Map(),
+      agents: new Map([[fullAgent.name, fullAgent]]),
+      connectors: connector ? new Map([[connector.name, connector]]) : new Map(),
+      units: [],
+      artifacts: new Map(),
+      studio: {},
+    };
+  }
+
+  function baseReq(agent: Agent, extra: Partial<InvokeRequest> = {}): InvokeRequest {
+    // PATH is always present in a real dispatch (buildMemberEnv's own baseline) — the spawned server
+    // needs it to resolve "bun" on PATH exactly like any other spawn boundary in this codebase.
+    return { agent, member: agent.name, kind: "spec", unit: "u1", project: "p1", context: "THE-TASK-CONTEXT", env: { PATH: process.env.PATH ?? "" }, tools: [], ...extra };
+  }
+
+  test("invokes the declared tool with {task}-substituted params and turns the text content into the doc", async () => {
+    const connector = fakeServerConnector("normal");
+    const agent = { name: "echo", server: "everything", tool: "noop", params: { message: "hi {task} bye" }, connectors: ["everything"] };
+    const repo = remoteTestRepo(agent, connector);
+    const boundary = createAsyncStdioRemoteBoundary(repo);
+    const { doc } = await boundary.call(baseReq(repo.agents.get("echo")!));
+    expect(doc).toBe(`called noop with ${JSON.stringify({ message: "hi THE-TASK-CONTEXT bye" })}`);
+  });
+
+  test("a tool reporting isError: true is a hard AdapterError", async () => {
+    const connector = fakeServerConnector("tool-error");
+    const agent = { name: "echo", server: "everything", tool: "noop", params: {}, connectors: ["everything"] };
+    const repo = remoteTestRepo(agent, connector);
+    const boundary = createAsyncStdioRemoteBoundary(repo);
+    await expect(boundary.call(baseReq(repo.agents.get("echo")!))).rejects.toThrow(AdapterError);
+  });
+
+  test("an unknown connector is a hard AdapterError", async () => {
+    const agent = { name: "echo", server: "ghost", tool: "noop" };
+    const repo = remoteTestRepo(agent);
+    const boundary = createAsyncStdioRemoteBoundary(repo);
+    await expect(boundary.call(baseReq(repo.agents.get("echo")!))).rejects.toThrow(/not a known connector/);
+  });
+
+  test("a connector that is kind: cli, not kind: mcp, is a hard AdapterError", async () => {
+    const connector: Connector = { name: "everything", kind: "cli", command: "gh", env: [], auth: "env", role: "tool", effects: "read", gate: "proposal" };
+    const agent = { name: "echo", server: "everything", tool: "noop", connectors: ["everything"] };
+    const repo = remoteTestRepo(agent, connector);
+    const boundary = createAsyncStdioRemoteBoundary(repo);
+    await expect(boundary.call(baseReq(repo.agents.get("echo")!))).rejects.toThrow(/not kind: mcp/);
+  });
+
+  test("a real mcp connector the member was never granted is a hard AdapterError", async () => {
+    const connector = fakeServerConnector("normal");
+    const agent = { name: "echo", server: "everything", tool: "noop" }; // no connectors: grant
+    const repo = remoteTestRepo(agent, connector);
+    const boundary = createAsyncStdioRemoteBoundary(repo);
+    await expect(boundary.call(baseReq(repo.agents.get("echo")!))).rejects.toThrow(/not granted/);
+  });
+
+  test("a kind: mcp connector with no stdio argv is a hard AdapterError naming the HTTP/SSE deferral", async () => {
+    const connector = fakeServerConnector("normal", { argv: undefined });
+    const agent = { name: "echo", server: "everything", tool: "noop", connectors: ["everything"] };
+    const repo = remoteTestRepo(agent, connector);
+    const boundary = createAsyncStdioRemoteBoundary(repo);
+    await expect(boundary.call(baseReq(repo.agents.get("echo")!))).rejects.toThrow(/no stdio 'argv'/);
+  });
+
+  test("a remote agent declaring no 'tool' is a hard AdapterError", async () => {
+    const connector = fakeServerConnector("normal");
+    const agent = { name: "echo", server: "everything", connectors: ["everything"] };
+    const repo = remoteTestRepo(agent, connector);
+    const boundary = createAsyncStdioRemoteBoundary(repo);
+    await expect(boundary.call(baseReq(repo.agents.get("echo")!))).rejects.toThrow(/declares no 'tool'/);
+  });
+
+  test("AdapterRunner.produceAsync routes kind: remote through asyncRemote when supplied, never the sync mock", async () => {
+    const connector = fakeServerConnector("normal");
+    const repo = loadRepo(ROOT);
+    repo.agents.set("echo", { ...repo.agents.get("lyra")!, name: "echo", kind: "remote", model: undefined, server: "everything", tool: "noop", params: { message: "{task}" }, connectors: ["everything"] });
+    repo.connectors.set("everything", connector);
+    repo.teams.get("kestrel")!.members.push("echo");
+    const runner = new AdapterRunner(repo, {
+      pricing,
+      capabilities: [{ member: "echo", kind: "spec" }],
+      native: nativeMock,
+      remote: { call: () => { throw new Error("sync mock must not be called by produceAsync when asyncRemote is supplied"); } },
+      asyncRemote: createAsyncStdioRemoteBoundary(repo),
+    });
+    const { doc, receipt } = await runner.produceAsync("echo", "spec", "checkout-flow", "storefront");
+    expect(doc).toContain("kind: spec");
+    expect(doc).toContain("produced_by: kestrel/echo");
+    expect(doc).toContain("called noop with");
+    expect(receipt.unreported).toBe(true);
   });
 });
 

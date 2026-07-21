@@ -322,13 +322,14 @@ describe("doctor: the guardrails-not-yet-enforced notice is retired (NOTES MERGE
   });
 });
 
-// NOTES REV1 finding 3: `kind: remote` validates cleanly but adapters.ts's `RemoteBoundary` is a
-// documented mock in every path today. Doctor repeats the same telling `levare validate` already
-// gives, naming every agent in the studio that declares it.
-describe("doctor: remote-member-not-implemented telling (NOTES REV1 finding 3)", () => {
+// NOTES MCP-1B (narrowed from REV1 finding 3): `kind: remote` validates cleanly, and since Phase 1b it
+// produces real work through a real, granted, stdio `kind: mcp` connector. Doctor repeats the same
+// telling `levare validate` already gives, naming every remote agent NOT yet backed by one (cli.ts's
+// own `remoteAgentImplemented` filter — formatDoctor itself just prints whatever list it's handed).
+describe("doctor: remote-member-not-implemented telling (NOTES MCP-1B)", () => {
   test("formatDoctor prints the not-implemented warning, naming every remote agent, when remoteAgents is non-empty", () => {
     const out = formatDoctor(diagnose(connectors, env, noGh), undefined, undefined, undefined, ["echo", "relay"]);
-    expect(out).toContain("⚠ remote members are not yet implemented — these will not produce real work: echo, relay");
+    expect(out).toContain("⚠ remote members without a real, granted, stdio MCP connector are not yet implemented (HTTP/SSE transport remains deferred) — these will not produce real work: echo, relay");
   });
 
   test("with no remote agent declared, no such line appears", () => {
@@ -341,18 +342,18 @@ describe("doctor: remote-member-not-implemented telling (NOTES REV1 finding 3)",
     expect(out).not.toContain("not yet implemented");
   });
 
-  test("`levare doctor` on a studio with a remote agent names it on the real CLI", () => {
+  test("`levare doctor` on a studio with a remote agent (unknown connector) names it on the real CLI", () => {
     const dir = mkdtempSync(join(tmpdir(), "levare-doctor-remote-"));
     try {
       cpSync("fixtures/golden", dir, { recursive: true });
       writeFileSync(
         join(dir, "agents", "echo.md"),
-        ["---", "name: echo", "kind: remote", "produces: [report]", "server: echo-mcp", "style:", "  avatar: Ec", "---", "", "A remote member.", ""].join("\n"),
+        ["---", "name: echo", "kind: remote", "produces: [report]", "server: echo-mcp", "tool: echo", "style:", "  avatar: Ec", "---", "", "A remote member.", ""].join("\n"),
       );
       const p = Bun.spawnSync(["./levare", "doctor", dir], { env: { ...process.env, ANTHROPIC_API_KEY: "" } });
       expect(p.exitCode).toBe(0);
       const out = p.stdout.toString();
-      expect(out).toContain("remote members are not yet implemented");
+      expect(out).toContain("remote members without a real, granted, stdio MCP connector are not yet implemented");
       expect(out).toContain("echo");
     } finally {
       rmSync(dir, { recursive: true, force: true });
