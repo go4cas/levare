@@ -1,3 +1,9 @@
+---
+title: Promote it to a project
+parent: Workflow
+nav_order: 2
+---
+
 # 4.2 · Promote it to a project
 
 A **project** is a commitment. It says: *this thing is real, here is where its code lives, and here

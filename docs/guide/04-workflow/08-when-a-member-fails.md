@@ -1,3 +1,9 @@
+---
+title: When a member fails
+parent: Workflow
+nav_order: 8
+---
+
 # 4.8 · When a member fails
 
 Members fail. A vendor rate-limits you, a CLI isn't installed, a model rejects an argument, a network

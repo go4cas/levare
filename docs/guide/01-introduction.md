@@ -1,3 +1,8 @@
+---
+title: Introduction
+nav_order: 2
+---
+
 # 1 · Introduction
 
 levare is a console for directing teams of AI agents. You are the conductor: you decide what gets

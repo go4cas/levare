@@ -1,3 +1,9 @@
+---
+title: Your first gate
+parent: Workflow
+nav_order: 4
+---
+
 # 4.4 · Your first gate
 
 Now a member runs, and it costs you money — about a cent.

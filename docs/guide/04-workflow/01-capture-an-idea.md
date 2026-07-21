@@ -1,3 +1,9 @@
+---
+title: Capture an idea
+parent: Workflow
+nav_order: 1
+---
+
 # 4.1 · Capture an idea
 
 Everything in levare starts as a sentence.

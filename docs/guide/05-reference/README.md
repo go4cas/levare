@@ -1,3 +1,9 @@
+---
+title: Reference
+nav_order: 6
+has_children: true
+---
+
 # 5 · Reference
 
 Look things up. Every field, every command, every rule levare enforces.

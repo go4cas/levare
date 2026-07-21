@@ -1,3 +1,8 @@
+---
+title: Quickstart
+nav_order: 3
+---
+
 # 2 · Quickstart
 
 Ten minutes. No API keys, no agents, no spend. At the end you'll have a studio on disk and a board

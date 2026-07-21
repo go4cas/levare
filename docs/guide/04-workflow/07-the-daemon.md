@@ -1,3 +1,9 @@
+---
+title: The daemon
+parent: Workflow
+nav_order: 7
+---
+
 # 4.7 · The daemon
 
 Everything so far has needed a click. The daemon is what makes levare feel like a studio rather than

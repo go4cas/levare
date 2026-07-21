@@ -1,3 +1,9 @@
+---
+title: The constitution
+parent: Reference
+nav_order: 5
+---
+
 # 5.4 · The constitution
 
 levare is governed by a small set of invariants — properties that must hold no matter what — and a

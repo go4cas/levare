@@ -1,3 +1,8 @@
+---
+title: Operations
+nav_order: 7
+---
+
 # 6 · Operations
 
 What to know before you run agents you don't fully control.

@@ -1,3 +1,8 @@
+---
+title: Concepts
+nav_order: 4
+---
+
 # 3 · Concepts
 
 levare has few concepts, and each one carries weight. This is all of them.

@@ -1,3 +1,9 @@
+---
+title: Workflow
+nav_order: 5
+has_children: true
+---
+
 # 4 · Workflow
 
 The guided build. You'll take a real product from a sentence to an approved brief, one step at a

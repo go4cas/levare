@@ -1,3 +1,9 @@
+---
+title: The CLI
+parent: Reference
+nav_order: 4
+---
+
 # 5.3 · The CLI
 
 levare has six commands. Five run once and exit; `serve` runs until you stop it.

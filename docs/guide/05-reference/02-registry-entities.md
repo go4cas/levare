@@ -1,3 +1,9 @@
+---
+title: Registry entities
+parent: Reference
+nav_order: 2
+---
+
 # 5.2 · Registry entities
 
 > For the terse per-entity field reference and copy-paste skeletons, see the [generated cheatsheets](cheatsheets/)

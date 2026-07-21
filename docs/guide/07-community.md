@@ -1,3 +1,8 @@
+---
+title: Community
+nav_order: 8
+---
+
 # 7 · Community
 
 levare is built to be run by one person, and shared as text.

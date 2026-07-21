@@ -1,3 +1,9 @@
+---
+title: Your first team and member
+parent: Workflow
+nav_order: 3
+---
+
 # 4.3 · Your first team and member
 
 A **team** is a group with a job: it declares what it consumes, what it produces, and the flow it

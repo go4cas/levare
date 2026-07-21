@@ -1,3 +1,9 @@
+---
+title: Your first loop
+parent: Workflow
+nav_order: 6
+---
+
 # 4.6 · Your first loop
 
 Two members, alternating, until they converge or run out of patience. This is the mechanic that makes

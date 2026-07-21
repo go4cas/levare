@@ -1,3 +1,9 @@
+---
+title: A foreign agent on your team
+parent: Workflow
+nav_order: 5
+---
+
 # 4.5 · A foreign agent on your team
 
 Everything so far has been Claude. Now bring in another vendor — not as an experiment off to the

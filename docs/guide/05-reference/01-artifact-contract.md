@@ -1,3 +1,9 @@
+---
+title: The artifact contract
+parent: Reference
+nav_order: 1
+---
+
 # 5.1 · The artifact contract
 
 An **artifact** is a markdown file with YAML frontmatter, produced by a member, that levare knows how

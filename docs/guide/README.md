@@ -1,3 +1,8 @@
+---
+title: Home
+nav_order: 1
+---
+
 # levare — documentation
 
 A solo operator's console for directing teams of AI agents, from pitch to production.
@@ -20,12 +25,12 @@ A solo operator's console for directing teams of AI agents, from pitch to produc
 |---|---|
 | **[4 · Workflow](04-workflow/)** | The guided build. Take a product from an idea to an approved spec, step by step. |
 | [4.1 Capture an idea](04-workflow/01-capture-an-idea.md) | From a pitch to a project. |
-| [4.2 Your first member](04-workflow/02-your-first-member.md) | A team, an agent, and the context it receives. |
-| [4.3 Your first gate](04-workflow/03-your-first-gate.md) | Approve, request changes, reject. |
-| [4.4 Your first loop](04-workflow/04-your-first-loop.md) | A reviewer, `max_rounds`, and what happens on exhaustion. |
-| [4.5 Wrapping a foreign CLI](04-workflow/05-wrapping-a-foreign-cli.md) | Gemini, Codex, or anything with a headless mode. |
-| [4.6 The daemon](04-workflow/06-the-daemon.md) | Let the score advance between gates. |
-| [4.7 Cost and budgets](04-workflow/07-cost-and-budgets.md) | What things cost, and how to bound them. |
+| [4.2 Promote it to a project](04-workflow/02-promote-to-a-project.md) | The first real commitment — and where you write the house rules. |
+| [4.3 Your first team and member](04-workflow/03-first-team-and-member.md) | A team, an agent, and the context it receives. |
+| [4.4 Your first gate](04-workflow/04-first-gate.md) | Approve, request changes, reject. |
+| [4.5 A foreign agent on your team](04-workflow/05-foreign-agent.md) | Gemini, Codex, or anything with a headless mode. |
+| [4.6 Your first loop](04-workflow/06-first-loop.md) | A reviewer, `max_rounds`, and what happens on exhaustion. |
+| [4.7 The daemon](04-workflow/07-the-daemon.md) | Let the score advance between gates. |
 | [4.8 When a member fails](04-workflow/08-when-a-member-fails.md) | Reading a blocked artifact. |
 
 ## Look things up
