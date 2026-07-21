@@ -1,18 +1,20 @@
-// MCP Phase 1a/1b (PRD Amendment 3, ruling R5 — docs/prd-amendment-3.md §5): a real stdio MCP client.
-// Spawns a local MCP server process, speaks JSON-RPC 2.0 over its stdin/stdout, completes the
+// MCP Phase 1a/1b/1c (PRD Amendment 3, rulings R3/R5 — docs/prd-amendment-3.md §§3/5): a real stdio MCP
+// client. Spawns a local MCP server process, speaks JSON-RPC 2.0 over its stdin/stdout, completes the
 // `initialize` handshake, sends `notifications/initialized`, lists whatever the negotiated
 // capabilities advertise (`tools/list`, `resources/list`), and — since Phase 1b — invokes a named tool
 // (`tools/call`, `callTool` below). Phase 1a proved handshake and discovery only; Phase 1b closes the
 // remaining step (invocation) so `adapters.ts#createAsyncStdioRemoteBoundary` can turn a real tool
 // response into a real artifact.
 //
-// UNSANDBOXED (ruling R3 names Phase 1c as the sandbox wrap): the process spawned here runs with
-// this module's own inherited environment (or, when the caller supplies `command.env`, EXACTLY that —
-// see `connectStdioMcpServer`'s own env-replacement comment) and no OS-level confinement at all — no
-// scoped HOME, no filesystem/network restriction, nothing R4 already gives a `kind: cli` member's
-// spawn. That is a real, honest gap for anything beyond a trusted reference server run by a
-// developer/test, not a production posture; nothing in this module, `validate`, or `doctor` may claim
-// otherwise until Phase 1c actually wraps this spawn (see NOTES MCP-1A/MCP-1B).
+// THIS MODULE ITSELF carries no sandboxing — `connectStdioMcpServer` spawns exactly `command.argv`
+// (never wrapped/interpreted here), in `command.cwd` (verbatim), with `command.env` as the WHOLE spawn
+// environment when supplied. That is deliberate, not a gap: ruling R3's sandbox wrap (Phase 1c) lives
+// entirely at the CALLER, `adapters.ts#createAsyncStdioRemoteBoundary` — it composes the sandboxed argv
+// (bwrap/sandbox-exec-prefixed), the per-dispatch scratch `cwd`, and the scoped `env` BEFORE ever
+// calling this function, exactly mirroring how `Bun.spawn` itself has no sandbox awareness and
+// `sandbox.ts#wrapForSandbox` does that composing for a `kind: cli` member's spawn. A caller that hands
+// this function unwrapped argv/an unscoped env gets an unsandboxed spawn — same as it always has —
+// which is exactly what a test (or `mcp-client.test.ts`'s own direct calls) legitimately wants.
 //
 // This is the "new sibling" ruling R5 names for `RemoteBoundary` (adapters.ts): `RemoteBoundary.call
 // (req): { doc: string }` is synchronous, matching the mocked fixture every dispatch path used through

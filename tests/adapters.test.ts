@@ -8,6 +8,7 @@ import type { Repo } from "../src/repo.ts";
 import { assembleContext } from "../src/context.ts";
 import { loadPricing } from "../src/pricing.ts";
 import { AdapterRunner, AdapterError, createAsyncStdioRemoteBoundary, type CliSpawn, type InvokeRequest, type NativeBoundary, type RemoteBoundary, type SpawnResult } from "../src/adapters.ts";
+import { connectStdioMcpServer } from "../src/mcp-client.ts";
 import type { Agent, Connector } from "../src/types.ts";
 import { render } from "../fixtures/stubs/member-stub.ts";
 import { detectSandbox } from "../src/sandbox.ts";
@@ -718,42 +719,54 @@ describe("remote adapter (mocked MCP)", () => {
 // fixture, now extended with a generic tools/call handler). This is the plumbing proof (repo/connector
 // resolution, the granted check, {task} substitution, isError/no-text handling) that doesn't need a
 // network; the real-server, real-artifact, real-gate proof lives in tests/mcp-remote-e2e.test.ts.
+// NOTES MCP-1C: an ABSOLUTE path — the real boundary now spawns every dispatch in a fresh, per-dispatch
+// scratch cwd (never this repo's own working directory, see createAsyncStdioRemoteBoundary's own doc),
+// so a relative "fixtures/stubs/..." argv element would no longer resolve. Resolved off this test file's
+// own location (`import.meta.dir`), not `process.cwd()`, so it's correct regardless of where `bun test`
+// was invoked from. Module-scoped (not describe-scoped) so both the plumbing tests below and the
+// sandboxed-real-spawn tests (NOTES MCP-1C) can share it.
+const FAKE_MCP_SERVER = join(import.meta.dir, "..", "fixtures", "stubs", "fake-mcp-server.ts");
+
+function fakeServerConnector(mode: string, overrides: Partial<Connector> = {}): Connector {
+  return {
+    name: "everything",
+    kind: "mcp",
+    argv: ["bun", FAKE_MCP_SERVER, mode],
+    env: [],
+    auth: "env",
+    role: "tool",
+    effects: "read",
+    gate: "proposal",
+    ...overrides,
+  };
+}
+
+// NOTES MCP-1C: `root` defaults to a nonexistent scratch path — harmless even under a real "full"-tier
+// sandbox (bubblewrap's own `--ro-bind-try` silently skips a source that doesn't exist, sandbox.ts's own
+// header) — but a test that means to PROVE studio-root readability needs a real one; pass `root` to
+// override.
+function remoteTestRepo(agent: Partial<Agent> & { name: string }, connector?: Connector, root = "/tmp/synthetic-remote-boundary"): Repo {
+  const fullAgent = { kind: "remote", produces: [], style: { avatar: "" }, body: "", ...agent } as Agent;
+  return {
+    root,
+    teams: new Map(),
+    types: new Map(),
+    projects: new Map(),
+    agents: new Map([[fullAgent.name, fullAgent]]),
+    connectors: connector ? new Map([[connector.name, connector]]) : new Map(),
+    units: [],
+    artifacts: new Map(),
+    studio: {},
+  };
+}
+
+function baseReq(agent: Agent, extra: Partial<InvokeRequest> = {}): InvokeRequest {
+  // PATH is always present in a real dispatch (buildMemberEnv's own baseline) — the spawned server
+  // needs it to resolve "bun" on PATH exactly like any other spawn boundary in this codebase.
+  return { agent, member: agent.name, kind: "spec", unit: "u1", project: "p1", context: "THE-TASK-CONTEXT", env: { PATH: process.env.PATH ?? "" }, tools: [], ...extra };
+}
+
 describe("remote adapter — real stdio MCP boundary (NOTES MCP-1B)", () => {
-  function fakeServerConnector(mode: string, overrides: Partial<Connector> = {}): Connector {
-    return {
-      name: "everything",
-      kind: "mcp",
-      argv: ["bun", "fixtures/stubs/fake-mcp-server.ts", mode],
-      env: [],
-      auth: "env",
-      role: "tool",
-      effects: "read",
-      gate: "proposal",
-      ...overrides,
-    };
-  }
-
-  function remoteTestRepo(agent: Partial<Agent> & { name: string }, connector?: Connector): Repo {
-    const fullAgent = { kind: "remote", produces: [], style: { avatar: "" }, body: "", ...agent } as Agent;
-    return {
-      root: "/tmp/synthetic-remote-boundary",
-      teams: new Map(),
-      types: new Map(),
-      projects: new Map(),
-      agents: new Map([[fullAgent.name, fullAgent]]),
-      connectors: connector ? new Map([[connector.name, connector]]) : new Map(),
-      units: [],
-      artifacts: new Map(),
-      studio: {},
-    };
-  }
-
-  function baseReq(agent: Agent, extra: Partial<InvokeRequest> = {}): InvokeRequest {
-    // PATH is always present in a real dispatch (buildMemberEnv's own baseline) — the spawned server
-    // needs it to resolve "bun" on PATH exactly like any other spawn boundary in this codebase.
-    return { agent, member: agent.name, kind: "spec", unit: "u1", project: "p1", context: "THE-TASK-CONTEXT", env: { PATH: process.env.PATH ?? "" }, tools: [], ...extra };
-  }
-
   test("invokes the declared tool with {task}-substituted params and turns the text content into the doc", async () => {
     const connector = fakeServerConnector("normal");
     const agent = { name: "echo", server: "everything", tool: "noop", params: { message: "hi {task} bye" }, connectors: ["everything"] };
@@ -828,6 +841,143 @@ describe("remote adapter — real stdio MCP boundary (NOTES MCP-1B)", () => {
     expect(doc).toContain("produced_by: kestrel/echo");
     expect(doc).toContain("called noop with");
     expect(receipt.unreported).toBe(true);
+  });
+});
+
+// NOTES MCP-1C (PRD Amendment 3, ruling R3, the Conductor's own confinement-fork ruling) — the spawned
+// MCP server process now goes through the SAME R4 sandbox wrap a cli member's spawn does: the same
+// generator (sandbox.ts), the same per-dispatch scratch, the same scoped HOME honoring the connector's
+// own `home:`, the same network-per-grant, the same decoy/operator-home guarantee. Mirrors
+// tests/adapters.test.ts's own "NOTES R4-SANDBOX Ruling 2" decoy-proof pattern exactly — see
+// `hostSandbox`'s own doc there for why these are `test.skipIf(hostSandbox.level !== "full")`: this dev
+// container's own `bwrap`/`unshare` are present but non-functional (outer container disables
+// unprivileged user namespaces), so `detectSandbox()` genuinely reports `none` here and these assertions
+// would prove nothing run — never a vacuous pass, honestly skipped instead, exactly as every other
+// real-sandbox-only proof in this file already is.
+describe("remote adapter — sandboxed real spawn (NOTES MCP-1C, PRD Amendment 3 ruling R3)", () => {
+  const hostSandbox = detectSandbox();
+
+  test("the real boundary records a 'sandbox:' enforcement level on the produced artifact, mirroring cli (Ruling 2/R3) — whichever level THIS host actually has", async () => {
+    const connector = fakeServerConnector("normal");
+    const repo = loadRepo(ROOT);
+    repo.agents.set("echo", { ...repo.agents.get("lyra")!, name: "echo", kind: "remote", model: undefined, server: "everything", tool: "noop", params: { message: "{task}" }, connectors: ["everything"] });
+    repo.connectors.set("everything", connector);
+    repo.teams.get("kestrel")!.members.push("echo");
+    const runner = new AdapterRunner(repo, {
+      pricing,
+      capabilities: [{ member: "echo", kind: "spec" }],
+      native: nativeMock,
+      remote: remoteMock,
+      asyncRemote: createAsyncStdioRemoteBoundary(repo),
+    });
+    const { doc } = await runner.produceAsync("echo", "spec", "checkout-flow", "storefront");
+    expect(doc).toMatch(/^sandbox: (full|fs-only|none)$/m);
+  });
+
+  test("an injected (test-double) connect never gets sandboxed — no scratch cwd, argv never wrapped, sandboxing only ever touches the real spawn boundary", async () => {
+    const connector = fakeServerConnector("normal");
+    const agent = { name: "echo", server: "everything", tool: "noop", params: {}, connectors: ["everything"] };
+    const repo = remoteTestRepo(agent, connector);
+    let seenCwd: string | undefined | "unset" = "unset";
+    const boundary = createAsyncStdioRemoteBoundary(repo, {
+      connect: async (command, opts) => {
+        seenCwd = command.cwd;
+        expect(command.argv).toEqual(connector.argv!); // never bwrap/sandbox-exec-wrapped
+        return connectStdioMcpServer(command, opts);
+      },
+    });
+    const { doc, sandbox } = await boundary.call(baseReq(repo.agents.get("echo")!));
+    expect(seenCwd).toBeUndefined(); // no per-dispatch scratch cwd was ever created
+    expect(sandbox).toBeUndefined();
+    expect(doc).toBe(`called noop with ${JSON.stringify({})}`);
+  });
+
+  test("LEVARE_SANDBOX_DEBUG=1 prints the detection/wrap debug blocks for a real remote dispatch, mirroring cli", async () => {
+    const connector = fakeServerConnector("normal");
+    const agent = { name: "echo", server: "everything", tool: "noop", params: {}, connectors: ["everything"] };
+    const repo = remoteTestRepo(agent, connector);
+    const prior = process.env.LEVARE_SANDBOX_DEBUG;
+    const origError = console.error;
+    const lines: string[] = [];
+    console.error = (...args: unknown[]) => {
+      lines.push(args.map(String).join(" "));
+    };
+    try {
+      process.env.LEVARE_SANDBOX_DEBUG = "1";
+      const boundary = createAsyncStdioRemoteBoundary(repo);
+      await boundary.call(baseReq(repo.agents.get("echo")!));
+      expect(lines.some((l) => l.includes("level:"))).toBe(true);
+      expect(lines.some((l) => l.includes("remote dispatch for 'echo'"))).toBe(true);
+    } finally {
+      console.error = origError;
+      if (prior === undefined) delete process.env.LEVARE_SANDBOX_DEBUG;
+      else process.env.LEVARE_SANDBOX_DEBUG = prior;
+    }
+  });
+
+  // NOTES MCP-1C: the decoy-deny proof's own MCP shape — an MCP tool call has no shell, so unlike the
+  // cli decoy proof (a bare `cat <decoy>`), this drives the fake server's own "read-home-file" tool
+  // (fixtures/stubs/fake-mcp-server.ts), which resolves `join(process.env.HOME, dotpath)` INSIDE the
+  // spawned process — the same "decoy under the operator's own HOME, outside anything granted" shape
+  // NOTES R4-SANDBOX-FIX-3 established, just reached through a JSON-RPC call instead of a shell command.
+  test.skipIf(hostSandbox.level !== "full")(
+    "decoy-file proof: a connector declaring no home: cannot read a file under the operator's own HOME through its MCP tool call",
+    async () => {
+      const decoyDir = mkdtempSync(join(homedir(), ".levare-mcp-1c-decoy-"));
+      try {
+        writeFileSync(join(decoyDir, "secret.txt"), "SECRET\n");
+        const dotpath = join(decoyDir, "secret.txt").slice(homedir().length + 1); // relative to $HOME
+        const connector = fakeServerConnector("normal"); // no home: declared
+        const agent = { name: "echo", server: "everything", tool: "read-home-file", params: { dotpath }, connectors: ["everything"] };
+        const repo = remoteTestRepo(agent, connector);
+        const boundary = createAsyncStdioRemoteBoundary(repo);
+        await expect(boundary.call(baseReq(repo.agents.get("echo")!))).rejects.toThrow(AdapterError);
+      } finally {
+        rmSync(decoyDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  // NOTES MCP-1C: the ruling's own centerpiece — a connector's `home:` (env.ts#scopeHomeForConnector,
+  // generalized from the subscription-cli-only mechanism CAP-B built) is what lets a server reach a
+  // SPECIFIC real-HOME path it legitimately needs, an auditable per-connector grant rather than a
+  // blanket exception. Same decoy file, same dotpath, only difference from the test above is that THIS
+  // connector declares `home: [dotpath's own parent dir]` — must now succeed.
+  test.skipIf(hostSandbox.level !== "full")(
+    "home: grant proof: a connector declaring home: CAN read the exact path it declared, through its MCP tool call, under the same working sandbox that denies everything else under HOME",
+    async () => {
+      const decoyDir = mkdtempSync(join(homedir(), ".levare-mcp-1c-grant-"));
+      try {
+        writeFileSync(join(decoyDir, "marker.txt"), "GRANTED-MARKER\n");
+        const dotpathDir = decoyDir.slice(homedir().length + 1); // relative to $HOME, e.g. ".levare-mcp-1c-grant-XXXX"
+        const dotpath = join(dotpathDir, "marker.txt");
+        const connector = fakeServerConnector("normal", { home: [dotpathDir] });
+        const agent = { name: "echo", server: "everything", tool: "read-home-file", params: { dotpath }, connectors: ["everything"] };
+        const repo = remoteTestRepo(agent, connector);
+        const boundary = createAsyncStdioRemoteBoundary(repo);
+        const { doc } = await boundary.call(baseReq(repo.agents.get("echo")!));
+        expect(doc).toBe("GRANTED-MARKER\n");
+      } finally {
+        rmSync(decoyDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  // NOTES MCP-1C: the studio-root-read grant — `buildRemoteSandboxPolicy`'s own `readOnlyPaths` always
+  // includes `repo.root` (mirrors cli's identical grant, R4-SANDBOX-FIX's own "excluding it broke most
+  // of this repo's own real-spawn fixtures" finding) — an ABSOLUTE root here (unlike the plumbing tests
+  // above's synthetic `/tmp/synthetic-remote-boundary`, which never needs to resolve to anything real)
+  // so the read genuinely exercises the grant rather than vacuously succeeding on a path bwrap/
+  // sandbox-exec never even tried to resolve.
+  test.skipIf(hostSandbox.level !== "full")("studio-root proof: the studio root is readable through the MCP tool call, same as a cli member's own read-only grant", async () => {
+    const root = realpathSync(ROOT);
+    const path = join(root, "teams", "kestrel.md");
+    const connector = fakeServerConnector("normal");
+    const agent = { name: "echo", server: "everything", tool: "read-abs-file", params: { path }, connectors: ["everything"] };
+    const repo = remoteTestRepo(agent, connector, root);
+    const boundary = createAsyncStdioRemoteBoundary(repo);
+    const { doc } = await boundary.call(baseReq(repo.agents.get("echo")!));
+    expect(doc).toContain("name: kestrel");
   });
 });
 

@@ -15,6 +15,24 @@
 // argument-visible, so a caller can assert both that the call happened AND what it was called with.
 // "tool-error" answers with `isError: true` instead, for adapters.ts#createAsyncStdioRemoteBoundary's
 // own isError handling.
+//
+// NOTES MCP-1C (PRD Amendment 3, ruling R3): two filesystem-read tools, always available regardless of
+// `mode` — the MCP equivalent of the R4-VENDOR-CLI gh harness's own plain `cat <path>` decoy step. A
+// real MCP tool call has no shell, so there's no vendor binary this fixture can borrow a generic file
+// read from; it declares its own instead, read only by this repo's own sandboxed-remote tests
+// (tests/adapters.test.ts) and by scripts/repro-mcp-1c-sandbox.ts, never by production code.
+//   - "read-abs-file" { path } — readFileSync(path). Proves an ABSOLUTE grant (the studio root, a
+//     project file) is reachable regardless of HOME scoping.
+//   - "read-home-file" { dotpath } — readFileSync(join(process.env.HOME, dotpath)). Proves the SAME
+//     dotpath resolves differently depending on what this process's own (possibly scoped) HOME is —
+//     the decoy-deny proof (no `home:` grant, dotpath sits outside anything reallowed) and the
+//     `home:`-grant proof (dotpath IS declared, symlinked into a scratch HOME) are the SAME tool,
+//     exercised against two differently-configured connectors.
+// Both report `isError: true` (never throw/exit) on a failed read — an EPERM/ENOENT is exactly the
+// signal these tests/harness exist to observe, not a reason to crash the fixture server itself.
+
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const mode = process.argv[2] ?? "normal";
 
@@ -49,7 +67,27 @@ function handleLine(line: string): void {
   fail(`unexpected method in mode '${mode}': ${msg.method}`);
 }
 
+function respondFileRead(id: number, path: string | undefined): void {
+  if (!path) {
+    send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: "no path/dotpath given" }], isError: true } });
+    return;
+  }
+  try {
+    const content = readFileSync(path, "utf8");
+    send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: content }] } });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `read failed: ${message}` }], isError: true } });
+  }
+}
+
 function handleToolCall(id: number, params: { name: string; arguments?: Record<string, unknown> }): void {
+  if (params.name === "read-abs-file") return respondFileRead(id, params.arguments?.path as string | undefined);
+  if (params.name === "read-home-file") {
+    const dotpath = params.arguments?.dotpath as string | undefined;
+    const home = process.env.HOME;
+    return respondFileRead(id, dotpath && home ? join(home, dotpath) : undefined);
+  }
   if (mode === "tool-error") {
     send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `tool '${params.name}' failed` }], isError: true } });
     return;

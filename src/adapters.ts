@@ -7,15 +7,16 @@
 //            backs it with the real SDK via `createSdkNativeBoundary`/`createAsyncSdkNativeBoundary`.
 //   cli    → Bun.spawn of the agent's command template in `cwd`, with the allowlisted env only and
 //            the timeout enforced; the raw stdout is the member's content.
-//   remote → an MCP call over stdio (PRD Amendment 3, ruling R5, NOTES MCP-1B). `produce()` (the
-//            phase-2 batch `Runner`/replay's own synchronous path) still drives the mocked, sync
+//   remote → an MCP call over stdio (PRD Amendment 3, rulings R3/R5, NOTES MCP-1B/MCP-1C). `produce()`
+//            (the phase-2 batch `Runner`/replay's own synchronous path) still drives the mocked, sync
 //            `RemoteBoundary`; `produceAsync()` (the live `levare serve` path) drives the real,
 //            Promise-returning `AsyncRemoteBoundary` when one is supplied — mirroring native's own
 //            sync-mock/async-real split (NOTES F8). The real implementation
 //            (`createAsyncStdioRemoteBoundary`) spawns the member's granted `kind: mcp` connector's
-//            declared stdio server (mcp-client.ts, Phase 1a), invokes exactly the one tool the agent
-//            declares, and turns the response into the artifact doc — UNSANDBOXED (Phase 1c is the
-//            sandbox wrap, ruling R3, not yet built).
+//            declared stdio server (mcp-client.ts, Phase 1a) through the SAME R4 sandbox wrap a cli
+//            member's spawn goes through (ruling R3: identical deny-user-data confinement, plus the
+//            connector's own `home:` for any declared exception), invokes exactly the one tool the
+//            agent declares, and turns the response into the artifact doc.
 //
 // Ruling C12: the member authors CONTENT, levare authors the ARTIFACT. Whatever a boundary returns —
 // plain prose, or prose wrapped in a frontmatter fence the member had no business emitting — is never
@@ -36,7 +37,7 @@ import { existsSync, statSync, accessSync, mkdirSync, mkdtempSync, rmSync, const
 import { isAbsolute, dirname, join as pathJoin } from "node:path";
 import { tmpdir } from "node:os";
 import { normalizeReceipt } from "./receipts.ts";
-import { buildMemberEnv, teamOf, subscriptionConnector, scopeHome, memberNetworkAllowed, grantedConnectors } from "./env.ts";
+import { buildMemberEnv, teamOf, subscriptionConnector, scopeHome, scopeHomeForConnector, memberNetworkAllowed, grantedConnectors } from "./env.ts";
 import { connectStdioMcpServer, type McpToolCallResult } from "./mcp-client.ts";
 import { allowedTools } from "./guardrails.ts";
 import { assembleContext, unitArtifactPaths } from "./context.ts";
@@ -48,7 +49,7 @@ import { detectSandbox, wrapForSandbox, resolveDarwinUserTempDir, type SandboxDe
 import type { Pricing } from "./pricing.ts";
 import type { Repo } from "./repo.ts";
 import type { MemberRunner } from "./runner.ts";
-import type { Agent, Receipt } from "./types.ts";
+import type { Agent, Connector, Receipt } from "./types.ts";
 
 export class AdapterError extends Error {}
 
@@ -138,9 +139,14 @@ export interface RemoteBoundary {
 /** NOTES MCP-1B — the non-blocking counterpart to `RemoteBoundary` (mirrors `AsyncNativeBoundary`'s
  * own split, NOTES F8): what `produceAsync`'s live `remote` case actually drives when supplied,
  * so a real stdio MCP session (an inherently async, multi-turn exchange over a long-lived child
- * process) never forces a fake synchronous facade over it. */
+ * process) never forces a fake synchronous facade over it. NOTES MCP-1C: `sandbox`, when the boundary
+ * actually wrapped its spawn (the real, un-injected `connectStdioMcpServer`, never a test double — see
+ * `createAsyncStdioRemoteBoundary`'s own `real` guard, mirroring `runCli`/`runCliAsync`'s identical
+ * cli-only convention), is the enforcement level that dispatch's server process actually ran under —
+ * recorded on the produced artifact by `AdapterRunner#author`, exactly like a `kind: cli` member's own
+ * `sandbox:` line. */
 export interface AsyncRemoteBoundary {
-  call(req: InvokeRequest): Promise<{ doc: string }>;
+  call(req: InvokeRequest): Promise<{ doc: string; sandbox?: SandboxLevel }>;
 }
 
 export interface SdkNativeBoundaryOptions {
@@ -402,24 +408,53 @@ function extractMcpText(result: McpToolCallResult): string {
     .trim();
 }
 
+// NOTES MCP-1C: the SAME `LEVARE_SANDBOX_DEBUG=1` gate `AdapterRunner.logSpawnDebug`/`logWorktreeDebug`
+// already use — a free-standing function (not a class method) since this boundary isn't one, but the
+// wording/gate stays identical so a Conductor grepping debug output for one prefix sees every sandboxed
+// spawn this codebase makes, cli or remote alike.
+function logRemoteSandboxDebug(line: string): void {
+  if (process.env.LEVARE_SANDBOX_DEBUG !== "1") return;
+  console.error(`[levare:sandbox-debug] ${line}`);
+}
+
 /**
- * NOTES MCP-1B (PRD Amendment 3, rulings R2/R4/R5) — the real stdio MCP backing for
+ * NOTES MCP-1B/MCP-1C (PRD Amendment 3, rulings R2/R3/R4/R5) — the real stdio MCP backing for
  * `AsyncRemoteBoundary`: resolves the member's declared `server:` to a granted `kind: mcp` connector,
- * spawns its declared stdio command (mcp-client.ts's `connectStdioMcpServer`, Phase 1a's own client),
- * invokes exactly the one tool the agent declares (`agent.tool`) with arguments built from
- * `agent.params`'s `{task}`-substituted template (ruling R2: one dispatch, one call, one artifact —
- * never an interactive multi-call session), and turns the tool's own text content into the artifact
- * `doc`. Auth is ruling R4, unchanged: `req.env` is already `buildMemberEnv`'s allowlisted output (the
- * member's granted connectors' env vars, computed at `AdapterRunner#prepare` before this boundary ever
- * runs) — passed straight through as the spawned server's WHOLE environment (mcp-client.ts's own
- * env-replacement comment). UNSANDBOXED (ruling R3 names the sandbox wrap as Phase 1c, not built here):
- * the spawned server process gets no OS-level confinement at all, exactly as honestly as
- * mcp-client.ts's own header states.
+ * spawns its declared stdio command (mcp-client.ts's `connectStdioMcpServer`, Phase 1a's own client)
+ * through the SAME R4 sandbox wrap a `kind: cli` member's spawn goes through, invokes exactly the one
+ * tool the agent declares (`agent.tool`) with arguments built from `agent.params`'s `{task}`-substituted
+ * template (ruling R2: one dispatch, one call, one artifact — never an interactive multi-call session),
+ * and turns the tool's own text content into the artifact `doc`. Auth is ruling R4, unchanged: `req.env`
+ * is already `buildMemberEnv`'s allowlisted output (the member's granted connectors' env vars, computed
+ * at `AdapterRunner#prepare` before this boundary ever runs).
+ *
+ * NOTES MCP-1C — the sandbox wrap itself (ruling R3, the Conductor's own confinement-fork ruling: an
+ * MCP server gets the IDENTICAL confinement a `cli` member gets, plus the connector's own `home:` for
+ * any declared exception — never a second, looser profile). Mirrors `AdapterRunner#runCli`/`runCliAsync`
+ * closely enough to read side by side:
+ *   - `real` (only the un-injected, default `connectStdioMcpServer` — never a test-injected `opts.connect`
+ *     double, mirroring `preflightCli`'s `this.spawn === bunSpawn` guard exactly: a double is a stand-in
+ *     for arbitrary behaviour, never a real OS process, so wrapping its argv would assert something about
+ *     bwrap/sandbox-exec rather than about this boundary's own logic).
+ *   - a fresh, per-dispatch scratch working directory (mirrors a cli dispatch's own worktree/vendor-
+ *     scratch lifecycle: created immediately before the spawn, removed in `finally`) — an MCP tools/call
+ *     has no cwd of its own (unlike a cli member's `agent.cwd`/`{feature_repo}`), so this IS the "scratch
+ *     working area" the ruling names, independent of whether an OS primitive actually confines it.
+ *   - `scopeHomeForConnector(connector, req.env)` — the SAME `home:` mechanism `env.ts#scopeHome` already
+ *     gives a subscription cli connector, generalized to ANY granted `kind: mcp` connector (Connector.home's
+ *     own doc, types.ts): a per-run scratch HOME symlinking only the connector's declared dotpaths when it
+ *     declares any, the real unscoped HOME otherwise.
+ *   - `buildRemoteSandboxPolicy`/`wrapForSandbox` — the SAME generator `sandbox.ts` already ships (no
+ *     second profile invented): filesystem confined to the scratch cwd + scoped HOME + the studio root
+ *     read-only, network best-effort (granted here unconditionally, since a remote dispatch always holds
+ *     at least its own `server:` connector — `memberNetworkAllowed` reads that identically for cli/remote).
+ * The enforcement level actually used (`wrapped.level`) is returned alongside `doc` so `AdapterRunner#author`
+ * can record it on the artifact — see `AsyncRemoteBoundary.call`'s own doc.
  */
 export function createAsyncStdioRemoteBoundary(repo: Repo, opts: StdioRemoteBoundaryOptions = {}): AsyncRemoteBoundary {
   const connect = opts.connect ?? connectStdioMcpServer;
   return {
-    async call(req: InvokeRequest): Promise<{ doc: string }> {
+    async call(req: InvokeRequest): Promise<{ doc: string; sandbox?: SandboxLevel }> {
       const agent = req.agent;
       const serverName = agent.server;
       if (!serverName) throw new AdapterError(`remote member '${req.member}' declares no 'server'`);
@@ -441,7 +476,32 @@ export function createAsyncStdioRemoteBoundary(repo: Repo, opts: StdioRemoteBoun
       const args = buildMcpToolArguments(agent.params, req.context);
       const timeoutMs = opts.timeoutMs ?? (agent.timeout ?? 600) * 1000;
 
-      const session = await connect({ argv: connector.argv, env: req.env }, { timeoutMs });
+      // NOTES MCP-1C: only the REAL boundary (default `connect`) ever sandboxes — see this function's
+      // own doc for why a test-injected `opts.connect` double must never be wrapped.
+      const real = connect === connectStdioMcpServer;
+      const scratchDir = real ? mkdtempSync(pathJoin(tmpdir(), "levare-mcp-dispatch-")) : undefined;
+      const scopedHome = real ? scopeHomeForConnector(connector, req.env) : undefined;
+      const spawnEnv = scopedHome?.env ?? req.env;
+      let wrapped: { argv: string[]; level?: SandboxLevel; cleanup?: () => void } = { argv: connector.argv };
+      if (real && scratchDir) {
+        const detection = detectSandbox();
+        logRemoteSandboxDebug(`level: ${detection.level} (primitive: ${detection.primitive})`);
+        const policy = buildRemoteSandboxPolicy(repo, req, connector, scratchDir, spawnEnv);
+        wrapped = wrapForSandbox(connector.argv, policy, detection);
+        logRemoteSandboxDebug(
+          `remote dispatch for '${req.member}' via connector '${serverName}': scratch cwd '${scratchDir}', home ${scopedHome?.skipped.length ? `scoped (skipped: ${scopedHome.skipped.join(", ")})` : connector.home?.length ? "scoped" : "unscoped (connector declares no home:)"}, sandbox level '${wrapped.level}'`,
+        );
+      }
+
+      let session: Awaited<ReturnType<typeof connect>>;
+      try {
+        session = await connect({ argv: wrapped.argv, cwd: scratchDir, env: spawnEnv }, { timeoutMs });
+      } catch (e) {
+        wrapped.cleanup?.();
+        scopedHome?.cleanup();
+        if (scratchDir) rmSync(scratchDir, { recursive: true, force: true });
+        throw e;
+      }
       try {
         const result = await session.callTool(tool, args);
         if (result.isError) {
@@ -449,9 +509,12 @@ export function createAsyncStdioRemoteBoundary(repo: Repo, opts: StdioRemoteBoun
         }
         const text = extractMcpText(result);
         if (!text) throw new AdapterError(`remote member '${req.member}' tool '${tool}' on connector '${serverName}' returned no text content`);
-        return { doc: text };
+        return { doc: text, sandbox: wrapped.level };
       } finally {
         await session.close();
+        wrapped.cleanup?.();
+        scopedHome?.cleanup();
+        if (scratchDir) rmSync(scratchDir, { recursive: true, force: true });
       }
     },
   };
@@ -854,6 +917,27 @@ function extractCliUsageTrailer(raw: string): { content: string; tokensUsed: num
  * `darwinXcrunTempDir` are FIX-7 through FIX-12's own accumulated grants — see `SandboxPolicy`'s own
  * per-field docs in `sandbox.ts` for what each does and why.
  */
+// NOTES MCP-1C: the plumbing shared by a cli member's own dispatch policy and a remote/MCP server's —
+// read-only system reach (the studio root, the running binary's own install tree, the resolved
+// argv[0]'s own install tree), the operator's real HOME (the darwin deny target), and the darwin xcrun
+// temp dir. Pulled out so `buildRemoteSandboxPolicy` below can build an equivalent policy without
+// dragging in cli-only concerns (`dispatchGitWriteGrant`, `cliVendorScratchDir`) that don't apply to a
+// spawned MCP server — it never touches a project's git worktree at all.
+function baseSandboxContext(
+  repo: Repo,
+  cwd: string | undefined,
+  argv0: string | undefined,
+  pathEnv: string | undefined,
+  baseEnv?: Record<string, string | undefined>,
+): { readOnlyPaths: string[]; operatorHome: string | undefined; darwinTempDir: string | undefined } {
+  const resolvedBin = argv0 ? resolveArgv0(argv0, cwd, pathEnv) : undefined;
+  const treeDirs = (p: string) => [dirname(p), dirname(dirname(p))];
+  const readOnlyPaths = [repo.root, ...treeDirs(process.execPath), ...(resolvedBin ? treeDirs(resolvedBin) : [])];
+  const operatorHome = baseEnv?.HOME ?? process.env.HOME;
+  const darwinTempDir = resolveDarwinUserTempDir();
+  return { readOnlyPaths, operatorHome, darwinTempDir };
+}
+
 export function buildDispatchSandboxPolicy(
   repo: Repo,
   req: InvokeRequest,
@@ -861,13 +945,9 @@ export function buildDispatchSandboxPolicy(
   argv0: string | undefined,
   baseEnv?: Record<string, string | undefined>,
 ): SandboxPolicy {
-  const resolvedBin = argv0 ? resolveArgv0(argv0, cwd, req.env.PATH) : undefined;
-  const treeDirs = (p: string) => [dirname(p), dirname(dirname(p))];
-  const readOnlyPaths = [repo.root, ...treeDirs(process.execPath), ...(resolvedBin ? treeDirs(resolvedBin) : [])];
-  const operatorHome = baseEnv?.HOME ?? process.env.HOME;
+  const { readOnlyPaths, operatorHome, darwinTempDir } = baseSandboxContext(repo, cwd, argv0, req.env.PATH, baseEnv);
   const sub = subscriptionConnector(repo, req.member);
   const grantedHomeTargets = operatorHome ? (sub?.home ?? []).filter(isSafeHomeDotpath).map((dotpath) => pathJoin(operatorHome, dotpath)) : [];
-  const darwinTempDir = resolveDarwinUserTempDir();
   return {
     cwd: cwd ?? process.cwd(),
     home: req.env.HOME,
@@ -882,6 +962,34 @@ export function buildDispatchSandboxPolicy(
     // generically.
     writablePaths: [...(req.dispatchGitWriteGrant?.subpaths ?? []), ...(req.cliVendorScratchDir ? [req.cliVendorScratchDir] : [])],
     gitWriteGrant: req.dispatchGitWriteGrant,
+    darwinXcrunTempDir: darwinTempDir,
+  };
+}
+
+/**
+ * NOTES MCP-1C (PRD Amendment 3, ruling R3) — the remote/MCP sibling of `buildDispatchSandboxPolicy`.
+ * `cwd` is the dispatch's own fresh, per-dispatch scratch working area (createAsyncStdioRemoteBoundary
+ * creates it fresh, never the project's own worktree — an MCP tools/call has no cwd of its own, unlike a
+ * cli member's `agent.cwd`/`{feature_repo}`). `homeEnv` is whatever `env.ts#scopeHomeForConnector`
+ * returned for THIS connector — the real, unscoped HOME when it declares no `home:`, or the per-run
+ * scratch HOME (symlinks to its declared dotpaths) when it does; threaded straight into `policy.home`
+ * exactly as `buildDispatchSandboxPolicy` threads `req.env.HOME` (`buildSandboxExecProfile`'s own
+ * DEFECT-1 canon-comparison already no-ops a `home` that resolves to the same path as `operatorHome`, so
+ * this needs no additional guard here). `grantedHomeTargets` reads `connector.home` directly — never
+ * `subscriptionConnector`, since ruling R3 generalizes the mechanism to ANY granted `kind: mcp`
+ * connector, `auth: env` or not (Connector.home's own doc, types.ts). No `writablePaths`/`gitWriteGrant`:
+ * a spawned MCP server has no dispatch-worktree git-write need at all.
+ */
+export function buildRemoteSandboxPolicy(repo: Repo, req: InvokeRequest, connector: Connector, cwd: string, homeEnv: Record<string, string>): SandboxPolicy {
+  const { readOnlyPaths, operatorHome, darwinTempDir } = baseSandboxContext(repo, cwd, connector.argv?.[0], req.env.PATH, undefined);
+  const grantedHomeTargets = operatorHome ? (connector.home ?? []).filter(isSafeHomeDotpath).map((dotpath) => pathJoin(operatorHome, dotpath)) : [];
+  return {
+    cwd,
+    home: homeEnv.HOME,
+    allowNetwork: memberNetworkAllowed(repo, req.member),
+    readOnlyPaths,
+    operatorHome,
+    grantedHomeTargets,
     darwinXcrunTempDir: darwinTempDir,
   };
 }
@@ -965,8 +1073,16 @@ export class AdapterRunner implements MemberRunner {
           break;
         }
         case "remote": {
-          const res = this.opts.asyncRemote ? await this.opts.asyncRemote.call(req2) : this.opts.remote.call(req2);
-          raw = res.doc;
+          // NOTES MCP-1C: `sandbox` is only ever set via the REAL boundary (`this.opts.remote`, the
+          // sync/replay-only mock, never wraps anything — see `RemoteBoundary`'s own doc) — mirrors the
+          // cli case immediately below, which likewise only ever gets a `sandbox` level from a real spawn.
+          if (this.opts.asyncRemote) {
+            const res = await this.opts.asyncRemote.call(req2);
+            raw = res.doc;
+            sandbox = res.sandbox;
+          } else {
+            raw = this.opts.remote.call(req2).doc;
+          }
           break;
         }
         case "cli": {
@@ -1204,11 +1320,13 @@ export class AdapterRunner implements MemberRunner {
       );
       if (finalReceipt.plan) lines.push(`  plan: ${finalReceipt.plan}`);
     }
-    // NOTES R4-SANDBOX: the OS-sandbox enforcement level a cli member's spawn actually ran under — a
-    // fact about THIS run, independent of `usage`/`unreported` (a member reporting no usage at all still
-    // carries a real sandbox level; never omitted just because nothing else was reported). Native/remote
-    // never carry one — Ruling 2 wraps only the two cli spawn paths.
-    if (req.agent.kind === "cli" && sandbox) lines.push(`sandbox: ${sandbox}`);
+    // NOTES R4-SANDBOX / NOTES MCP-1C: the OS-sandbox enforcement level this member's spawn actually ran
+    // under — a fact about THIS run, independent of `usage`/`unreported` (a member reporting no usage at
+    // all still carries a real sandbox level; never omitted just because nothing else was reported).
+    // `cli` (Ruling 2) and `remote` (ruling R3 — the SAME sandbox wrap, closing MCP-1C's own deferral) are
+    // the only two kinds that ever spawn a real OS process levare itself confines; `native` never carries
+    // one (the Claude Agent SDK call has no separate process for this module to wrap).
+    if ((req.agent.kind === "cli" || req.agent.kind === "remote") && sandbox) lines.push(`sandbox: ${sandbox}`);
     lines.push("---", "");
     return { doc: lines.join("\n") + content + "\n", receipt: finalReceipt };
   }
