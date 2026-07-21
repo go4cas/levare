@@ -179,17 +179,19 @@ export interface ScopeHomeOptions {
 }
 
 /**
- * NOTES CAP-B: when `member` is granted a `auth: subscription` connector that declares `home:`, give
- * it a PER-RUN scratch `HOME` containing SYMLINKS to only the declared dotpaths from the real `HOME` —
- * never a copy (the vendor's on-disk login is a LIVE credential; revoking the real login must still
- * revoke it here, which only a symlink guarantees). Every other member, and a subscription connector
- * declaring no `home:` (the pre-CAP-B default — see the `SUBSCRIPTION_NO_HOME` validate/doctor
- * warning), gets back `env` completely unchanged — real, unscoped `HOME`, exactly as before this item.
+ * NOTES CAP-B / NOTES MCP-1C (PRD Amendment 3, ruling R3 — the Conductor's own confinement-fork ruling:
+ * an MCP server gets the connector's `home:` mechanism "exactly as home: already scopes a subscription
+ * cli connector"): give a member a PER-RUN scratch `HOME` containing SYMLINKS to only `connector`'s own
+ * declared `home:` dotpaths from the real `HOME` — never a copy (a vendor's on-disk login, or whatever
+ * a granted server's own declared reach names, is a LIVE resource; revoking it in the real HOME must
+ * still revoke it here, which only a symlink guarantees). `connector` absent, or present but declaring
+ * no `home:` (the pre-CAP-B default for a subscription connector — see the `SUBSCRIPTION_NO_HOME`
+ * validate/doctor warning), returns `env` completely unchanged — real, unscoped `HOME`.
  *
- * `env` must already be `buildMemberEnv`'s own output (its `HOME`, when present, is the real one this
- * function symlinks FROM) — this function only ever narrows an already-allowlisted env, never widens
- * one, and reads no connector env vars of its own (a write-gated connector's vars stay withheld exactly
- * as `buildMemberEnv` already decided; `home:` scoping and env-var withholding are orthogonal).
+ * `env` must already be the caller's own allowlisted output (its `HOME`, when present, is the real one
+ * this function symlinks FROM) — this function only ever narrows an already-allowlisted env, never
+ * widens one, and reads no connector env vars of its own (env-var withholding is orthogonal to `home:`
+ * scoping and stays whatever the caller already decided).
  *
  * Scratch dirs are created fresh on every call (never cached/shared across spawns) and MUST be removed
  * by the caller via the returned `cleanup()` once the spawn this env was built for is done.
@@ -199,9 +201,8 @@ export interface ScopeHomeOptions {
  * trusting that a caller validated first. Such an entry is skipped (never symlinked, no exception
  * thrown) and named in the returned `skipped` list; every other declared dotpath still scopes normally.
  */
-export function scopeHome(repo: Repo, member: string, env: Record<string, string>, opts: ScopeHomeOptions = {}): ScopedHome {
-  const sub = subscriptionConnector(repo, member);
-  const dotpaths = sub?.home;
+export function scopeHomeForConnector(connector: Connector | undefined, env: Record<string, string>, opts: ScopeHomeOptions = {}): ScopedHome {
+  const dotpaths = connector?.home;
   const realHome = env.HOME;
   if (!dotpaths || dotpaths.length === 0 || !realHome) return { env, cleanup() {}, skipped: [] };
 
@@ -251,4 +252,14 @@ export function scopeHome(repo: Repo, member: string, env: Record<string, string
       }
     },
   };
+}
+
+/** The `cli`/`native` member-scoped counterpart to `scopeHomeForConnector` — resolves `member`'s own
+ * granted `auth: subscription` connector (the only connector kind this call site has ever scoped
+ * against) and delegates. Unchanged behaviour from before NOTES MCP-1C; the remote/MCP dispatch path
+ * (adapters.ts#createAsyncStdioRemoteBoundary) calls `scopeHomeForConnector` directly with its own
+ * resolved `kind: mcp` connector instead, since a remote member's `home:`-declaring connector need not
+ * be `auth: subscription` at all (ruling R3: "the connector's existing home: mechanism", generalized). */
+export function scopeHome(repo: Repo, member: string, env: Record<string, string>, opts: ScopeHomeOptions = {}): ScopedHome {
+  return scopeHomeForConnector(subscriptionConnector(repo, member), env, opts);
 }

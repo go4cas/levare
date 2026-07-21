@@ -192,16 +192,20 @@ export interface Connector {
    */
   actions?: Record<string, string[]>;
   /**
-   * NOTES CAP-B (v1.1 capability layer, part B, item 4): dotpaths under `$HOME` the vendor CLI actually
-   * needs (e.g. `[".codex"]`) — meaningful for `auth: subscription` connectors, whose credential is a
-   * live, disk-stored login rather than an env var. When a member is granted a subscription connector
-   * that declares `home`, `env.ts#scopeHome` gives that member's spawned process a per-run scratch
-   * `$HOME` containing SYMLINKS to only these paths from the real home — never a copy, since the login
-   * is a live credential (revoking it in the real home revokes it everywhere it's symlinked). A
-   * subscription connector declaring no `home` keeps the pre-CAP-B behaviour: the member's spawned
-   * process sees the real, unscoped `$HOME` (see the `SUBSCRIPTION_NO_HOME` doctor/validate warning).
-   * Undeclared/empty is a no-op for an `auth: env` connector — there is no live credential on disk for
-   * one to scope.
+   * NOTES CAP-B (v1.1 capability layer, part B, item 4) / NOTES MCP-1C (PRD Amendment 3, ruling R3):
+   * dotpaths under `$HOME` this connector's own backend actually needs (e.g. `[".codex"]`, or
+   * `[".npm"]` for a bunx/npx-spawned MCP server's own cache dir). Originally scoped to `auth:
+   * subscription` connectors, whose credential is a live, disk-stored login rather than an env var —
+   * `env.ts#scopeHomeForConnector` gives a spawned process a per-run scratch `$HOME` containing
+   * SYMLINKS to only these paths from the real home, never a copy, since the underlying resource is
+   * live (revoking a subscription login in the real home revokes it everywhere it's symlinked). Ruling
+   * R3 generalizes the SAME mechanism to a `kind: mcp` connector's declared stdio server, `auth: env` or
+   * not: an MCP server otherwise gets the identical deny-user-data confinement a `cli` member's spawn
+   * does (adapters.ts#createAsyncStdioRemoteBoundary), and `home:` is the one, auditable, per-connector
+   * way to declare a specific real-HOME path that server legitimately needs — never a blanket exception.
+   * A connector declaring no `home` keeps the pre-CAP-B behaviour: the spawned process sees the real,
+   * unscoped `$HOME` (see the `SUBSCRIPTION_NO_HOME` doctor/validate warning, `auth: subscription`
+   * only). Undeclared/empty is a no-op for anything with no live resource on disk to scope.
    */
   home?: string[];
 }
