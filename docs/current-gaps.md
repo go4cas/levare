@@ -41,14 +41,21 @@ that remains by design:
   all (an unfetched SSH URL, a placeholder) is likewise unaffected — no work branch, no merge gate, no
   worktree, flow completion behaves exactly as it did before either goal.
 
-## Remote/MCP members
+## Remote/MCP members — the stdio case is now real and sandboxed (docs/prd-amendment-3.md, NOTES MCP-1A/1B/1C)
 
-An agent may declare `kind: remote` and it validates cleanly — but every remote invocation is served
-by a mocked `RemoteBoundary` (`adapters.ts`); no live MCP call exists anywhere in the codebase today.
-`levare validate`, `levare doctor`, and the registry's agent card all surface an explicit warning for
-any `kind: remote` declaration so a studio author can't mistake the schema accepting the declaration
-for the runtime honoring it (NOTES REV1, Finding 3). The wiring itself — an actual MCP client, a real
-remote dispatch path — was and is out of scope; only the honesty layer was built.
+A `kind: remote` agent declaring a real, granted, stdio `kind: mcp` connector now produces real work: a
+real JSON-RPC handshake and tool call against a spawned local MCP server process
+(`adapters.ts#createAsyncStdioRemoteBoundary`, `mcp-client.ts`), sandboxed exactly like a `kind: cli`
+member's own spawn (ruling R3, NOTES MCP-1C — the same generator, sandbox.ts, plus the connector's own
+`home:` for any declared per-server exception). `levare validate`/`levare doctor`/the registry's agent
+card narrowed their REV1-era warning accordingly (env.ts#remoteAgentImplemented is the single dividing
+line): a working stdio remote member carries no "not implemented" telling at all, only the same
+`SANDBOX_UNAVAILABLE` a `kind: cli` agent already gets when this host has no working OS primitive. What
+remains a mocked `RemoteBoundary` fixture (`adapters.ts`), by ruling R1, is the still-deferred HTTP/SSE
+transport — a `kind: mcp` connector whose `server:` names an HTTP endpoint rather than a stdio `argv:`.
+The MCP-1C sandbox wrap's own live-host verification (`scripts/repro-mcp-1c-sandbox.ts`) is the
+Conductor's standing macOS gate, the same posture NOTES R4-SANDBOX's own live rounds established for
+`kind: cli` — this container can only prove the wiring, never the primitive.
 
 ## Conversation persistence — closed (NOTES V11-CONV), two narrower gaps remain
 
@@ -257,9 +264,13 @@ member).length > 0`. First surfaced as a live finding by NOTES R4-VENDOR-CLI's v
 `gh` dispatch, and re-confirmed holding through that investigation's round 4 close-out. Its consequence,
 confirmed by construction: **levare cannot express "may hold this connector's credential, must not reach
 the network" for a `kind: cli` member** — credential-scope and network-scope are welded at the
-connector-grant level. (Scoped to `cli` specifically: NOTES R4-SANDBOX v2 Ruling 2 wraps only the two
-`cli` spawn paths; a `native`/`remote` member holding a connector never goes through this sandbox
-mechanism, so the coupling doesn't reach them.) **The Conductor's ruling: this is not a missing third
+connector-grant level. (Originally scoped to `cli` specifically — NOTES R4-SANDBOX v2 Ruling 2 wrapped
+only the two `cli` spawn paths, with `native`/`remote` exempt since neither went through this sandbox
+mechanism. NOTES MCP-1C, ruling R3, extends the IDENTICAL coupling to `kind: remote`'s own spawned MCP
+server process — `env.ts#memberNetworkAllowed` is read by `adapters.ts#buildRemoteSandboxPolicy`
+exactly as it is by `buildDispatchSandboxPolicy`, and a remote member always holds at least its own
+`server:` connector, so this reach is granted by construction. `native` remains exempt — a Claude Agent
+SDK call has no separate spawned process for the sandbox to wrap.) **The Conductor's ruling: this is not a missing third
 dimension awaiting construction, because levare has no connector shape that names a purely-local
 capability in the first place** — Ruling 2's own reasoning is that every connector IS levare's declared
 way of naming an external reach; "hold a credential but deny network" would require inventing a connector

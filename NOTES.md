@@ -12118,3 +12118,262 @@ gives a `kind: cli` member's spawn. Phase 1c (ruling R3) is the sandbox wrap, an
 started in this goal — `mcp-client.ts`'s own header, `createAsyncStdioRemoteBoundary`'s own doc, and
 this NOTES entry all say so. HTTP/SSE transport (ruling R1) remains its own, separately-deferred phase;
 the REV1 honesty warnings now name exactly that case and nothing more.
+
+# NOTES MCP-1C (2026-07-21) — the sandbox wrap: a spawned MCP server gets the IDENTICAL confinement a cli member gets
+
+PRD Amendment 3, ruling R3 (`docs/prd-amendment-3.md` §3) names this phase explicitly: "stdio MCP
+servers run inside the R4 sandbox." Phase 1a (NOTES MCP-1A) proved the handshake; Phase 1b (NOTES MCP-1B)
+closed the mock and made a real tool call produce a real artifact, UNSANDBOXED, by design, naming Phase
+1c as the deferral. This goal closes that deferral — the last one invariant 10's remote clause named.
+
+## The Conductor's ruling on the confinement fork
+
+Before any code: does an MCP server get its OWN, second sandbox profile (network-forward, tuned for a
+Node/npm process), or the SAME one a `cli` member's spawn already gets? **Ruled: the SAME one, no
+exceptions.** An MCP server is just another spawned process the R4 sandbox exists to confine — deny-
+user-data (operator HOME denied, scratch working area, studio root read-only), network denied unless the
+connector grants it, `full`/`fs-only`/`none` reported honestly per dispatch, exactly like `cli`. **PLUS**
+the connector's own `home:` mechanism — already built for a subscription `cli` connector (NOTES CAP-B) —
+generalizes to name any specific real-HOME path a given MCP server legitimately needs: an auditable,
+per-connector, per-server grant, declared once, visible in the registry, never a blanket exception carved
+into the sandbox generator itself. Default is full confinement; a server reaching operator paths must
+DECLARE them via `home:` on its own connector. This is the entire design — everything below is that
+ruling, implemented.
+
+## What was built
+
+**`sandbox.ts` — UNTOUCHED.** No second profile, no new field for "this is an MCP server." The exact
+same `detectSandbox`/`wrapForSandbox`/`buildSandboxExecProfile`/`bubblewrapArgv`/`unshareArgv` a `cli`
+member's spawn already goes through now also wraps a remote member's spawned MCP server process — the
+ruling's own "reuse the one cli model" instruction, taken literally: if this goal had needed to touch
+`sandbox.ts` at all, that would have been the ruling being violated, not honored.
+
+**`env.ts` — `scopeHome` split into a thin wrapper over a new `scopeHomeForConnector`.** The pre-existing
+`scopeHome(repo, member, env)` always resolved `subscriptionConnector(repo, member)` internally — correct
+for a `cli`/`native` member (whose ONLY connector that could ever declare a live, disk-stored credential
+worth scoping is its granted `auth: subscription` one), wrong for `remote`: a `kind: mcp` connector's
+`home:` need not be `auth: subscription` at all (an MCP server's own npm cache dir is not a "live login",
+just a real-HOME path it happens to need). `scopeHomeForConnector(connector: Connector | undefined, env,
+opts)` is the SAME symlink-scoping body, generalized to take its connector explicitly rather than
+re-deriving one from a member's subscription grant — `scopeHome` is now exactly `scopeHomeForConnector
+(subscriptionConnector(repo, member), env, opts)`, byte-identical behavior for every existing `cli`/
+`native` caller. `createAsyncStdioRemoteBoundary` calls `scopeHomeForConnector` directly with the
+remote member's OWN resolved `kind: mcp` connector — the generalization ruling R3 names ("exactly as
+`home:` already scopes a subscription cli connector"), reusing the mechanism rather than forking it.
+`Connector.home`'s own doc (types.ts) and the connector schema's own comment (validate.ts) are updated to
+say so; the schema itself needed no change — `home?: string[]` was never type-restricted to `auth:
+subscription` connectors, only documented that way.
+
+**`adapters.ts` — the actual wrap, inside `createAsyncStdioRemoteBoundary`.** Mirrors `AdapterRunner#
+runCli`/`runCliAsync` closely enough to read side by side:
+
+- `buildDispatchSandboxPolicy` (the `cli` policy builder) is refactored: its shared plumbing (read-only
+  system reach — the studio root, the running binary's own install tree, the resolved argv[0]'s own
+  install tree — the operator's real HOME, and the darwin xcrun temp dir) is pulled into a new
+  `baseSandboxContext` helper, so a sibling builder can reuse it without dragging in cli-only concerns.
+  `buildDispatchSandboxPolicy` itself is otherwise byte-identical in behavior — same fields, same
+  `subscriptionConnector` lookup, same `dispatchGitWriteGrant`/`cliVendorScratchDir` handling.
+- `buildRemoteSandboxPolicy(repo, req, connector, cwd, homeEnv)` — the remote sibling. No
+  `writablePaths`/`gitWriteGrant`: a spawned MCP server never touches a project's git worktree at all (an
+  MCP tools/call has no cwd of its own — Phase 1a/1b's own header already said so), so there is nothing
+  to reseal. `grantedHomeTargets` reads `connector.home` directly, never `subscriptionConnector` — ruling
+  R3's own generalization, in the one place it has to land.
+- `createAsyncStdioRemoteBoundary`'s `real` guard (`connect === connectStdioMcpServer`, never a test-
+  injected double) is the EXACT same reasoning `preflightCli`'s `this.spawn === bunSpawn` guard already
+  uses: a double is a stand-in for arbitrary behaviour, never a real OS process, so wrapping its argv
+  would assert something about bwrap/sandbox-exec rather than about this boundary's own logic. Only the
+  real boundary creates a scratch dir, scopes HOME, or wraps argv.
+- A fresh, per-dispatch scratch working directory (`mkdtempSync`, unconditional whenever `real` — mirrors
+  `createCliVendorScratch`'s own "created unconditionally when real, cost is trivial" precedent) is the
+  MCP dispatch's own version of a `cli` member's `{feature_repo}` cwd — the "scratch working area" ruling
+  R3 names, independent of whether an OS primitive ends up confining it at all. Passed as BOTH the
+  sandbox policy's `cwd` (the read-write bind target) and the actual `Bun.spawn` cwd (`command.cwd`) —
+  never the ambient process cwd an MCP tools/call previously, silently, inherited.
+- `scopeHomeForConnector(connector, req.env)` scopes HOME exactly as described above; the resulting env
+  (whole-environment-replace, `mcp-client.ts`'s own pre-existing contract, unchanged) is what the spawned
+  server actually receives.
+- `wrapForSandbox(connector.argv, policy, detection)` composes the wrapped argv — the SAME function, the
+  SAME per-call `detectSandbox()` (never cached, mirrors `sandboxWrap`'s own header), the SAME
+  `LEVARE_SANDBOX_DEBUG=1` diagnostic prints (profile text, composed argv, cwd) a `cli` dispatch's own
+  wrap already produces, for free, by construction.
+- Cleanup (`wrapped.cleanup?.()`, `scopedHome.cleanup()`, `rmSync(scratchDir, ...)`) runs in a `finally`
+  around the session's own lifetime — success, `isError`, or a connect-time throw alike — mirroring
+  `withHomeScope`/`withDispatchWorktree`'s own create-immediately-before/clean-up-immediately-after shape.
+- `AsyncRemoteBoundary.call` now returns `{ doc, sandbox?: SandboxLevel }` — `produceAsync`'s `remote`
+  case threads `res.sandbox` through exactly like the `cli` case already threads `out.sandbox`, and
+  `AdapterRunner#author`'s own `sandbox:` line condition widens from `kind === "cli"` to `kind === "cli"
+  || kind === "remote"`. The sync `RemoteBoundary`/`produce()` path stays mocked forever (never a real
+  spawn — unchanged since MCP-1B), so it never carries a `sandbox:` line, matching `cli`'s own identical
+  sync/async split.
+
+**`mcp-client.ts` — untouched functionally, header comment corrected.** The module never claimed to
+sandbox anything itself (`connectStdioMcpServer` just spawns `command.argv` verbatim) — that was always
+true, and remains true; what changed is WHERE the composing happens (the caller, now for real) rather
+than IN this module. The header's own "UNSANDBOXED, Phase 1c not built" framing is replaced with an
+explicit "this module carries no sandboxing by design — the caller composes wrapped argv/scoped env/
+scratch cwd before ever calling this function, mirroring how `Bun.spawn` itself has no sandbox
+awareness" — the same honest-by-construction shape the rest of this codebase already uses for a layered
+boundary (`sandbox.ts` composes, `adapters.ts#bunSpawn`/`asyncBunSpawn` merely execute).
+
+## The honesty layer (validate/doctor/registry)
+
+**`validate.ts`** — `validateAgentRemoteImplementation` (the tree-wide pass that already resolves
+`server:` → a real, granted, stdio `kind: mcp` connector for `REMOTE_NOT_IMPLEMENTED`) grew a `sandbox?`
+parameter and an `else if` branch: when a remote agent IS fully implemented (`reason === null`) and
+`sandbox.level === "none"`, it now emits the SAME `SANDBOX_UNAVAILABLE` code a `kind: cli` agent already
+gets from `validateAgentSandboxWarning` — deliberately NOT by widening that sibling function's own
+`data.kind !== "cli"` guard (which only ever sees bare per-file frontmatter, with no connector-registry
+access to resolve "is this remote agent's connector real, granted, and stdio"), but by adding the check
+where the resolution ALREADY happened, avoiding a second, independently-drifting resolution of the exact
+same fact. `validatePath`'s own call site threads its existing `sandbox` param through — no new plumbing.
+
+**`doctor.ts`/`cli.ts`** — `formatDoctor`/`runDoctor`'s `cliAgents` parameter is renamed `sandboxedAgents`
+(the "left unconfined" warning's own naming list is no longer cli-only) and its wording drops the word
+"cli" ("unconfined cli spawns" → "unconfined cli/remote spawns", "these cli members" → "these members").
+`cli.ts#runDoctorCmd` now computes `remoteImplementedAgents` (`env.ts#remoteAgentImplemented` filter,
+mirroring the pre-existing `remoteAgents`/`cliAgents` filters right next to it) and merges it into
+`sandboxedAgents` before the call — the ONLY new computation; `formatDoctor` itself just prints whatever
+list it's handed, unchanged in shape.
+
+**`board/render/registry.ts`** — the per-agent `sandboxWarning` callout's condition widens from `a.kind
+=== "cli"` to `(a.kind === "cli" || (a.kind === "remote" && remoteAgentImplemented(repo, a)))`, same
+`sandbox.level === "none"` gate, same callout text (never claimed to be cli-specific in its own wording,
+so no text change needed there).
+
+Net effect, stated as the goal's own instruction asked: **a working stdio remote member is now SANDBOXED
+where the host has a primitive, and says so** — no `validate`/`doctor`/registry surface anywhere claims
+"unsandboxed" for a real remote dispatch anymore; the ONLY warning such a member can still carry is the
+identical, honest "no working primitive on THIS host" a `cli` member already carries, never a
+remote-specific residual.
+
+## The harness — `scripts/repro-mcp-1c-sandbox.ts`
+
+Built in the `repro-r4-vendor-cli-gh.ts` ladder style, per the goal's own instruction: drives the real,
+unmodified production entry point (`AdapterRunner.produceAsync`, real `createAsyncStdioRemoteBoundary`,
+never a hand-rolled spawn), leaves `LEVARE_SANDBOX_DEBUG=1` set so production's own debug prints (profile
+text, composed argv, cwd, scratch/home-scoping decision, raw spawn result for the darwin probe) do the
+evidence-printing, and never re-derives or re-captures any of it. Four steps:
+
+1. **vendor-echo** — a REAL `bunx`/`npx`-spawned `@modelcontextprotocol/server-everything` (the same
+   reference server MCP-1A/1B already prove a real handshake/dispatch against), no `home:` declared. This
+   is the step built to surface a REAL Node/npm vendor finding — the config-EPERM/trustd class NOTES
+   R4-VENDOR-CLI found for `gh` — since a bunx-spawned Node process does more at startup than the fake
+   fixture server or the member stub ever did (npm cache, Node's own config/state dirs). Informational;
+   gated on `bunx`/`npx` actually resolving.
+2. **decoy-deny** — the MCP-shaped equivalent of the gh harness's own bare `cat <decoy>` step. An MCP
+   tool call has no shell, so `fixtures/stubs/fake-mcp-server.ts` (Phase 1a's own fixture) gained a
+   `read-home-file` tool: `readFileSync(join(process.env.HOME, dotpath))`, run INSIDE the spawned
+   process — a connector declaring NO `home:`, asked to read a decoy planted directly under the
+   operator's own real `$HOME`. MUST fail on a working sandbox (the FIX-3/FIX-4 operator-home decoy
+   proof, reached through JSON-RPC).
+3. **home:-grant** — the SAME decoy, the SAME tool, but the connector NOW declares `home:` naming the
+   decoy's own parent dotpath. MUST succeed on a working sandbox — ruling R3's own centerpiece, proven
+   end to end.
+4. **studio-root-read** — a second new fixture tool, `read-abs-file` (`readFileSync(path)`, an absolute
+   path), reading a real file under the studio root. MUST succeed regardless of sandbox tier — mirrors
+   `cli`'s own "excluding the studio root broke most of this repo's own real-spawn fixtures" finding
+   (NOTES R4-SANDBOX-FIX): `buildRemoteSandboxPolicy`'s `readOnlyPaths` always includes `repo.root`.
+
+A best-effort macOS kernel-denial capture (`log show`, filtered for `bun`/`node`/`npm`/`npx`/`Sandbox:`)
+runs after, mirroring the gh harness's own step 6.
+
+**Degrades honestly in-container, confirmed by an actual run here:** `detectSandbox()` reports `platform=
+linux primitive=none level=none` (this dev container's own standing reality — `bwrap`/`unshare` are on
+PATH and both fail every real invocation, confirmed directly in the captured `LEVARE_SANDBOX_DEBUG`
+output: `bwrap: No permissions to create a new namespace`, `unshare: unshare failed: Operation not
+permitted`). Step 1 (the real bunx-spawned reference server) ran for real and SUCCEEDED — this
+container's own npm registry access is real, confirmed by NOTES MCP-1A. Steps 2/3/4 all dispatched
+successfully end to end (proving the scratch-cwd/home-scoping/argv-passthrough wiring), but steps 2/3's
+own must-fail/must-succeed assertions printed `SKIPPED, not a pass or fail` rather than a vacuous verdict
+— exactly the goal's own "no primitive means the sandboxed steps skip, never pass vacuously" instruction,
+proven by the script's own output, not merely asserted in this NOTES entry. Step 4 (studio-root-read)
+genuinely succeeded (trivially true at `level: none`, but the dispatch itself — scratch cwd, connector
+resolution, tool call — is real and exercised).
+
+Fixture extension: `fixtures/stubs/fake-mcp-server.ts` gained `read-abs-file`/`read-home-file` (always
+available, regardless of `mode`) — both report `isError: true` (never throw/exit the fixture process) on
+a failed read, since an EPERM/ENOENT IS the signal these tests/this harness exist to observe.
+
+## Tests
+
+`tests/adapters.test.ts` — the `fakeServerConnector`/`remoteTestRepo`/`baseReq` helpers (previously
+`describe`-scoped to the MCP-1B plumbing block) are promoted to module scope so a new sibling `describe`
+can share them; `fakeServerConnector`'s own argv gained an ABSOLUTE path to `fake-mcp-server.ts`
+(`import.meta.dir`-resolved) — the real boundary now spawns every real dispatch in a fresh scratch cwd,
+so the pre-existing relative `"fixtures/stubs/fake-mcp-server.ts"` argv element would no longer resolve.
+New `describe("remote adapter — sandboxed real spawn (NOTES MCP-1C...)")`:
+
+- a wiring test asserting the produced artifact's `sandbox:` line is one of `full|fs-only|none` (passes
+  on any host, since it only asserts the line exists and is well-formed, never a specific level);
+- the test-double-never-sandboxed proof (`opts.connect` override sees `cwd: undefined`, unwrapped argv,
+  `sandbox: undefined` on the result) — the remote sibling of the pre-existing cli "an injected CliSpawn
+  never gets wrapped" test;
+- a `LEVARE_SANDBOX_DEBUG=1` capture test, proving the debug lines actually print for a real remote
+  dispatch;
+- THREE `test.skipIf(hostSandbox.level !== "full")` proofs — decoy-deny, `home:`-grant, and studio-root-
+  read — mirroring the exact `hostSandbox = detectSandbox()` / `test.skipIf` pattern this file's own
+  pre-existing cli decoy tests already established, so they run for real on a host where `bubblewrap`
+  actually works and skip honestly here.
+
+`tests/validate.test.ts` — a new `describe("SANDBOX_UNAVAILABLE for a fully implemented remote agent")`:
+fires for an implemented remote agent under `level: "none"`; never fires for an unimplemented one
+(REMOTE_NOT_IMPLEMENTED already told the whole story); never fires when `sandbox` is omitted; never fires
+when the level is a working primitive.
+
+`tests/sandbox.test.ts` — the pre-existing `formatDoctor` "prints none plainly" test's own exact-text
+assertion updated for the wording change (`"unconfined cli spawns"` → `"unconfined cli/remote spawns"`);
+a new sibling test proves a `remote` agent name renders in the same per-agent warning list alongside a
+`cli` one.
+
+`tests/board-render.test.ts` — a new test proving the registry's sandbox-unavailable callout fires for a
+fully-implemented remote agent under `level: "none"` and does NOT fire for an unimplemented one (there is
+nothing for the host's sandbox state to be a fact ABOUT in that case).
+
+## Docs
+
+`docs/current-gaps.md` — the "Remote/MCP members" register entry (badly stale even before this goal — it
+still described the pre-Amendment-3 REV1 state, "no live MCP call exists anywhere," never updated by
+MCP-1A/1B) is rewritten to state the stdio case is real and sandboxed, naming the dividing line
+(`remoteAgentImplemented`) and the still-deferred HTTP/SSE case. The "Connector trust-tier taxonomy"
+entry's own credential/network-coupling paragraph — which asserted "a `native`/`remote` member holding a
+connector never goes through this sandbox mechanism" — is corrected: true for `native` (no separate
+spawned process to wrap, still), no longer true for `remote` since this goal.
+
+`docs/guide/06-operations.md` — "What levare does not constrain" section extended: the opening claim, the
+`tools:`-enforcement table's `remote` row (was "Mocked," now correctly described as a different
+vocabulary — `tool:` singular, N/A to this table — with a pointer to its own real sandbox), and the full
+OS-sandboxing paragraph, all updated to name `remote`'s identical confinement alongside `cli`'s.
+
+## Verification (in-container leg)
+
+`bun test` — 1237 pass, 9 skip, 0 fail, across 92 files. This goal's own new tests: 6 in
+`tests/adapters.test.ts`'s new sandboxed-remote `describe` block (3 always-run, 3 `skipIf(full)` joining
+this file's own pre-existing 5 cli-only ones — 8 skip total in that file, matching the suite-wide 9 minus
+1 unrelated pre-existing skip elsewhere), 4 in `tests/validate.test.ts`'s SANDBOX_UNAVAILABLE-for-remote
+block, 1 in `tests/sandbox.test.ts`, 1 in `tests/board-render.test.ts` — 12 new tests, 9 of which run for
+real in this container and 3 of which honestly skip.
+`bunx tsc --noEmit` → exit 0. `bun run deps:check` → `deps ok` (no new dependency). `bun run build` →
+succeeds. `bun run src/cli.ts validate fixtures/golden` → `valid`, the same two pre-existing
+`SANDBOX_UNAVAILABLE` warnings (finch/rook, `kind: cli`) — unchanged, since the golden fixture declares
+no fully-implemented `kind: remote` agent. `bun run src/cli.ts replay fixtures/golden --stubs` → oracle
+match, byte-for-byte (replay never touches the remote dispatch path — `produce()`'s own `remote` case
+stays the mocked, sync boundary, unchanged by this goal). `bun run docs:generate` → no drift (the
+`Connector.home` schema shape itself never changed, only its doc comment — the cheatsheet's own generated
+row is type-only). `bun run scripts/repro-mcp-1c-sandbox.ts` → ran end to end, reported honestly (see
+above) — the harness itself is proven runnable and correctly degrading, not merely written.
+
+## What this goal does NOT claim
+
+**The live-host leg is pending the Conductor's own macOS run** — the standing rule (anything touching
+`sandbox.ts`'s own callers requires it) applies here exactly as it did for every R4-SANDBOX-FIX round and
+for R4-VENDOR-CLI. This container can prove the wiring (scratch dir created, HOME scoped, argv composed,
+debug output correct, honest degradation) but CANNOT prove the sandbox itself confines anything, because
+nothing on this host actually can. Run `bun run scripts/repro-mcp-1c-sandbox.ts` on a live macOS host (or
+a Linux host with working `bubblewrap`) for the real verdict: decoy-deny must fail, `home:`-grant must
+succeed, studio-root-read must succeed, step 1's vendor-echo dispatch must survive sandboxed startup
+cleanly (any HANG/crash there is a real, expected-class finding — diagnose evidence-first from the
+printed profile/argv/raw-result, fix with the narrowest grant that evidence justifies, re-run step 2's
+own decoy-must-still-deny check after any such grant is added, exactly the R4-VENDOR-CLI method). Nothing
+in `validate`/`doctor`/the registry/this NOTES entry claims the live-host leg already ran — only that the
+in-container leg is green and the harness that closes it is built, hand-runnable, and itself verified to
+degrade honestly rather than pass vacuously.

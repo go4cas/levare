@@ -109,9 +109,11 @@ the default (`proposal`) is the safer posture for anything that changes state ou
 
 This is the part most tools would leave unsaid. levare says it plainly:
 
-**levare governs which agents run, and what they can see — and, for a `cli` member and best-effort
-per-OS, what it can reach on disk and over the network once it's running (NOTES R4-SANDBOX, v2 Ruling
-2). It does not govern *which named tool* a `cli` member uses within that reach.**
+**levare governs which agents run, and what they can see — and, for a `cli` member's own spawned
+process and, since PRD Amendment 3 ruling R3 (NOTES MCP-1C), a `remote` member's spawned MCP server
+process, best-effort per-OS, what it can reach on disk and over the network once it's running
+(NOTES R4-SANDBOX, v2 Ruling 2). It does not govern *which named tool* a `cli` member uses within that
+reach.**
 
 ### `tools:` — the vocabulary is real, and enforcement depends on `kind`
 
@@ -125,7 +127,7 @@ discovered as a silent no-op at run time. But naming a real tool is not the same
 |------------|-------------------------------------------------------------------------------------------|
 | `native`   | **Enforced.** The declared list forwards to the Claude Agent SDK's own `tools`/`allowedTools` boundary, verbatim — the SDK boundary receives exactly what you declared, nothing implicit. Declaring none keeps the current default (an empty allowlist) unchanged. |
 | `cli`      | **Not enforced at the per-tool level — warned.** There is no SDK boundary in the cli spawn path for a named-tool allowlist to reach; `finch`'s own `codex` binary decides what it can do, not levare. The OS sandbox below narrows the member's *overall* reach, but a sandbox can't tell "may use Read" from "may use Write" the way `tools:` itself describes — so `levare validate`/`levare doctor` still warn plainly (`CLI_TOOLS_NOT_ENFORCEABLE`) when a cli agent declares `tools:`, narrowed by the sandbox, never silenced by it. The only way to silence the warning itself is to remove the field and encode the constraint in the connector/command instead, via the vendor's own flags (`codex --sandbox read-only` is this studio's own in-tree precedent). |
-| `remote`   | **Mocked.** No live MCP call exists yet (see the `kind: remote` note above) — nothing to enforce against.  |
+| `remote`   | **N/A — different vocabulary.** A `remote` member declares `tool:` (singular) — the ONE MCP server tool it calls (PRD Amendment 3 ruling R2, one dispatch, one call) — never `tools:`'s SDK allowlist; there is nothing here for that field to enforce. Its spawned MCP server process gets the same OS-level sandbox a `cli` member's spawn does (below, ruling R3). |
 
 A `native` member's capabilities really are bounded by its declared allowlist now. A `cli` member is
 still a wrapped foreign binary that decides for itself which of ITS OWN tools/flags to use with whatever
@@ -143,16 +145,22 @@ is more precise than levare's coarser process-level confinement.
 Side-effecting connectors gated as proposals (the `effects: read | write` declaration above) closed the
 "levare cannot tell a read from a write" half of the capability layer (part A). Real `native` tool
 forwarding and a symlinked, per-run scoped `HOME` (the section above) close part B. **OS-level sandboxing
-(v2, NOTES R4-SANDBOX) is now closed too:** both real `cli` spawn paths run inside an OS sandbox wherever
-a working primitive exists on the host — `bubblewrap` on Linux (falling back to a raw `unshare`
-confinement when `bubblewrap` isn't installed but the kernel still allows it), a generated `sandbox-exec`
-profile on macOS. Filesystem is a hard limit when a primitive works: the member's process can reach its
-own per-dispatch git worktree, its own scoped `HOME`, the studio root itself (read-only — so a command
-checked into the studio, and a `context_artifacts: paths` member's own consumed-artifact reads, both keep
-working), the running levare binary's own install and wherever the member's own interpreter resolves to,
-and a small set of baseline system paths — nothing else; a decoy file anywhere outside that reach is
-genuinely unreadable, proven by a dedicated test. Network is best-effort — denied unless the member holds
-a connector granting it somewhere to reach. **Detection is never assumed from the platform:** a host can
+(v2, NOTES R4-SANDBOX; extended to remote/MCP by PRD Amendment 3 ruling R3, NOTES MCP-1C) is now closed
+too:** every real `cli` spawn, AND a real `remote` member's own spawned MCP server process, run inside an
+OS sandbox wherever a working primitive exists on the host — `bubblewrap` on Linux (falling back to a raw
+`unshare` confinement when `bubblewrap` isn't installed but the kernel still allows it), a generated
+`sandbox-exec` profile on macOS; the SAME generator either way, never a second, looser profile for MCP.
+Filesystem is a hard limit when a primitive works: the member's process can reach its own per-dispatch
+working area (a `cli` member's git worktree; a `remote` member's fresh per-dispatch scratch cwd — an MCP
+tools/call has no cwd of its own), its own scoped `HOME` (a `remote` member's connector can declare its
+OWN `home:` dotpaths a spawned server legitimately needs, the identical mechanism a subscription `cli`
+connector already uses), the studio root itself (read-only — so a command checked into the studio, and a
+`context_artifacts: paths` member's own consumed-artifact reads, both keep working), the running levare
+binary's own install and wherever the member's own interpreter resolves to, and a small set of baseline
+system paths — nothing else; a decoy file anywhere outside that reach is genuinely unreadable, proven by
+a dedicated test for both `cli` and `remote`. Network is best-effort — denied unless the member holds a
+connector granting it somewhere to reach (a `remote` member always holds at least its own MCP server
+connector, so this is granted by construction for it). **Detection is never assumed from the platform:** a host can
 have `bubblewrap` on `PATH` and still not actually support it (this project's own dev container is exactly
 that case — unprivileged user namespaces disabled by the outer container), and levare probes a real
 invocation before trusting either primitive, at both `levare doctor` time and at every spawn. A live macOS
@@ -163,11 +171,12 @@ it's written in; and the original design left out the studio root and the interp
 location, which is exactly the reach an ordinary vendor CLI needs (NOTES R4-SANDBOX-FIX). When neither
 primitive works, the spawn proceeds unsandboxed rather than failing — a Conductor ruling, not an oversight
 — and `levare doctor`/`levare validate`/the registry all say so plainly (`SANDBOX_UNAVAILABLE`, the
-sibling to `CLI_TOOLS_NOT_ENFORCEABLE` above), with the actual
+sibling to `CLI_TOOLS_NOT_ENFORCEABLE` above — fired per `cli` agent, and per fully-implemented `remote`
+agent), with the actual
 enforcement level (`full` / `fs-only` / `none`) recorded on the produced artifact every run. Treat a
-`cli` member with the same caution you'd treat any script you're about to run regardless: know what the
-binary is, and grant it only what it needs — the sandbox narrows the blast radius of a mistake, it
-doesn't remove the need for that judgment.
+`cli` member, or a `remote` member's granted MCP server, with the same caution you'd treat any script
+you're about to run regardless: know what the binary is, and grant it only what it needs — the sandbox
+narrows the blast radius of a mistake, it doesn't remove the need for that judgment.
 
 ---
 
