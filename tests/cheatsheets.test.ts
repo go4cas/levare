@@ -11,7 +11,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generateAll, OUT_DIR, skeletonMarkdown } from "../scripts/generate-cheatsheets.ts";
+import { generateAll, INDEX_FILENAME, OUT_DIR, skeletonMarkdown } from "../scripts/generate-cheatsheets.ts";
 import {
   ARTIFACT_SCHEMA,
   REGISTRY_SCHEMAS,
@@ -35,6 +35,22 @@ describe("cheatsheet generation", () => {
             `no longer matches what src/validate.ts's schemas would generate`,
         );
       }
+    }
+  });
+
+  // ISSUE 1 (docs/guide/05-reference/cheatsheets/ 404s on GitHub Pages with no index page): the
+  // byte-identical drift test above already fails if this file goes missing or stale (it's just
+  // another entry in generateAll()'s Map), but this test names the actual property the folder needs —
+  // an index page linking every entity cheatsheet — so a future refactor that keeps the byte compare
+  // passing but drops a link still fails, and fails on this line specifically.
+  test("the folder index links every generated entity cheatsheet", () => {
+    const fresh = generateAll();
+    expect(fresh.has(INDEX_FILENAME)).toBe(true);
+
+    const index = fresh.get(INDEX_FILENAME)!;
+    for (const [name] of fresh) {
+      if (name === INDEX_FILENAME) continue;
+      expect(index).toContain(`(${name})`);
     }
   });
 
