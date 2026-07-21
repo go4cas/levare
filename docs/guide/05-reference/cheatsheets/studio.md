@@ -14,7 +14,7 @@ The root-level studio singleton — settings that apply across the whole studio.
 ---
 ---
 
-Replace this line with the real content.
+This body is not used by levare — see "Body" below.
 ```
 
 **Body:** Not used — the studio singleton carries no body content.

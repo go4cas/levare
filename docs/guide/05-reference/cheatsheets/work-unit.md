@@ -24,7 +24,7 @@ type: inception
 status: active
 ---
 
-Replace this line with the real content.
+This body is not used by levare — see "Body" below.
 ```
 
 **Body:** Not used — a human-readable brief may be written here, but nothing reads it back.

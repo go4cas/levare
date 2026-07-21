@@ -289,9 +289,19 @@ function serializeFrontmatter(data: Record<string, YamlValue>): string {
 
 const BODY_PLACEHOLDER = "Replace this line with the real content.";
 
-export function skeletonMarkdown(data: Record<string, YamlValue>): string {
+// For an entity whose BODY_PURPOSE says the body is never read, telling the reader to "replace this
+// line with the real content" is dishonest — there's no real content to write. Derived from
+// BODY_PURPOSE (already hand-authored, single source of truth), not a new per-entity fact.
+const BODY_UNUSED_PLACEHOLDER = 'This body is not used by levare — see "Body" below.';
+
+function bodyTextFor(schema: Schema): string {
+  const purpose = BODY_PURPOSE[schema.name];
+  return purpose !== undefined && purpose.startsWith("Not used") ? BODY_UNUSED_PLACEHOLDER : BODY_PLACEHOLDER;
+}
+
+export function skeletonMarkdown(data: Record<string, YamlValue>, body: string = BODY_PLACEHOLDER): string {
   const fm = serializeFrontmatter(data);
-  return `---\n${fm}${fm ? "\n" : ""}---\n\n${BODY_PLACEHOLDER}\n`;
+  return `---\n${fm}${fm ? "\n" : ""}---\n\n${body}\n`;
 }
 
 const MAX_HEAL_ITERATIONS = 8;
@@ -305,7 +315,7 @@ function healSkeleton(entity: EntityDef, scratchRoot: string): Record<string, Ya
   mkdirSync(join(filePath, ".."), { recursive: true });
 
   for (let i = 0; i < MAX_HEAL_ITERATIONS; i++) {
-    writeFileSync(filePath, skeletonMarkdown(data));
+    writeFileSync(filePath, skeletonMarkdown(data, bodyTextFor(entity.schema)));
     const result = validatePath(scratchRoot);
     if (result.ok) return data;
 
@@ -363,7 +373,7 @@ ${removedFieldsSection(schema)}
 ## Minimal valid skeleton
 
 \`\`\`markdown
-${skeletonMarkdown(skeleton)}\`\`\`
+${skeletonMarkdown(skeleton, bodyTextFor(schema))}\`\`\`
 
 **Body:** ${bodyPurpose}
 

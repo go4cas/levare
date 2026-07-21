@@ -17,7 +17,7 @@ A rubric scoring a work-unit type's output.
 name: example-name
 ---
 
-Replace this line with the real content.
+This body is not used by levare — see "Body" below.
 ```
 
 **Body:** Not used — the frontmatter `rubric` is what's read; the body is stored but never rendered or consumed.

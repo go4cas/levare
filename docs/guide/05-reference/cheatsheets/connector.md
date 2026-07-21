@@ -29,7 +29,7 @@ kind: mcp
 env: [example-env]
 ---
 
-Replace this line with the real content.
+This body is not used by levare — see "Body" below.
 ```
 
 **Body:** Not used — a connector carries no body content.

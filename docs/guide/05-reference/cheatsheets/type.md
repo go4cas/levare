@@ -24,7 +24,7 @@ expects: []
 gates: []
 ---
 
-Replace this line with the real content.
+This body is not used by levare — see "Body" below.
 ```
 
 **Body:** Not used — a type carries no body content.
