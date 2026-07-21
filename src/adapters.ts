@@ -7,8 +7,15 @@
 //            backs it with the real SDK via `createSdkNativeBoundary`/`createAsyncSdkNativeBoundary`.
 //   cli    → Bun.spawn of the agent's command template in `cwd`, with the allowlisted env only and
 //            the timeout enforced; the raw stdout is the member's content.
-//   remote → an MCP call, likewise behind a mockable `RemoteBoundary` (still mocked in every path —
-//            a documented, separate deferral, untouched by F8).
+//   remote → an MCP call over stdio (PRD Amendment 3, ruling R5, NOTES MCP-1B). `produce()` (the
+//            phase-2 batch `Runner`/replay's own synchronous path) still drives the mocked, sync
+//            `RemoteBoundary`; `produceAsync()` (the live `levare serve` path) drives the real,
+//            Promise-returning `AsyncRemoteBoundary` when one is supplied — mirroring native's own
+//            sync-mock/async-real split (NOTES F8). The real implementation
+//            (`createAsyncStdioRemoteBoundary`) spawns the member's granted `kind: mcp` connector's
+//            declared stdio server (mcp-client.ts, Phase 1a), invokes exactly the one tool the agent
+//            declares, and turns the response into the artifact doc — UNSANDBOXED (Phase 1c is the
+//            sandbox wrap, ruling R3, not yet built).
 //
 // Ruling C12: the member authors CONTENT, levare authors the ARTIFACT. Whatever a boundary returns —
 // plain prose, or prose wrapped in a frontmatter fence the member had no business emitting — is never
@@ -29,7 +36,8 @@ import { existsSync, statSync, accessSync, mkdirSync, mkdtempSync, rmSync, const
 import { isAbsolute, dirname, join as pathJoin } from "node:path";
 import { tmpdir } from "node:os";
 import { normalizeReceipt } from "./receipts.ts";
-import { buildMemberEnv, teamOf, subscriptionConnector, scopeHome, memberNetworkAllowed } from "./env.ts";
+import { buildMemberEnv, teamOf, subscriptionConnector, scopeHome, memberNetworkAllowed, grantedConnectors } from "./env.ts";
+import { connectStdioMcpServer, type McpToolCallResult } from "./mcp-client.ts";
 import { allowedTools } from "./guardrails.ts";
 import { assembleContext, unitArtifactPaths } from "./context.ts";
 import { asyncSdkTransport, bunSdkTransport, resolveNativeBinary, type AsyncSdkTransport, type SdkTransport } from "./sdk-transport.ts";
@@ -119,9 +127,20 @@ export interface AsyncNativeBoundary {
   invoke(req: InvokeRequest): Promise<{ doc: string; receipt?: Receipt }>;
 }
 
-/** The remote MCP boundary (mocked this phase). */
+/** The remote MCP boundary — synchronous, used only by the phase-2 batch `Runner` (`levare replay`),
+ * which drives a scripted decision walk synchronously and never reaches a live `levare serve` request
+ * path. Stays mocked forever for that path (mirrors `NativeBoundary`'s own sync/replay-only role) —
+ * the real implementation is `AsyncRemoteBoundary`/`createAsyncStdioRemoteBoundary` below. */
 export interface RemoteBoundary {
   call(req: InvokeRequest): { doc: string };
+}
+
+/** NOTES MCP-1B — the non-blocking counterpart to `RemoteBoundary` (mirrors `AsyncNativeBoundary`'s
+ * own split, NOTES F8): what `produceAsync`'s live `remote` case actually drives when supplied,
+ * so a real stdio MCP session (an inherently async, multi-turn exchange over a long-lived child
+ * process) never forces a fake synchronous facade over it. */
+export interface AsyncRemoteBoundary {
+  call(req: InvokeRequest): Promise<{ doc: string }>;
 }
 
 export interface SdkNativeBoundaryOptions {
@@ -354,6 +373,90 @@ export function createAsyncSdkNativeBoundary(opts: AsyncSdkNativeBoundaryOptions
   };
 }
 
+export interface StdioRemoteBoundaryOptions {
+  /** Test-only override for the mcp session constructor — default the real `connectStdioMcpServer`
+   * (mcp-client.ts). Lets a test drive this boundary against a deterministic fake stdio server without
+   * spawning a real third-party MCP install. */
+  connect?: typeof connectStdioMcpServer;
+  /** Test-only override for the connect/request timeout ceiling — default derives from the agent's own
+   * `timeout:` (falls back to the same 600s default `defaultCliCommand`'s cli timeout uses). */
+  timeoutMs?: number;
+}
+
+// NOTES MCP-1B: {task} substitution only — mirrors adapters.ts#defaultCliCommand's own {task}
+// substitution for a cli member's argv template. A remote member declares no {feature_repo}/{model}
+// equivalent: an MCP tools/call has no cwd of its own, and `model:` is native-only.
+function buildMcpToolArguments(params: Record<string, string> | undefined, context: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(params ?? {})) out[key] = value.replace(/\{task\}/g, context);
+  return out;
+}
+
+// NOTES MCP-1B: only the text blocks a tools/call result carries — see McpToolCallResult's own doc
+// (mcp-client.ts) for why other block types pass through unread rather than being rejected.
+function extractMcpText(result: McpToolCallResult): string {
+  return result.content
+    .filter((c) => c.type === "text" && typeof c.text === "string")
+    .map((c) => c.text as string)
+    .join("\n")
+    .trim();
+}
+
+/**
+ * NOTES MCP-1B (PRD Amendment 3, rulings R2/R4/R5) — the real stdio MCP backing for
+ * `AsyncRemoteBoundary`: resolves the member's declared `server:` to a granted `kind: mcp` connector,
+ * spawns its declared stdio command (mcp-client.ts's `connectStdioMcpServer`, Phase 1a's own client),
+ * invokes exactly the one tool the agent declares (`agent.tool`) with arguments built from
+ * `agent.params`'s `{task}`-substituted template (ruling R2: one dispatch, one call, one artifact —
+ * never an interactive multi-call session), and turns the tool's own text content into the artifact
+ * `doc`. Auth is ruling R4, unchanged: `req.env` is already `buildMemberEnv`'s allowlisted output (the
+ * member's granted connectors' env vars, computed at `AdapterRunner#prepare` before this boundary ever
+ * runs) — passed straight through as the spawned server's WHOLE environment (mcp-client.ts's own
+ * env-replacement comment). UNSANDBOXED (ruling R3 names the sandbox wrap as Phase 1c, not built here):
+ * the spawned server process gets no OS-level confinement at all, exactly as honestly as
+ * mcp-client.ts's own header states.
+ */
+export function createAsyncStdioRemoteBoundary(repo: Repo, opts: StdioRemoteBoundaryOptions = {}): AsyncRemoteBoundary {
+  const connect = opts.connect ?? connectStdioMcpServer;
+  return {
+    async call(req: InvokeRequest): Promise<{ doc: string }> {
+      const agent = req.agent;
+      const serverName = agent.server;
+      if (!serverName) throw new AdapterError(`remote member '${req.member}' declares no 'server'`);
+      const connector = repo.connectors.get(serverName);
+      if (!connector) throw new AdapterError(`remote member '${req.member}' declares server '${serverName}', which is not a known connector`);
+      if (connector.kind !== "mcp") {
+        throw new AdapterError(`remote member '${req.member}' declares server '${serverName}', which is kind: '${connector.kind}', not kind: mcp`);
+      }
+      if (!grantedConnectors(repo, req.member).some((c) => c.name === connector.name)) {
+        throw new AdapterError(`remote member '${req.member}' is not granted connector '${serverName}' (agent/team 'connectors:')`);
+      }
+      if (!connector.argv || connector.argv.length === 0) {
+        throw new AdapterError(
+          `remote member '${req.member}''s connector '${serverName}' declares no stdio 'argv' — only a real, granted, stdio kind: mcp connector is implemented (PRD Amendment 3 ruling R1); HTTP/SSE MCP servers remain deferred`,
+        );
+      }
+      const tool = agent.tool;
+      if (!tool) throw new AdapterError(`remote member '${req.member}' declares no 'tool'`);
+      const args = buildMcpToolArguments(agent.params, req.context);
+      const timeoutMs = opts.timeoutMs ?? (agent.timeout ?? 600) * 1000;
+
+      const session = await connect({ argv: connector.argv, env: req.env }, { timeoutMs });
+      try {
+        const result = await session.callTool(tool, args);
+        if (result.isError) {
+          throw new AdapterError(`remote member '${req.member}' tool '${tool}' on connector '${serverName}' reported isError: ${extractMcpText(result) || "(no content)"}`);
+        }
+        const text = extractMcpText(result);
+        if (!text) throw new AdapterError(`remote member '${req.member}' tool '${tool}' on connector '${serverName}' returned no text content`);
+        return { doc: text };
+      } finally {
+        await session.close();
+      }
+    },
+  };
+}
+
 export interface SpawnResult {
   stdout: string;
   exitCode: number;
@@ -539,6 +642,11 @@ export interface AdapterRunnerOptions {
   capabilities?: Array<{ member: string; kind: string }>;
   native: NativeBoundary;
   remote: RemoteBoundary;
+  /** NOTES MCP-1B: the non-blocking counterpart to `remote`, used only by `produceAsync`. When absent,
+   * `produceAsync` falls back to `remote.call` (fine for a mocked/stub boundary, which does no real
+   * I/O); `productionAdapterRunner` always supplies a real one (`createAsyncStdioRemoteBoundary`) so a
+   * live remote dispatch never blocks the event loop — mirrors `asyncNative`'s own doc below. */
+  asyncRemote?: AsyncRemoteBoundary;
   spawn?: CliSpawn;
   /** NOTES F5: the non-blocking counterpart to `spawn`, used only by `produceAsync`. Defaults to
    * `asyncBunSpawn` (real, non-blocking `Bun.spawn`). */
@@ -856,9 +964,11 @@ export class AdapterRunner implements MemberRunner {
           receipt = res.receipt;
           break;
         }
-        case "remote":
-          raw = this.opts.remote.call(req2).doc;
+        case "remote": {
+          const res = this.opts.asyncRemote ? await this.opts.asyncRemote.call(req2) : this.opts.remote.call(req2);
+          raw = res.doc;
           break;
+        }
         case "cli": {
           const out = await this.withHomeScopeAsync(member, req2, (r) => this.runCliAsync(agent, r));
           raw = out.content;

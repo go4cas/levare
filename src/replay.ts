@@ -18,10 +18,12 @@ import {
   asyncBunSpawn,
   createSdkNativeBoundary,
   createAsyncSdkNativeBoundary,
+  createAsyncStdioRemoteBoundary,
   type InvokeRequest,
   type NativeBoundary,
   type AsyncNativeBoundary,
   type RemoteBoundary,
+  type AsyncRemoteBoundary,
 } from "./adapters.ts";
 import type { AsyncMemberRunner } from "./dagwalk.ts";
 import { loadPricing } from "./pricing.ts";
@@ -93,9 +95,10 @@ export function stubAdapterRunner(repo: Repo): AdapterRunner {
  * native` member is invoked through the real Claude Agent SDK (`createSdkNativeBoundary`/
  * `createAsyncSdkNativeBoundary`, adapters.ts) — its declared model, tool allowlist, and assembled §6
  * context, with its artifact body and usage receipt coming from the real call — closing the last
- * "mocked this phase" deferral for member invocation (NOTES K5). `remote` (MCP) stays behind the
- * mocked boundary `stubAdapterRunner` also uses — a separate, still-documented deferral, untouched by
- * this fix. The CLI adapter gets NO `cliCommand` override here: left unset, `AdapterRunner` falls back
+ * "mocked this phase" deferral for member invocation (NOTES K5). `remote` (MCP), since NOTES MCP-1B, is
+ * likewise real for the stdio case: `asyncRemote` defaults to `createAsyncStdioRemoteBoundary(repo)`,
+ * which spawns the member's granted `kind: mcp` connector's declared stdio server and invokes its
+ * declared tool for real. The CLI adapter gets NO `cliCommand` override here: left unset, `AdapterRunner` falls back
  * to its own `defaultCliCommand`, which substitutes the agent's own declared `command` template into
  * argv. A CLI member invoked through this function spawns its REAL command — never the fixture stub —
  * which is the entire point: before F4, `stubAdapterRunner` (above) was the only constructor in this
@@ -125,6 +128,9 @@ export interface ProductionAdapterOverrides {
    */
   native?: NativeBoundary;
   asyncNative?: AsyncNativeBoundary;
+  /** Test-only: substitute the real stdio remote boundary (`createAsyncStdioRemoteBoundary`) — mirrors
+   * `asyncNative`'s own override. Every real call site (daemon.ts, board/gateops.ts) leaves this unset. */
+  asyncRemote?: AsyncRemoteBoundary;
 }
 
 export function productionAdapterRunner(repo: Repo, overrides: ProductionAdapterOverrides = {}): AsyncMemberRunner {
@@ -133,6 +139,7 @@ export function productionAdapterRunner(repo: Repo, overrides: ProductionAdapter
     native: overrides.native ?? createSdkNativeBoundary(),
     asyncNative: overrides.asyncNative ?? createAsyncSdkNativeBoundary(),
     remote: stubRemote,
+    asyncRemote: overrides.asyncRemote ?? createAsyncStdioRemoteBoundary(repo),
     spawn: bunSpawn,
     asyncSpawn: asyncBunSpawn,
   });
