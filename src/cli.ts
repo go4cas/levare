@@ -7,6 +7,7 @@ import { loadRepo, repoCapabilities } from "./repo.ts";
 import { assembleContext } from "./context.ts";
 import { runDoctor, type PromptCheck } from "./doctor.ts";
 import { detectSandbox } from "./sandbox.ts";
+import { remoteAgentImplemented } from "./env.ts";
 import { serve } from "./board/serve.ts";
 import { initStudio, GIT_IDENTITY_NOTE } from "./init.ts";
 import { applyStudioEnv } from "./dotenv.ts";
@@ -118,9 +119,12 @@ export function runDoctorCmd(rest: string[]): number {
     const env = { has: (name: string) => typeof process.env[name] === "string" && process.env[name] !== "" };
     const probe = (command: string): "found" | "not-found" => (Bun.which(command) ? "found" : "not-found");
     const orchestrator = resolveOrchestratorStatus(process.env);
-    // NOTES REV1 finding 3: every agent declaring `kind: remote` — a legal declaration that produces
-    // no real work today (adapters.ts's RemoteBoundary is a mocked fixture).
-    const remoteAgents = [...repo.agents.values()].filter((a) => a.kind === "remote").map((a) => a.name);
+    // NOTES MCP-1B (PRD Amendment 3, ruling R5): every `kind: remote` agent that is NOT yet backed by
+    // a real, granted, stdio `kind: mcp` connector — narrowed from REV1's original "every remote agent"
+    // now that the stdio case is a real dispatch path (adapters.ts#createAsyncStdioRemoteBoundary); see
+    // env.ts#remoteAgentImplemented for the exact dividing line (missing/wrong-kind/ungranted connector,
+    // or a connector with no stdio 'argv' — an HTTP/SSE server, ruling R1's still-deferred phase 2).
+    const remoteAgents = [...repo.agents.values()].filter((a) => a.kind === "remote" && !remoteAgentImplemented(repo, a)).map((a) => a.name);
     // NOTES CAP-B: every `kind: cli` agent that also declares `tools:` — legal, but not enforceable by
     // levare (see validate.ts#validateAgentCliToolsWarning, the same warning repeated here).
     const cliToolAgents = [...repo.agents.values()].filter((a) => a.kind === "cli" && (a.tools?.length ?? 0) > 0).map((a) => a.name);

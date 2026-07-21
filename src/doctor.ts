@@ -115,11 +115,14 @@ export function diagnose(connectors: Connector[], env: EnvProbe, probe: CliProbe
  * code I think it is?" needs a visible answer. A full staleness check (comparing the build commit
  * against the studio/source HEAD) is deferred; this only makes the run mode legible.
  *
- * `remoteAgents`, when given (NOTES REV1 finding 3): the names of every agent in the studio declaring
- * `kind: remote`. A legal declaration — `levare validate` accepts it — but adapters.ts's
- * `RemoteBoundary` is a documented mock in every path today (no live MCP call exists), so doctor
- * repeats the same telling the validator's warning already gives, in case the Conductor never ran
- * (or reread) `validate`'s own output.
+ * `remoteAgents`, when given (NOTES MCP-1B, narrowed from REV1 finding 3): the names of every agent in
+ * the studio declaring `kind: remote` that is NOT yet backed by a real, granted, stdio `kind: mcp`
+ * connector (env.ts#remoteAgentImplemented) — a legal declaration `levare validate` accepts, but one
+ * that either names a missing/wrong-kind/ungranted connector, or a `kind: mcp` connector with no stdio
+ * `argv:` (an HTTP/SSE server, PRD Amendment 3 ruling R1's still-deferred phase 2). A remote agent
+ * backed by a real, working stdio connector is no longer named here at all — it produces real work
+ * through `adapters.ts#createAsyncStdioRemoteBoundary`. Doctor repeats the same telling the validator's
+ * warning already gives, in case the Conductor never ran (or reread) `validate`'s own output.
  *
  * `cliToolAgents`, when given (NOTES CAP-B, part B item 3): the names of every `kind: cli` agent that
  * also declares `tools:` — legal, but levare cannot enforce it at the per-tool level (there is no SDK
@@ -174,7 +177,9 @@ export function formatDoctor(
     out.push("");
   }
   if (remoteAgents && remoteAgents.length > 0) {
-    out.push(`⚠ remote members are not yet implemented — these will not produce real work: ${remoteAgents.join(", ")}`);
+    out.push(
+      `⚠ remote members without a real, granted, stdio MCP connector are not yet implemented (HTTP/SSE transport remains deferred) — these will not produce real work: ${remoteAgents.join(", ")}`,
+    );
     out.push("");
   }
   if (cliToolAgents && cliToolAgents.length > 0) {

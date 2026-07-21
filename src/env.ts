@@ -8,7 +8,7 @@
 import { mkdtempSync, mkdirSync, symlinkSync, rmSync } from "node:fs";
 import { join, dirname, relative, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
-import type { Connector, Team } from "./types.ts";
+import type { Agent, Connector, Team } from "./types.ts";
 import type { Repo } from "./repo.ts";
 import { isSafeHomeDotpath } from "./validate.ts";
 
@@ -59,6 +59,23 @@ export function subscriptionConnector(repo: Repo, member: string): Connector | u
  */
 export function memberNetworkAllowed(repo: Repo, member: string): boolean {
   return grantedConnectors(repo, member).length > 0;
+}
+
+/**
+ * NOTES MCP-1B (PRD Amendment 3, rulings R1/R5): whether a `kind: remote` agent's declared `server:`
+ * names a connector this agent can actually dispatch through today — a real, GRANTED, `kind: mcp`
+ * connector that declares a non-empty stdio `argv:`. `false` for a missing/wrong-kind/ungranted
+ * connector, and for a `kind: mcp` connector with no `argv:` (ruling R1's still-deferred HTTP/SSE
+ * transport, which spawns no local process and so never declares one). This is the single line
+ * validate.ts, doctor.ts, and board/render/registry.ts each narrow their REV1 honesty warning around,
+ * now that the stdio case is a real, working dispatch path (adapters.ts#createAsyncStdioRemoteBoundary)
+ * rather than a blanket mock.
+ */
+export function remoteAgentImplemented(repo: Repo, agent: Agent): boolean {
+  if (agent.kind !== "remote" || !agent.server) return false;
+  const connector = repo.connectors.get(agent.server);
+  if (!connector || connector.kind !== "mcp" || !connector.argv || connector.argv.length === 0) return false;
+  return grantedConnectors(repo, agent.name).some((c) => c.name === connector.name);
 }
 
 function allowlist(names: readonly string[], base: Record<string, string | undefined>, env: Record<string, string>): void {

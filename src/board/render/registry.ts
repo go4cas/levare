@@ -10,6 +10,7 @@ import { loadExtras } from "../../extra.ts";
 import { STUDIO_SCOPE } from "../../conversation.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
 import { detectSandbox, type SandboxDetection } from "../../sandbox.ts";
+import { remoteAgentImplemented } from "../../env.ts";
 import { tag, editorOverlay, orchTurn, callout, card } from "../components.ts";
 import {
   shell,
@@ -134,11 +135,15 @@ export function renderRegistry(
       // UI7: kind+model render adjacent ("native · claude-sonnet-5") in one row, the kind itself a
       // shape/treatment badge (RULE B — never colour); no "wears <team>" row (RULE A — the avatar
       // above is already tinted with the team's colour, so the team is shown, not told).
-      // NOTES REV1 finding 3: `kind: remote` validates cleanly but adapters.ts's `RemoteBoundary` is a
-      // documented mock in every path today (no live MCP call exists) — a user can't tell that from
-      // the schema alone, so the card says so via the same canonical warning callout the guardrails
-      // finding above uses.
-      const remoteWarning = a.kind === "remote" ? callout("warning", "remote members are not yet implemented — this member will not produce real work.") : "";
+      // NOTES MCP-1B (narrowed from REV1 finding 3): `kind: remote` validates cleanly, and since Phase
+      // 1b it produces real work when `server:` names a real, granted, stdio `kind: mcp` connector
+      // (env.ts#remoteAgentImplemented) — adapters.ts#createAsyncStdioRemoteBoundary is the real
+      // dispatch path. The card only warns when that's NOT yet true (a missing/wrong-kind/ungranted
+      // connector, or an HTTP/SSE server — PRD Amendment 3 ruling R1's still-deferred phase 2).
+      const remoteWarning =
+        a.kind === "remote" && !remoteAgentImplemented(repo, a)
+          ? callout("warning", "this remote member has no working stdio MCP connector yet (HTTP/SSE MCP servers remain deferred) — it will not produce real work.")
+          : "";
       // NOTES CAP-B (part B item 3) / NOTES R4-SANDBOX (v2, Ruling 2): a cli member's tools: is a
       // legal declaration levare cannot enforce at the per-tool level — even a working OS sandbox is a
       // coarser boundary than tools: describes. Same callout treatment as the remote-members warning

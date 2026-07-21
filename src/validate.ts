@@ -266,6 +266,10 @@ const AGENT_SCHEMA: Schema = {
     result: { type: "str", required: false },
     // remote
     server: { type: "str", required: false },
+    // NOTES MCP-1B: which MCP tool this member calls, and its tools/call arguments template
+    // ({task}-substituted at dispatch — see adapters.ts#createAsyncStdioRemoteBoundary).
+    tool: { type: "str", required: false },
+    params: { type: "str-map", required: false, nullable: true },
     // env scoping (§6): connectors granted to this agent, unioned with its team's grants.
     connectors: { type: "str[]", required: false },
     style: { type: "map", required: true, fields: { avatar: { type: "str", required: true } } },
@@ -305,6 +309,11 @@ const CONNECTOR_SCHEMA: Schema = {
     kind: { type: "enum", required: true, enum: ["mcp", "cli"] },
     server: { type: "str", required: false },
     command: { type: "str", required: false },
+    // NOTES MCP-1B (PRD Amendment 3, ruling R1): the real stdio spawn argv for a kind: mcp connector —
+    // see Connector.argv's own doc (types.ts). Absent/empty is a legal, still-honest declaration (an
+    // HTTP/SSE server, or simply not configured yet); env.ts#remoteAgentImplemented is where that gets
+    // narrowed into a warning for any remote agent that actually references this connector.
+    argv: { type: "str[]", required: false },
     // Required-ness of `env` is auth-mode-dependent (NOTES C13) — enforced by validateConnectorAuth
     // below, not by this shape-only schema, since "required" here would reject a bare-absent `env:`
     // on an `auth: subscription` connector even though that's the correct shape for one.
@@ -469,6 +478,7 @@ export function validatePath(target: string, overlay?: OverlayFile, sandbox?: Sa
     validateAgentContextScope(target, errors, overlay);
     validateEnvNotTracked(target, errors);
     validateKnownModels(target, errors, overlay);
+    validateAgentRemoteImplementation(target, warnings, overlay);
   }
 
   // Cross-artifact checks over everything discovered.
@@ -580,7 +590,6 @@ function validateSingleFile(
     artifacts.push({ file, dir: dirname(file), isFolder: false, data });
   }
   if (kind.schema === AGENT_SCHEMA) validateAgentVariant(data, file, errors);
-  if (kind.schema === AGENT_SCHEMA) validateAgentRemoteNotice(data, file, warnings);
   if (kind.schema === AGENT_SCHEMA) validateAgentTools(data, file, errors);
   if (kind.schema === AGENT_SCHEMA) validateAgentCliToolsWarning(data, file, warnings);
   if (kind.schema === AGENT_SCHEMA) validateAgentSandboxWarning(data, file, warnings, sandbox);
@@ -964,21 +973,100 @@ function validateAgentVariant(data: Record<string, YamlValue>, file: string, err
         });
       }
     }
-  } else if (data.kind === "remote") need("server");
+  } else if (data.kind === "remote") {
+    need("server");
+    // NOTES MCP-1B: the member's declared intent → server-call mapping (ruling R5) — which tool on
+    // `server`'s connector this member invokes. `params` stays optional: a tool that takes no arguments
+    // is legal (validate.ts cannot know a live server's input schema statically; see
+    // validateAgentRemoteImplementation below for the deeper, tree-wide cross-entity check).
+    need("tool");
+  }
 }
 
-// NOTES REV1 finding 3: `kind: remote` validates cleanly and is a LEGAL declaration — but
-// adapters.ts's `RemoteBoundary` is a documented mock in every path today (no live MCP call exists).
-// A studio author cannot tell that from the schema alone, so this is a warning, never an error — the
-// declaration is not rejected, it's told plainly, the same "fix the telling, not the capability"
-// posture as the guardrails finding (this file's own goal).
-function validateAgentRemoteNotice(data: Record<string, YamlValue>, file: string, warnings: ValidationWarning[]): void {
-  if (data.kind !== "remote") return;
-  warnings.push({
-    code: "REMOTE_NOT_IMPLEMENTED",
-    message: `agent '${String(data.name)}' declares kind: remote — remote members are not yet implemented; this member will not produce real work (levare's RemoteBoundary is a mocked fixture, no live MCP call exists yet)`,
-    file,
-  });
+// NOTES MCP-1B (PRD Amendment 3, ruling R5): `kind: remote` validates cleanly and is a LEGAL
+// declaration — but it only produces real work through a real, GRANTED, stdio `kind: mcp` connector
+// (a non-empty `argv:`, ruling R1); a `server:` that's missing, wrong-kind, ungranted, or an HTTP/SSE
+// connector with no stdio path (ruling R1's still-deferred phase 2) is told plainly here, a warning
+// never an error — the declaration is not rejected, the same "fix the telling, not the capability"
+// posture REV1 established, now narrowed to name only what remains genuinely unimplemented. Tree-wide
+// (needs the connector registry + team grants to resolve), so it only runs when `root` is a directory
+// (mirrors validateProposalArtifact's own "no root, no cross-entity check" fail-open posture) — a
+// single-file validate (no root) emits no remote warning at all, same as that check.
+function validateAgentRemoteImplementation(root: string, warnings: ValidationWarning[], overlay?: OverlayFile): void {
+  const agentsDir = join(root, "agents");
+  if (!existsSync(agentsDir)) return;
+
+  const teamConnectors = new Map<string, Set<string>>();
+  const teamsByMember = new Map<string, string[]>();
+  const teamsDir = join(root, "teams");
+  if (existsSync(teamsDir)) {
+    for (const file of readdirSync(teamsDir).sort()) {
+      if (!file.endsWith(".md") || file.endsWith(".learnings.md")) continue;
+      let tdata: Record<string, YamlValue>;
+      try {
+        ({ data: tdata } = parseFrontmatter(readOverlaid(join(teamsDir, file), overlay)));
+      } catch {
+        continue; // its own PARSE_ERROR was already recorded by the per-file pass.
+      }
+      const teamName = typeof tdata.name === "string" ? tdata.name : basename(file, ".md");
+      teamConnectors.set(teamName, new Set(strList(tdata.connectors)));
+      for (const member of strList(tdata.members)) {
+        const arr = teamsByMember.get(member) ?? [];
+        arr.push(teamName);
+        teamsByMember.set(member, arr);
+      }
+    }
+  }
+
+  for (const name of readdirSync(agentsDir).sort()) {
+    if (!name.endsWith(".md") || name.endsWith(".learnings.md")) continue;
+    const file = join(agentsDir, name);
+    let data: Record<string, YamlValue>;
+    try {
+      ({ data } = parseFrontmatter(readOverlaid(file, overlay)));
+    } catch {
+      continue; // its own PARSE_ERROR was already recorded by the per-file pass.
+    }
+    if (data.kind !== "remote") continue;
+    const agentName = typeof data.name === "string" ? data.name : basename(name, ".md");
+    const serverName = typeof data.server === "string" ? data.server : undefined;
+    if (!serverName) continue; // MISSING_FIELD already recorded by validateAgentVariant.
+
+    const connectorFile = join(root, "connectors", `${serverName}.md`);
+    let reason: string | null = null;
+    if (!existsSync(connectorFile)) {
+      reason = `its declared server '${serverName}' is not a known connector`;
+    } else {
+      let cdata: Record<string, YamlValue>;
+      try {
+        ({ data: cdata } = parseFrontmatter(readOverlaid(connectorFile, overlay)));
+      } catch {
+        cdata = {};
+      }
+      if (cdata.kind !== "mcp") {
+        reason = `its declared server '${serverName}' is a kind: '${String(cdata.kind)}' connector, not kind: mcp`;
+      } else {
+        const argv = cdata.argv;
+        const hasArgv = Array.isArray(argv) && argv.length > 0 && argv.every((x) => typeof x === "string");
+        if (!hasArgv) {
+          reason = `connector '${serverName}' declares no stdio 'argv' — it is either an HTTP/SSE MCP server (ruling R1's still-deferred phase 2) or not yet configured for the stdio path`;
+        } else {
+          const ownGrant = new Set(strList(data.connectors));
+          const teamGrants = new Set((teamsByMember.get(agentName) ?? []).flatMap((t) => [...(teamConnectors.get(t) ?? [])]));
+          if (!ownGrant.has(serverName) && !teamGrants.has(serverName)) {
+            reason = `connector '${serverName}' is a working stdio kind: mcp connector, but it is not granted to '${agentName}' (agent or team 'connectors:')`;
+          }
+        }
+      }
+    }
+    if (reason) {
+      warnings.push({
+        code: "REMOTE_NOT_IMPLEMENTED",
+        message: `agent '${agentName}' declares kind: remote — ${reason}; this member will not produce real work until it does (only a real, granted, stdio kind: mcp connector is implemented — PRD Amendment 3 ruling R5)`,
+        file,
+      });
+    }
+  }
 }
 
 // NOTES CAP-B (part B, item 1): `tools:` is a validated fixed enum, not a free-form registry — every
@@ -1007,8 +1095,8 @@ function validateAgentTools(data: Record<string, YamlValue>, file: string, error
 // sandboxed cli spawn's overall filesystem/network REACH is confined — but it cannot distinguish "may
 // use Read" from "may use Write" the way a real tool allowlist would: the sandbox is a coarser boundary
 // than `tools:` itself describes, so this warning is narrowed, never silenced, by a working sandbox.
-// Warned here (never an error, the same "legal declaration, told plainly" posture as
-// `validateAgentRemoteNotice` above), and doctor.ts repeats it; the ONLY way to silence it is to remove
+// Warned here (never an error, the same "legal declaration, told plainly" posture
+// `validateAgentRemoteImplementation` above takes), and doctor.ts repeats it; the ONLY way to silence it is to remove
 // `tools:` — declare the constraint in the connector/command instead, via the vendor's own flags
 // (`codex --sandbox read-only` is this repo's own in-tree precedent).
 function validateAgentCliToolsWarning(data: Record<string, YamlValue>, file: string, warnings: ValidationWarning[]): void {
