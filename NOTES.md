@@ -12547,3 +12547,83 @@ expect it to complete in well under a second, matching 1b's own ~112ms, with `sa
 the produced artifact this time (not a fallthrough to `none`). If it still hangs, the widened kernel-log
 capture should now surface whatever the NEXT denied resource is — diagnose it the identical evidence-
 first way, never guessed ahead of the log.
+
+## Addendum 4 — live-host re-run: two test bugs (fixed), one unrelated flake (not reproduced), one live-optional finding still open
+
+Live macOS re-run of the fixed 1c code (addendum 3's own `argvScriptReadOnlyPaths` grant) reported four
+failures. Diagnosis, per failure:
+
+**1. Profile-text decoy test — TEST BUG, fixed.** The test asserted `scriptDir.startsWith(operatorHome)`
+is `false`, on the (unstated-until-caught) assumption that a studio's own checkout never lives under the
+operator's real `$HOME`. True in this dev container (`/workspaces/levare`, outside any home); FALSE on
+the reporting Mac, whose checkout lives at `~/source/levare` — exactly the ordinary case ruling R3 exists
+to protect, not an edge case. The CODE was never wrong: the live profile capture showed `deny .../Users/
+cas` broadly AND `allow .../fixtures/stubs` narrowly, the additive grant working exactly as designed —
+only the TEST's own path-comparison assertion was host-layout-dependent. Fixed by never depending on
+where this repo's own checkout lives: both the "operator home" and the "script directory" in this test
+are now synthetic, freshly created under `os.tmpdir()` for the test alone, and the assertion checks the
+security property directly (script dir narrowly allowed, home broadly denied, a decoy elsewhere under
+that home named by no re-allow rule in the generated text) rather than inferring it from a path-string
+relationship that happens to hold on some hosts and not others. Verified: manually reverted the
+`buildRemoteSandboxPolicy` fix, confirmed this rewritten test fails (`Expected to contain:
+"(allow file-read* (subpath \".../levare-mcp-1c-synthetic-script-...\"))"`, not present), restored the
+fix, confirmed it passes — the same catch-a-real-regression discipline addendum 3's own test already
+proved for itself.
+
+**2. `home:` grant test — TEST-SETUP BUG, fixed, one level up from where it looked.** The live failure
+(`isError: "no path/dotpath given"`) looked like a malformed tool call, but the test's own `params: {
+dotpath }` was correct the whole time. The actual defect: `baseReq()` (this test file's own shared
+`InvokeRequest` builder) never set `HOME` in `req.env` — only `PATH`. `env.ts#scopeHomeForConnector` can
+only ever scope FROM a real HOME (`!realHome` short-circuits to a no-op otherwise), so the spawned
+fixture server received NO `HOME` environment variable at all, and its own `read-home-file` tool's
+`join(process.env.HOME, dotpath)` silently degraded to "no path given" before ever attempting a
+filesystem read — never reaching the sandbox, the grant, or anything this test meant to exercise. The
+live profile capture independently confirmed the GRANT itself was present and correct
+(`(allow file-read* (subpath "/Users/cas/.levare-mcp-1c-grant-G605KM"))`) the whole time. Fixed by giving
+`baseReq()` a real `HOME` (`homedir()`), matching `buildMemberEnv`'s own `ENV_BASELINE` (`["PATH",
+"HOME"]`) — every REAL dispatch always carries both; the test's own synthetic env was the one place that
+didn't. (This also means the sibling decoy-DENY test, which happened to still "pass" before this fix —
+its own `isError` came from the identical missing-HOME short-circuit, not from a genuine sandbox denial —
+now exercises the real code path too, for the first time.)
+
+**3. "chat vs POST" gate test — not reproduced, confirmed unrelated.** `tests/orchestrator.test.ts`'s
+`describe("(b) one gate-resolution path: chat vs POST /gates")` and its full containing file both pass
+consistently here (three isolated re-runs of the specific tests, three full-file re-runs) — no failure,
+no flake, in this container. This test touches nothing MCP/sandbox-related; the most likely explanation
+is a full-suite-run flake on the reporting host (unrelated resource contention, timing), not a real
+regression this goal introduced. Left as-is; would need its own independent live-host re-run (isolated,
+by its own exact name) to confirm one way or the other if it recurs.
+
+**4. The live, optional bunx-fetched-server e2e dispatch — still open, evidence-gated, correctly
+NON-blocking.** `tests/mcp-remote-e2e.test.ts`/the harness's own step 1 both prefer `npx` over `bunx`
+when both are on PATH (`Bun.which("npx") ?? Bun.which("bunx")` — pre-existing since Phase 1a, unchanged by
+1c). Two live candidates, NEITHER acted on without evidence, per this whole investigation's own standing
+rule:
+  - (a) if `npx` gets chosen over `bunx` on the reporting host, `npx`'s own resolved install tree is
+    granted (same `resolveArgv0` mechanism as any interpreter), but NPM's own package cache (`~/.npm` or
+    similar) is a SEPARATE location this fix's `argvScriptReadOnlyPaths` does NOT reach (it only ever
+    scans argv for an ABSOLUTE EXISTING FILE path — an `npx`-resolved package spec is never that) — this
+    would be a DIFFERENT, plausible gap from the one addendum 3 closed: the vendor-cache-directory class
+    R4-VENDOR-CLI found for `gh`'s own `GH_CONFIG_DIR`/`XDG_*`, not the argv-script-path class.
+  - (b) the reported "`bunx @modelcontextprotocol/server-everything --help` exits 1 even standalone-warm"
+    observation may not actually be informative either way: this package's own CLI is documented (and
+    this codebase's own connector argv, `[..., "stdio"]`) to expect a TRANSPORT positional argument, never
+    a `--help` flag — an unsupported-flag exit 1 on `--help` says nothing about whether `stdio` mode
+    itself works, and testing a DIFFERENT code path than what's actually dispatched is exactly the
+    "weak canary" failure mode NOTES R4-SANDBOX-FIX-5 already named once for this exact class of mistake
+    (a probe exercising a narrower/different path than production proves nothing about production).
+  No code change made for this — the instruction was explicit (no change unless evidence proves a real
+  gap) and neither candidate has kernel-log evidence yet. Next step, unchanged from addendum 3's own
+  closing note: re-run with `LEVARE_SANDBOX_DEBUG=1` on the `stdio`-mode dispatch specifically (not a
+  standalone `--help` check) and the widened `captureKernelDenials`, and diagnose whichever denial (if
+  any) actually shows up — never guess ahead of it. This step is the LIVE, OPTIONAL vendor-echo proof
+  (gated on `npx`/`bunx` resolving at all, explicitly informational in the harness's own verdict logic)
+  and was never part of the core R3 seal — it does not block on this open item, and the core seal (the
+  fixture-based sandbox proofs: decoy-deny, `home:`-grant, studio-root-read, all now fixed and expected to
+  pass on the next live run) stands independent of it.
+
+**Overarching, restated because it's the single most important line in this addendum:** the 1c CODE was
+correct throughout this whole round — every one of the two fixable failures traced to a test carrying an
+assumption ("the checkout is outside home," "the env this test builds already includes HOME") that this
+container's own layout happened to make invisible. No sandbox/policy code changed in this addendum;
+only the tests that mis-measured it did.
