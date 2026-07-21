@@ -11946,3 +11946,175 @@ artifact** — `RemoteBoundary` stays exactly as mocked as it was before this go
 is a new, standalone sibling module, not yet reachable from any dispatch path. Phase 1b (invocation to
 artifact — mapping a remote member's declared intent to a real server call, invoking it, turning the
 result into a gated artifact, and closing the mock) is separate, later work.
+
+# NOTES MCP-1B (2026-07-21) — invocation to artifact: closing the RemoteBoundary mock
+
+PRD Amendment 3, ruling R5 (`docs/prd-amendment-3.md` §5) stages the MCP client into three phases.
+Phase 1a (NOTES MCP-1A) proved a real stdio handshake and discovery. This goal is **Phase 1b**: a
+`kind: remote` member's dispatch makes a real `tools/call` against a real stdio MCP server, and the
+result becomes one gated artifact — closing invariant 10's standing remote deferral for the stdio case,
+scoped strictly to invocation-to-artifact (Phase 1c's sandbox wrap is untouched, deliberately).
+
+## The async reconciliation (ruling: no synchronous facade)
+
+NOTES MCP-1A left this exact question open: a real stdio MCP session is an inherently async, multi-turn
+exchange over a long-lived child process, and `RemoteBoundary.call(req): { doc: string }` is
+synchronous. The Conductor ruled the real path joins the existing async dispatch spine rather than
+forcing a fake sync wrapper over it — mirroring the `NativeBoundary`/`AsyncNativeBoundary` split NOTES
+F8 already established. Concretely (`src/adapters.ts`):
+
+- `RemoteBoundary` (sync) is untouched and stays exactly what it was: the mocked boundary
+  `AdapterRunner#produce` (the phase-2 batch `Runner`/`levare replay --stubs` path) drives, forever —
+  that path is inherently synchronous and never reaches a live studio.
+- `AsyncRemoteBoundary` (new) is the Promise-returning counterpart `AdapterRunner#produceAsync` (the
+  live `levare serve` path) drives when supplied, via `AdapterRunnerOptions.asyncRemote`. The dispatch
+  switch's `remote` case now reads `this.opts.asyncRemote ? await this.opts.asyncRemote.call(req2) :
+  this.opts.remote.call(req2)` — the identical fallback shape `asyncNative` already uses.
+- `createAsyncStdioRemoteBoundary(repo)` is the real implementation, wired into
+  `replay.ts#productionAdapterRunner` exactly like `createAsyncSdkNativeBoundary` — no other production
+  call site changes; `daemon.ts`/`board/gateops.ts` get the real remote path for free through that one
+  function.
+
+## The intent → tool mapping (schema addition, minimal)
+
+Before this goal, a `kind: remote` agent declared only `server:` (required) — a label with no
+machine-checkable meaning and no way to say WHICH server call it makes. Two fields close that gap
+(`types.ts`, `Agent`):
+
+- `tool: string` (now required for `kind: remote`, validated by `validateAgentVariant`) — the exact MCP
+  tool name this member invokes via `tools/call`. Ruling R2 forecloses the interactive/multi-call model
+  (that's a review loop, not a dispatch), so exactly one tool, once, is the whole shape.
+- `params?: Record<string, string>` — the `tools/call` arguments template, each value `{task}`-
+  substituted with the assembled §6 context at dispatch (`adapters.ts#buildMcpToolArguments`), mirroring
+  `defaultCliCommand`'s own `{task}` substitution for a `kind: cli` member's argv template. There is no
+  separate "propose params" step for a remote member the way CAP-A's `effects: write` connectors have
+  one — ruling R2's "one dispatch, one call, one artifact" makes the static template the correct shape,
+  not a gap to fill later.
+
+`server:` itself is unchanged in shape (a string) but its semantics are now load-bearing: it names the
+`kind: mcp` connector's own registry `name` — resolved, at dispatch, through the exact same
+`grantedConnectors`/`repo.connectors` machinery every other connector reference in this codebase uses
+(CAP-A's proposal-connector check is the closest precedent). No new "action vocabulary" layer was added
+on the connector side the way CAP-A's `actions:` is — the MCP server's own `tools/list` IS the action
+vocabulary; levare doesn't need to re-declare it, only to record which one tool this member invokes.
+
+The one genuinely new connector field is `Connector.argv?: string[]` (`kind: mcp` only) — the real
+stdio spawn command, argv only, never a shell string (mirrors `Agent.command`'s own non-shell-split
+guarantee and `mcp-client.ts`'s own `StdioMcpServerCommand.argv`). Deliberately **not** required by the
+schema: an existing `kind: mcp` connector with no `argv:` (the golden fixture's own `linear` connector,
+predating this goal) stays a legal, valid declaration — it simply isn't dispatchable yet, which is
+exactly what the narrowed honesty warning (below) now says plainly instead of silently accepting.
+
+## The real dispatch (`createAsyncStdioRemoteBoundary`, `src/adapters.ts`)
+
+Per call: resolve `agent.server` to a connector (error if absent/unknown/not `kind: mcp`), confirm it is
+actually GRANTED to the member (`grantedConnectors` — ruling R4's credential⇔grant model, unchanged),
+confirm it declares a non-empty `argv:` (else: the honest "HTTP/SSE remains deferred" error), resolve
+`agent.tool` (error if absent), build the `tools/call` arguments from `agent.params`'s `{task}`-
+substituted template, `mcp-client.ts#connectStdioMcpServer` the connector's own `argv`, `session
+.callTool(tool, args)`, extract the text content blocks (`extractMcpText` — other block types pass
+through unread, per `McpToolCallResult`'s own doc), reject on `isError: true` or empty text, `doc` is
+what `AdapterRunner#author` wraps exactly like every other producer's raw content (ruling C12
+untouched: a remote member's tool-call output is content, never a document — the same strip-and-rewrap
+every `native`/`cli` boundary already gets).
+
+Auth (ruling R4, literally unchanged): `req.env` reaching the boundary is already
+`buildMemberEnv`'s allowlisted output (computed at `AdapterRunner#prepare`, before the boundary ever
+runs) — the connector's granted env vars, nothing else. This is handed to the spawned MCP server as its
+WHOLE environment. That required one real fix in `mcp-client.ts` itself: Phase 1a's
+`connectStdioMcpServer` merged a caller-supplied `env:` OVER `process.env` (fine for a standalone
+dev-tool call, which is all Phase 1a ever made) — Phase 1b is the first caller that hands it a
+deliberately-narrow allowlist, and merging it over the full host environment would have leaked every
+var levare withheld straight into the spawned server's process, silently defeating invariant 11 for
+this one call site. Fixed to wholesale-replace (`env: command.env ?? process.env`), matching every
+other spawn boundary in this codebase (`bunSpawn`/`asyncBunSpawn`'s own "env is replaced wholesale, that
+is the allowlist guarantee").
+
+UNSANDBOXED, still, honestly: this phase is invocation-to-artifact only. The spawned MCP server process
+gets no OS-level confinement — Phase 1c (ruling R3) is the sandbox wrap, and it was NOT started here.
+`mcp-client.ts`'s own header, `createAsyncStdioRemoteBoundary`'s own doc, and this NOTES entry all say so
+plainly.
+
+## The honesty narrowing (REV1 warnings come down for stdio, stay up for HTTP/SSE)
+
+`env.ts#remoteAgentImplemented(repo, agent)` is the single dividing line every one of the three REV1
+telling sites now shares: `true` exactly when `agent.kind === "remote"` AND `agent.server` resolves to a
+connector that (a) exists, (b) is `kind: mcp`, (c) declares a non-empty `argv:`, and (d) is actually
+granted to the agent. `false` covers every remaining case — a missing/wrong-kind/ungranted connector, OR
+a `kind: mcp` connector with no `argv:` (ruling R1's still-deferred HTTP/SSE transport, which spawns no
+local process and so never has one to declare).
+
+- `validate.ts`: the per-file, unconditional `validateAgentRemoteNotice` warning is retired. In its
+  place, `validateAgentRemoteImplementation` (tree-wide, needs the connector registry + team grants —
+  runs only when `root` is a directory, the same fail-open posture `validateProposalArtifact`'s own
+  cross-entity half already takes) names the SPECIFIC reason a remote agent isn't dispatchable yet
+  (unknown connector / wrong kind / no stdio argv / not granted) — and says NOTHING at all for an agent
+  backed by a real, working, granted stdio connector. `validateAgentVariant` also now requires `tool:`
+  for `kind: remote` (`server:` was already required) — a structural MISSING_FIELD error, not a warning,
+  since a remote member with no declared tool can never dispatch regardless of its connector.
+- `doctor.ts` / `cli.ts`: `remoteAgents` (the list `formatDoctor` names in its `⚠ remote members
+  without a real, granted, stdio MCP connector...` line) is now `cli.ts`'s own
+  `filter(a => a.kind === "remote" && !remoteAgentImplemented(repo, a))` — narrowed from "every remote
+  agent" to "every remote agent NOT yet dispatchable."
+- `board/render/registry.ts`: the agent card's warning callout is gated the same way — silent for an
+  implemented remote agent, and reworded ("no working stdio MCP connector yet ... HTTP/SSE MCP servers
+  remain deferred") for one that isn't.
+
+Proven by tests in all three files: `tests/validate.test.ts` asserts both the warning (unknown
+connector) and its absence (a real, granted, stdio `everything` connector); `tests/doctor.test.ts`
+asserts the new message wording; `tests/board-render.test.ts` asserts the callout's presence and its
+absence for the same two shapes.
+
+## What a real invocation actually produced
+
+Two levels of proof, mirroring NOTES MCP-1A's own "offline edge cases + one live proof" structure:
+
+- **Offline, deterministic** (`tests/adapters.test.ts`, new `describe("remote adapter — real stdio MCP
+  boundary")`): `createAsyncStdioRemoteBoundary` driven directly against the Phase 1a fake stdio server
+  (`fixtures/stubs/fake-mcp-server.ts`, extended with a generic `tools/call` handler and a new
+  `tool-error` mode) — covers `{task}` substitution, `isError: true` handling, and every AdapterError
+  path (unknown connector, wrong-kind connector, ungranted connector, no-argv connector, no declared
+  tool) — plus one test driving `AdapterRunner.produceAsync` end-to-end with a real `asyncRemote`
+  supplied, proving the sync mock is never touched when one is.
+- **Live, real server** (`tests/mcp-remote-e2e.test.ts`, new file) — the proof that matters, gated
+  exactly like `tests/mcp-handshake.test.ts` (a real handshake attempted at module load; skips by name,
+  honestly, if `npx`/`bunx`/the registry aren't reachable — never a vacuous pass). Rewires the golden
+  fixture's `wren` (kestrel's first flow step, produces `product-brief`) from `kind: native` to `kind:
+  remote`, calling `@modelcontextprotocol/server-everything`'s own `echo` tool (probed live during this
+  goal — real input schema `{message: string}`, real response `{content: [{type: "text", text: "Echo:
+  <message>"}]}`) through a real connector declaring the real `bunx -y @modelcontextprotocol/server-
+  everything stdio` argv. Drives the studio through `createBoard(root)` with NO `memberRunner`
+  override — the exact production wiring (`resolveGate`'s own default, `productionAdapterRunner`) a live
+  `levare serve` uses. `POST /gates/storefront/loyalty-flow/start` produced a real artifact whose body
+  is `Echo: MCP-1B-LIVE <the real, unit-specific §6 context>` — proof the real MCP round trip happened,
+  on the real reference server, carrying the real substituted context, not a canned/fixture string.
+  That artifact: passed `validateArtifactSource` with zero errors (flows through validate, structurally,
+  unchanged from any other producer), then was approved through the real gate route (`POST
+  /gates/storefront/product-brief-loyalty-flow-v1/approve`), landing `status: approved` on disk — the
+  full produce → validate → gate → approve path, for real, end to end.
+
+## Verification
+
+`bun test` → 1228 pass, 6 skip (unchanged pre-existing skips), 0 fail, across 92 files (up from 91;
++1 new file `tests/mcp-remote-e2e.test.ts`, plus new cases in `tests/adapters.test.ts`,
+`tests/validate.test.ts`, `tests/doctor.test.ts`, `tests/board-render.test.ts`) — the live e2e test ran
+for real in this environment (`bunx`/registry both reachable), never skipped. `bunx tsc --noEmit` →
+exit 0. `bun run deps:check` → `deps ok` (no new dependency). `bun run build` → succeeds. `bun run
+docs:generate` was re-run (the `agent`/`connector` cheatsheets drifted from the new `tool`/`params`/
+`argv` schema fields — `tests/cheatsheets.test.ts` catches drift, and did). `bun run src/cli.ts validate
+fixtures/golden` → `valid`, the same two pre-existing `SANDBOX_UNAVAILABLE` warnings, unchanged (no
+fixture agent declares `kind: remote`, so `validateAgentRemoteImplementation`'s path is exercised only
+by the new tests' own scratch studios). `bun run src/cli.ts replay fixtures/golden --stubs` → oracle
+match, byte-for-byte (this goal never touches the phase-2 batch `Runner`, `stubAdapterRunner`, or any
+golden-fixture entity — only the live `produceAsync` path and the registry schema changed).
+
+## Stated plainly, per the goal's own instruction
+
+**This is invocation-to-artifact only, and it is UNSANDBOXED.** A `kind: remote` member's dispatch now
+makes a real `tools/call` against a real stdio MCP server and the result becomes a real, gated artifact
+— closing invariant 10's remote deferral for the stdio case. The spawned MCP server process runs with
+no OS-level confinement at all: no scoped `HOME`, no filesystem/network restriction, nothing R4 already
+gives a `kind: cli` member's spawn. Phase 1c (ruling R3) is the sandbox wrap, and it was explicitly NOT
+started in this goal — `mcp-client.ts`'s own header, `createAsyncStdioRemoteBoundary`'s own doc, and
+this NOTES entry all say so. HTTP/SSE transport (ruling R1) remains its own, separately-deferred phase;
+the REV1 honesty warnings now name exactly that case and nothing more.
