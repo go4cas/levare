@@ -1128,6 +1128,16 @@ describe("remote adapter — sandboxed real spawn (NOTES MCP-1C, PRD Amendment 3
   // process received no `HOME` at all, and its own `read-home-file` tool's `join(process.env.HOME,
   // dotpath)` silently degraded to "no path given" before ever attempting a read. The `home:` grant
   // itself was never broken — the live profile capture showed the re-allow present the whole time.
+  //
+  // NOTES MCP-1C addendum 5 (live-macOS re-run, AFTER the HOME fix above): the mechanism PASSED live —
+  // the fixture's own `read-home-file` tool (fixtures/stubs/fake-mcp-server.ts#respondFileRead) reads
+  // the file via a bare `readFileSync(path, "utf8")`, no trimming, so it returns the marker's exact
+  // on-disk bytes including the trailing newline — but `adapters.ts#extractMcpText` (the SAME function
+  // every remote dispatch's text content passes through, unrelated to this addendum, unchanged since
+  // MCP-1B) calls `.trim()` on the joined text before it ever becomes the artifact `doc`. This test's
+  // own expected value never accounted for that: asserting the *exact* correct value production
+  // produces (trimmed), not merely a looser match (`.trim()` on both sides, or `startsWith`), which
+  // would have kept this test from actually pinning down what `doc` really is.
   test.skipIf(hostSandbox.level !== "full")(
     "home: grant proof: a connector declaring home: CAN read the exact path it declared, through its MCP tool call, under the same working sandbox that denies everything else under HOME",
     async () => {
@@ -1141,7 +1151,9 @@ describe("remote adapter — sandboxed real spawn (NOTES MCP-1C, PRD Amendment 3
         const repo = remoteTestRepo(agent, connector);
         const boundary = createAsyncStdioRemoteBoundary(repo);
         const { doc } = await boundary.call(baseReq(repo.agents.get("echo")!));
-        expect(doc).toBe("GRANTED-MARKER\n");
+        // extractMcpText (adapters.ts) trims every remote dispatch's text content — the marker's own
+        // on-disk trailing newline never survives into the artifact doc.
+        expect(doc).toBe("GRANTED-MARKER");
       } finally {
         rmSync(decoyDir, { recursive: true, force: true });
       }
