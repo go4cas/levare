@@ -1,3 +1,8 @@
-theme: jekyll-theme-minimal
+remote_theme: just-the-docs/just-the-docs
+plugins:
+  - jekyll-remote-theme
+
 title: levare guide
 description: The console for directing AI agent teams — pitch to production, one gate at a time.
+
+search_enabled: true
