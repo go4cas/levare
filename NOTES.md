@@ -12424,3 +12424,53 @@ exactly this class of thing — but it is a `home:`-DECLARED-connector question,
 one: this investigation's own evidence is that the NOT-scoped case (what this specific test exercises) is
 unaffected. The live host's own step 3 (`scripts/repro-mcp-1c-sandbox.ts`, the `home:`-grant proof)
 remains the right place to watch for this class of finding, exactly as already recorded above.
+
+## Addendum 2 — the hang is confirmed real (live macOS, 3/3), root-caused to the sandbox wrap itself; instrumented for the next live run
+
+Addendum 1's own non-reproduction stands as accurate for THIS container (`sandbox: none`) — but a live
+macOS run (`sandbox: full`, real `sandbox-exec`) reproduced the hang 3/3, confirming it real and 1c-
+specific. The key variable Addendum 1 didn't control for: this container never exercises the SANDBOXED
+code path at all (no working primitive → `wrapForSandbox` falls through to `level: "none"`, argv
+unchanged, exactly 1b's own behavior) — so every repeated run and every worktree bisection in Addendum 1
+was, unavoidably, testing the unsandboxed branch on both sides of the diff. The delta that actually bites
+only exists on a host where a primitive works: the fake server's spawn goes through a REAL `sandbox-exec`
+profile for the first time in this whole investigation, and something in that profile denies a resource
+the fixture needs to complete its JSON-RPC handshake — hang, not crash, the same "blocked process waiting
+on a denied resource" signature FIX-10/FIX-11 catalogued for git's own xcrun-shim retry chain, now
+recurring for a spawned MCP server's own startup.
+
+**Instrumented before diagnosing, per the review's own request** (NOTES MCP-1C, adapters.ts commit
+"injectable sandboxDetection + explicit pre-spawn marker"):
+
+- `StdioRemoteBoundaryOptions` gains a test-only `sandboxDetection` override — parity with
+  `AdapterRunnerOptions.sandboxDetection`, a seam this boundary didn't have before.
+- `createAsyncStdioRemoteBoundary` now logs an explicit `spawning now: argv=... cwd=...` line as the
+  LAST thing printed before the one call that can actually hang — deliberately downstream of
+  `wrapForSandbox`'s own PRE-EXISTING prints (composed argv/cwd for every tier; for `sandbox-exec`
+  specifically, the darwin profile's own full text and the temp file it was written to,
+  `sandbox.ts#sandboxExecArgv`, entirely unchanged by this addendum — the instrumentation the review
+  asked for was already built into the reused machinery; this addendum's own job was proving it actually
+  reaches the remote path and adding one more explicit marker, not building it from scratch).
+- New in-container test (`tests/adapters.test.ts`) drives the remote boundary through `wrapForSandbox`'s
+  REAL bubblewrap branch via `fakeWorkingPrimitive()` (this file's own pre-existing cli-test helper — a
+  shell script that genuinely `exec`s whatever follows `--`), on a container with no functioning bwrap of
+  its own. It completes without hanging and its own composed argv (`--tmpfs`, `--die-with-parent`) plus
+  the new spawning-now marker both appear in captured `LEVARE_SANDBOX_DEBUG` output. **This is the load-
+  bearing result:** it proves the WIRING (detection → policy → argv composition → the actual spawn call)
+  does not itself hang — isolating the live-macOS finding strictly to genuine kernel-level denial inside
+  a REAL `sandbox-exec` profile, never a deadlock in this codebase's own control flow. A bug in adapters.ts
+  itself would have hung THIS test too; it didn't.
+
+**What the next Mac run should do, unchanged from the review's own plan:** re-run with
+`LEVARE_SANDBOX_DEBUG=1` (either the specific failing test, WITHOUT redirecting `console.error` — a test
+that captures debug output into an array to assert on it must never be the one used to diagnose a hang,
+since a stall before the assertions run would swallow the exact evidence needed; the existing "invokes
+the declared tool..." test and `scripts/repro-mcp-1c-sandbox.ts` both print straight to real stderr,
+uncaptured, which is what makes them the right tools here) and capture the kernel log (`log show`,
+already automated in the harness's own `captureKernelDenials`). Name the exact denied resource from that
+evidence — never guess ahead of it — and fix with the narrowest grant/redirect it justifies, re-checking
+the decoy-deny proof (step 2 of the harness, or the equivalent `test.skipIf(hostSandbox.level !== "full")`
+tests in `tests/adapters.test.ts`) still holds after any such grant, exactly the R4-VENDOR-CLI method.
+
+**Do not weaken the sandbox to make the test pass** — unchanged instruction, restated because it's the
+one failure mode this whole addendum exists to prevent.
