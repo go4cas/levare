@@ -997,6 +997,36 @@ export function buildDispatchSandboxPolicy(
   };
 }
 
+// NOTES MCP-1C (live macOS finding, LEVARE_SANDBOX_DEBUG's own captured profile): a `kind: mcp`
+// connector's argv often names an INTERPRETER (bun, node, python3) plus a local SCRIPT the connector
+// author wrote — unlike a `kind: cli` command, where argv[0] is almost always the actual binary being
+// executed directly, already covered by `resolveArgv0`'s own install-tree grant. Live evidence: the
+// interpreter's own resolved install tree WAS granted, but the SCRIPT PATH it was told to load (argv[1],
+// e.g. `/Users/cas/source/levare/fixtures/stubs/fake-mcp-server.ts`) was not — bun spawned under the
+// sandbox, tried to read the very file it was told to execute, was denied (`deny file-read-data` on the
+// script path, confirmed from the kernel log), and HUNG at module-load rather than exiting cleanly
+// (bun's own loader blocks on a denied read rather than erroring — the same "blocked process, not a
+// crash" shape this whole R4 saga has repeatedly found for a startup-time denial). Never a gap for
+// `cli`: no evidence anywhere in this codebase of a `cli` command template taking this
+// interpreter-plus-local-script shape, so `buildDispatchSandboxPolicy` is deliberately left untouched —
+// the narrowest fix the evidence justifies is remote-specific.
+//
+// Scans every argv element AFTER argv[0] for an ABSOLUTE path to a real, existing FILE on disk — never
+// a bare flag, mode string, or bunx/npx package name (none of which resolve as an existing absolute
+// path), so this can never over-grant on a well-formed connector: a `bunx -y @scope/pkg stdio` connector
+// (no local script at all) scans its three trailing args and finds nothing to add. Grants exactly the
+// script's own directory, read-only — a `subpath` reallow, the SAME granularity every other
+// `readOnlyPaths` entry already gets (and, on darwin, canonicalized by `buildSandboxExecProfile`'s own
+// existing `canon()` pass over every `readOnlyPaths` entry — no separate symlink handling needed here).
+// Never the whole studio root, never a blanket re-allow of the operator's home.
+function argvScriptReadOnlyPaths(argv: string[]): string[] {
+  const out: string[] = [];
+  for (const el of argv.slice(1)) {
+    if (isAbsolute(el) && existsSync(el) && statSync(el).isFile()) out.push(dirname(el));
+  }
+  return out;
+}
+
 /**
  * NOTES MCP-1C (PRD Amendment 3, ruling R3) — the remote/MCP sibling of `buildDispatchSandboxPolicy`.
  * `cwd` is the dispatch's own fresh, per-dispatch scratch working area (createAsyncStdioRemoteBoundary
@@ -1010,6 +1040,10 @@ export function buildDispatchSandboxPolicy(
  * `subscriptionConnector`, since ruling R3 generalizes the mechanism to ANY granted `kind: mcp`
  * connector, `auth: env` or not (Connector.home's own doc, types.ts). No `writablePaths`/`gitWriteGrant`:
  * a spawned MCP server has no dispatch-worktree git-write need at all.
+ *
+ * `readOnlyPaths` additionally includes `argvScriptReadOnlyPaths(connector.argv)` — see that function's
+ * own doc for the live finding this closes: an interpreter-plus-local-script connector's own script must
+ * be readable under the sandbox, or the spawned interpreter hangs trying to load it.
  */
 export function buildRemoteSandboxPolicy(repo: Repo, req: InvokeRequest, connector: Connector, cwd: string, homeEnv: Record<string, string>): SandboxPolicy {
   const { readOnlyPaths, operatorHome, darwinTempDir } = baseSandboxContext(repo, cwd, connector.argv?.[0], req.env.PATH, undefined);
@@ -1018,7 +1052,7 @@ export function buildRemoteSandboxPolicy(repo: Repo, req: InvokeRequest, connect
     cwd,
     home: homeEnv.HOME,
     allowNetwork: memberNetworkAllowed(repo, req.member),
-    readOnlyPaths,
+    readOnlyPaths: [...readOnlyPaths, ...(connector.argv ? argvScriptReadOnlyPaths(connector.argv) : [])],
     operatorHome,
     grantedHomeTargets,
     darwinXcrunTempDir: darwinTempDir,

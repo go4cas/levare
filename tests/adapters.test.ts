@@ -7,11 +7,11 @@ import { loadRepo } from "../src/repo.ts";
 import type { Repo } from "../src/repo.ts";
 import { assembleContext } from "../src/context.ts";
 import { loadPricing } from "../src/pricing.ts";
-import { AdapterRunner, AdapterError, createAsyncStdioRemoteBoundary, type CliSpawn, type InvokeRequest, type NativeBoundary, type RemoteBoundary, type SpawnResult } from "../src/adapters.ts";
+import { AdapterRunner, AdapterError, createAsyncStdioRemoteBoundary, buildRemoteSandboxPolicy, type CliSpawn, type InvokeRequest, type NativeBoundary, type RemoteBoundary, type SpawnResult } from "../src/adapters.ts";
 import { connectStdioMcpServer } from "../src/mcp-client.ts";
 import type { Agent, Connector } from "../src/types.ts";
 import { render } from "../fixtures/stubs/member-stub.ts";
-import { detectSandbox } from "../src/sandbox.ts";
+import { detectSandbox, buildSandboxExecProfile } from "../src/sandbox.ts";
 import { createDispatchWorktree } from "../src/merge.ts";
 
 // The three adapters dispatch by agent kind. CLI is tested against the fixture stub (real spawn path
@@ -1006,6 +1006,54 @@ describe("remote adapter — sandboxed real spawn (NOTES MCP-1C, PRD Amendment 3
     },
     REAL_SPAWN_TEST_TIMEOUT_MS,
   );
+
+  // NOTES MCP-1C addendum 3 — the live-macOS finding: `buildRemoteSandboxPolicy` granted the resolved
+  // INTERPRETER's own install tree (argv[0], e.g. `~/.bun/bin`) but never the SCRIPT PATH an
+  // interpreter+local-script connector (`["bun", "<script>", ...]`) actually loads. A real sandbox
+  // denied that read and the spawned interpreter HUNG at module-load rather than exiting cleanly — see
+  // NOTES MCP-1C's own addendum 2 for the full live-host diagnosis. Reproduced here at CONSTRUCTION
+  // level: this container has no working primitive to reproduce the live denial/hang itself, but the
+  // generated POLICY/PROFILE TEXT is directly inspectable regardless of host capability — the same
+  // "exercised only by construction, never live" posture `sandbox.ts`'s own pure profile tests already
+  // take for exactly this reason.
+  describe("buildRemoteSandboxPolicy grants the connector's own script path (NOTES MCP-1C addendum 3)", () => {
+    function policyForArgv(argv: string[]) {
+      const connector = fakeServerConnector("normal", { argv });
+      const agent = { name: "echo", server: "everything", tool: "noop", connectors: ["everything"] };
+      const repo = remoteTestRepo(agent, connector);
+      const req = baseReq(repo.agents.get("echo")!);
+      return buildRemoteSandboxPolicy(repo, req, connector, "/tmp/some-scratch-cwd", { HOME: "/tmp/some-scratch-cwd" });
+    }
+
+    test("an interpreter+local-script connector's readOnlyPaths includes the script's own directory — the regression this addendum closes", () => {
+      const scriptDir = dirname(FAKE_MCP_SERVER);
+      const policy = policyForArgv(["bun", FAKE_MCP_SERVER, "normal"]);
+      expect(policy.readOnlyPaths).toContain(scriptDir);
+    });
+
+    test("a bunx/npx package-name connector (no local script at all) adds nothing extra — the scan never over-grants", () => {
+      const policy = policyForArgv(["bunx", "-y", "@modelcontextprotocol/server-everything", "stdio"]);
+      // None of "-y" / the package name / "stdio" is an absolute path to an existing file, so the scan
+      // contributes nothing beyond argv[0]'s own resolved tree — never a spurious grant derived from a
+      // package name that merely LOOKS path-like.
+      expect((policy.readOnlyPaths ?? []).some((p) => p.includes("@modelcontextprotocol"))).toBe(false);
+    });
+
+    test("the darwin profile TEXT re-allows the script's directory narrowly, while STILL denying the operator's home broadly — the decoy proof survives this grant", () => {
+      const scriptDir = realpathSync(dirname(FAKE_MCP_SERVER));
+      const operatorHome = realpathSync(homedir());
+      const policy = { ...policyForArgv(["bun", FAKE_MCP_SERVER, "normal"]), operatorHome };
+      const text = buildSandboxExecProfile(policy);
+      // The script's own directory is a narrow, explicit re-allow...
+      expect(text).toContain(`(allow file-read* (subpath "${scriptDir}"))`);
+      // ...but the operator's real HOME is still broadly DENIED — this is an ADDITIVE grant, never a
+      // widening of the deny-user-data model itself. (`scriptDir` lives under this repo's own checkout,
+      // never under `homedir()` in this container, so this is a genuine assertion, not a tautology —
+      // the fix must never make these two paths coincide for a real studio.)
+      expect(scriptDir.startsWith(operatorHome)).toBe(false);
+      expect(text).toContain(`(deny file-read* (subpath "${operatorHome}"))`);
+    });
+  });
 
   // NOTES MCP-1C: the decoy-deny proof's own MCP shape — an MCP tool call has no shell, so unlike the
   // cli decoy proof (a bare `cat <decoy>`), this drives the fake server's own "read-home-file" tool
