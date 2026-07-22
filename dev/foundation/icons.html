@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>levare — entity-icon family</title>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="tokens.css"/>
+<style>
+  .shell{ max-width:1100px; margin:0 auto; padding:0 28px 100px; }
+  .fhead{ position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:var(--space-4);
+    padding:16px 28px; background:var(--bg); border-bottom:1px solid var(--border); backdrop-filter:blur(6px); }
+  .fhead h1{ font-size:15px; margin:0; font-weight:600; }
+  .fhead nav{ display:flex; gap:var(--space-4); margin-left:var(--space-2); }
+  .fhead nav a{ color:var(--fg-mute); text-decoration:none; font-size:12.5px; }
+  .fhead nav a.is-active, .fhead nav a:hover{ color:var(--fg); }
+  .fhead .sp{ flex:1; }
+  .themebtn{ background:transparent; border:1px solid var(--border); color:var(--fg-dim); padding:6px 12px;
+    border-radius:var(--radius-md); font-size:11.5px; cursor:pointer; font-family:var(--font-sans); }
+  .themebtn:hover{ border-color:var(--border-strong); color:var(--fg); }
+
+  .intro{ padding:32px 0 6px; }
+  .intro p{ color:var(--fg-dim); font-size:13.5px; line-height:1.6; max-width:680px; }
+  .intro code{ font-family:var(--font-mono); font-size:.92em; background:var(--panel-2); padding:1px 5px; border-radius:4px; }
+
+  .groupsec{ padding:30px 0; border-top:1px solid var(--border); }
+  .groupsec:first-of-type{ border-top:none; }
+  .groupsec h2{ font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--fg-mute); font-weight:600; margin:0 0 4px; }
+  .groupsec .sub{ font-size:12px; color:var(--fg-mute); margin:0 0 20px; }
+
+  .modepair{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .modepanel{ border:1px solid var(--border); border-radius:var(--radius-lg); padding:18px; background:var(--bg); }
+  .modepanel__label{ font-family:var(--font-mono); font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg-mute); margin-bottom:14px; }
+
+  .glyphgrid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; }
+  .glyphcard{ background:var(--panel); border:1px solid var(--border); border-radius:var(--radius-md); padding:12px 12px 10px; display:flex; flex-direction:column; gap:9px; }
+  .glyphcard__sizes{ display:flex; align-items:center; gap:16px; }
+  .glyphcard__size{ display:flex; flex-direction:column; align-items:center; gap:4px; }
+  .glyphcard__size svg{ color:var(--fg); display:block; }
+  .glyphcard__size small{ font-family:var(--font-mono); font-size:9px; color:var(--fg-mute); }
+  .glyphcard__name{ font-size:12px; font-weight:600; color:var(--fg); }
+  .glyphcard__desc{ font-size:10.5px; color:var(--fg-mute); line-height:1.4; }
+
+  .context-strip{ display:flex; align-items:center; gap:10px; padding:8px 0; }
+  .context-strip svg{ color:var(--fg-dim); flex:none; }
+  .context-strip .mono{ font-family:var(--font-mono); font-size:12.5px; color:var(--fg); }
+</style>
+</head>
+<body>
+<header class="fhead">
+  <h1>levare · foundation</h1>
+  <nav>
+    <a href="tokens.html">Tokens</a>
+    <a href="icons.html" class="is-active">Icons</a>
+    <a href="components.html">Components</a>
+  </nav>
+  <span class="sp"></span>
+  <button class="themebtn" data-theme-toggle>☼ light</button>
+</header>
+
+<div class="shell">
+  <div class="intro">
+    <p>The entity-icon family — amendment 1 §1, Ruling R2 (RATIFIED): thin geometric line-glyphs,
+    single-weight strokes, geometric-abstract, one optical size, drawn as if by the same hand as
+    the score rail's circles and diamonds. Monochrome always — a glyph carries <em>type</em> only,
+    never state or identity. Source: <code>icons.js</code>. <strong>This sheet is the approval
+    artifact</strong> — nothing downstream should consume these until they're signed off here.</p>
+  </div>
+
+  <section class="groupsec">
+    <h2>Entity types (10)</h2>
+    <p class="sub">Registry cards, sidebar entries, kind-tags, inline disambiguation — amendment 1 §1 Ruling R3.</p>
+    <div class="modepair">
+      <div class="modepanel" data-theme="light">
+        <div class="modepanel__label">light</div>
+        <div class="glyphgrid" id="entity-light"></div>
+      </div>
+      <div class="modepanel" data-theme="dark">
+        <div class="modepanel__label">dark</div>
+        <div class="glyphgrid" id="entity-dark"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="groupsec">
+    <h2>Work-unit-type sub-glyphs (5)</h2>
+    <p class="sub">Absorbed into the same family per Ruling R1 — redrawn from the base brief's ◈▸◦, plus new spike/research glyphs. Scoped to exactly three places: project view unit rows, gate inbox, run view header.</p>
+    <div class="modepair">
+      <div class="modepanel" data-theme="light">
+        <div class="modepanel__label">light</div>
+        <div class="glyphgrid" id="wu-light"></div>
+      </div>
+      <div class="modepanel" data-theme="dark">
+        <div class="modepanel__label">dark</div>
+        <div class="glyphgrid" id="wu-dark"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="groupsec">
+    <h2>In context — 16px inline, next to mono text</h2>
+    <p class="sub">The legibility test that matters: sitting beside a filesystem-truth mono identifier at the size they'll actually ship at.</p>
+    <div class="modepair">
+      <div class="modepanel" data-theme="light">
+        <div class="modepanel__label">light</div>
+        <div id="context-light"></div>
+      </div>
+      <div class="modepanel" data-theme="dark">
+        <div class="modepanel__label">dark</div>
+        <div id="context-dark"></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script src="icons.js"></script>
+<script src="shared.js"></script>
+<script>
+  function glyphCard(id, entry) {
+    return `<div class="glyphcard">
+      <div class="glyphcard__sizes">
+        <div class="glyphcard__size">${levareIcons.svg(id, 16, { title:false })}<small>16px</small></div>
+        <div class="glyphcard__size">${levareIcons.svg(id, 24, { title:false })}<small>24px</small></div>
+      </div>
+      <div class="glyphcard__name">${entry.label}</div>
+      <div class="glyphcard__desc">${entry.desc}</div>
+    </div>`;
+  }
+  function renderGrid(containerId, dict) {
+    document.getElementById(containerId).innerHTML =
+      Object.entries(dict).map(([id, entry]) => glyphCard(id, entry)).join("");
+  }
+  renderGrid("entity-light", levareIcons.ENTITY_ICONS);
+  renderGrid("entity-dark", levareIcons.ENTITY_ICONS);
+  renderGrid("wu-light", levareIcons.WORK_UNIT_TYPE_ICONS);
+  renderGrid("wu-dark", levareIcons.WORK_UNIT_TYPE_ICONS);
+
+  const CONTEXT_LINES = [
+    ["work-unit", "checkout-flow", "work unit · project view row"],
+    ["inception", "storefront/pointer.md", "work-unit type · run view header"],
+    ["feature", "cart-icon-fix", "work-unit type · gate inbox"],
+    ["fix", "loyalty-flow", "work-unit type · project view row"],
+    ["spike", "auth-spike-014", "work-unit type · short score, few gates"],
+    ["research", "pricing-research-03", "work-unit type · terminal artifact is a report"],
+    ["agent", "lyra", "agent · registry sidebar"],
+    ["team", "storefront-team", "team · registry card kind-tag"],
+    ["connector", "stripe", "connector · registry sidebar"],
+    ["skill", "pdf-extract", "skill · registry card kind-tag"],
+    ["knowledge", "brand-voice", "knowledge · registry sidebar"],
+    ["eval", "checkout-eval", "eval · registry card kind-tag"],
+    ["idea", "loyalty-v2", "idea · studio rail (understated, no urgency styling)"],
+    ["artifact", "pointer-v2.md", "artifact · registry card kind-tag"],
+    ["project", "storefront", "project · registry sidebar"],
+  ];
+  function renderContext(containerId) {
+    document.getElementById(containerId).innerHTML = CONTEXT_LINES.map(([id, name, where]) =>
+      `<div class="context-strip">${levareIcons.svg(id, 16, { title:false })}<span class="mono">${name}</span><span style="color:var(--fg-mute);font-size:11px;">${where}</span></div>`
+    ).join("");
+  }
+  renderContext("context-light");
+  renderContext("context-dark");
+</script>
+</body>
+</html>
