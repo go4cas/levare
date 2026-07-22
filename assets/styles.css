@@ -525,7 +525,8 @@ button{ font-family:inherit; }
 /* margin-top:auto pins this row to the bottom of .rendered's (now flex:1) box, so every entity
    kind's actions row lands on a consistent baseline regardless of its own content's natural height —
    the fix for the chip/actions-row misalignment across teams/agents/skills/etc. sharing a grid row. */
-.editbar{ display:flex; align-items:center; gap:10px; margin-top:auto; }
+.editbar{ display:flex; align-items:center; gap:10px; margin-top:auto; padding-top:var(--space-3);
+  border-top:1px solid var(--border); }
 .togglebtn{ background:var(--panel); border:1px solid var(--border-strong); color:var(--fg-dim);
   padding:6px 12px; border-radius:7px; font-size:12px; font-weight:500; cursor:pointer; font-family:var(--mono); }
 .togglebtn:hover{ color:var(--fg); }
