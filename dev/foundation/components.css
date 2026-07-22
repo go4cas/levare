@@ -1,0 +1,105 @@
+/* levare — base components (Phase 1 foundation)
+   amendment 1 §3 "one-anatomy discipline": one card anatomy everywhere, one label style, a fixed
+   label vocabulary per card type. Builds on tokens.css — no component here hand-picks a colour;
+   every hue reference is a token. */
+
+/* ---------- kind-tag — entity glyph + word, mandatory in every card header (R3) ---------- */
+.kindtag{ display:inline-flex; align-items:center; gap:6px; font-family:var(--font-mono);
+  font-size:10.5px; letter-spacing:.05em; text-transform:uppercase; color:var(--fg-dim);
+  background:var(--panel-2); border:1px solid var(--border); padding:3px 9px 3px 7px;
+  border-radius:var(--radius-pill); }
+.kindtag svg{ flex:none; color:var(--fg-mute); }
+
+/* ---------- one card anatomy: header / body / footer ---------- */
+.lvcard{ background:var(--panel); border:1px solid var(--border); border-radius:var(--radius-lg);
+  display:flex; flex-direction:column; overflow:hidden; }
+.lvcard__header{ display:flex; align-items:flex-start; justify-content:space-between; gap:12px;
+  padding:15px 17px 12px; }
+.lvcard__headwrap{ display:flex; flex-direction:column; gap:8px; min-width:0; }
+.lvcard__title{ font-size:15px; font-weight:600; color:var(--fg); line-height:1.3; }
+.lvcard__title a{ color:inherit; text-decoration:none; }
+.lvcard__title a:hover{ text-decoration:underline; }
+.lvcard__body{ padding:0 17px 14px; display:flex; flex-direction:column; gap:12px; font-size:12.5px; color:var(--fg-dim); line-height:1.5; }
+.lvcard__label{ font-family:var(--font-mono); font-size:10.5px; letter-spacing:.07em; text-transform:uppercase; color:var(--fg-mute); }
+.lvcard__footer{ display:flex; align-items:center; justify-content:space-between; gap:10px;
+  padding:12px 17px; border-top:1px solid var(--border); background:var(--panel-2); }
+.lvcard__meta{ font-family:var(--font-mono); font-size:11px; color:var(--fg-mute); }
+
+/* ---------- buttons — one primary/dark per view, neutral, danger ---------- */
+.btn{ font-family:var(--font-sans); font-size:12.5px; font-weight:500; padding:7px 14px;
+  border-radius:var(--radius-md); cursor:pointer; transition:opacity var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
+  border:1px solid var(--border-strong); background:transparent; color:var(--fg-dim);
+  display:inline-flex; align-items:center; gap:7px; }
+.btn:hover{ color:var(--fg); border-color:var(--fg-dim); }
+.btn:disabled{ opacity:.45; cursor:not-allowed; }
+.btn--primary{ background:var(--fg); color:var(--bg); border-color:var(--fg); }
+.btn--primary:hover{ opacity:.88; color:var(--bg); }
+.btn--neutral{ color:var(--fg-dim); }
+/* destructive is ALWAYS danger-outlined, never the solid primary treatment (review F11) —
+   a red button that reads as "the main action" is exactly the anti-pattern this avoids. */
+.btn--danger{ color:var(--status-danger); border-color:var(--border-strong); background:transparent; }
+.btn--danger:hover{ color:var(--status-danger); border-color:var(--status-danger); }
+.btn--gate{ background:var(--gate); color:#fff; border-color:var(--gate); }
+.btn--gate:hover{ opacity:.9; color:#fff; }
+.btn .dots{ display:inline-flex; gap:3px; }
+.btn .dots span{ width:4px; height:4px; border-radius:50%; background:currentColor; animation:lv-blink var(--motion-blink) infinite; }
+.btn .dots span:nth-child(2){ animation-delay:.2s; }
+.btn .dots span:nth-child(3){ animation-delay:.4s; }
+
+/* ---------- chips — filled=metadata, dashed=env/secret, pill=kind-tag (kindtag, above) ----------
+   Never dark (no --fg solid fill), never status (no status-palette hue). Pure neutral ink scale. */
+.chip-filled{ display:inline-flex; align-items:center; gap:6px; font-family:var(--font-mono);
+  font-size:10.5px; color:var(--fg-dim); background:var(--panel-2); border:1px solid var(--border);
+  padding:3px 8px; border-radius:var(--radius-sm); }
+.chip-dashed{ display:inline-flex; align-items:center; gap:6px; font-family:var(--font-mono);
+  font-size:10.5px; color:var(--fg-mute); background:transparent; border:1px dashed var(--border-strong);
+  padding:3px 8px; border-radius:var(--radius-sm); }
+
+/* ---------- status badge — dot+uppercase label, one geometry, canonical palette ----------
+   The badge container's geometry (pill, height, padding, type scale) is identical across every
+   status. Only the indicator differs, and only along the channel the brief actually assigns to
+   it: circle for step-states, diamond for the gate-shaped needs-you state — shape stays its own
+   channel, never re-merged into "whatever looks nice per status". */
+.statusbadge{ display:inline-flex; align-items:center; gap:6px; font-family:var(--font-mono);
+  font-size:10.5px; font-weight:600; letter-spacing:.04em; text-transform:uppercase;
+  padding:3px 9px; border-radius:var(--radius-pill); }
+.statusbadge__ind{ width:7px; height:7px; flex:none; border-radius:50%; }
+.statusbadge__ind.is-diamond{ border-radius:2px; transform:rotate(45deg); }
+.statusbadge.is-done{ color:var(--status-done); background:color-mix(in oklab, var(--status-done) 14%, transparent); }
+.statusbadge.is-done .statusbadge__ind{ background:var(--status-done); }
+.statusbadge.is-active{ color:var(--status-active); background:color-mix(in oklab, var(--status-active) 14%, transparent); }
+.statusbadge.is-active .statusbadge__ind{ background:var(--status-active); animation:lv-pulse var(--motion-pulse) infinite; --pulse-c:var(--status-active); }
+.statusbadge.is-waiting{ color:var(--fg-mute); background:color-mix(in oklab, var(--fg) 8%, transparent); }
+.statusbadge.is-waiting .statusbadge__ind{ border:1.5px solid var(--fg-mute); }
+.statusbadge.is-blocked{ color:var(--fg-mute); background:var(--panel-2); border:1px solid var(--border-strong); }
+.statusbadge.is-blocked .statusbadge__ind{ border:1.5px solid var(--fg-mute); }
+.statusbadge.is-needsyou{ color:var(--gate); background:var(--gate-panel); }
+.statusbadge.is-needsyou .statusbadge__ind{ background:var(--gate); }
+.statusbadge.is-failed{ color:var(--status-danger); background:color-mix(in oklab, var(--status-danger) 14%, transparent); }
+.statusbadge.is-failed .statusbadge__ind{ background:var(--status-danger); }
+
+/* ---------- page header — breadcrumb-with-leaf, title+count+description+primary action ---------- */
+.pageheader{ display:flex; flex-direction:column; gap:8px; }
+.pageheader__crumb{ display:flex; align-items:center; gap:7px; font-family:var(--font-mono); font-size:11.5px; color:var(--fg-mute); }
+.pageheader__crumb a{ color:var(--fg-mute); text-decoration:none; }
+.pageheader__crumb a:hover{ color:var(--fg-dim); }
+.pageheader__crumb .leaf{ color:var(--fg-dim); }
+.pageheader__crumb .sep{ color:var(--border-strong); }
+.pageheader__row{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.pageheader__title{ font-size:23px; font-weight:600; letter-spacing:-.01em; color:var(--fg); margin:0; }
+.pageheader__count{ font-family:var(--font-mono); font-size:12px; color:var(--fg-mute);
+  background:var(--panel-2); border:1px solid var(--border); padding:2px 8px; border-radius:var(--radius-sm); }
+.pageheader__sp{ flex:1; }
+.pageheader__desc{ font-size:13px; color:var(--fg-dim); line-height:1.5; max-width:640px; margin:0; }
+
+/* ---------- stat band — noun · window grammar, tint only when actionable (gate-brass) ---------- */
+.statband{ display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--border);
+  border:1px solid var(--border); border-radius:var(--radius-lg); overflow:hidden; }
+.statcell{ background:var(--panel); padding:15px 16px; display:flex; flex-direction:column; gap:6px; }
+.statcell.is-actionable{ background:var(--gate-panel); }
+.statcell__n{ font-family:var(--font-mono); font-size:26px; font-weight:500; letter-spacing:-.02em; line-height:1; color:var(--fg); }
+.statcell.is-actionable .statcell__n{ color:var(--gate); }
+.statcell__l{ font-size:11.5px; color:var(--fg-dim); }
+.statcell__l .win{ color:var(--fg-mute); }
+
+@media (max-width:640px){ .statband{ grid-template-columns:repeat(2,1fr); } }

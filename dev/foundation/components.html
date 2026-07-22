@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>levare — components</title>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="tokens.css"/>
+<link rel="stylesheet" href="components.css"/>
+<style>
+  .shell{ max-width:1040px; margin:0 auto; padding:0 28px 100px; }
+  .fhead{ position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:var(--space-4);
+    padding:16px 28px; background:var(--bg); border-bottom:1px solid var(--border); backdrop-filter:blur(6px); }
+  .fhead h1{ font-size:15px; margin:0; font-weight:600; }
+  .fhead nav{ display:flex; gap:var(--space-4); margin-left:var(--space-2); }
+  .fhead nav a{ color:var(--fg-mute); text-decoration:none; font-size:12.5px; }
+  .fhead nav a.is-active, .fhead nav a:hover{ color:var(--fg); }
+  .fhead .sp{ flex:1; }
+  .themebtn{ background:transparent; border:1px solid var(--border); color:var(--fg-dim); padding:6px 12px;
+    border-radius:var(--radius-md); font-size:11.5px; cursor:pointer; font-family:var(--font-sans); }
+  .themebtn:hover{ border-color:var(--border-strong); color:var(--fg); }
+
+  .intro{ padding:32px 0 6px; }
+  .intro p{ color:var(--fg-dim); font-size:13.5px; line-height:1.6; max-width:680px; }
+  .intro code{ font-family:var(--font-mono); font-size:.92em; background:var(--panel-2); padding:1px 5px; border-radius:4px; }
+
+  .csec{ padding:36px 0; border-top:1px solid var(--border); }
+  .csec:first-of-type{ border-top:none; }
+  .csec h2{ font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--fg-mute); font-weight:600; margin:0 0 4px; }
+  .csec .sub{ font-size:12px; color:var(--fg-mute); margin:0 0 20px; max-width:600px; line-height:1.5; }
+
+  .cardrow{ display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px; }
+  .staterow{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .statelabel{ font-family:var(--font-mono); font-size:10px; color:var(--fg-mute); text-transform:uppercase; letter-spacing:.05em; width:100%; margin:14px 0 4px; }
+  .statelabel:first-child{ margin-top:0; }
+
+  .avdemo{ width:24px; height:24px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-family:var(--font-mono); font-size:9.5px; font-weight:500; flex:none; }
+</style>
+</head>
+<body>
+<header class="fhead">
+  <h1>levare · foundation</h1>
+  <nav>
+    <a href="tokens.html">Tokens</a>
+    <a href="icons.html">Icons</a>
+    <a href="components.html" class="is-active">Components</a>
+  </nav>
+  <span class="sp"></span>
+  <button class="themebtn" data-theme-toggle>☼ light</button>
+</header>
+
+<div class="shell">
+  <div class="intro">
+    <p>Base components — amendment 1 §3's one-anatomy discipline applied. One card shape, one
+    button set, one chip system, one status-badge geometry, the page-header pattern, the stat
+    band. Every colour reference here is a token from <code>tokens.css</code>; every glyph is
+    from the approved <code>icons.js</code> sheet. Nothing on this page is wired into a real
+    screen yet — that's Phase 2.</p>
+  </div>
+
+  <section class="csec">
+    <h2>Page header</h2>
+    <p class="sub">Breadcrumb with the leaf (full path, including the current page — amendment 1 §3, review F2). Title, count, description, one primary action.</p>
+    <div class="pageheader">
+      <div class="pageheader__crumb">
+        <a href="#">studio</a><span class="sep">/</span><a href="#">storefront</a><span class="sep">/</span><span class="leaf">work units</span>
+      </div>
+      <div class="pageheader__row">
+        <h1 class="pageheader__title">Work units</h1>
+        <span class="pageheader__count">14</span>
+        <span class="pageheader__sp"></span>
+        <button class="btn btn--primary">Review gate</button>
+      </div>
+      <p class="pageheader__desc">Derived from <code class="mono" style="font-family:var(--font-mono)">work/storefront/</code> on every request. Order is load-bearing: gates, then running, then everything else.</p>
+    </div>
+  </section>
+
+  <section class="csec">
+    <h2>Stat band</h2>
+    <p class="sub">Fixed "noun · window" grammar (review F13). Tints only when actionable — and the only actionable tint in the product is gate brass.</p>
+    <div class="statband">
+      <div class="statcell is-actionable"><div class="statcell__n">3</div><div class="statcell__l">Gates <span class="win">· on you</span></div></div>
+      <div class="statcell"><div class="statcell__n">5</div><div class="statcell__l">Members <span class="win">· running</span></div></div>
+      <div class="statcell"><div class="statcell__n">28</div><div class="statcell__l">Shipped <span class="win">· 30d</span></div></div>
+      <div class="statcell"><div class="statcell__n">4m</div><div class="statcell__l">Gate response <span class="win">· median</span></div></div>
+    </div>
+  </section>
+
+  <section class="csec">
+    <h2>Status badge</h2>
+    <p class="sub">Dot + uppercase label, one badge geometry throughout. Only the indicator shape varies — circle for step-states, diamond for the gate-shaped needs-you state — because shape is its own channel, never remerged per-status.</p>
+    <div class="staterow">
+      <span class="statusbadge is-done"><span class="statusbadge__ind"></span>done</span>
+      <span class="statusbadge is-active"><span class="statusbadge__ind"></span>active</span>
+      <span class="statusbadge is-waiting"><span class="statusbadge__ind"></span>waiting</span>
+      <span class="statusbadge is-blocked"><span class="statusbadge__ind"></span>blocked</span>
+      <span class="statusbadge is-needsyou"><span class="statusbadge__ind is-diamond"></span>needs you</span>
+      <span class="statusbadge is-failed"><span class="statusbadge__ind"></span>failed</span>
+    </div>
+  </section>
+
+  <section class="csec">
+    <h2>Chips</h2>
+    <p class="sub">Three treatments, one meaning each — never dark, never a status hue. Filled = metadata. Dashed = env/secret. Uppercase pill = kind-tag (the entity glyph + word, mandatory in card headers).</p>
+    <div class="staterow">
+      <span class="chip-filled">14 members</span>
+      <span class="chip-filled">last commit 2d ago</span>
+      <span class="chip-dashed">env: STRIPE_KEY</span>
+      <span class="chip-dashed">secret</span>
+      <span class="kindtag" id="kindtag-demo"></span>
+    </div>
+  </section>
+
+  <section class="csec">
+    <h2>Buttons</h2>
+    <p class="sub">One primary (dark fill) per view, neutral, and danger — destructive is always danger-outlined, never the solid primary treatment (review F11).</p>
+    <div class="staterow">
+      <div class="statelabel">default</div>
+      <button class="btn btn--primary">Approve</button>
+      <button class="btn btn--neutral">Request changes</button>
+      <button class="btn btn--danger">Reject</button>
+      <button class="btn btn--gate">Start</button>
+      <div class="statelabel">disabled (tier-1 wait: whole verb group disables on click — amendment 1 R5)</div>
+      <button class="btn btn--primary" disabled>Approve</button>
+      <button class="btn btn--neutral" disabled>Request changes</button>
+      <button class="btn btn--danger" disabled>Reject</button>
+      <div class="statelabel">in-flight (spinner rides only the clicked verb — amendment 1 R4 tier 1)</div>
+      <button class="btn btn--primary" disabled><span class="dots"><span></span><span></span><span></span></span>Approving</button>
+    </div>
+  </section>
+
+  <section class="csec">
+    <h2>Card anatomy</h2>
+    <p class="sub">One anatomy — header (kind-tag mandatory) / body / footer — reused across registry, work-unit, and gate cards (amendment 1 §3, review F5/F6/F7). Team-tinted avatars below use the live derivation from <code>team-color.js</code>, not a hand-picked hue.</p>
+    <div class="cardrow" id="card-demo"></div>
+  </section>
+</div>
+
+<script src="icons.js"></script>
+<script src="team-color.js"></script>
+<script src="shared.js"></script>
+<script>
+  document.getElementById("kindtag-demo").innerHTML = levareIcons.svg("team", 13, { title:false }) + "team";
+
+  const teamA = levareTeamColor.deriveTeamStyle("#2E7D8C"); // vivid, already-safe teal
+  const teamB = levareTeamColor.deriveTeamStyle("#C9A227"); // golden, boosted from a duller input
+
+  function avatar(initials, style, size) {
+    return `<span class="avdemo" style="background:${style.hue};color:${style.avatarText};width:${size}px;height:${size}px;font-size:${size*0.42}px;">${initials}</span>`;
+  }
+
+  const cards = [
+    {
+      kind: "team", title: "storefront-team", status: { cls: "is-active", ind: "", label: "active" },
+      body: `<div><div class="lvcard__label">members</div>
+        <div style="display:flex;gap:6px;margin-top:6px;">${avatar("ly", teamA, 26)}${avatar("ka", teamA, 26)}${avatar("mo", teamA, 26)}</div></div>
+        <div><div class="lvcard__label">flow</div><div style="margin-top:4px;">pitch → design → build → review</div></div>`,
+      meta: "last commit 2d ago by cas", action: `<button class="btn btn--neutral">Edit source</button>`,
+    },
+    {
+      kind: "agent", title: `${avatar("ly", teamB, 22)} lyra`, status: { cls: "is-done", ind: "", label: "idle" },
+      body: `<div><div class="lvcard__label">context recipe</div>
+        <div class="staterow" style="margin-top:6px;"><span class="chip-filled">brand-voice</span><span class="chip-filled">pricing-model</span></div></div>
+        <div><div class="lvcard__label">produces</div><div style="margin-top:4px;">artifact</div></div>`,
+      meta: "kind: native", action: `<button class="btn btn--neutral">Edit source</button>`,
+    },
+    {
+      kind: "artifact", title: "pointer-v2.md", status: { cls: "is-needsyou", ind: "is-diamond", label: "needs you" },
+      body: `<div><div class="lvcard__label">producer</div><div style="margin-top:4px;">storefront-team / lyra</div></div>
+        <div><div class="lvcard__label">lineage</div><div style="margin-top:4px;">supersedes pointer-v1.md</div></div>`,
+      meta: "age 3h", action: `<button class="btn btn--primary">Review gate</button>`,
+    },
+  ];
+  document.getElementById("card-demo").innerHTML = cards.map(c => `
+    <div class="lvcard">
+      <div class="lvcard__header">
+        <div class="lvcard__headwrap">
+          <span class="kindtag">${levareIcons.svg(c.kind, 13, { title:false })}${c.kind.replace("-", " ")}</span>
+          <div class="lvcard__title">${c.title}</div>
+        </div>
+        <span class="statusbadge ${c.status.cls}"><span class="statusbadge__ind ${c.status.ind}"></span>${c.status.label}</span>
+      </div>
+      <div class="lvcard__body">${c.body}</div>
+      <div class="lvcard__footer">
+        <span class="lvcard__meta">${c.meta}</span>
+        ${c.action}
+      </div>
+    </div>
+  `).join("");
+</script>
+</body>
+</html>
