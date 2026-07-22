@@ -13034,3 +13034,132 @@ piercing); the mini-score's own waiting/blocked dots read the same way; timestam
 two-line stamps. `bun test`: 1279 pass, 0 fail. `bunx tsc --noEmit`: clean. `bun run deps:check`: ok.
 `bun run src/cli.ts validate fixtures/golden`: valid, same two pre-existing warnings. `bun run src/
 cli.ts replay fixtures/golden --stubs`: oracle match, byte-for-byte.
+
+# NOTES UI-PHASE2-C4 (2026-07-22) — topbar/Orchestrator popover, chat role-rows, edit-source zones: the last screen cluster
+
+UI rework Phase 2, cluster 4 — the LAST screen cluster. Four surfaces: the topbar Orchestrator status
+badge + popover, the API-key-reason copy bug, the chat rail's role-row anatomy, and the edit-source
+modal's labeled zones. Governed by `docs/levare-design-brief.md` + amendment 1. Reconciled into the
+existing shipped components (`statusBadge`, `orchTurn`/`userTurn`, `editorOverlay`) — nothing forked.
+
+## Part 1 — topbar / Orchestrator popover, and the copy fix
+
+`orchestratorIndicator` (shell.ts) previously hand-rolled a `.status-dot` + mono text pair as its
+trigger and a flat three-`<p>` popover. Reconciled to the foundation's own vocabulary instead of
+building parallel markup: the trigger is now `statusBadge()` — the SAME `.chip` primitive every other
+lifecycle state on the board renders through — mapping "on" to the canonical `done` state (green,
+matching what a healthy connector's dot already read as) and "off" to `waiting` (solid neutral gray,
+never red: this is a configuration state, never a failure). The popover gained real anatomy: a head
+(title + close button, `data-orchind-close` wired in `assets/app.js` to clear the `<details>`'s `open`
+attribute), a body (the reason sentence, plus the env var as a `.chip-dashed` reference chip — ported
+from `dev/foundation/components.css`'s own "dashed = env/secret" rule, not previously wired into the
+shipped stylesheet), and a foot (the reassurance line). A CSS `::before` caret anchors the popover to
+its trigger.
+
+One structural bug found and fixed mid-build: the popover's head/foot were first marked up as real
+`<header>`/`<footer>` tags, nested inside the app's own `<header class="apphead">` — several
+`tests/board-render.test.ts` assertions use a lazy `[\s\S]*?<\/header>` regex to isolate the app header,
+which matched the FIRST `</header>` it found — now the popover's own nested one, truncating the
+captured header and failing six unrelated assertions ("carries the mark, wordmark..."). Fixed by using
+plain `<div>`s for the popover's head/foot (CSS still targets them by class, unaffected); reserving
+`<header>`/`<footer>` for genuine page-level sectioning, not a small popover sub-row, is also the more
+correct HTML semantics.
+
+The API-key-reason copy bug (Phase 2 cluster 3 review): `orchestratorPanel`'s disabled-turn message
+concatenated `${status.reason}` (a bare clause, e.g. "ANTHROPIC_API_KEY is not set", with no guaranteed
+trailing punctuation — `orchestrator-status.ts` never promises one) directly onto more prose, producing
+a run-on ("...is not set The board, the registry..."). A small `reasonSentence()` helper in shell.ts
+guarantees a trailing period before any following text; applied at the one place that actually
+concatenated (the disabled orchestrator turn) and, for consistency, at the popover's own reason
+paragraph too (which didn't have the concatenation bug — reason was already its own `<p>` — but reads
+better ending in a period regardless).
+
+## Part 2 — chat rail: role rows, not bubble colour
+
+The base brief review flagged `userTurn` as a one-off accent-blue bubble; on inspection this had
+already been fixed to a neutral fill in an earlier pass (`tests/user-bubble-color.test.ts`, still
+green). What remained undone was the anatomical half of the same finding: `orchTurn`/`userTurn` had no
+speaker-identifying ROW at all — the Orchestrator's identity came from its accent mark plus alignment,
+the Conductor's from alignment alone, and the one caption line sat as a trailing full-width row beneath
+the whole turn rather than reading as a role signal.
+
+Added `turnRow()` (components.ts) — name + the existing `turnCaption()` (kind tag + mono timestamp,
+unchanged markup, just relocated) — as the first child of `.turn__content`, shared by both `orchTurn`
+and `userTurn`. The Orchestrator keeps its brand-accent mark beside the row (its identity voice, per
+the brief); the message surface itself (`.turn__body`) is now a neutral fill for BOTH speakers — the
+base rule gained `background:var(--panel-2)`/`border`/`padding`/`radius` (previously bare text for the
+Orchestrator, a bubble only for the Conductor), with `.turn--user .turn__body`'s own neutral
+`--bg-user`/`--text-user` override untouched (still passes `user-bubble-color.test.ts` verbatim).
+`assets/app.js#appendTurnMessage` mirrors this exactly client-side (`buildRow`), so a server-rendered
+and a client-appended turn are indistinguishable, per the existing invariant that test suite already
+enforces.
+
+The composer's pending-reply indicator ("thinking…" + three blinking dots) is replaced with two
+content-shaped skeleton bars (`.skeleton-block.turn__skel-line`, the same warm-sheen primitive the
+tier-2/3 loading states already use) inside the pending turn's own neutral bubble — a lie-free "still
+working" signal per amendment 1 R5/review F28, rather than a claim ("thinking") the system can't
+actually back up mid-flight. The gate card's own dispatching dots (`pendingState()`, a different
+context) are untouched.
+
+## Part 3 — edit-source modal: labeled zones, structured validation, dirty gate
+
+`editorOverlay()` (components.ts) held one undifferentiated `<textarea>` and a bare status-dot "valid"
+indicator. Reconciled to the foundation's frontmatter/body split (never previously wired into the
+shipped editor) without rewriting the save/commit mechanics `assets/app.js#bindEditorOverlay` already
+owns:
+
+- **Two labeled zones, one scroll area.** `FRONTMATTER yaml` / `BODY markdown`, each its own
+  auto-growing (`autoGrow()`, no internal scrollbar) textarea inside one bordered `.editor-overlay__zones`
+  wrapper that itself scrolls — not two independently-scrolling boxes. `splitFrontmatter`/
+  `joinFrontmatter` (app.js) parse the SINGLE raw string on open and rejoin it before every check/save
+  POST (`currentContent()`) — the fetch calls, debounce, and routes themselves are byte-identical to
+  before this cluster; only what produces the `content` string changed. `isDirty()` compares each
+  zone's own populated starting value (never the rejoined string), so a freshly opened, unedited buffer
+  can never read dirty from a formatting quirk in the split/join round-trip.
+- **statusBadge-consistent validity.** The "valid"/"invalid"/"checking…" indicator is now the same
+  `.chip` markup `statusBadge()` renders everywhere else (done/failed/waiting), not a bespoke
+  `.status-dot`.
+- **Structured invalid errors.** Each error now renders as "line · key" (muted mono — `errorLocator()`
+  reads `err.line` and lifts a best-effort field name off the SAME human message the validator already
+  writes, via the `field '<key>'`/`key '<key>'` pattern most of validate.ts's messages already use;
+  falls back to the error's own `code` when the message names no field, e.g. a cross-entity reference
+  error) beside the validator's own human message (unchanged wording) — never a bare dot.
+- **Dirty marker.** An "unsaved" pill in the header (`[data-editor-dirty]`), neutral ink (never the
+  message-severity amber — that channel is reserved for warning-severity MESSAGES, not UI chrome),
+  shown only while the buffer differs from what was loaded.
+- **Save enable condition.** `ovSave.disabled = !(isDirty() && validState === 'valid')` — previously
+  Save enabled the instant a check resolved valid, even against a completely unedited buffer; now it
+  needs BOTH.
+
+## Verified
+
+`bun test` → 1282 pass, 9 skip, 0 fail, across 92 files (up from 1279/1279 pre-cluster: three new tests
+in the role-row/neutral-bubble suite, plus the editor-overlay suite's tests rewritten for the two-zone
+model — dirty-then-valid-enables-then-reverting-disables, the "line · key" structured row, the joined
+save/check content). `bunx tsc --noEmit` → clean. `bun run deps:check` → `deps ok`. `bun run build` →
+succeeds. `bun run src/cli.ts validate fixtures/golden` → `valid`, same two pre-existing
+`SANDBOX_UNAVAILABLE` warnings, unchanged. `bun run src/cli.ts replay fixtures/golden --stubs` → oracle
+match, byte-for-byte (this cluster never touches replay/dagwalk/runner logic).
+
+Live-rendered in a real headless-Chromium session against `levare serve fixtures/golden --read-only`,
+both themes: the popover (header/close/body/dashed-chip/footer/caret — the caret is genuinely there,
+just a 9px mark, confirmed via a 4x-scaled crop after an initial pass where `overflow:hidden` on
+`.orchind__pop` was silently clipping it, since fixed by moving corner-rounding to the head/foot
+children instead of the popover box itself); the Orchestrator's disabled-panel turn reading as two
+clean sentences; the edit-source modal's two zones, the "valid" chip, the "unsaved" marker appearing on
+edit and the Save button flipping from disabled to enabled the instant the debounced re-check confirmed
+dirty+valid, in both light and dark. No console errors beyond a stray favicon 404 (pre-existing, no
+`favicon.ico` route in `serve.ts`, unrelated to this cluster).
+
+## What this cluster does NOT claim
+
+The Orchestrator was OFF (no `ANTHROPIC_API_KEY` in this dev environment) for the whole live-browser
+pass — the disabled-panel copy fix and the off-state popover/badge were verified directly; the
+ON-state opening-briefing role row and a live Conductor→Orchestrator exchange were verified through the
+existing test suite's server-rendered/client-appended assertions (both halves of
+`tests/board-orchestrator-conversation.test.ts`) and by reading the real `renderStudio()` output for the
+`ON` fixture status, not by an end-to-end live SDK call in the browser — this repo has no live
+credential in this environment, consistent with every prior cluster's own posture on this exact gap.
+
+This is the last screen-cluster goal per the Conductor's own scoping; only the loading/motion wrap-up
+and a final consistency sweep remain across the whole Phase 2 rework.
