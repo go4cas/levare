@@ -717,12 +717,24 @@
       oldMain.parentNode.replaceChild(newMain, oldMain);
       if (before) flashLiveChanges(before, newMain);
 
+      // Regression fix (Phase 2 cluster 4 seal-time finding): a background refresh — an SSE `reload`
+      // from ANY repo change, not just this tab's own writes; e.g. the daemon's own startup tick still
+      // landing a moment after a fast navigate+click — must never destroy an OPEN, mid-edit overlay.
+      // `extras` is entirely static/repo-independent for the registry page's own editor-overlay shell
+      // (its title/kind/buffer are populated by openEditor(), never server-rendered per request), so
+      // skipping this swap while the Conductor has it open loses nothing: the next natural refresh
+      // (the save flow's own `refreshCurrent()`, or the next SSE tick after Cancel/Escape/backdrop
+      // closes it) catches the extras region up normally. Re-binding is skipped in lockstep — it would
+      // otherwise reset `bindEditorOverlay()`'s closure state (`current`/`checkTimer`) out from under
+      // the still-live, still-open DOM node even without touching the DOM itself.
+      var liveOverlay = document.getElementById('editor-overlay');
+      var editorIsOpen = !!liveOverlay && !liveOverlay.hidden;
       var extrasHost = document.querySelector('[data-extras-host]');
-      if (extrasHost) extrasHost.innerHTML = data.extras || '';
+      if (extrasHost && !editorIsOpen) extrasHost.innerHTML = data.extras || '';
       // The registry editor overlay (when present) is part of `extras` — its old DOM node (and every
       // listener attached directly to it) was just discarded along with the innerHTML above. Rebind
       // to whichever instance exists now (a fresh one, or none at all on a non-registry page).
-      bindEditorOverlay();
+      if (!editorIsOpen) bindEditorOverlay();
 
       syncOrchTail(data);
 

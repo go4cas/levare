@@ -88,6 +88,46 @@ class FakeEventTarget {
   }
 }
 
+// Small, purpose-scoped HTML-fragment parser backing `FakeElement#innerHTML`'s setter — real tags,
+// real attributes (including bare boolean ones like `hidden`), real nesting, plain text as `#text`
+// children (so `.textContent` still reads correctly through `FakeElement`'s own children-first getter)
+// — no entity decoding, no self-closing-tag inference beyond a literal trailing `/`. Scoped to exactly
+// what this suite's own fixtures ever construct, same discipline as the rest of this hand-rolled harness.
+function buildNodesFromHTML(html: string): FakeElement[] {
+  const root = new FakeElement("div");
+  const stack: FakeElement[] = [root];
+  const withoutComments = html.replace(/<!--[\s\S]*?-->/g, "");
+  const re = /<(\/?)([a-zA-Z][\w-]*)([^>]*)>|([^<]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(withoutComments))) {
+    if (m[4] !== undefined) {
+      if (m[4].trim()) {
+        const t = new FakeElement("#text");
+        t.textContent = m[4];
+        stack[stack.length - 1].appendChild(t);
+      }
+      continue;
+    }
+    if (m[1] === "/") {
+      if (stack.length > 1) stack.pop();
+      continue;
+    }
+    const el = new FakeElement(m[2]);
+    const attrsStr = m[3] || "";
+    const attrRe = /([a-zA-Z_:][-\w:.]*)(?:\s*=\s*"([^"]*)")?/g;
+    let am: RegExpExecArray | null;
+    while ((am = attrRe.exec(attrsStr))) {
+      const name = am[1];
+      const value = am[2] !== undefined ? am[2] : "";
+      el.setAttribute(name, value);
+      if (name === "hidden") el.hidden = true;
+    }
+    stack[stack.length - 1].appendChild(el);
+    if (!/\/\s*$/.test(attrsStr)) stack.push(el);
+  }
+  return root.children;
+}
+
 class FakeElement extends FakeEventTarget {
   tagName: string;
   parent: FakeElement | null = null;
@@ -140,6 +180,23 @@ class FakeElement extends FakeEventTarget {
     this.children.push(c);
     return c;
   }
+  // swapFragment (app.js) — exercised by the seal-time regression suite below — reads `.parentNode`
+  // and `.firstElementChild` and calls `.replaceChild(...)`, none of which any prior test in this
+  // file ever needed (the overlay/save/dismiss flows never touch `.main`).
+  get parentNode(): FakeElement | null {
+    return this.parent;
+  }
+  get firstElementChild(): FakeElement | null {
+    return this.children.find((c) => c.tagName !== "#text") || null;
+  }
+  replaceChild(newChild: FakeElement, oldChild: FakeElement): FakeElement {
+    const i = this.children.indexOf(oldChild);
+    if (i === -1) throw new Error("replaceChild: oldChild is not a child of this element");
+    oldChild.parent = null;
+    newChild.parent = this;
+    this.children[i] = newChild;
+    return oldChild;
+  }
   remove(): void {
     if (!this.parent) return;
     const i = this.parent.children.indexOf(this);
@@ -164,13 +221,17 @@ class FakeElement extends FakeEventTarget {
     this.children = [];
   }
   set innerHTML(v: string) {
-    // Assigned '' (to clear before re-appending real child nodes) OR a small literal markup string
-    // (`.validity`'s own chip — Phase 2 cluster 4 item 4b: `<span class="chip ...">label</span>`) —
-    // no real markup PARSING is needed for either, just enough to make `.textContent` read the same
-    // human-visible label a real browser would show: strip tags, keep the text.
+    // Assigned '' (to clear before re-appending real child nodes), a small literal chip string
+    // (`.validity`'s own — Phase 2 cluster 4 item 4b), OR — as of the swapFragment seal-time
+    // regression test below — a real fragment payload (`data.main`/`data.extras`) that MUST become
+    // real, queryable child elements (attributes included): `wrap.innerHTML = data.main; var newMain
+    // = wrap.firstElementChild;` only works if this setter actually builds a tree. `buildNodesFromHTML`
+    // is a small, purpose-scoped parser (tags/attributes/text, no self-closing-tag inference beyond a
+    // trailing `/`, no entity decoding) — enough for every payload this suite's own fixtures construct.
     for (const c of this.children) c.parent = null;
     this.children = [];
-    this._text = v.replace(/<[^>]*>/g, "");
+    this._text = "";
+    for (const n of buildNodesFromHTML(v)) this.appendChild(n);
   }
   closest(selector: string): FakeElement | null {
     let el: FakeElement | null = this;
@@ -676,5 +737,255 @@ describe("registry overlay editor — real app.js exercised against a fake DOM",
     // name (documenting what was replaced); the assertion is about executable code, not commentary.
     const code = APP_JS_SOURCE.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
     expect(code).not.toMatch(/\bwindow\.confirm\(|\bconfirm\(|\balert\(/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Seal-time regression (found during live-browser verification): a background client-side-navigation
+// refresh (swapFragment — triggered by the SSE `reload` message on ANY repo change, not just this
+// tab's own writes; e.g. the daemon's own startup tick still landing a moment after a fast
+// navigate-then-click) unconditionally replaced `[data-extras-host]` — which holds the registry's one
+// editor overlay — with a freshly server-rendered (hidden-by-default) copy. Opening the overlay, then
+// having ANY repo change land before the Conductor closes it, silently destroyed the in-progress edit:
+// no exception, no console error, just a fresh hidden overlay in its place. This suite builds a
+// minimal fixture matching pageBody()'s REAL nesting (`.main` + a `[data-extras-host]` sibling of
+// `.app`, the overlay INSIDE that host — the original overlay-only fixture above puts the overlay
+// directly on `body`, which is enough for the open/close/save tests above but not for this one) and
+// drives the real `navigate()`/`swapFragment()` path via an in-app anchor click, since neither
+// function is itself exposed for direct invocation.
+// ---------------------------------------------------------------------------
+describe("swapFragment must not destroy an OPEN editor overlay on a background refresh (seal-time regression)", () => {
+  function buildSwapFixture(doc: FakeDocument) {
+    const app = doc.createElement("div");
+    app.setAttribute("class", "app");
+    doc.body.appendChild(app);
+
+    const main = doc.createElement("main");
+    main.setAttribute("class", "main");
+    app.appendChild(main);
+
+    const card = doc.createElement("article");
+    card.setAttribute("class", "entity card");
+    card.setAttribute("data-entity", "teams");
+    card.setAttribute("data-path", "teams/kestrel.md");
+    main.appendChild(card);
+
+    const rawSource = doc.createElement("textarea");
+    rawSource.setAttribute("class", "rawmd-source");
+    rawSource.hidden = true;
+    rawSource.value = RAW_SOURCE;
+    card.appendChild(rawSource);
+
+    const editOpen = doc.createElement("button");
+    editOpen.setAttribute("class", "togglebtn");
+    editOpen.setAttribute("data-edit-open", "");
+    editOpen.setAttribute("data-path", "teams/kestrel.md");
+    editOpen.setAttribute("data-editor-name", "kestrel");
+    editOpen.setAttribute("data-editor-kind", "team");
+    card.appendChild(editOpen);
+
+    // An ordinary in-app link elsewhere on the page — clicking it is this harness's only way to
+    // reach the real navigate()/swapFragment() path (neither is exposed for direct invocation).
+    const link = doc.createElement("a");
+    link.setAttribute("href", "/registry/teams");
+    doc.body.appendChild(link);
+
+    // `pageBody()`'s REAL nesting: `[data-extras-host]` is a body-level sibling of `.app`, and the
+    // editor overlay lives INSIDE it — not directly on `body` (the simpler fixture above never needed
+    // this distinction; this test's whole point is what happens to that host on a swap).
+    const extrasHost = doc.createElement("div");
+    extrasHost.setAttribute("data-extras-host", "");
+    doc.body.appendChild(extrasHost);
+
+    const overlay = doc.createElement("div");
+    overlay.setAttribute("class", "editor-overlay");
+    overlay.setAttribute("id", "editor-overlay");
+    overlay.hidden = true;
+    extrasHost.appendChild(overlay);
+
+    const backdrop = doc.createElement("div");
+    backdrop.setAttribute("data-editor-backdrop", "");
+    overlay.appendChild(backdrop);
+    const panel = doc.createElement("div");
+    panel.setAttribute("class", "editor-overlay__panel");
+    overlay.appendChild(panel);
+    const title = doc.createElement("h2");
+    title.setAttribute("class", "editor-overlay__title");
+    panel.appendChild(title);
+    const kind = doc.createElement("span");
+    kind.setAttribute("class", "editor-overlay__kind mono");
+    panel.appendChild(kind);
+    const dirty = doc.createElement("span");
+    dirty.setAttribute("class", "editor-overlay__dirty");
+    dirty.setAttribute("data-editor-dirty", "");
+    dirty.hidden = true;
+    panel.appendChild(dirty);
+    const front = doc.createElement("textarea");
+    front.setAttribute("class", "editor-overlay__textarea editor-overlay__textarea--front");
+    panel.appendChild(front);
+    const bodyTa = doc.createElement("textarea");
+    bodyTa.setAttribute("class", "editor-overlay__textarea editor-overlay__textarea--body");
+    panel.appendChild(bodyTa);
+    const validity = doc.createElement("span");
+    validity.setAttribute("class", "validity");
+    panel.appendChild(validity);
+    const errors = doc.createElement("div");
+    errors.setAttribute("class", "editor-overlay__errors");
+    panel.appendChild(errors);
+    const cancel = doc.createElement("button");
+    cancel.setAttribute("data-editor-cancel", "");
+    panel.appendChild(cancel);
+    const save = doc.createElement("button");
+    save.setAttribute("data-editor-save", "");
+    save.disabled = true;
+    panel.appendChild(save);
+
+    return { editOpen, link, extrasHost, overlay, front, body: bodyTa, cancel, main };
+  }
+
+  function setupSwapGuard() {
+    const doc = new FakeDocument();
+    const fixture = buildSwapFixture(doc);
+
+    let timerId = 1;
+    const timers: Array<{ id: number; fn: () => void }> = [];
+    const fakeSetTimeout = (fn: () => void, _ms: number): number => {
+      const id = timerId++;
+      timers.push({ id, fn });
+      return id;
+    };
+    const fakeClearTimeout = (id: number): void => {
+      const i = timers.findIndex((t) => t.id === id);
+      if (i >= 0) timers.splice(i, 1);
+    };
+    const flushTimers = () => {
+      const due = timers.splice(0, timers.length);
+      for (const t of due) t.fn();
+    };
+
+    // `fetchFragment` (app.js) requires a JSON content-type header to accept a response as a real
+    // fragment payload — the simpler overlay-only fixture's fetch mock never needed one (it only ever
+    // answers the check/save routes, whose responses fetchFragment never sees).
+    type FragmentBody = { ok: boolean; main?: string; extras?: string; title?: string };
+    const pending: Array<{ url: string; resolve: (b: FragmentBody) => void }> = [];
+    const fakeFetch = (url: string, _init?: any) =>
+      new Promise((resolve) => {
+        pending.push({
+          url,
+          resolve: (body: FragmentBody) =>
+            resolve({ ok: true, headers: { get: (h: string) => (h.toLowerCase() === "content-type" ? "application/json" : null) }, json: () => Promise.resolve(body) }),
+        });
+      });
+
+    const context: any = {
+      document: doc,
+      window: { matchMedia: undefined, EventSource: undefined, scrollTo: undefined },
+      location: { pathname: "/registry/teams", search: "", href: "http://localhost/registry/teams" },
+      history: { pushState: () => {} },
+      fetch: fakeFetch,
+      setTimeout: fakeSetTimeout,
+      clearTimeout: fakeClearTimeout,
+      console,
+    };
+    vm.createContext(context);
+    vm.runInContext(APP_JS_SOURCE, context);
+    (doc as any).dispatchEvent({ type: "DOMContentLoaded" });
+
+    return { doc, ...fixture, pending, flushTimers };
+  }
+
+  function clickLink(doc: FakeDocument, target: FakeElement) {
+    // The delegated in-app-navigation handler (app.js) requires `button === 0` (a real left-click) —
+    // the shared `click()`/`clickOn()` helpers above never set it since no prior test needed to.
+    doc.dispatchEvent({ type: "click", target, button: 0, preventDefault() {} });
+  }
+
+  function flush(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  // A refreshed extras payload must carry the FULL overlay anatomy — `bindEditorOverlay()` re-runs
+  // against whatever this parses into and throws if any element it expects (cancel/save/backdrop/
+  // front/body/...) is missing, exactly as it would against a real, mismatched server response.
+  function fullOverlayHTML(marker: string): string {
+    return (
+      '<div class="editor-overlay" id="editor-overlay" hidden ' + marker + '>' +
+      '<div data-editor-backdrop></div>' +
+      '<div class="editor-overlay__panel">' +
+      '<h2 class="editor-overlay__title"></h2>' +
+      '<span class="editor-overlay__kind mono"></span>' +
+      '<span class="editor-overlay__dirty" data-editor-dirty hidden></span>' +
+      '<textarea class="editor-overlay__textarea editor-overlay__textarea--front"></textarea>' +
+      '<textarea class="editor-overlay__textarea editor-overlay__textarea--body"></textarea>' +
+      '<span class="validity"></span>' +
+      '<div class="editor-overlay__errors"></div>' +
+      '<button data-editor-cancel></button>' +
+      '<button data-editor-save disabled></button>' +
+      '</div></div>'
+    );
+  }
+
+  test("an open, DIRTY overlay survives a background navigate-refresh — the buffer is untouched, and main still updates", async () => {
+    const h = setupSwapGuard();
+    clickLink(h.doc, h.editOpen); // wait — this must go through the delegated data-edit-open handler
+    await flush();
+    expect(h.overlay.hidden).toBe(false);
+
+    h.body.value = "changed while open";
+    h.body.dispatchEvent({ type: "input", target: h.body });
+
+    // A background refresh lands (this tab's own navigate(), standing in for the real SSE `reload`
+    // path — both funnel through the same swapFragment()). `pending` also holds the check-route
+    // fetch openEditor() already fired, so find the fragment request by its own URL rather than by
+    // position.
+    clickLink(h.doc, h.link);
+    await flush();
+    const fragmentReq = h.pending.find((p) => p.url === "/registry/teams");
+    expect(fragmentReq).not.toBeUndefined();
+    fragmentReq!.resolve({
+      ok: true,
+      main: '<main class="main" data-fresh="1"></main>',
+      extras: fullOverlayHTML('data-should-never-appear="1"'),
+      title: "levare · registry",
+    });
+    await flush();
+
+    // The overlay is untouched — still open, still carrying the Conductor's unsaved edit — even
+    // though `.main` DID update (the guard is scoped to the extras host only, not a blanket freeze).
+    expect(h.overlay.hidden).toBe(false);
+    expect(h.body.value).toBe("changed while open");
+    expect(h.doc.querySelector('.main[data-fresh="1"]')).not.toBeNull();
+    // The extras host was left alone entirely — still the SAME overlay node, not a freshly-parsed one.
+    expect(h.extrasHost.querySelector("#editor-overlay")).toBe(h.overlay);
+    expect(h.overlay.hasAttribute("data-should-never-appear")).toBe(false);
+  });
+
+  test("once the overlay is closed, the NEXT background refresh replaces the extras host normally", async () => {
+    const h = setupSwapGuard();
+    clickLink(h.doc, h.editOpen);
+    await flush();
+    expect(h.overlay.hidden).toBe(false);
+
+    // Close it (buffer was never touched, so this is the clean-buffer immediate-close path).
+    h.cancel.dispatchEvent({ type: "click", target: h.cancel, preventDefault() {} });
+    expect(h.overlay.hidden).toBe(true);
+
+    clickLink(h.doc, h.link);
+    await flush();
+    const fragmentReq = h.pending.find((p) => p.url === "/registry/teams");
+    expect(fragmentReq).not.toBeUndefined();
+    fragmentReq!.resolve({
+      ok: true,
+      main: '<main class="main" data-fresh="1"></main>',
+      extras: fullOverlayHTML('data-refreshed="1"'),
+      title: "levare · registry",
+    });
+    await flush();
+
+    // Now the extras host DID get replaced — the guard only ever holds while the overlay is open.
+    const refreshed = h.doc.getElementById("editor-overlay");
+    expect(refreshed).not.toBeNull();
+    expect(refreshed!.getAttribute("data-refreshed")).toBe("1");
+    expect(refreshed).not.toBe(h.overlay);
   });
 });
