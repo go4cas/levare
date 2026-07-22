@@ -308,6 +308,12 @@ export function confirmModal(): string {
   </div>`;
 }
 
+// Phase 2 cluster 4 item 4: the raw-markdown editor gets labeled ZONES (frontmatter/body — the
+// design brief's own frontmatter/body split and mono-means-truth) instead of one undifferentiated
+// textarea, a statusBadge-consistent validity indicator, structured "line · key · expectation" error
+// rows, and a header dirty marker. `assets/app.js#bindEditorOverlay` owns the split/join between this
+// markup and the single raw string the check/save routes actually read and write — reconciled, not
+// rewritten: the fetch calls, debounce, and save route are untouched (see that file's own comment).
 export function editorOverlay(): string {
   return `<div class="editor-overlay" id="editor-overlay" hidden>
     <div class="editor-overlay__backdrop" data-editor-backdrop></div>
@@ -315,11 +321,21 @@ export function editorOverlay(): string {
       <header class="editor-overlay__head">
         <h2 class="editor-overlay__title" id="editor-overlay-title"></h2>
         <span class="editor-overlay__kind mono"></span>
+        <span class="editor-overlay__dirty" data-editor-dirty hidden>unsaved</span>
       </header>
-      <textarea class="editor-overlay__textarea" spellcheck="false"></textarea>
+      <div class="editor-overlay__zones">
+        <div class="editor-overlay__zone editor-overlay__zone--front">
+          <div class="editor-overlay__zone-label mono">frontmatter <span class="editor-overlay__zone-hint">yaml</span></div>
+          <textarea class="editor-overlay__textarea editor-overlay__textarea--front" spellcheck="false"></textarea>
+        </div>
+        <div class="editor-overlay__zone editor-overlay__zone--body">
+          <div class="editor-overlay__zone-label mono">body <span class="editor-overlay__zone-hint">markdown</span></div>
+          <textarea class="editor-overlay__textarea editor-overlay__textarea--body" spellcheck="false"></textarea>
+        </div>
+      </div>
       <div class="editor-overlay__foot">
         <div class="editor-overlay__status">
-          <span class="validity"><span class="status-dot is-ok"></span>valid</span>
+          <span class="validity"><span class="chip is-waiting">checking&hellip;</span></span>
           <div class="editor-overlay__errors"></div>
         </div>
         <div class="editor-overlay__actions">

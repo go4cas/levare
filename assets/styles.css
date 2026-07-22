@@ -621,18 +621,36 @@ button{ font-family:inherit; }
 .editor-overlay__title{ font-size:19px; font-weight:600; letter-spacing:-.01em; margin:0; }
 .editor-overlay__kind{ font-size:11px; color:var(--fg-mute); border:1px solid var(--border); padding:2px 8px;
   border-radius:5px; margin-left:auto; }
-.editor-overlay__textarea{ flex:1; width:100%; box-sizing:border-box; resize:vertical; min-height:360px;
-  font-family:var(--mono); font-size:12.5px; line-height:1.7; color:var(--fg); background:var(--panel-2);
-  border:1px solid var(--border); border-radius:12px; padding:16px 18px; tab-size:2; outline:none; white-space:pre; }
-.editor-overlay__textarea:focus{ border-color:var(--border-strong); }
+/* Phase 2 cluster 4 item 4c: an "unsaved" marker in the header, shown only while the buffer is dirty
+   (assets/app.js#updateDirtyMarker) — plain neutral ink, never the message-severity amber (that
+   channel is reserved for warning-severity MESSAGES, never UI chrome). */
+.editor-overlay__dirty{ font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg-dim);
+  background:var(--panel-2); border:1px solid var(--border-strong); padding:2px 8px; border-radius:999px; }
+
+/* ---------- labeled zones — frontmatter (yaml) / body (markdown) in ONE scroll area (item 4a) ----------
+   The design brief's own frontmatter/body split, made visible: two textareas that read as distinct
+   labeled regions inside a single bordered surface, divided by a hairline — never two independently-
+   scrolling boxes. Each textarea auto-grows to its content (assets/app.js#autoGrow); the WRAPPER is
+   what scrolls once the combined content overflows the modal. */
+.editor-overlay__zones{ flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column;
+  background:var(--panel-2); border:1px solid var(--border); border-radius:12px; }
+.editor-overlay__zone--front{ border-bottom:1px solid var(--border); }
+.editor-overlay__zone-label{ display:flex; align-items:baseline; gap:7px; font-size:10px; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--fg-mute); padding:10px 16px 4px; }
+.editor-overlay__zone-hint{ text-transform:none; letter-spacing:0; opacity:.75; }
+.editor-overlay__textarea{ display:block; width:100%; box-sizing:border-box; resize:none; overflow:hidden;
+  font-family:var(--mono); font-size:12.5px; line-height:1.7; color:var(--fg); background:transparent;
+  border:none; padding:0 16px 14px; tab-size:2; outline:none; white-space:pre; }
+.editor-overlay__textarea--front{ min-height:44px; }
+.editor-overlay__textarea--body{ min-height:200px; }
 .editor-overlay__foot{ display:flex; align-items:flex-start; gap:16px; justify-content:space-between; }
-.editor-overlay__status{ display:flex; flex-direction:column; gap:6px; min-width:0; }
-.editor-overlay__errors{ display:flex; flex-direction:column; gap:6px; }
-.editor-overlay__err{ font-size:12px; line-height:1.5; }
-/* UI4 item 2: the editor shows the validator's human message only — no code, filename, or bare
-   `:line` locator (the editor has no visible line numbers for one to point at). The message itself
-   carries the danger tint that the now-removed code/location line used to. */
-.editor-overlay__err p{ margin:0; color:var(--danger); }
+.editor-overlay__status{ display:flex; flex-direction:column; gap:8px; min-width:0; }
+.editor-overlay__errors{ display:flex; flex-direction:column; gap:7px; }
+/* item 4b: the invalid state lists each error as "line · key" (muted mono, structured) beside the
+   validator's own human message (in the danger tint the old bare-dot state used) — never a bare dot. */
+.editor-overlay__err{ display:flex; gap:8px; align-items:baseline; font-size:12px; line-height:1.5; }
+.editor-overlay__err-loc{ flex:none; white-space:nowrap; color:var(--fg-mute); font-size:10.5px; }
+.editor-overlay__err-msg{ margin:0; color:var(--danger); }
 
 /* ---------- confirm modal (UI4 item 1) — the reusable primitive replacing every native
    confirm()/alert() in the product. Same recipe as the editor overlay just above it (a centered panel

@@ -114,6 +114,17 @@ class FakeElement extends FakeEventTarget {
       toggle: (c: string) => (self.classSet.has(c) ? (self.classSet.delete(c), false) : (self.classSet.add(c), true)),
     };
   }
+  // Phase 2 cluster 4 item 4b: app.js#renderErrors builds its structured "line · key"/message spans
+  // with `.className =` (idiomatic, works in a real browser) and this suite now queries INTO them by
+  // class (`row.querySelector(".editor-overlay__err-loc")`) — a real requirement this harness didn't
+  // previously have (the old flat message-only row never needed to be queried by class). Alias
+  // `.className` onto the same `setAttribute('class', ...)` path real elements share.
+  set className(v: string) {
+    this.setAttribute("class", v);
+  }
+  get className(): string {
+    return this.getAttribute("class") || "";
+  }
   setAttribute(name: string, value: string): void {
     this.attrs.set(name, String(value));
     if (name === "class") this.classSet = new Set(String(value).split(/\s+/).filter(Boolean));
@@ -152,12 +163,14 @@ class FakeElement extends FakeEventTarget {
     for (const c of this.children) c.parent = null;
     this.children = [];
   }
-  set innerHTML(_v: string) {
-    // Only ever assigned '' by the code under test (to clear before re-appending real child nodes) —
-    // no markup parsing needed; clearing children is the only observable effect that matters here.
+  set innerHTML(v: string) {
+    // Assigned '' (to clear before re-appending real child nodes) OR a small literal markup string
+    // (`.validity`'s own chip — Phase 2 cluster 4 item 4b: `<span class="chip ...">label</span>`) —
+    // no real markup PARSING is needed for either, just enough to make `.textContent` read the same
+    // human-visible label a real browser would show: strip tags, keep the text.
     for (const c of this.children) c.parent = null;
     this.children = [];
-    this._text = "";
+    this._text = v.replace(/<[^>]*>/g, "");
   }
   closest(selector: string): FakeElement | null {
     let el: FakeElement | null = this;
@@ -222,6 +235,10 @@ class FakeDocument extends FakeEventTarget {
 // only needs to carry the same classes/attributes app.js's selectors key off of.
 // ---------------------------------------------------------------------------
 const RAW_SOURCE = "---\nname: kestrel\nmembers: [wren, lyra, finch]\n---\n\n# Kestrel\n";
+// Phase 2 cluster 4 item 4a: the frontmatter/body split app.js#splitFrontmatter produces from
+// RAW_SOURCE above — the two zoned textareas' own initial values.
+const RAW_FRONT = "name: kestrel\nmembers: [wren, lyra, finch]";
+const RAW_BODY = "# Kestrel\n";
 
 function buildFixture(doc: FakeDocument): { editOpen: FakeElement; rawSource: FakeElement; overlay: FakeElement; confirmModal: FakeElement } {
   const app = doc.createElement("div");
@@ -275,9 +292,22 @@ function buildFixture(doc: FakeDocument): { editOpen: FakeElement; rawSource: Fa
   kind.setAttribute("class", "editor-overlay__kind mono");
   panel.appendChild(kind);
 
-  const textarea = doc.createElement("textarea");
-  textarea.setAttribute("class", "editor-overlay__textarea");
-  panel.appendChild(textarea);
+  // Phase 2 cluster 4 item 4c: the "unsaved" marker, hidden by default.
+  const dirty = doc.createElement("span");
+  dirty.setAttribute("class", "editor-overlay__dirty");
+  dirty.setAttribute("data-editor-dirty", "");
+  dirty.hidden = true;
+  panel.appendChild(dirty);
+
+  // Phase 2 cluster 4 item 4a: one undifferentiated textarea became two labeled zones —
+  // frontmatter (yaml) and body (markdown) — in one scroll area.
+  const front = doc.createElement("textarea");
+  front.setAttribute("class", "editor-overlay__textarea editor-overlay__textarea--front");
+  panel.appendChild(front);
+
+  const bodyTa = doc.createElement("textarea");
+  bodyTa.setAttribute("class", "editor-overlay__textarea editor-overlay__textarea--body");
+  panel.appendChild(bodyTa);
 
   const validity = doc.createElement("span");
   validity.setAttribute("class", "validity");
@@ -405,7 +435,9 @@ function overlayParts(h: ReturnType<typeof setupOverlay>) {
   return {
     title: h.overlay.querySelector(".editor-overlay__title")!,
     kind: h.overlay.querySelector(".editor-overlay__kind")!,
-    textarea: h.overlay.querySelector(".editor-overlay__textarea")!,
+    dirty: h.overlay.querySelector("[data-editor-dirty]")!,
+    front: h.overlay.querySelector(".editor-overlay__textarea--front")!,
+    body: h.overlay.querySelector(".editor-overlay__textarea--body")!,
     validity: h.overlay.querySelector(".validity")!,
     errors: h.overlay.querySelector(".editor-overlay__errors")!,
     saveBtn: h.overlay.querySelector("[data-editor-save]")!,
@@ -449,44 +481,70 @@ describe("registry overlay editor — real app.js exercised against a fake DOM",
     p = overlayParts(h);
   });
 
-  test("opening the editor populates the overlay from the clicked card and kicks off a live check", () => {
+  test("opening the editor populates the overlay's two zones from the clicked card and kicks off a live check", () => {
     expect(h.overlay.hidden).toBe(true); // closed by default — the board is what's visible
     clickOn(h.doc, h.editOpen);
     expect(h.overlay.hidden).toBe(false);
     expect(p.title.textContent).toBe("kestrel");
     expect(p.kind.textContent).toBe("team");
-    expect(p.textarea.value).toBe(RAW_SOURCE);
-    // A check fires immediately on open, against the unsaved-but-unmodified buffer.
+    // Phase 2 cluster 4 item 4a: the frontmatter/body split populates the two labeled zones.
+    expect(p.front.value).toBe(RAW_FRONT);
+    expect(p.body.value).toBe(RAW_BODY);
+    expect(p.dirty.hidden).toBe(true); // item 4c: no marker on a freshly opened, unedited buffer
+    // A check fires immediately on open, against the unsaved-but-unmodified buffer — the SAME raw
+    // string the check/save routes have always read, rejoined from the two zones.
     expect(h.fetchCalls.length).toBe(1);
     expect(h.fetchCalls[0].url).toBe("/registry/check/teams/kestrel.md");
     expect(JSON.parse(h.fetchCalls[0].init.body!).content).toBe(RAW_SOURCE);
   });
 
-  test("rapid keystrokes debounce into exactly one check call; Save is disabled until it resolves ok", async () => {
+  // Item 4d: Save enables only when the buffer is BOTH dirty and valid — never valid alone. Opening a
+  // clean, valid buffer must never itself enable Save.
+  test("Save stays disabled on a clean-but-valid buffer; typing (dirty) then resolving valid enables it; reverting the edit disables it again", async () => {
     clickOn(h.doc, h.editOpen);
     h.fetchCalls[0].resolve({ ok: true, errors: [] });
     await flush();
-    expect(p.saveBtn.disabled).toBe(false);
+    expect(p.saveBtn.disabled).toBe(true); // valid, but not dirty — still blocked
+    expect(p.dirty.hidden).toBe(true);
 
-    p.textarea.value = RAW_SOURCE + "\nmore: 1\n";
-    p.textarea.dispatchEvent({ type: "input", target: p.textarea });
+    p.body.value = RAW_BODY + "\nmore text\n";
+    p.body.dispatchEvent({ type: "input", target: p.body });
     expect(p.saveBtn.disabled).toBe(true); // blocked the instant the buffer changes, before any response
-    p.textarea.value = RAW_SOURCE + "\nmore: 12\n";
-    p.textarea.dispatchEvent({ type: "input", target: p.textarea }); // a second keystroke before the debounce fires
+    expect(p.dirty.hidden).toBe(false); // item 4c: the marker appears the instant the buffer differs
+
+    h.flushTimers(); // advances past the 250ms debounce window
+    h.fetchCalls[h.fetchCalls.length - 1].resolve({ ok: true, errors: [] });
+    await flush();
+    expect(p.saveBtn.disabled).toBe(false); // now dirty AND valid
+
+    // Reverting the edit back to the original value clears dirty — Save must block again even though
+    // the buffer is (still) valid, since it no longer differs from what was loaded.
+    p.body.value = RAW_BODY;
+    p.body.dispatchEvent({ type: "input", target: p.body });
+    expect(p.dirty.hidden).toBe(true);
+    expect(p.saveBtn.disabled).toBe(true);
+  });
+
+  test("rapid keystrokes debounce into exactly one check call, joining the two zones back into one raw string", async () => {
+    clickOn(h.doc, h.editOpen);
+    h.fetchCalls[0].resolve({ ok: true, errors: [] });
+    await flush();
+
+    p.body.value = RAW_BODY + "\nmore: 1\n";
+    p.body.dispatchEvent({ type: "input", target: p.body });
+    p.body.value = RAW_BODY + "\nmore: 12\n";
+    p.body.dispatchEvent({ type: "input", target: p.body }); // a second keystroke before the debounce fires
     expect(h.fetchCalls.length).toBe(1); // still just the initial open-time check — nothing scheduled has run yet
 
     h.flushTimers(); // advances past the 250ms debounce window
     expect(h.fetchCalls.length).toBe(2); // the two rapid keystrokes coalesced into ONE re-check, not two
     expect(h.fetchCalls[1].url).toBe("/registry/check/teams/kestrel.md");
-    expect(JSON.parse(h.fetchCalls[1].init.body!).content).toBe(RAW_SOURCE + "\nmore: 12\n");
+    expect(JSON.parse(h.fetchCalls[1].init.body!).content).toBe(RAW_SOURCE.replace(RAW_BODY, RAW_BODY + "\nmore: 12\n"));
   });
 
-  // UI4 item 2: the same ValidationError[] the CLI formats with a code and a file:line locator
-  // (src/cli.ts#formatResult — see tests/validate.test.ts's own CLI-output assertion) renders as the
-  // human message ALONE in the editor: no error code, no filename, no bare `:line` (the editor shows
-  // no line numbers, so a locator would point at nothing visible). One validator, one rule set —
-  // this is a presentation choice in app.js's renderErrors, not a second implementation of any rule.
-  test("an invalid buffer shows the validator's human MESSAGE ONLY — no code, filename, or line locator — and keeps Save blocked", async () => {
+  // Item 4b: each error now reads as "line · key" (structured) beside the validator's own human
+  // message — the human message itself is unchanged (still no code/filename baked into IT).
+  test("an invalid buffer lists each error as 'line · key' beside the validator's human message, and keeps Save blocked", async () => {
     clickOn(h.doc, h.editOpen);
     h.fetchCalls[0].resolve({
       ok: false,
@@ -494,27 +552,35 @@ describe("registry overlay editor — real app.js exercised against a fake DOM",
     });
     await flush();
     expect(p.saveBtn.disabled).toBe(true);
-    expect(p.validity.classList.contains("is-invalid")).toBe(true);
+    expect(p.validity.textContent).toContain("invalid");
     expect(p.errors.children.length).toBe(1);
-    expect(p.errors.children[0].textContent).toBe("unknown key 'bogus_key' in team");
-    expect(p.errors.children[0].textContent).not.toContain("UNKNOWN_KEY");
-    expect(p.errors.children[0].textContent).not.toContain("teams/kestrel.md");
-    expect(p.errors.children[0].textContent).not.toContain(":3");
+    const row = p.errors.children[0];
+    const loc = row.querySelector(".editor-overlay__err-loc")!;
+    const msg = row.querySelector(".editor-overlay__err-msg")!;
+    expect(loc.textContent).toBe("L3 · bogus_key"); // structured: line + the field name lifted from the message
+    expect(msg.textContent).toBe("unknown key 'bogus_key' in team"); // the human message, unchanged
   });
 
   test("Save POSTs to the write route (not the check route) and closes the overlay on success", async () => {
     clickOn(h.doc, h.editOpen);
     h.fetchCalls[0].resolve({ ok: true, errors: [] });
     await flush();
+    // Item 4d: Save needs a dirty buffer too — an edit that round-trips back to valid.
+    p.body.value = RAW_BODY + "\nmore: 1\n";
+    p.body.dispatchEvent({ type: "input", target: p.body });
+    h.flushTimers();
+    h.fetchCalls[h.fetchCalls.length - 1].resolve({ ok: true, errors: [] });
+    await flush();
     expect(p.saveBtn.disabled).toBe(false);
 
+    const expectedContent = RAW_SOURCE.replace(RAW_BODY, RAW_BODY + "\nmore: 1\n");
     click(p.saveBtn);
     expect(p.saveBtn.disabled).toBe(true);
-    expect(h.fetchCalls.length).toBe(2);
-    expect(h.fetchCalls[1].url).toBe("/registry/teams/kestrel.md"); // the save route, distinct from /registry/check/...
-    expect(JSON.parse(h.fetchCalls[1].init.body!).content).toBe(RAW_SOURCE);
+    expect(h.fetchCalls.length).toBe(3);
+    expect(h.fetchCalls[2].url).toBe("/registry/teams/kestrel.md"); // the save route, distinct from /registry/check/...
+    expect(JSON.parse(h.fetchCalls[2].init.body!).content).toBe(expectedContent);
 
-    h.fetchCalls[1].resolve({ ok: true, commit: "deadbeef" });
+    h.fetchCalls[2].resolve({ ok: true, commit: "deadbeef" });
     await flush();
     expect(h.overlay.hidden).toBe(true); // the overlay itself closes on a successful save
     // NOTES UI10: a successful save no longer forces a full-page reload — it refreshes the swapped
@@ -522,9 +588,9 @@ describe("registry overlay editor — real app.js exercised against a fake DOM",
     // which would tear down the SSE connection this goal exists to stop doing that to).
     h.flushTimers(); // the short delay before the content refresh that re-derives from the commit
     expect(h.reloadCalls.length).toBe(0);
-    expect(h.fetchCalls.length).toBe(3);
-    expect(h.fetchCalls[2].url).toBe("/registry/teams");
-    expect(h.fetchCalls[2].init.headers!["X-Levare-Fragment"]).toBe("1");
+    expect(h.fetchCalls.length).toBe(4);
+    expect(h.fetchCalls[3].url).toBe("/registry/teams");
+    expect(h.fetchCalls[3].init.headers!["X-Levare-Fragment"]).toBe("1");
   });
 
   test("Save is blocked while invalid — clicking a disabled Save button does nothing", async () => {
@@ -569,8 +635,8 @@ describe("registry overlay editor — real app.js exercised against a fake DOM",
         p = overlayParts(h);
         const cm = confirmModalParts(h);
         clickOn(h.doc, h.editOpen);
-        p.textarea.value = RAW_SOURCE + "\nchanged: true\n";
-        p.textarea.dispatchEvent({ type: "input", target: p.textarea });
+        p.body.value = RAW_BODY + "\nchanged: true\n";
+        p.body.dispatchEvent({ type: "input", target: p.body });
 
         dismiss();
         expect(cm.modal.hidden).toBe(false);
@@ -593,8 +659,8 @@ describe("registry overlay editor — real app.js exercised against a fake DOM",
     test("the confirm modal's own backdrop click also declines (keeps editing), same as its Keep-editing button", async () => {
       const cm = confirmModalParts(h);
       clickOn(h.doc, h.editOpen);
-      p.textarea.value = RAW_SOURCE + "\nchanged: true\n";
-      p.textarea.dispatchEvent({ type: "input", target: p.textarea });
+      p.body.value = RAW_BODY + "\nchanged: true\n";
+      p.body.dispatchEvent({ type: "input", target: p.body });
 
       click(p.cancelBtn);
       expect(cm.modal.hidden).toBe(false);

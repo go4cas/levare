@@ -821,53 +821,106 @@
       }
       var ovTitle = overlay.querySelector('.editor-overlay__title');
       var ovKind = overlay.querySelector('.editor-overlay__kind');
-      var ovTextarea = overlay.querySelector('.editor-overlay__textarea');
+      var ovDirty = overlay.querySelector('[data-editor-dirty]');
+      var ovFront = overlay.querySelector('.editor-overlay__textarea--front');
+      var ovBody = overlay.querySelector('.editor-overlay__textarea--body');
       var ovValidity = overlay.querySelector('.validity');
       var ovErrors = overlay.querySelector('.editor-overlay__errors');
       var ovSave = overlay.querySelector('[data-editor-save]');
       var ovCancel = overlay.querySelector('[data-editor-cancel]');
       var ovBackdrop = overlay.querySelector('[data-editor-backdrop]');
-      var current = null; // { path, original } \u2014 null whenever the overlay is closed
+      var current = null; // { path, hasFrontmatter, originalFront, originalBody } — null when closed
       var checkTimer = null;
       var checkToken = 0;
+      var validState = 'checking'; // 'valid' | 'invalid' | 'checking'
+
+      /* Phase 2 cluster 4 item 4a: the modal shows the frontmatter/body split as two labeled zones,
+         but the check/save routes still read and write ONE raw markdown string — split on open,
+         rejoined on every check/save. Every real entity/artifact file opens with `---\n...\n---\n\n`,
+         so this round-trips byte-for-byte; `isDirty()` still compares each zone's OWN starting value
+         (never the rejoined string) so a freshly opened buffer can never read dirty from a formatting
+         quirk in the split/join alone. */
+      function splitFrontmatter(raw) {
+        if (raw.slice(0, 4) !== '---\n') return { front: '', body: raw, hasFrontmatter: false };
+        var rest = raw.slice(4);
+        var closeIdx = rest.indexOf('\n---');
+        if (closeIdx === -1) return { front: '', body: raw, hasFrontmatter: false };
+        var front = rest.slice(0, closeIdx);
+        var body = rest.slice(closeIdx + 4).replace(/^\r?\n\r?\n?/, '');
+        return { front: front, body: body, hasFrontmatter: true };
+      }
+      function joinFrontmatter(front, body) {
+        return '---\n' + front + '\n---\n\n' + body;
+      }
+      function currentContent() {
+        if (!current) return '';
+        return current.hasFrontmatter ? joinFrontmatter(ovFront.value, ovBody.value) : ovBody.value;
+      }
 
       function isDirty() {
-        return !!current && ovTextarea.value !== current.original;
+        return !!current && (ovFront.value !== current.originalFront || ovBody.value !== current.originalBody);
+      }
+      function updateDirtyMarker() {
+        ovDirty.hidden = !isDirty();
+      }
+      function recomputeSave() {
+        ovSave.disabled = !(isDirty() && validState === 'valid'); // item 4d: dirty AND valid, never valid alone
+      }
+
+      function autoGrow(el) {
+        el.style.height = 'auto';
+        el.style.height = el.scrollHeight + 'px';
       }
 
       /* The check route returns the SAME ValidationError[] the CLI formats with a code and a
-         file:line locator (levare validate's own output, unchanged — src/cli.ts#formatResult). The
-         editor is a different audience: the Conductor is looking at an unsaved buffer, not a
-         checked-out file tree, and the editor shows no line numbers — so a bare `:line` locator would
-         point at nothing visible. UI4 item 2: render the human message only. */
+         file:line locator (levare validate's own output, unchanged — src/cli.ts#formatResult).
+         Item 4b: each row now reads "line · key" (muted, mono) beside the validator's own human
+         message — structured, not a bare status dot. `key` is best-effort, read off the SAME
+         message text the validator already writes (most of validate.ts's messages name the field as
+         `field '<key>'`/`key '<key>'`); falls back to the error's own `code` when the message names
+         no field (e.g. a cross-entity reference error) — never fabricated, always something the
+         response actually carries. */
+      function errorLocator(er) {
+        var loc = (typeof er.line === 'number') ? ('L' + er.line) : '—';
+        var m = /\b(?:field|key)\s+'([^']+)'/.exec(er.message || '');
+        var key = m ? m[1] : (er.code || '');
+        return loc + ' · ' + key;
+      }
       function renderErrors(errors) {
         ovErrors.innerHTML = '';
         (errors || []).forEach(function (er) {
           var row = document.createElement('div');
           row.className = 'editor-overlay__err';
+          var loc = document.createElement('span');
+          loc.className = 'editor-overlay__err-loc mono';
+          loc.textContent = errorLocator(er);
           var msg = document.createElement('p');
+          msg.className = 'editor-overlay__err-msg';
           msg.textContent = er.message;
+          row.appendChild(loc);
           row.appendChild(msg);
           ovErrors.appendChild(row);
         });
       }
 
+      /* item 4b: the validity indicator is now the SAME `.chip` markup statusBadge() renders
+         everywhere else on the board (done/waiting/failed — never a bare status dot here either). */
       function setValid() {
-        ovValidity.classList.remove('is-invalid');
-        ovValidity.innerHTML = '<span class="status-dot is-ok"></span>valid';
+        validState = 'valid';
+        ovValidity.innerHTML = '<span class="chip is-done">valid</span>';
         renderErrors([]);
-        ovSave.disabled = false;
+        recomputeSave();
       }
       function setInvalid(errors, label) {
-        ovValidity.classList.add('is-invalid');
-        ovValidity.innerHTML = '<span class="status-dot is-danger"></span>' + (label || 'invalid');
+        validState = 'invalid';
+        ovValidity.innerHTML = '<span class="chip is-failed">' + (label || 'invalid') + '</span>';
         renderErrors(errors);
-        ovSave.disabled = true;
+        recomputeSave();
       }
       function setChecking() {
-        ovValidity.classList.remove('is-invalid');
-        ovValidity.innerHTML = '<span class="status-dot is-idle"></span>checking\u2026';
-        ovSave.disabled = true;
+        validState = 'checking';
+        ovValidity.innerHTML = '<span class="chip is-waiting">checking…</span>';
+        recomputeSave();
       }
 
       function runCheck() {
@@ -878,7 +931,7 @@
         fetch('/registry/check/' + path, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ content: ovTextarea.value })
+          body: JSON.stringify({ content: currentContent() })
         }).then(function (r) {
           return r.json().catch(function () { return { ok: false, errors: [] }; });
         }).then(function (body) {
@@ -896,14 +949,19 @@
       }
 
       openEditor = function (path, name, kind, raw) {
-        current = { path: path, original: raw };
+        var split = splitFrontmatter(raw);
+        current = { path: path, hasFrontmatter: split.hasFrontmatter, originalFront: split.front, originalBody: split.body };
         ovTitle.textContent = name;
         ovKind.textContent = kind;
-        ovTextarea.value = raw;
+        ovFront.value = split.front;
+        ovBody.value = split.body;
+        autoGrow(ovFront);
+        autoGrow(ovBody);
         ovSave.textContent = 'Save and commit';
+        updateDirtyMarker();
         overlay.hidden = false;
         runCheck();
-        ovTextarea.focus();
+        ovFront.focus();
       };
 
       function closeEditor() {
@@ -925,35 +983,37 @@
 
       ovCancel.addEventListener('click', requestDismiss);
       ovBackdrop.addEventListener('click', requestDismiss);
-      ovTextarea.addEventListener('input', function () {
-        ovSave.disabled = true; // stays blocked until the debounced re-check comes back valid
-        scheduleCheck();
+      [ovFront, ovBody].forEach(function (ta) {
+        ta.addEventListener('input', function () {
+          autoGrow(ta);
+          updateDirtyMarker();
+          ovSave.disabled = true; // stays blocked until the debounced re-check comes back valid (and dirty)
+          scheduleCheck();
+        });
       });
 
       ovSave.addEventListener('click', function () {
         if (!current || ovSave.disabled) return;
         var path = current.path;
         ovSave.disabled = true;
-        ovSave.textContent = 'Saving\u2026';
+        ovSave.textContent = 'Saving…';
         fetch('/registry/' + path, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ content: ovTextarea.value })
+          body: JSON.stringify({ content: currentContent() })
         }).then(function (r) {
           return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, body: j }; });
         }).then(function (res) {
           if (res.ok && res.body && res.body.ok) {
-            ovSave.textContent = 'Committed \u2713';
+            ovSave.textContent = 'Committed ✓';
             closeEditor();
             setTimeout(function () { refreshCurrent(); }, 400);
           } else {
-            ovSave.disabled = false;
             ovSave.textContent = 'Save and commit';
             var msg = (res.body && res.body.error) ? res.body.error : 'save failed';
             setInvalid([{ code: 'SAVE_FAILED', message: msg, file: path }], 'save failed');
           }
         }).catch(function () {
-          ovSave.disabled = false;
           ovSave.textContent = 'Save and commit';
           setInvalid([{ code: 'SAVE_FAILED', message: 'could not reach the board', file: path }], 'save failed');
         });

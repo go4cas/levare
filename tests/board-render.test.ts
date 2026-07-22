@@ -551,10 +551,14 @@ describe("registry screen", () => {
     expect(html).toContain('class="rail"');
     expect(html).toContain('data-entity="teams"');
     expect(html).toContain('class="orch__head"');
-    // The overlay carries the heading, textarea, validity indicator, and both dismiss/save controls.
+    // The overlay carries the heading, the labeled frontmatter/body zones, a validity indicator, and
+    // both dismiss/save controls (Phase 2 cluster 4 item 4: one undifferentiated textarea became two
+    // labeled zones in one scroll area).
     expect(html).toContain('class="editor-overlay__title"');
     expect(html).toContain('class="editor-overlay__kind mono"');
-    expect(html).toContain('class="editor-overlay__textarea"');
+    expect(html).toContain('data-editor-dirty');
+    expect(html).toContain('class="editor-overlay__textarea editor-overlay__textarea--front"');
+    expect(html).toContain('class="editor-overlay__textarea editor-overlay__textarea--body"');
     expect(html).toContain('data-editor-backdrop');
     expect(html).toContain('data-editor-cancel');
     expect(html).toContain('data-editor-save');
