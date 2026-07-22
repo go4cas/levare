@@ -99,9 +99,9 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
       const snodeCls = scoreNodeClass(n, isGate);
       const av = n.producedBy ? `<div class="sstep__av">${memberAvatar(repo, n.producedBy)}</div>` : `<div class="sstep__av"></div>`;
       // NOTES UI1: "blocked" used to render with the SAME red inline style as "rejected" — a direct
-      // violation of the design brief's canonical palette ("blocked = hollow neutral ... never
+      // violation of the design brief's canonical palette ("blocked = solid neutral gray ... never
       // orange [or red]; failed = red" are two different states). Routed through the canonical map:
-      // rejected is genuinely `failed` (red stays); blocked is genuinely `blocked` (hollow neutral).
+      // rejected is genuinely `failed` (red stays); blocked is genuinely `blocked` (neutral gray).
       const chip =
         n.state === "done" ? statusBadge("done", "approved", "sstep__chip")
         : n.state === "gate" ? statusBadge("needs-you", "needs you", "sstep__chip")

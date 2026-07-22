@@ -42,7 +42,9 @@
   --status-active:#2B6CB0;   /* blue + pulse */
   --status-done:#2F7D53;     /* solid green */
   --status-danger:#A81F1A;   /* failed / message DANGER (deliberately the same red — one meaning) */
-  /* waiting / blocked have no hue — hollow neutral, drawn from --fg-mute / --border-strong;
+  /* waiting / blocked have no hue — solid neutral gray, drawn from --fg-mute (conductor amendment,
+     Phase 2 cluster 3 seal: moved from hollow to solid once the score rail's connecting line ran
+     continuously through every node — a hollow ring reads as the line piercing an empty center);
      needs-you has no separate token — it IS --gate. */
 
   /* ---------- 7. type ---------- */
@@ -87,7 +89,7 @@
   --motion-instant:80ms;
   --motion-fast:120ms;
   --motion-base:180ms;
-  --motion-pulse:1.9s;
+  --motion-pulse:1.6s;
   --motion-blink:1.2s;
   --ease-standard:cubic-bezier(.2,.7,.3,1);
 

@@ -219,8 +219,12 @@ button{ font-family:inherit; }
 .gate__badge{ font-family:var(--mono); font-size:9.5px; letter-spacing:.09em; text-transform:uppercase; color:var(--gate);
   background:color-mix(in oklab, var(--gate) 12%, transparent); padding:3px 7px; border-radius:5px; flex:none; }
 .gate__badge.is-start{ background:none; border:1px dashed color-mix(in oklab, var(--gate) 55%, transparent); }
-/* Canonical palette: "blocked" is hollow neutral plus an explicit label, never red — red is `failed`
-   (a content rejection), a different state entirely. This badge used to be red for both. */
+/* Canonical palette: "blocked" is neutral (never red) plus an explicit label — red is `failed` (a
+   content rejection), a different state entirely. This badge used to be red for both. A badge is a
+   bordered pill, not a node marker on the score rail's own connecting line, so it keeps this
+   outlined-pill treatment regardless of the rail's own solid-vs-hollow ruling (see the score section
+   below, and docs/levare-design-brief.md's status-palette entry, for that ruling and why it applies to
+   node markers specifically). */
 .gate__badge.is-blocked{ color:var(--fg-mute); background:var(--panel-2); border:1px solid var(--border-strong); }
 /* "exhausted" (NOTES F20) is still a gate — still on the Conductor — so it stays in the brass family
    (the only amber-adjacent hue the product ever uses), but as a solid-outline variant distinct from
@@ -275,7 +279,7 @@ button{ font-family:inherit; }
 .mrow .doing{ font-size:12.5px; color:var(--fg-dim); flex:1; }
 .mrow .step{ font-family:var(--mono); font-size:11px; color:var(--fg-mute); }
 .mrow .elapsed{ font-family:var(--mono); font-size:12px; color:var(--fg-dim); width:42px; text-align:right; }
-.pulse{ width:8px; height:8px; border-radius:50%; flex:none; animation:lv-pulse 1.9s infinite; }
+.pulse{ width:8px; height:8px; border-radius:50%; flex:none; animation:lv-pulse 1.6s infinite; }
 
 /* ---------- avatars ---------- */
 .avatar{ border-radius:50%; color:#fff; display:inline-flex; align-items:center; justify-content:center;
@@ -313,12 +317,19 @@ button{ font-family:inherit; }
 .miniscore{ display:flex; align-items:center; gap:5px; }
 .dot{ width:7px; height:7px; border-radius:50%; flex:none; }
 .dot.is-done{ background:var(--ok); }
-.dot.is-active{ background:var(--active); --pulse-c:var(--active); animation:lv-pulse 1.9s infinite; }
-/* Phase 2 cluster 3 part 3: "blocked" and "waiting" used to be the SAME hollow ring — the same gap
-   the score rail's own node just closed (dashed, not a new colour — both stay hollow neutral). The
-   mini-score is the score's own dot-strip compression (design brief), so it shares the rail's grammar. */
-.dot.is-blocked{ border:1.5px dashed var(--border-strong); }
-.dot.is-wait{ border:1.5px solid var(--border-strong); }
+.dot.is-active{ background:var(--active); --pulse-c:var(--active); animation:lv-pulse 1.6s infinite; }
+/* Conductor amendment (Phase 2 cluster 3 seal): "waiting" moved from hollow-neutral to SOLID neutral
+   gray, palette-wide — once the score rail's connecting line runs continuously through every node, a
+   hollow ring reads as the thread piercing an empty center, not as "nothing happening yet". Filled
+   `--fg-mute` (already the exact gray every waiting/muted label elsewhere in the product uses, so this
+   is a fill matching an already-established tone, not a new one) reads correctly with the line passing
+   behind it. "blocked" gets the identical solid fill — the dashed-ring distinction this cluster
+   introduced one seal ago is superseded by the same piercing problem — and stays visually distinct
+   from plain "waiting" via its own mandatory explicit label only, per the canonical palette's own
+   "blocked = ... plus an explicit label" rule. See docs/levare-design-brief.md's status-palette entry
+   (updated to match) and NOTES.md for the full ruling. */
+.dot.is-blocked{ background:var(--fg-mute); }
+.dot.is-wait{ background:var(--fg-mute); }
 .dot.is-danger{ background:var(--danger); }
 .diamond{ width:8px; height:8px; transform:rotate(45deg); flex:none; }
 .diamond.is-gate{ background:var(--gate); }
@@ -727,13 +738,19 @@ button{ font-family:inherit; }
   box-shadow:0 0 0 3px color-mix(in oklab, var(--gate) 14%, transparent); }
 /* The "ictus" — the identity's own baton/ictus vocabulary ("the precise instant the beat lands under
    the baton"), reused here rather than inventing a new motif: the pulse ring is the anticipation, the
-   small paper-cut centre dot is the beat landing. Same canonical blue, same canonical pulse motion. */
-.snode.active{ background:var(--active); --pulse-c:var(--active); animation:lv-pulse 1.9s infinite; }
+   small paper-cut centre dot is the beat landing. Same canonical blue, same canonical pulse motion —
+   1.6s: a calm, unhurried heartbeat, not the anxious quicker blink an earlier pass shipped at. */
+.snode.active{ background:var(--active); --pulse-c:var(--active); animation:lv-pulse 1.6s infinite; }
 .snode.active::after{ content:""; position:absolute; inset:5px; border-radius:50%; background:var(--panel); }
-/* "blocked" stays hollow neutral (never orange/red) but is now dashed — distinguished from "waiting"
-   by stroke, not colour, on top of the explicit label chip both already carry. */
-.snode.blocked{ background:transparent; border:2px dashed var(--border-strong); }
-.snode.upcoming{ background:transparent; border:2px solid var(--border-strong); }
+/* Conductor amendment (Phase 2 cluster 3 seal): "waiting"/"blocked" moved from a hollow ring to a
+   SOLID `--fg-mute` fill, palette-wide — a hollow node reads as the connecting line piercing an empty
+   center now that the line runs continuously through every node (it didn't, when hollow was chosen).
+   "blocked" carries the identical fill (the dashed-ring distinction introduced one seal ago is
+   superseded by the same piercing problem) and reads as its own state via its mandatory explicit label
+   alone, per the canonical palette's own "blocked = ... plus an explicit label" rule — never red
+   (that's `failed`, a different state), never a second colour. */
+.snode.blocked{ background:var(--fg-mute); }
+.snode.upcoming{ background:var(--fg-mute); }
 .snode.is-danger{ background:var(--danger); }
 .sstep__av{ flex:none; width:24px; height:24px; display:flex; align-items:center; justify-content:center;
   box-shadow:0 0 0 2px var(--panel); border-radius:50%; }
@@ -748,7 +765,7 @@ button{ font-family:inherit; }
    node's own sub-line. Round n/m + real elapsed time only; no fabricated token count (run.ts's own
    `ScoreNode.live` doc comment explains why — no live token stream exists anywhere in the system). */
 .sstep__live{ display:flex; align-items:center; gap:8px; font-family:var(--mono); font-size:11px; color:var(--active); }
-.sstep__live .ld{ width:6px; height:6px; border-radius:50%; background:var(--active); flex:none; animation:lv-pulse 1.9s infinite; --pulse-c:var(--active); }
+.sstep__live .ld{ width:6px; height:6px; border-radius:50%; background:var(--active); flex:none; animation:lv-pulse 1.6s infinite; --pulse-c:var(--active); }
 .sstep__live b{ font-weight:600; color:var(--fg); }
 
 /* ---------- timeline (timestamped) ---------- */

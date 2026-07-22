@@ -12964,3 +12964,73 @@ free. Client-side JS in this app has zero automated test coverage (no jsdom/happ
 forbids a new dependency) — every claim about `assets/app.js`'s behaviour in this entry is a real,
 screenshotted Playwright run, never a unit test, and should be read with that in mind on a future change
 to the same code.
+
+## Addendum — two seal-time fixes, one of them a ruled palette amendment
+
+Two issues surfaced only once the rail was live and reviewed in situ (both invisible in the
+`dev/foundation/score.html` showcase's own shorter, more uniform example rows).
+
+**The connecting line was rendering but effectively absent on most rows.** `.sstep__rail` was fixed at
+the head row's own 24px height, and `.sstep__line`'s `bottom` offset was tuned to that fixed box — but
+the real gap between two rows' nodes also includes the variable-height meta content below the head
+(sub-text, a status chip, sometimes the tier-3 live strip), which the fixed offset never accounted for.
+On a typical row the line covered ~34px of a ~71-95px gap — most of the thread between nodes was
+genuinely missing, not just subtle. Fixed by restructuring so the rail is a SIBLING of a new
+`.sstep__body` wrapper (head + meta stacked) instead of nested inside the head — flex's own default
+`align-items:stretch` now makes the rail match the row's real height automatically, for any content
+length. The node is pinned to a fixed point (12px from the row's own top) via absolute positioning
+inside the now-variable-height rail, so the part-1 centerline alignment is untouched; the line spans
+that real height plus one genuinely fixed, content-independent constant (padding-bottom + the next
+row's own fixed node offset = 34px) — never undershoots again, on any row.
+
+Timeline: "2026-07-07 09:12" was wrapping across three lines, breaking mid-token at the ISO date's own
+hyphens, because the date/time column was 46px wide — well under half of what the full stamp needs at
+this font. Date and time now render as two explicit, independently-`nowrap` lines (run.ts builds them
+as separate spans, never relying on the browser's own line-breaking); the column widened to 74px.
+
+**Conductor ruling — "waiting" (and "blocked") move from hollow-neutral to SOLID neutral gray, palette-
+wide.** With the connecting line now genuinely continuous through every node (the fix above), a hollow
+ring reads as the line piercing an empty center, not as "honestly nothing happening yet" — the rule
+that made sense when the line barely rendered stopped making sense once it did. Ruled: both `waiting`
+and `blocked` fill solid with `--fg-mute` (already the exact gray every muted/waiting label elsewhere
+in the product draws from, so this is a fill matching an already-established tone, not a new hue) —
+clearly distinct from `done` (green) and `active` (blue), and distinct from body-text ink. `blocked`
+loses the dashed-ring distinction this same cluster introduced one seal ago (it had the identical
+piercing problem) and now reads apart from plain `waiting` via its own mandatory explicit label alone —
+consistent with the canonical palette's own "blocked = ... plus an explicit label" wording, which
+already made the label load-bearing, not decorative.
+
+Applied everywhere the canonical `waiting`/`blocked` state renders a NODE-shaped marker (the two places
+that actually had a hollow/dashed ring to begin with): `.snode.upcoming`/`.snode.blocked` (the score
+rail) and `.dot.is-wait`/`.dot.is-blocked` (the mini-score — "the score's own dot-strip compression",
+so it was already required to share the rail's own grammar). Deliberately NOT changed: `.chip.is-
+waiting`/`.chip.is-blocked`, `.gate__badge.is-blocked` — both are bordered pills, not node markers that
+ever sit on the connecting line, and both already draw their text from `--fg-mute` (the same gray the
+amendment standardises on for nodes), so they were already consistent in tone; a pill has no hollow-
+center-pierced-by-a-line problem to begin with, and forcing a "solid fill" reinterpretation onto a
+shape that was never hollow would be change for its own sake, not a fix.
+
+`docs/levare-design-brief.md`'s canonical-palette sentence updated to match (`waiting`/`blocked` now
+read "solid neutral gray", with an inline amendment note dated to this seal). `dev/foundation/score.html`
+(CSS, legend copy, intro, constraint-check section) and `dev/foundation/{tokens,components}.css`
+updated too, so the design workspace doesn't contradict what actually shipped — a stale showcase citing
+a superseded rule would mislead the next reader more than it would help. `src/board/status.ts` and
+`run.ts`'s own doc comments (which quoted the old "hollow neutral" palette wording verbatim) updated in
+step. One existing test (`board-render.test.ts`, the mini-score blocked/waiting rule-diff check) asserted
+the NOW-SUPERSEDED dashed-vs-solid distinction as the correctness bar — rewritten to assert the new
+bar instead (both a solid `--fg-mute` fill, neither carrying a `border`).
+
+**Pulse timing — 1.9s → 1.6s, every use of `lv-pulse` in the shipped stylesheet** (the active score
+node's ictus ring, the mini-score's active dot, the studio "running now" pulse dot, the tier-3 live
+strip's own dot) — a calm, unhurried heartbeat rather than the quicker, more anxious-reading blink the
+first pass shipped at, per the base brief's own "calm, factual, slightly dry" register. `dev/foundation/
+tokens.css`'s `--motion-pulse` token updated to match (`dev/foundation/score.html` already reads the
+token rather than a hardcoded literal, so it picked this up for free). `prefers-reduced-motion` is
+unaffected — it already disables all animation outright, regardless of duration.
+
+Verified live in a browser, both themes: the connecting line now runs continuously through every node
+center including the now-solid waiting/blocked ones (which the line visibly, cleanly meets rather than
+piercing); the mini-score's own waiting/blocked dots read the same way; timestamps render as clean
+two-line stamps. `bun test`: 1279 pass, 0 fail. `bunx tsc --noEmit`: clean. `bun run deps:check`: ok.
+`bun run src/cli.ts validate fixtures/golden`: valid, same two pre-existing warnings. `bun run src/
+cli.ts replay fixtures/golden --stubs`: oracle match, byte-for-byte.

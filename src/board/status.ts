@@ -14,7 +14,7 @@
 // made exactly once, here, for the whole product.
 //
 // "blocked" deliberately does NOT render red: the design brief's canonical palette states "blocked =
-// hollow neutral plus an explicit label (never orange — orange near brass is forbidden)" — red is
+// solid neutral gray plus an explicit label (never orange — orange near brass is forbidden)" — red is
 // reserved for `failed` (a content-level rejection), never a stalled-but-recoverable state. Gate
 // brass (`needs-you`) is scarce by construction: it is the only canonical status this module ever
 // hands out that uses the amber/brass family, and nothing outside a gate ever asks for it.
@@ -94,7 +94,7 @@ export function statusChip(status: CanonicalStatus, label?: string, extraClass?:
 }
 
 /** `WorkUnitStatus` → the canonical palette. `abandoned` is the unit-level terminal negative outcome
- * (the brief's "failed"); `paused` is an honest hollow-neutral "waiting", not a fabricated activity. */
+ * (the brief's "failed"); `paused` is an honest solid-neutral-gray "waiting", not a fabricated activity. */
 export function fromWorkUnitStatus(status: WorkUnitStatus): CanonicalStatus {
   switch (status) {
     case "shipped":

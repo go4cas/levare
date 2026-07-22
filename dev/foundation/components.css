@@ -70,9 +70,11 @@
 .statusbadge.is-active{ color:var(--status-active); background:color-mix(in oklab, var(--status-active) 14%, transparent); }
 .statusbadge.is-active .statusbadge__ind{ background:var(--status-active); animation:lv-pulse var(--motion-pulse) infinite; --pulse-c:var(--status-active); }
 .statusbadge.is-waiting{ color:var(--fg-mute); background:color-mix(in oklab, var(--fg) 8%, transparent); }
-.statusbadge.is-waiting .statusbadge__ind{ border:1.5px solid var(--fg-mute); }
+/* Conductor amendment (Phase 2 cluster 3 seal): a solid fill, not a hollow ring — matches the shipped
+   `.dot`/`.snode` treatment (assets/styles.css). */
+.statusbadge.is-waiting .statusbadge__ind{ background:var(--fg-mute); }
 .statusbadge.is-blocked{ color:var(--fg-mute); background:var(--panel-2); border:1px solid var(--border-strong); }
-.statusbadge.is-blocked .statusbadge__ind{ border:1.5px solid var(--fg-mute); }
+.statusbadge.is-blocked .statusbadge__ind{ background:var(--fg-mute); }
 .statusbadge.is-needsyou{ color:var(--gate); background:var(--gate-panel); }
 .statusbadge.is-needsyou .statusbadge__ind{ background:var(--gate); }
 .statusbadge.is-failed{ color:var(--status-danger); background:color-mix(in oklab, var(--status-danger) 14%, transparent); }

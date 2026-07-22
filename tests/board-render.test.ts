@@ -202,17 +202,20 @@ describe("project screen", () => {
     expect(html).toContain('<div class="stat stat--actionable"><div class="n">2</div><div class="l">Gates open</div></div>');
   });
 
-  // Phase 2 cluster 3 part 3: "blocked" and "waiting" mini-score dots used to be visually identical
-  // (both a plain solid hollow ring) — the same gap the score rail's own node just closed. Both stay
-  // hollow neutral (never a new colour); only the stroke style now differs.
-  test("mini-score blocked and waiting dots are both hollow neutral but visually distinct (dashed vs solid)", () => {
+  // Conductor amendment (Phase 2 cluster 3 seal): "waiting"/"blocked" moved from a hollow ring to a
+  // SOLID neutral-gray fill, palette-wide — a hollow ring reads as the score rail's own connecting
+  // line piercing an empty center once that line runs continuously through every node. Both states
+  // now share the identical fill; "blocked" stays distinguishable from "waiting" via its own mandatory
+  // explicit label alone, never via a second stroke/fill treatment on the marker itself.
+  test("mini-score blocked and waiting dots are both a solid neutral-gray fill, never a hollow ring", () => {
     expect(hasCssRuleFor("dot is-blocked")).toBe(true);
     expect(hasCssRuleFor("dot is-wait")).toBe(true);
     const blockedRule = /\.dot\.is-blocked\{([^}]*)\}/.exec(STYLES)![1];
     const waitRule = /\.dot\.is-wait\{([^}]*)\}/.exec(STYLES)![1];
-    expect(blockedRule).toContain("dashed");
-    expect(waitRule).toContain("solid");
-    expect(blockedRule).not.toBe(waitRule);
+    expect(blockedRule).toContain("background:var(--fg-mute)");
+    expect(waitRule).toContain("background:var(--fg-mute)");
+    expect(blockedRule).not.toContain("border");
+    expect(waitRule).not.toContain("border");
   });
 
   test("constitution shows founding artifacts with citation counts", () => {

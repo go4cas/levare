@@ -42,10 +42,11 @@
      fully separate from the shipped .score2/.sstep/.snode family in
      assets/styles.css until this direction is approved and wired.
 
-     Semantic hard constraints (unchanged, verified below):
+     Semantic hard constraints (verified below; waiting/blocked amended post-approval — see the
+     "solid, not hollow" note further down):
        - canonical status palette drives every node's colour: done=green,
-         active=blue+pulse, waiting=hollow neutral, blocked=hollow neutral
-         + explicit label, needs-you=gate brass (gates only), failed=red.
+         active=blue+pulse, waiting=solid neutral gray, blocked=solid neutral
+         gray + explicit label, needs-you=gate brass (gates only), failed=red.
        - shape: circle=step, diamond=gate, dashed=start gate.
        - colour-means-team is scoped to the avatar ONLY — never the node.
      The risk is spent on: the node rendering itself (the "ictus" active
@@ -90,8 +91,12 @@
 
   .rnode{ width:16px; height:16px; border-radius:50%; box-sizing:border-box; position:relative; z-index:1; flex:none; }
   .rnode.is-done{ background:var(--status-done); }
-  .rnode.is-waiting{ background:transparent; border:2px solid var(--border-strong); }
-  .rnode.is-blocked{ background:transparent; border:2px dashed var(--border-strong); }
+  /* Conductor amendment (Phase 2 cluster 3 seal): moved from a hollow ring to a solid --fg-mute fill —
+     a hollow ring reads as the connecting line piercing an empty center once the line runs
+     continuously through every node, which it does in the wired real rail. "blocked" carries the
+     identical fill; it stays distinct from "waiting" via its own mandatory explicit label alone. */
+  .rnode.is-waiting{ background:var(--fg-mute); }
+  .rnode.is-blocked{ background:var(--fg-mute); }
   .rnode.is-failed{ background:var(--status-danger); }
   /* the "ictus" — the active node reuses the identity's own baton/ictus vocabulary (base brief,
      Identity §Logo: "the ictus — the precise instant the beat lands under the baton"). The pulse ring
@@ -230,7 +235,8 @@
     <p class="sub">What changed and what didn't, for review against the base brief + amendment 1.</p>
     <ul class="note-list">
       <li><b>Unchanged (hard constraints):</b> canonical status→colour map; circle=step/diamond=gate/dashed=start-gate; team-tint scoped to the avatar, never the node; pulse reserved for the active node (the only attention-seeking motion, per the base brief's motion rules).</li>
-      <li><b>New — node rendering:</b> the active node's centre dot (the "ictus") reuses the identity's own baton/ictus vocabulary rather than inventing a new motif; the gate diamond gets a static (non-animated) brass halo matching the base brief's "its scarcity is the product's personality"; blocked is now a dashed hollow ring (still hollow neutral, still explicitly labelled below it) so it reads distinctly from waiting without touching colour.</li>
+      <li><b>New — node rendering:</b> the active node's centre dot (the "ictus") reuses the identity's own baton/ictus vocabulary rather than inventing a new motif; the gate diamond gets a static (non-animated) brass halo matching the base brief's "its scarcity is the product's personality".</li>
+      <li><b>Amended post-approval — solid, not hollow:</b> waiting/blocked shipped as a hollow ring here and in the first real wiring; once the connecting line ran continuously through every node in the real run view, a hollow ring read as the line piercing an empty center, not "nothing happening yet". Both moved to a solid <code>--fg-mute</code> fill instead — "blocked" now reads distinctly from "waiting" via its own mandatory explicit label alone, not via a second stroke treatment on the marker. This page (node CSS, legend, intro) and <code>docs/levare-design-brief.md</code>'s status-palette entry were updated to match; see NOTES.md for the full ruling.</li>
       <li><b>New — the line:</b> three states (settled / frontier / future) instead of one flat hairline, all derived from tokens the palette already owns (green-tinted thread, active-or-gate-tinted frontier, neutral dashed future) — a richer drawing of existing semantics, not a new channel.</li>
       <li><b>New — row wash:</b> the active/needs-you row gets the same actionable-tint treatment already shipped for gate cards and stat cells (<code>--gate-panel</code>) — generalised to <code>--active-panel</code> for "this step is live right now", not a new idea.</li>
       <li><b>New — rhythm:</b> node, avatar, and title share one fixed centerline (part 1's fix, carried forward); the avatar gets a 2px paper-coloured ring so it reads as its own disc against the new row washes.</li>
@@ -303,8 +309,8 @@
   var LEGEND = [
     { state: "done", title: "done", desc: "solid green — approved, settled, behind you." },
     { state: "active", title: "active", desc: "blue, pulsing ring around a paper-cut centre dot — the ictus: the precise instant the beat lands." },
-    { state: "waiting", title: "waiting", desc: "hollow neutral ring — honestly nothing happening yet, never orange." },
-    { state: "blocked", title: "blocked", desc: "hollow neutral, dashed — same hollow-neutral hue as waiting, distinguished by stroke, not colour, plus the explicit label below." },
+    { state: "waiting", title: "waiting", desc: "solid neutral gray — honestly nothing happening yet, never orange. Amended from hollow post-approval: a hollow ring reads as the connecting line piercing an empty center." },
+    { state: "blocked", title: "blocked", desc: "solid neutral gray, same fill as waiting — distinguished only by the explicit label below, never by a second stroke treatment." },
     { state: "gate", title: "needs you", desc: "brass diamond with a static brass halo — scarce by construction, never animated (pulse stays reserved for active/live)." },
     { state: "startgate", title: "start gate", desc: "dashed brass diamond, unfilled — the unit hasn't begun." },
     { state: "failed", title: "failed", desc: "solid red — flat, matter-of-fact, no embellishment." },
