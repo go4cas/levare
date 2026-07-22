@@ -175,38 +175,49 @@ export function pendingState(opts: { label: string }): string {
 }
 
 // ---------------------------------------------------------------------------
-// orchTurn / orchMark — the Orchestrator conversation's one message-group primitive (NOTES UI8). The
-// old per-message header ("RESPONSE"/"BRIEFING" + a timestamp on every line) is gone; instead the
-// Orchestrator's speech is marked ONCE per unbroken run of its own messages by `orchMark()` — the same
-// podium glyph the app header and panel head already use — with left alignment doing the rest. A
-// message's `caption`, when given, renders as a quiet line beneath the WHOLE turn: reserved for the
-// panel's very first message (the opening briefing is a genuinely distinct message worth marking; no
-// later message — including any that merge into this same turn via the client's own turn-grouping,
-// assets/app.js#appendTurnMessage — repeats it). The Conductor's own messages never call this; they
-// render via the client-side `turn--user` path (right-aligned, accent bubble) since every user message
-// is composer-submitted, never server-rendered.
+// orchTurn / orchMark — the Orchestrator conversation's one message-group primitive (NOTES UI8,
+// evolved by Phase 2 cluster 4 item 3: role rows, not bubble colour). The Orchestrator's speech is
+// still marked ONCE per unbroken run of its own messages by `orchMark()` — the same podium glyph the
+// app header and panel head already use, and per the design brief its one remaining piece of brand
+// colour ("the Orchestrator wears the brand accent — the identity and the agent speak in one voice").
+// Speaker identity itself, though, now reads from a ROLE ROW (`turnRow`) — name, kind tag, timestamp —
+// at the top of the turn, not from a coloured bubble: `.turn__body` (the message surface) is a neutral
+// fill for BOTH speakers (see assets/styles.css), so a right-aligned Conductor bubble can never again
+// be mistaken for a status/accent colour doing double duty. The Conductor's own messages never call
+// `orchTurn`; they render via the client-side `turn--user` path (composer-submitted, never
+// server-rendered) mirrored by `userTurn` below.
 // ---------------------------------------------------------------------------
 export function orchMark(): string {
   return `<span class="turn__mark" aria-hidden="true"><i></i><b></b></span>`;
 }
 
 // ---------------------------------------------------------------------------
-// turnCaption — NOTES UI11: every turn (either speaker) now carries a quiet timestamp line, not just
-// the opening briefing. `label` (e.g. "briefing") stays reserved for the one genuinely distinct
-// opening message; a plain reply/user turn passes no label, just the time. The relative text
-// ("now"/"2m"/"1h") is the only thing shown; the full ISO stamp lives in the `title` attribute (a
-// hover, never a second line — the caption stays one unobtrusive row per the design brief's caption
-// treatment). assets/app.js#buildCaption renders the identical markup client-side for turns appended
-// after the page loaded, so a server-rendered and a client-appended caption are indistinguishable.
+// turnCaption — NOTES UI11: every turn (either speaker) carries a quiet timestamp, not just the
+// opening briefing. `label` (e.g. "briefing") stays reserved for the one genuinely distinct opening
+// message — Phase 2 cluster 4: it now doubles as the role row's kind tag, sitting beside the speaker's
+// name rather than prefixing the timestamp on its own line. The relative text ("now"/"2m"/"1h") is the
+// only thing shown; the full ISO stamp lives in the `title` attribute (a hover, never a second line).
+// assets/app.js#buildCaption renders the identical markup client-side for turns appended after the
+// page loaded, so a server-rendered and a client-appended caption are indistinguishable.
 // ---------------------------------------------------------------------------
 export function turnCaption(time: { text: string; title: string }, label?: string): string {
   const prefix = label ? `${esc(label)} &middot; ` : "";
   return `<div class="turn__caption mono">${prefix}<span class="turn__time" title="${esc(time.title)}">${esc(time.text)}</span></div>`;
 }
 
+// ---------------------------------------------------------------------------
+// turnRow — Phase 2 cluster 4 item 3: the one role-row anatomy shared by orchTurn and userTurn (name +
+// kind tag + mono timestamp). This is now the ONLY speaker signal besides the Orchestrator's own mark
+// — the message surface below it carries no speaker-specific colour at all.
+// ---------------------------------------------------------------------------
+function turnRow(name: string, time?: { text: string; title: string }, label?: string): string {
+  const captionHtml = time ? turnCaption(time, label) : "";
+  return `<div class="turn__row"><span class="turn__name">${esc(name)}</span>${captionHtml}</div>`;
+}
+
 export function orchTurn(bodyHtml: string, opts: { captionTime?: { text: string; title: string }; captionLabel?: string } = {}): string {
-  const captionHtml = opts.captionTime ? turnCaption(opts.captionTime, opts.captionLabel) : "";
-  return `<div class="turn turn--orch">${orchMark()}<div class="turn__content">${bodyHtml}</div>${captionHtml}</div>`;
+  const rowHtml = turnRow("Orchestrator", opts.captionTime, opts.captionLabel);
+  return `<div class="turn turn--orch">${orchMark()}<div class="turn__content">${rowHtml}${bodyHtml}</div></div>`;
 }
 
 // The Conductor's own turn, server-rendered — mirrors `orchTurn` minus the mark (the mark is the
@@ -215,8 +226,8 @@ export function orchTurn(bodyHtml: string, opts: { captionTime?: { text: string;
 // indistinguishable (NOTES V11-CONV item 4 — the panel must never look like it's showing two
 // different things depending on whether a message survived a reload).
 export function userTurn(bodyHtml: string, opts: { captionTime?: { text: string; title: string } } = {}): string {
-  const captionHtml = opts.captionTime ? turnCaption(opts.captionTime) : "";
-  return `<div class="turn turn--user"><div class="turn__content">${bodyHtml}</div>${captionHtml}</div>`;
+  const rowHtml = turnRow("You", opts.captionTime);
+  return `<div class="turn turn--user"><div class="turn__content">${rowHtml}${bodyHtml}</div></div>`;
 }
 
 // ---------------------------------------------------------------------------

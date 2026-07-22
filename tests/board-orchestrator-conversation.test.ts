@@ -7,12 +7,15 @@ import type { OrchestratorStatus } from "../src/orchestrator-status.ts";
 
 // NOTES UI8 — the Orchestrator panel reads as a conversation, not a labelled log: the old per-message
 // "RESPONSE"/"BRIEFING" header is gone; the Orchestrator's speech is marked once per turn (the podium
-// mark, left-aligned), the Conductor's own messages render right-aligned in an accent bubble, and
-// consecutive same-speaker messages merge into one turn. This suite has two halves: server-rendered
-// HTML assertions (the initial page load, string-based — same style as tests/board-render.test.ts),
-// and a client-side half exercising the real assets/app.js verbatim against a hand-rolled fake DOM (the
-// same no-DOM-dependency approach as tests/board-pending-state.test.ts) for the parts of the goal that
-// are inherently client behaviour: turn-merging and the in-flight "thinking" state.
+// mark, left-aligned), the Conductor's own messages render right-aligned, and consecutive same-speaker
+// messages merge into one turn. Phase 2 cluster 4 item 3 evolves the speaker signal further: a role
+// row (name + kind tag + mono timestamp) now carries speaker identity, and the message bubble is a
+// neutral fill for BOTH speakers — a one-off accent-blue user bubble would read as a status colour
+// doing double duty (review F21). This suite has two halves: server-rendered HTML assertions (the
+// initial page load, string-based — same style as tests/board-render.test.ts), and a client-side half
+// exercising the real assets/app.js verbatim against a hand-rolled fake DOM (the same no-DOM-dependency
+// approach as tests/board-pending-state.test.ts) for the parts of the goal that are inherently client
+// behaviour: turn-merging and the in-flight pending state.
 
 const root = "fixtures/golden";
 const repo = loadRepo(root);
@@ -56,6 +59,39 @@ describe("server-rendered Orchestrator panel — no per-message header, mark onc
     expect(html).toContain('class="turn__mark"');
     expect(html).not.toContain("turn__caption");
     expect(html).not.toContain("msg__label");
+  });
+});
+
+// Phase 2 cluster 4 item 3: speaker identity now reads from a role row (name + kind tag + mono
+// timestamp) at the top of the turn, not from a coloured bubble — the message surface itself
+// (`.turn__body`) is a neutral fill for both speakers.
+describe("Phase 2 cluster 4: the Orchestrator's turn carries a role row, and its bubble is neutral (not the pre-cluster bare text)", () => {
+  test("the opening briefing's turn carries a turn__row with the Orchestrator's name, ahead of the message body", () => {
+    const html = renderStudio(repo, root, now, [], ON);
+    const turnIdx = html.indexOf('class="turn turn--orch"');
+    expect(turnIdx).toBeGreaterThan(-1);
+    const rowIdx = html.indexOf('class="turn__row"', turnIdx);
+    const nameIdx = html.indexOf('<span class="turn__name">Orchestrator</span>', turnIdx);
+    const bodyIdx = html.indexOf('class="turn__body"', turnIdx);
+    expect(rowIdx).toBeGreaterThan(-1);
+    expect(nameIdx).toBeGreaterThan(-1);
+    expect(bodyIdx).toBeGreaterThan(-1);
+    // The row (name + caption) renders BEFORE the message paragraph, not after.
+    expect(rowIdx).toBeLessThan(bodyIdx);
+    expect(nameIdx).toBeLessThan(bodyIdx);
+  });
+
+  test("the base .turn__body rule (the Orchestrator's own message surface) is a neutral fill — no accent, no status-palette hue", () => {
+    const css = readFileSync("assets/styles.css", "utf8");
+    // Anchored to a line start so this doesn't match INTO a compound selector like
+    // `.orch.is-disabled .turn__body{...}`, which also contains the bare substring ".turn__body{".
+    const m = /(?:^|\n)\.turn__body\{[^}]*\}/.exec(css);
+    expect(m).not.toBeNull();
+    const rule = m![0];
+    expect(rule).toContain("background:var(--panel-2)");
+    expect(rule).not.toContain("var(--accent)");
+    expect(rule).not.toContain("var(--active)");
+    expect(rule).not.toContain("var(--gate)");
   });
 });
 
@@ -339,8 +375,8 @@ describe("consecutive Orchestrator messages merge into one turn (item 4)", () =>
   });
 });
 
-describe("a Conductor message renders right-aligned in an accent bubble (item 3)", () => {
-  test("submitting the composer appends a turn--user carrying the typed text", () => {
+describe("a Conductor message renders right-aligned in a neutral bubble, with its own role row (item 3)", () => {
+  test("submitting the composer appends a turn--user carrying the typed text, with a role row naming 'You'", () => {
     let refs!: ReturnType<typeof buildComposer>;
     setup((doc) => {
       refs = buildComposer(doc);
@@ -357,6 +393,10 @@ describe("a Conductor message renders right-aligned in an accent bubble (item 3)
     expect(bubble.textContent).toBe("what needs me?");
     // The Conductor's turn carries no mark — the mark is the Orchestrator's speaker signal only.
     expect(userTurns[0].querySelector(".turn__mark")).toBeNull();
+    // Phase 2 cluster 4 item 3: speaker identity now reads from the role row, not the mark/bubble colour.
+    const name = userTurns[0].querySelector(".turn__name")!;
+    expect(name).not.toBeNull();
+    expect(name.textContent).toBe("You");
   });
 });
 
@@ -466,7 +506,9 @@ describe("NOTES UI11: every client-appended turn (both speakers) carries a capti
 });
 
 describe("the in-flight state renders inline, at the reply's own position — never a panel-wide loader (item 5)", () => {
-  test("immediately after sending, a pending Orchestrator turn (mark + thinking dots) appears as the next turn, and nothing else about the panel changes", () => {
+  // Phase 2 cluster 4 item 3 (amendment 1 R5, review F28): a pending reply now shows content-shaped
+  // skeleton lines, not a "thinking…" dots+text claim — a lie-free "still working" signal.
+  test("immediately after sending, a pending Orchestrator turn (mark + skeleton lines) appears as the next turn, and nothing else about the panel changes", () => {
     let refs!: ReturnType<typeof buildComposer>;
     setup((doc) => {
       refs = buildComposer(doc);
@@ -485,8 +527,10 @@ describe("the in-flight state renders inline, at the reply's own position — ne
     expect(pendingTurn.classList.contains("turn--orch")).toBe(true);
     expect(pendingTurn.classList.contains("turn--pending")).toBe(true);
     expect(pendingTurn.querySelector(".turn__mark")).not.toBeNull();
-    expect(pendingTurn.querySelector(".turn__dots")).not.toBeNull();
-    expect(pendingTurn.querySelector(".turn__body")!.textContent).toContain("thinking");
+    expect(pendingTurn.querySelector(".turn__body.turn--pending")).not.toBeNull();
+    const skelLines = pendingTurn.querySelectorAll(".turn__skel-line");
+    expect(skelLines.length).toBe(2);
+    expect(pendingTurn.querySelector(".turn__body")!.textContent).not.toContain("thinking");
 
     // The panel's own class never changes to reflect a global loading state.
     expect(aside.className).toBe(asideClassBefore);

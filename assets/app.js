@@ -363,6 +363,21 @@
       return cap;
     }
 
+    /* Phase 2 cluster 4 item 3: the role row (name + mono timestamp) — mirrors
+       render/components.ts#turnRow's markup exactly, so a server-rendered and a client-appended row
+       read identically. It is now the ONE speaker signal besides the Orchestrator's own accent mark;
+       the message surface below it (`.turn__body`) carries no speaker-specific colour. */
+    function buildRow(speaker) {
+      var row = document.createElement('div');
+      row.className = 'turn__row';
+      var name = document.createElement('span');
+      name.className = 'turn__name';
+      name.textContent = speaker === 'orch' ? 'Orchestrator' : 'You';
+      row.appendChild(name);
+      row.appendChild(buildCaption());
+      return row;
+    }
+
     function appendTurnMessage(body, speaker, buildBodyEl) {
       var last = lastTurn(body);
       var turn = (last && last.classList.contains('turn--' + speaker)) ? last : null;
@@ -379,9 +394,9 @@
         }
         var content = document.createElement('div');
         content.className = 'turn__content';
+        content.appendChild(buildRow(speaker));
         turn.appendChild(content);
         body.appendChild(turn);
-        turn.appendChild(buildCaption());
       }
       turn.querySelector('.turn__content').appendChild(buildBodyEl());
       body.scrollTop = body.scrollHeight;
@@ -462,18 +477,23 @@
             return p;
           });
         }
-        // In-flight state (item 5): local and inline, exactly where the reply will land \u2014 the mark
-        // plus an animated "thinking\u2026" indicator, a fresh turn right after the Conductor's own (never
-        // merged into it, since the speaker differs), cleared as soon as a reply or failure arrives.
-        // Never a bar/spinner that replaces more of the panel than this.
+        // In-flight state (item 5, evolved by Phase 2 cluster 4 item 3): local and inline, exactly
+        // where the reply will land \u2014 the mark plus content-shaped skeleton lines standing in for
+        // the reply that hasn't arrived yet (amendment 1 R5, review F28 \u2014 a lie-free "still working"
+        // signal, not a "thinking\u2026" dots+text claim), a fresh turn right after the Conductor's own
+        // (never merged into it, since the speaker differs), cleared as soon as a reply or failure
+        // arrives. Never a bar/spinner that replaces more of the panel than this.
         var pendingTurn = appendTurnMessage(body, 'orch', function () {
           var p = document.createElement('p');
           p.className = 'turn__body turn--pending';
-          var dots = document.createElement('span');
-          dots.className = 'turn__dots';
-          for (var i = 0; i < 3; i++) dots.appendChild(document.createElement('span'));
-          p.appendChild(dots);
-          p.appendChild(document.createTextNode('thinking\u2026'));
+          var line1 = document.createElement('span');
+          line1.className = 'skeleton-block turn__skel-line';
+          line1.style.width = '78%';
+          var line2 = document.createElement('span');
+          line2.className = 'skeleton-block turn__skel-line';
+          line2.style.width = '48%';
+          p.appendChild(line1);
+          p.appendChild(line2);
           return p;
         });
         pendingTurn.classList.add('turn--pending');

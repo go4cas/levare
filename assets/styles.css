@@ -376,28 +376,28 @@ button{ font-family:inherit; }
    accent bubble (Conductor) is the ONLY speaker signal — no per-message "RESPONSE"/"BRIEFING" header.
    A same-speaker message immediately following an existing turn merges into it (client-side, see
    app.js#appendTurnMessage) instead of repeating the mark/spacing (design brief item 4). ---------- */
-.turn{ display:flex; gap:9px; flex-wrap:wrap; }
+.turn{ display:flex; gap:9px; }
 .turn__mark{ position:relative; width:12px; height:15px; flex:none; margin-top:3px; }
 .turn__mark i{ position:absolute; left:5.5px; top:0; width:2px; height:12px; background:var(--accent);
   border-radius:2px; transform:rotate(-11deg); transform-origin:bottom center; }
 .turn__mark b{ position:absolute; left:2.5px; bottom:0; width:5px; height:5px; background:var(--accent); border-radius:50%; }
 .turn__content{ display:flex; flex-direction:column; gap:6px; min-width:0; flex:1; }
-.turn__body{ margin:0; font-size:13.5px; line-height:1.6; color:var(--fg-dim); }
-/* NOTES UI11: the caption (every turn now, not just the first message — item 4) reads as its own
-   quiet row beneath the whole turn, distinctly separated from the message text — `flex:0 0 100%` on a
-   `flex-wrap:wrap` row forces it onto a fresh line under the fixed-width mark + flexible content,
-   rather than crowding beside them as a third row item. `margin-left` aligns it under the message text
-   (mark width + the row's own gap), never under the mark glyph itself. Both speakers share this one
-   rule; only alignment (`.turn--user` below) differs. */
-.turn__caption{ flex:0 0 100%; margin-top:6px; margin-left:21px; font-size:10px; letter-spacing:.03em; color:var(--fg-mute); }
+/* Phase 2 cluster 4 item 3: the role row is now the ONE speaker signal besides the Orchestrator's own
+   accent mark — name, kind tag, mono timestamp, once per unbroken run of a speaker's own messages
+   (assets/app.js#appendTurnMessage never repeats it for a merged follow-up message). Replaces the old
+   scheme where the timestamp alone sat in its own line beneath the whole turn. */
+.turn__row{ display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
+.turn__name{ font-size:12.5px; font-weight:600; color:var(--fg); }
+.turn__caption{ font-size:10px; letter-spacing:.03em; color:var(--fg-mute); }
 .turn__time{ font-style:normal; }
+/* The message surface — a NEUTRAL fill for BOTH speakers (review F21: a one-off accent-blue user
+   bubble read as a status colour doing double duty); only alignment differs by speaker now. */
+.turn__body{ margin:0; font-size:13.5px; line-height:1.6; color:var(--fg-dim); background:var(--panel-2);
+  border:1px solid var(--border); padding:9px 12px; border-radius:10px; }
 
 .turn--user{ justify-content:flex-end; }
 .turn--user .turn__content{ max-width:84%; margin-left:auto; align-items:flex-end; }
 .turn--user .turn__body{ background:var(--bg-user); color:var(--text-user); border:1px solid var(--border); padding:9px 12px; border-radius:10px; }
-/* The Conductor's own turn has no mark, and its bubble is right-aligned — its caption sits flush
-   right too, reading as "beneath the bubble" rather than under a mark that isn't there. */
-.turn--user .turn__caption{ margin-left:0; text-align:right; }
 .summon{ display:inline-flex; align-items:center; gap:8px; align-self:flex-start; cursor:pointer;
   background:color-mix(in oklab, var(--accent) 9%, transparent); border:1px solid color-mix(in oklab, var(--accent) 24%, transparent);
   padding:7px 11px; border-radius:8px; transition:.12s; }
@@ -420,12 +420,15 @@ button{ font-family:inherit; }
 .turn__dots{ display:inline-flex; gap:4px; }
 .turn__dots span{ width:4px; height:4px; border-radius:50%; background:var(--fg-mute);
   animation:lv-blink 1.2s infinite; }
-/* item 5: the in-flight state is local and inline, exactly where the reply will render — the mark
-   (rendered by the shared turn markup) plus this dimmed dots+text paragraph, never a bar/spinner that
-   replaces the panel. */
-.turn__body.turn--pending{ display:flex; align-items:center; gap:7px; color:var(--fg-mute); }
 .turn__dots span:nth-child(2){ animation-delay:.25s; }
 .turn__dots span:nth-child(3){ animation-delay:.5s; }
+/* Phase 2 cluster 4 item 3 (amendment 1 R5, review F28): a pending Orchestrator reply shows
+   content-shaped skeleton lines inside its own neutral bubble instead of a "thinking…" dots+text
+   paragraph — the same warm-sheen skeleton-block treatment the tier-2/3 loading states use
+   (`.skeleton-block` further below), sized for chat text rather than a whole-page block. Local and
+   inline, exactly where the reply will render — never a bar/spinner replacing the panel. */
+.turn__body.turn--pending{ display:flex; flex-direction:column; gap:6px; }
+.turn__skel-line{ height:11px; border-radius:6px; }
 
 /* orchestrator link/mono inside message */
 .turn__body .link{ border-bottom-color:color-mix(in oklab, var(--accent) 60%, transparent); }
