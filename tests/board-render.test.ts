@@ -1180,20 +1180,25 @@ describe("the app header carries the wordmark, version chip, orchestrator status
     });
   }
 
-  test("orchestrator: on — a filled dot, never the danger colour", () => {
+  // Phase 2 cluster 4 item 1: the trigger is the shared statusBadge `.chip` (never a hand-rolled dot)
+  // — "on" maps to the canonical `done` state (green), "off" to `waiting` (solid neutral gray), never
+  // `failed` (red) — this is a configuration state, never an error.
+  test("orchestrator: on — the done chip, never the danger colour", () => {
     const html = renderStudio(repo, root, now, [], { available: true, reason: "The Orchestrator is live.", envVar: "ANTHROPIC_API_KEY" });
     const header = headerOf(html);
     expect(header).toContain("orchestrator: on");
-    expect(header).toContain('class="status-dot is-ok"');
+    expect(header).toContain('class="chip is-done"');
     expect(header).not.toContain('class="status-dot is-danger"');
+    expect(header).not.toContain("is-failed");
   });
 
-  test("orchestrator: off — a hollow/outline dot (a legitimate mode, never the danger colour)", () => {
+  test("orchestrator: off — the waiting chip (a legitimate mode, never the danger colour)", () => {
     const html = renderStudio(repo, root, now, [], { available: false, reason: "ANTHROPIC_API_KEY is not set", envVar: "ANTHROPIC_API_KEY" });
     const header = headerOf(html);
     expect(header).toContain("orchestrator: off");
-    expect(header).toContain('class="status-dot is-idle"');
+    expect(header).toContain('class="chip is-waiting"');
     expect(header).not.toContain('class="status-dot is-danger"');
+    expect(header).not.toContain("is-failed");
   });
 
   test("the header's structure is byte-identical across all six screens (only the rail-toggle aria-label legitimately varies)", () => {
@@ -1605,8 +1610,8 @@ describe("UI4 item 1: the confirm-modal primitive renders on every screen", () =
 
 // ---------------------------------------------------------------------------
 // NOTES C11 part 3: a global status indicator in the app header, on every screen — "orchestrator: on"
-// with a credential and the SDK boundary live, "orchestrator: off" without. Quiet vocabulary reused
-// from the existing canonical state palette (status-dot is-ok/is-idle), not a new color.
+// with a credential and the SDK boundary live, "orchestrator: off" without. Phase 2 cluster 4 item 1:
+// the shared statusBadge() `.chip` (done/waiting), not a hand-rolled dot.
 // ---------------------------------------------------------------------------
 
 describe("the header status indicator shows the Orchestrator's real state, on every screen", () => {
@@ -1626,7 +1631,7 @@ describe("the header status indicator shows the Orchestrator's real state, on ev
     test(`${name}: shows "orchestrator: on" with a credential`, () => {
       expect(html).toContain("orchestrator: on");
       expect(html).not.toContain("orchestrator: off");
-      expect(html).toContain('class="status-dot is-ok"');
+      expect(html).toContain('class="chip is-done"');
     });
   }
 
@@ -1634,7 +1639,7 @@ describe("the header status indicator shows the Orchestrator's real state, on ev
     test(`${name}: shows "orchestrator: off" without a credential`, () => {
       expect(html).toContain("orchestrator: off");
       expect(html).not.toContain("orchestrator: on");
-      expect(html).toContain('class="status-dot is-idle"');
+      expect(html).toContain('class="chip is-waiting"');
     });
   }
 

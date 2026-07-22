@@ -40,6 +40,16 @@
       }
     });
 
+    /* ---------- Orchestrator status popover: close affordance (Phase 2 cluster 4 item 1) ----------
+       `<details>` has no native close button; the popover's own header close control just clears the
+       trigger's `open` attribute, same mechanism a click on the summary itself already toggles. */
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-orchind-close]');
+      if (!btn) return;
+      var det = btn.closest('details.orchind');
+      if (det) det.open = false;
+    });
+
     /* ---------- work-unit rows expand ---------- */
     document.querySelectorAll('.unit__head').forEach(function (row) {
       row.addEventListener('click', function (e) {

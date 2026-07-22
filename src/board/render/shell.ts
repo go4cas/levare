@@ -106,23 +106,42 @@ function composer(opts: { disabled?: boolean } = {}): string {
 // "the rail answers 'is this connector configured?', the header answers 'what kind of studio am I
 // looking at?'"). `orchestratorIndicator` is the ONE clickable badge for this fact — it now lives
 // exclusively in the top-level app header (item 3/4a: the rail's old Orchestrator section is gone),
-// so exactly one copy is ever rendered per page, at every viewport width. It reuses the canonical
-// `.status-dot` classes already established for connector health (is-ok/is-idle) rather than a new
-// color — "on" reads as the same quiet green as a healthy connector, "off" the same hollow/outline
-// neutral as an unconfigured one (dot filled for on, hollow for off); this is a configuration state,
-// never a failure, so it is never red, and it never changes mid-response — a live SDK call's own
-// "thinking" state is the Orchestrator panel's concern (`.turn--pending`), not the header's.
+// so exactly one copy is ever rendered per page, at every viewport width. Phase 2 cluster 4 item 1:
+// the trigger is now the shared `statusBadge()` primitive — the same `.chip` every other lifecycle
+// state on the board renders through — rather than a hand-rolled dot+text pair; "on" maps to `done`
+// (the same green a healthy connector's dot already used), "off" to `waiting` (solid neutral gray,
+// never red — this is a configuration state, never a failure, and it never changes mid-response: a
+// live SDK call's own "thinking" state is the Orchestrator panel's concern, not the header's).
 // ---------------------------------------------------------------------------
 
+// The API-key-reason copy bug (Phase 2 cluster 3 review): `status.reason` (orchestrator-status.ts)
+// is a bare clause with no guaranteed trailing punctuation ("ANTHROPIC_API_KEY is not set") — every
+// call site that follows it with more prose was concatenating straight onto that bare clause,
+// producing a run-on ("...is not set The board..."). One place closes the sentence, wherever
+// `status.reason` renders followed by anything else.
+function reasonSentence(reason: string): string {
+  const trimmed = reason.trim();
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
 function orchestratorIndicator(status: OrchestratorStatus): string {
-  const dotCls = status.available ? "is-ok" : "is-idle";
-  const label = status.available ? "orchestrator: on" : "orchestrator: off";
+  const badge = status.available
+    ? statusBadge("done", "orchestrator: on")
+    : statusBadge("waiting", "orchestrator: off");
   return `<details class="orchind">
-    <summary class="orchind__sum"><span class="status-dot ${dotCls}"></span><span class="orchind__label mono">${esc(label)}</span></summary>
-    <div class="orchind__pop">
-      <p>${esc(status.reason)}</p>
-      <p>Env var: <span class="mono">${esc(status.envVar)}</span></p>
-      <p>The board, the registry, and every gate are unaffected: approvals, rejections, and the runner all keep working either way.</p>
+    <summary class="orchind__sum">${badge}</summary>
+    <div class="orchind__pop" role="group" aria-label="Orchestrator status">
+      <div class="orchind__pop-head">
+        <span class="orchind__pop-title">Orchestrator</span>
+        <button type="button" class="orchind__pop-close" data-orchind-close aria-label="Close">&times;</button>
+      </div>
+      <div class="orchind__pop-body">
+        <p>${esc(reasonSentence(status.reason))}</p>
+        <div class="orchind__pop-row"><span class="orchind__pop-k">env var</span><span class="chip-dashed mono">${esc(status.envVar)}</span></div>
+      </div>
+      <div class="orchind__pop-foot">
+        <p>The board, the registry, and every gate are unaffected — approvals, rejections, and the runner all keep working either way.</p>
+      </div>
     </div>
   </details>`;
 }
@@ -154,7 +173,7 @@ export function orchestratorPanel(scope: string, status: OrchestratorStatus, bri
     return `<aside class="orch is-disabled" data-scope="${esc(scope)}">
     ${orchHead(scope)}
     <div class="orch__body">
-      ${orchTurn(`<p class="turn__body">Orchestrator unavailable — ${esc(status.reason)} The board, the registry, and every gate still work: you can approve, reject, and the runner will advance.</p>`)}
+      ${orchTurn(`<p class="turn__body">Orchestrator unavailable — ${esc(reasonSentence(status.reason))} The board, the registry, and every gate still work: you can approve, reject, and the runner will advance.</p>`)}
       ${tailBlock}
       ${actionableHtml}
     </div>
