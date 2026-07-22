@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>levare — tokens</title>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="tokens.css"/>
+<style>
+  .shell{ max-width:1040px; margin:0 auto; padding:0 28px 100px; }
+  .fhead{ position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:var(--space-4);
+    padding:16px 28px; background:var(--bg); border-bottom:1px solid var(--border); backdrop-filter:blur(6px); }
+  .fhead h1{ font-size:15px; margin:0; font-weight:600; }
+  .fhead nav{ display:flex; gap:var(--space-4); margin-left:var(--space-2); }
+  .fhead nav a{ color:var(--fg-mute); text-decoration:none; font-size:12.5px; }
+  .fhead nav a.is-active, .fhead nav a:hover{ color:var(--fg); }
+  .fhead .sp{ flex:1; }
+  .themebtn{ background:transparent; border:1px solid var(--border); color:var(--fg-dim); padding:6px 12px;
+    border-radius:var(--radius-md); font-size:11.5px; cursor:pointer; font-family:var(--font-sans); }
+  .themebtn:hover{ border-color:var(--border-strong); color:var(--fg); }
+
+  .intro{ padding:36px 0 8px; }
+  .intro p{ color:var(--fg-dim); font-size:13.5px; line-height:1.6; max-width:640px; }
+  .intro code{ font-family:var(--font-mono); font-size:.92em; background:var(--panel-2); padding:1px 5px; border-radius:4px; }
+
+  section.tsec{ padding:40px 0; border-top:1px solid var(--border); }
+  section.tsec:first-of-type{ border-top:none; }
+  .tsec h2{ font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--fg-mute); font-weight:600; margin:0 0 6px; }
+  .tsec .note{ font-size:12.5px; color:var(--fg-dim); line-height:1.6; max-width:640px; margin:0 0 22px; }
+
+  .swatchrow{ display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:12px; }
+  .swatch{ border:1px solid var(--border); border-radius:var(--radius-md); overflow:hidden; }
+  .swatch__fill{ height:52px; }
+  .swatch__meta{ padding:8px 10px; background:var(--panel); }
+  .swatch__name{ font-size:11.5px; font-weight:600; }
+  .swatch__hex{ font-family:var(--font-mono); font-size:10.5px; color:var(--fg-mute); }
+
+  /* forced-mode comparison panels: show both light and dark simultaneously regardless of the
+     page's own toggle, so a reviewer sees both without switching */
+  .modepair{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .modepanel{ border:1px solid var(--border); border-radius:var(--radius-lg); padding:16px; background:var(--bg); }
+  .modepanel__label{ font-family:var(--font-mono); font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg-mute); margin-bottom:10px; }
+
+  .stack{ display:flex; flex-direction:column; gap:8px; }
+
+  .statuschip{ font-size:10.5px; font-weight:600; font-family:var(--font-mono); letter-spacing:.04em;
+    padding:3px 8px; border-radius:var(--radius-sm); display:inline-flex; align-items:center; gap:6px; }
+  .sdot{ width:7px; height:7px; border-radius:50%; flex:none; }
+  .chiprow{ display:flex; flex-wrap:wrap; gap:10px; }
+
+  .notice{ display:flex; align-items:flex-start; gap:8px; padding:10px 12px; border-radius:var(--radius-md); font-size:12.5px; line-height:1.55; max-width:440px; }
+  .notice--note{ background:var(--note-panel); border:1px solid var(--border); color:var(--fg); }
+  .notice--warning{ background:var(--warning-panel); border:1px solid var(--warning-border); color:var(--fg); }
+  .notice--danger{ background:var(--danger-panel); border:1px solid var(--danger-border); color:var(--fg); }
+  .notice b{ display:block; font-size:10px; letter-spacing:.06em; text-transform:uppercase; margin-bottom:2px; }
+  .notice--note b{ color:var(--fg-mute); }
+  .notice--warning b{ color:var(--warning); }
+  .notice--danger b{ color:var(--status-danger); }
+
+  .amberpair{ display:flex; gap:20px; flex-wrap:wrap; }
+  .amberchip{ display:flex; flex-direction:column; gap:8px; align-items:center; }
+  .amberchip .sw{ width:64px; height:64px; border-radius:var(--radius-md); border:1px solid var(--border); }
+  .amberchip small{ font-family:var(--font-mono); font-size:10.5px; color:var(--fg-mute); text-align:center; }
+
+  .typesample{ display:flex; flex-direction:column; gap:4px; margin-bottom:18px; }
+  .typesample .lbl{ font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg-mute); }
+  .typesample .demo{ font-size:20px; color:var(--fg); }
+  .mono-demo{ font-family:var(--font-mono); font-size:13px; color:var(--fg); }
+  .mono-demo a{ color:var(--fg); border-bottom:1px solid color-mix(in oklab, var(--fg) 22%, transparent); text-decoration:none; }
+  .mono-demo a:hover{ border-bottom-color:var(--accent); }
+  .prose-demo{ font-size:13.5px; color:var(--fg-dim); line-height:1.6; max-width:520px; }
+
+  table.teamtable{ width:100%; border-collapse:collapse; font-size:12px; }
+  table.teamtable th, table.teamtable td{ text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); vertical-align:middle; }
+  table.teamtable th{ font-size:10px; letter-spacing:.05em; text-transform:uppercase; color:var(--fg-mute); font-weight:600; }
+  .swpair{ display:flex; align-items:center; gap:8px; }
+  .swdot{ width:26px; height:26px; border-radius:50%; border:1px solid var(--border); flex:none; }
+  .avdemo{ width:30px; height:30px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center;
+    font-family:var(--font-mono); font-size:11px; font-weight:500; flex:none; }
+  .pass{ color:var(--status-done); font-weight:600; }
+  .fail{ color:var(--status-danger); font-weight:600; }
+
+  .spacerow{ display:flex; align-items:flex-end; gap:10px; }
+  .spaceblock{ background:var(--accent); }
+  .spacelbl{ font-family:var(--font-mono); font-size:10px; color:var(--fg-mute); }
+
+  .motionrow{ display:flex; gap:26px; align-items:center; }
+  .pulsedemo{ width:12px; height:12px; border-radius:50%; background:var(--status-active); --pulse-c:var(--status-active); animation:lv-pulse var(--motion-pulse) infinite; }
+  .blinkdemo{ width:8px; height:8px; border-radius:50%; background:var(--fg-mute); animation:lv-blink var(--motion-blink) infinite; }
+</style>
+</head>
+<body>
+<header class="fhead">
+  <h1>levare · foundation</h1>
+  <nav>
+    <a href="tokens.html" class="is-active">Tokens</a>
+    <a href="icons.html">Icons</a>
+    <a href="components.html">Components</a>
+  </nav>
+  <span class="sp"></span>
+  <button class="themebtn" data-theme-toggle>☼ light</button>
+</header>
+
+<div class="shell">
+  <div class="intro">
+    <p>The token system, as ratified by <code>docs/levare-design-brief.md</code> and
+    <code>docs/levare-design-brief-amendment-1.md</code>. Every derived token below reads from
+    <code>tokens.css</code> — nothing on this page is a hand-picked literal beyond the six named
+    colours the brief fixes (Ink, Paper, Podium, gate brass, warning amber, and the status hues).
+    Team colour is not a token — see the derivation-rules section below, powered by
+    <code>team-color.js</code>.</p>
+  </div>
+
+  <section class="tsec">
+    <h2>Neutrals — Ink / Paper, swapping roles</h2>
+    <p class="note">Ink <code>#191B21</code> and Paper <code>#F5F6F7</code> are the two fixed
+    literals. Every other neutral is <code>color-mix</code>'d from them. In dark mode, Ink becomes
+    the panel/foreground-adjacent surface and Paper becomes the foreground text colour — a true
+    swap, not two independent palettes.</p>
+    <div class="modepair">
+      <div class="modepanel" data-theme="light">
+        <div class="modepanel__label">light</div>
+        <div class="swatchrow" id="neutrals-light"></div>
+      </div>
+      <div class="modepanel" data-theme="dark">
+        <div class="modepanel__label">dark</div>
+        <div class="swatchrow" id="neutrals-dark"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="tsec">
+    <h2>Accent — Podium</h2>
+    <p class="note">Vermilion, ~<code>#C2402A</code> light / <code>#E56A50</code> dark. Sparingly
+    used — Orchestrator-voice only; colour otherwise belongs to teams.</p>
+    <div class="modepair">
+      <div class="modepanel" data-theme="light"><div class="modepanel__label">light</div>
+        <div class="swatchrow" id="accent-light"></div></div>
+      <div class="modepanel" data-theme="dark"><div class="modepanel__label">dark</div>
+        <div class="swatchrow" id="accent-dark"></div></div>
+    </div>
+  </section>
+
+  <section class="tsec">
+    <h2>The two ambers — kept deliberately distinct</h2>
+    <p class="note">Gate brass (needs-you, gates only) and message-warning amber (WARNING severity,
+    messages only) must never be mistakable for one another at a glance — one hue, one meaning, per
+    channel (amendment 1, "the amber rule, refined"). Shown together, both modes, to prove the
+    values are genuinely different swatches, not a shared token.</p>
+    <div class="modepair">
+      <div class="modepanel" data-theme="light">
+        <div class="modepanel__label">light</div>
+        <div class="amberpair">
+          <div class="amberchip"><div class="sw" style="background:var(--gate)"></div><small>gate brass<br><code>#8A6414</code><br>needs-you · entities</small></div>
+          <div class="amberchip"><div class="sw" style="background:var(--warning)"></div><small>warning amber<br><code>#96591C</code><br>WARNING · messages</small></div>
+        </div>
+      </div>
+      <div class="modepanel" data-theme="dark">
+        <div class="modepanel__label">dark</div>
+        <div class="amberpair">
+          <div class="amberchip"><div class="sw" style="background:var(--gate)"></div><small>gate brass<br><code>#C99A3C</code><br>needs-you · entities</small></div>
+          <div class="amberchip"><div class="sw" style="background:var(--warning)"></div><small>warning amber<br><code>#E2A25A</code><br>WARNING · messages</small></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="tsec">
+    <h2>Canonical status palette — entity lifecycle</h2>
+    <p class="note">One system-owned palette for every stateful entity — work units, artifacts,
+    score nodes, chips. Never varies by team; never borrows the message-severity amber.</p>
+    <div class="chiprow">
+      <span class="statuschip" style="color:var(--status-done);background:color-mix(in oklab, var(--status-done) 14%, transparent)"><span class="sdot" style="background:var(--status-done)"></span>done</span>
+      <span class="statuschip" style="color:var(--status-active);background:color-mix(in oklab, var(--status-active) 14%, transparent)"><span class="sdot" style="background:var(--status-active)"></span>active</span>
+      <span class="statuschip" style="color:var(--fg-mute);background:color-mix(in oklab, var(--fg) 8%, transparent)"><span class="sdot" style="border:1.5px solid var(--fg-mute)"></span>waiting</span>
+      <span class="statuschip" style="color:var(--fg-mute);background:var(--panel-2);border:1px solid var(--border-strong)"><span class="sdot" style="border:1.5px solid var(--fg-mute)"></span>blocked</span>
+      <span class="statuschip" style="color:var(--gate);background:var(--gate-panel)"><span class="sdot" style="background:var(--gate);border-radius:2px;transform:rotate(45deg)"></span>needs-you</span>
+      <span class="statuschip" style="color:var(--status-danger);background:color-mix(in oklab, var(--status-danger) 14%, transparent)"><span class="sdot" style="background:var(--status-danger)"></span>failed</span>
+    </div>
+  </section>
+
+  <section class="tsec">
+    <h2>Message severity — NOTE / WARNING / DANGER</h2>
+    <p class="note">An orthogonal scale answering "how seriously should the Conductor take this
+    message?" — never the entity's lifecycle state. DANGER deliberately reuses the status
+    palette's own red (one meaning, two channels); WARNING is the only place general-purpose amber
+    is permitted, and it is never gate brass.</p>
+    <div class="stack">
+      <div class="notice notice--note"><span><b>note</b>Derived from <code>work/</code> on every request — this panel is a stateless projection.</span></div>
+      <div class="notice notice--warning"><span><b>warning</b>This connector's subscription is scoped narrowly — true, and worth knowing before you approve.</span></div>
+      <div class="notice notice--danger"><span><b>danger</b>The last run failed validation — lineage is intact, but this artifact did not ship.</span></div>
+    </div>
+  </section>
+
+  <section class="tsec">
+    <h2>Type</h2>
+    <p class="note">Mono carries filesystem truth — every mono token is a link. UI sans carries
+    prose, judgment, narration. The split is doing real semantic work.</p>
+    <div class="typesample">
+      <div class="lbl">UI sans — Hanken Grotesk (Switzer when licensed)</div>
+      <div class="demo" style="font-family:var(--font-sans)">Agents play on your beat.</div>
+    </div>
+    <div class="typesample">
+      <div class="lbl">mono — IBM Plex Mono (Berkeley Mono preferred, Commit Mono next)</div>
+      <div class="mono-demo">work/storefront/checkout-flow/<a href="#">cart-icon-fix.md</a> · <a href="#">a3f9e21</a> · 2d ago</div>
+    </div>
+    <p class="prose-demo">Prose reads in the UI sans face — judgment and narration, never filesystem
+    truth. <span class="mono-demo">supersedes: pointer-v2.md</span> stays mono because it names a
+    real, linkable file.</p>
+  </section>
+
+  <section class="tsec">
+    <h2>Team colour — derivation rules, not hues (live)</h2>
+    <p class="note">Team colour is user data. This system implements the RULES — tint via
+    color-mix, a contrast floor for avatar text, minimum perceptual distance from Podium and gate
+    brass — never a specific hue. The rows below run six deliberately adversarial inputs (a pale
+    pastel, a near-grey, a hue declared suspiciously close to Podium, one close to gate brass, one
+    already safe, and pure white) through <code>team-color.js</code>'s <code>deriveTeamStyle()</code>
+    live, in this browser, right now.</p>
+    <table class="teamtable">
+      <thead><tr><th>declared (raw)</th><th>derived hue</th><th>avatar</th><th>contrast</th><th>rotated</th><th>chroma-boosted</th></tr></thead>
+      <tbody id="team-rows"></tbody>
+    </table>
+  </section>
+
+  <section class="tsec">
+    <h2>Spacing &amp; radius scale</h2>
+    <div class="spacerow" style="margin-bottom:22px;">
+      <div id="space-scale" class="spacerow"></div>
+    </div>
+    <div class="chiprow" id="radius-scale"></div>
+  </section>
+
+  <section class="tsec">
+    <h2>Motion</h2>
+    <p class="note">Pulse (live things) and blink (in-flight/dispatching) are the only
+    attention-seeking animations. Everything else is fast, physical, quiet.
+    <code>prefers-reduced-motion</code> disables all of it.</p>
+    <div class="motionrow">
+      <div class="pulsedemo" title="lv-pulse, 1.9s"></div>
+      <div class="blinkdemo" title="lv-blink, 1.2s"></div>
+      <span style="font-size:12px;color:var(--fg-mute)">pulse · blink — try prefers-reduced-motion in devtools</span>
+    </div>
+  </section>
+</div>
+
+<script src="team-color.js"></script>
+<script src="shared.js"></script>
+<script>
+  const NEUTRALS = [
+    ["--bg","bg"], ["--panel","panel"], ["--panel-2","panel-2"], ["--fg","fg"],
+    ["--fg-dim","fg-dim"], ["--fg-mute","fg-mute"], ["--border","border"], ["--border-strong","border-strong"],
+  ];
+  function renderSwatchRow(containerId, scopeSelector, tokens) {
+    const scope = document.querySelector(scopeSelector);
+    const cs = getComputedStyle(scope);
+    const el = document.getElementById(containerId);
+    el.innerHTML = tokens.map(([varName, label]) => {
+      const val = cs.getPropertyValue(varName).trim();
+      return `<div class="swatch"><div class="swatch__fill" style="background:${varName === "--fg" || varName === "--fg-dim" || varName === "--fg-mute" ? "var(--panel)" : `var(${varName})`}; ${varName.startsWith("--fg") ? `color:var(${varName});display:flex;align-items:center;justify-content:center;font-family:var(--font-mono);font-size:11px;` : ""}">${varName.startsWith("--fg") ? "Aa" : ""}</div><div class="swatch__meta"><div class="swatch__name">${label}</div><div class="swatch__hex">${val}</div></div></div>`;
+    }).join("");
+  }
+  renderSwatchRow("neutrals-light", '.modepanel[data-theme="light"]', NEUTRALS);
+  renderSwatchRow("neutrals-dark", '.modepanel[data-theme="dark"]', NEUTRALS);
+  renderSwatchRow("accent-light", '.modepanel[data-theme="light"]', [["--accent","accent"], ["--accent-ink","accent-ink"]]);
+  renderSwatchRow("accent-dark", '.modepanel[data-theme="dark"]', [["--accent","accent"], ["--accent-ink","accent-ink"]]);
+
+  // ---- spacing / radius scale, read live from tokens.css ----
+  const rootCs = getComputedStyle(document.documentElement);
+  const spaceTokens = ["--space-1","--space-2","--space-3","--space-4","--space-5","--space-6","--space-8"];
+  document.getElementById("space-scale").innerHTML = spaceTokens.map(t => {
+    const px = rootCs.getPropertyValue(t).trim();
+    return `<div style="display:flex;flex-direction:column;align-items:center;gap:6px;"><div class="spaceblock" style="width:${px};height:${px};border-radius:2px;"></div><span class="spacelbl">${t.replace("--space-","")}</span></div>`;
+  }).join("");
+  const radiusTokens = ["--radius-sm","--radius-md","--radius-lg","--radius-xl","--radius-pill"];
+  document.getElementById("radius-scale").innerHTML = radiusTokens.map(t => {
+    const px = rootCs.getPropertyValue(t).trim();
+    return `<div style="width:64px;height:40px;border:1px solid var(--border-strong);border-radius:${px};display:flex;align-items:center;justify-content:center;font-family:var(--font-mono);font-size:10px;color:var(--fg-mute);">${px}</div>`;
+  }).join("");
+
+  // ---- team colour derivation, live ----
+  const SAMPLES = [
+    "#E8C9CE", // pale pastel pink — low chroma, should get boosted + still legible
+    "#8A8D93", // near-grey — effectively achromatic input
+    "#C64A33", // suspiciously close to Podium — must be pushed away
+    "#8E6A1E", // suspiciously close to gate brass — must be pushed away
+    "#2E7D8C", // already safe, vivid teal-blue
+    "#FFFFFF", // pure white — pathological edge case
+  ];
+  function renderTeamRows() {
+    const rows = SAMPLES.map(hex => {
+      const d = levareTeamColor.deriveTeamStyle(hex);
+      return `<tr>
+        <td><span class="swpair"><span class="swdot" style="background:${hex}"></span><code>${hex}</code></span></td>
+        <td><span class="swpair"><span class="swdot" style="background:${d.hue}"></span><code>${d.hue}</code></span></td>
+        <td><span class="avdemo" style="background:${d.hue};color:${d.avatarText}">ab</span></td>
+        <td class="${d.meetsContrastFloor ? "pass" : "fail"}">${d.contrastRatio}:1 ${d.meetsContrastFloor ? "✓" : "✗"}</td>
+        <td>${d.rotatedDeg ? d.rotatedDeg + "°" : "—"}</td>
+        <td>${d.chromaBoosted ? "yes" : "—"}</td>
+      </tr>`;
+    }).join("");
+    document.getElementById("team-rows").innerHTML = rows;
+  }
+  renderTeamRows();
+</script>
+</body>
+</html>
