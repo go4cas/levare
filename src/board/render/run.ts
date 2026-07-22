@@ -126,13 +126,23 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
             }${elapsedLabel(n.live.startedAt, now)}</span></div>`
           : "";
       const lineHtml = `<span class="sstep__line ${scoreLineClass(n.state)}" aria-hidden="true"></span>`;
+      // The rail is now a sibling of `.sstep__body` (head + meta stacked), not nested inside the head
+      // — it stretches to the row's REAL height (flex's own default align-items:stretch, driven by
+      // body's natural content height) instead of a fixed guess. The node stays pinned to a fixed
+      // offset from the row's top (matching the head's own fixed height) via absolute positioning
+      // inside the now-variable-height rail, so alignment is untouched; the LINE can now reach all
+      // the way down through however tall this row's meta content actually is, plus the fixed gap to
+      // the next row's node — see assets/styles.css's own comment on `.sstep__rail`/`.sstep__line` for
+      // why a fixed bottom offset alone (the prior approach) undershot on anything but the shortest row.
       return `<div class="${rowCls}">
-        <div class="sstep__head">
-          <div class="sstep__rail"><span class="${snodeCls}" aria-hidden="true"></span>${lineHtml}</div>
-          ${av}
-          <span class="sstep__label">${esc(n.kind)}</span>
+        <div class="sstep__rail"><span class="${snodeCls}" aria-hidden="true"></span>${lineHtml}</div>
+        <div class="sstep__body">
+          <div class="sstep__head">
+            ${av}
+            <span class="sstep__label">${esc(n.kind)}</span>
+          </div>
+          <div class="sstep__meta"><span class="sstep__sub">${sub}</span>${chip}${liveStrip}</div>
         </div>
-        <div class="sstep__meta"><span class="sstep__sub">${sub}</span>${chip}${liveStrip}</div>
       </div>`;
     })
     .join("\n");
@@ -142,10 +152,15 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
   const timeline = buildTimeline(root, unit.dir);
   const timelineHtml = timeline.length
     ? timeline
-        .map(
-          (t) =>
-            `<div class="tlrow"><span class="tlrow__time mono">${esc(t.ts.slice(0, 16).replace("T", " "))}</span><span class="tlrow__text">${timelineActorAvatar(repo, t.actor)}${t.text}</span></div>`,
-        )
+        .map((t) => {
+          // Date and time render as two explicit, independently-nowrap lines — never one run of text
+          // left to the browser's own line-breaking, which (at this column's width) was choosing to
+          // break mid-token at the ISO date's own hyphens ("2026-" / "07-07" / "09:12"), not just at
+          // the natural date/time boundary.
+          const dateStr = t.ts.slice(0, 10);
+          const timeStr = t.ts.slice(11, 16);
+          return `<div class="tlrow"><span class="tlrow__time mono"><span class="tlrow__date">${esc(dateStr)}</span><span class="tlrow__clock">${esc(timeStr)}</span></span><span class="tlrow__text">${timelineActorAvatar(repo, t.actor)}${t.text}</span></div>`;
+        })
         .join("\n")
     : emptyState({ message: "No recorded events yet." });
 
