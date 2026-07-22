@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>levare — score rail (proposal)</title>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="tokens.css"/>
+<link rel="stylesheet" href="components.css"/>
+<style>
+  .shell{ max-width:1100px; margin:0 auto; padding:0 28px 120px; }
+  .fhead{ position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:var(--space-4);
+    padding:16px 28px; background:var(--bg); border-bottom:1px solid var(--border); backdrop-filter:blur(6px); }
+  .fhead h1{ font-size:15px; margin:0; font-weight:600; }
+  .fhead nav{ display:flex; gap:var(--space-4); margin-left:var(--space-2); }
+  .fhead nav a{ color:var(--fg-mute); text-decoration:none; font-size:12.5px; }
+  .fhead nav a.is-active, .fhead nav a:hover{ color:var(--fg); }
+  .fhead .sp{ flex:1; }
+  .themebtn{ background:transparent; border:1px solid var(--border); color:var(--fg-dim); padding:6px 12px;
+    border-radius:var(--radius-md); font-size:11.5px; cursor:pointer; font-family:var(--font-sans); }
+  .themebtn:hover{ border-color:var(--border-strong); color:var(--fg); }
+
+  .intro{ padding:32px 0 6px; }
+  .intro p{ color:var(--fg-dim); font-size:13.5px; line-height:1.6; max-width:720px; }
+  .intro code{ font-family:var(--font-mono); font-size:.92em; background:var(--panel-2); padding:1px 5px; border-radius:4px; }
+  .flagbox{ display:flex; align-items:flex-start; gap:10px; margin-top:16px; padding:12px 14px; max-width:720px;
+    background:var(--gate-panel); border:1px solid var(--gate-border); border-radius:var(--radius-md); }
+  .flagbox p{ margin:0; font-size:12.5px; line-height:1.55; color:var(--fg); max-width:none; }
+  .flagbox b{ color:var(--gate); }
+
+  .rsec{ padding:34px 0; border-top:1px solid var(--border); }
+  .rsec:first-of-type{ border-top:none; }
+  .rsec h2{ font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--fg-mute); font-weight:600; margin:0 0 4px; }
+  .rsec .sub{ font-size:12.5px; color:var(--fg-mute); margin:0 0 20px; max-width:680px; line-height:1.55; }
+
+  .modepair{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .modepanel{ border:1px solid var(--border); border-radius:var(--radius-lg); padding:20px 22px; background:var(--bg); }
+  .modepanel__label{ font-family:var(--font-mono); font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg-mute); margin-bottom:16px; }
+
+  /* =====================================================================
+     THE SCORE RAIL — proposal. New classes (.rail/.rstep/.rnode/...), kept
+     fully separate from the shipped .score2/.sstep/.snode family in
+     assets/styles.css until this direction is approved and wired.
+
+     Semantic hard constraints (unchanged, verified below):
+       - canonical status palette drives every node's colour: done=green,
+         active=blue+pulse, waiting=hollow neutral, blocked=hollow neutral
+         + explicit label, needs-you=gate brass (gates only), failed=red.
+       - shape: circle=step, diamond=gate, dashed=start gate.
+       - colour-means-team is scoped to the avatar ONLY — never the node.
+     The risk is spent on: the node rendering itself (the "ictus" active
+     marker, echoing the identity's own baton/ictus vocabulary), the
+     connecting line reading as literal run PROGRESS (a solid settled
+     thread behind you, a tinted frontier at the current node, a dashed
+     unplayed rest ahead of you), and a disciplined shared centerline so
+     the node column and the avatar column read as two straight, legible
+     lanes "from across the room".
+     ===================================================================== */
+  :root, [data-theme="light"]{
+    --active-panel: color-mix(in oklab, var(--status-active) 6%, var(--panel));
+    --active-border: color-mix(in oklab, var(--status-active) 28%, var(--border));
+    --done-thread: color-mix(in oklab, var(--status-done) 55%, var(--border-strong));
+  }
+  [data-theme="dark"]{
+    --active-panel: color-mix(in oklab, var(--status-active) 10%, var(--panel));
+    --active-border: color-mix(in oklab, var(--status-active) 34%, var(--border));
+    --done-thread: color-mix(in oklab, var(--status-done) 60%, var(--border-strong));
+  }
+
+  .rail{ display:flex; flex-direction:column; max-width:430px; }
+  .rstep{ display:flex; flex-direction:column; position:relative; margin:0 -12px; padding:3px 12px 24px;
+    border-radius:var(--radius-md); transition:background var(--motion-base) var(--ease-standard); }
+  .rstep:last-child{ padding-bottom:3px; }
+  /* The row wash is the SAME "actionable tint" vocabulary the rest of the product already uses for
+     gate cards / actionable stat cells (--gate-panel) — generalised here to the run view's own live
+     signal (--active-panel) so "which step needs my attention right now" reads the instant you land
+     on the page, before you've even parsed a single node shape. Never a third hue: both washes are
+     colour-mixed from tokens the palette already owns. */
+  .rstep.is-live{ background:var(--active-panel); }
+  .rstep.is-open{ background:var(--gate-panel); }
+
+  .rstep__head{ display:flex; align-items:center; gap:14px; }
+  .rstep__rail{ position:relative; width:18px; height:24px; flex:none; display:flex; align-items:center; justify-content:center; }
+  .rstep__line{ position:absolute; top:12px; bottom:-24px; left:50%; width:0; margin-left:-1px; border-left:2px solid var(--border); }
+  .rstep:last-child .rstep__line{ display:none; }
+  .rstep__line.is-past{ border-left-style:solid; border-left-color:var(--done-thread); }
+  .rstep__line.is-frontier{ border-left-style:dashed; border-left-color:var(--active-border); }
+  .rstep__line.is-frontier-gate{ border-left-style:dashed; border-left-color:var(--gate); }
+  .rstep__line.is-future{ border-left-style:dashed; border-left-color:var(--border-strong); }
+
+  .rnode{ width:16px; height:16px; border-radius:50%; box-sizing:border-box; position:relative; z-index:1; flex:none; }
+  .rnode.is-done{ background:var(--status-done); }
+  .rnode.is-waiting{ background:transparent; border:2px solid var(--border-strong); }
+  .rnode.is-blocked{ background:transparent; border:2px dashed var(--border-strong); }
+  .rnode.is-failed{ background:var(--status-danger); }
+  /* the "ictus" — the active node reuses the identity's own baton/ictus vocabulary (base brief,
+     Identity §Logo: "the ictus — the precise instant the beat lands under the baton"). The pulse ring
+     is the anticipation; the small paper-cut centre dot is the beat itself landing. Same canonical
+     blue, same canonical pulse motion — a richer DRAWING of the existing semantics, not a new one. */
+  .rnode.is-active{ background:var(--status-active); animation:lv-pulse var(--motion-pulse) infinite; --pulse-c:var(--status-active); }
+  .rnode.is-active::after{ content:""; position:absolute; inset:5px; border-radius:50%; background:var(--panel); }
+  .rnode.is-gate{ width:12px; height:12px; border-radius:3px; transform:rotate(45deg); background:var(--gate);
+    box-shadow:0 0 0 3px color-mix(in oklab, var(--gate) 14%, transparent); }
+  .rnode.is-startgate{ width:12px; height:12px; border-radius:3px; transform:rotate(45deg); background:transparent;
+    border:1.75px dashed var(--gate); }
+
+  .rstep__av{ width:24px; height:24px; border-radius:50%; flex:none; display:flex; align-items:center; justify-content:center;
+    font-family:var(--font-mono); font-size:10px; font-weight:500; box-shadow:0 0 0 2px var(--panel); }
+  .rstep__av--empty{ box-shadow:none; }
+
+  .rstep__label{ font-size:14.5px; font-weight:600; line-height:1.2; color:var(--fg); }
+  .rstep.is-upcoming .rstep__label{ color:var(--fg-dim); }
+
+  /* 56px = rail (18) + head gap (14) + avatar (24) — lines sub/chip/live-strip up under the title. */
+  .rstep__meta{ display:flex; flex-direction:column; gap:5px; padding-left:56px; padding-top:5px; }
+  .rstep__sub{ font-family:var(--font-mono); font-size:11px; color:var(--fg-mute); line-height:1.4; }
+  .rstep__chip{ align-self:flex-start; }
+
+  /* Tier-3 (10s+) live strip — amendment 1 §2 R4: "round n/m, elapsed, tokens ticking", full
+     expression on the run view, riding directly under the active node's own sub-line. */
+  .rstep__live{ display:flex; align-items:center; gap:8px; font-family:var(--font-mono); font-size:11px; color:var(--status-active); }
+  .rstep__live .ld{ width:6px; height:6px; border-radius:50%; background:var(--status-active); flex:none;
+    animation:lv-pulse var(--motion-pulse) infinite; --pulse-c:var(--status-active); }
+  .rstep__live b{ font-weight:600; color:var(--fg); }
+
+  .legendgrid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:14px; }
+  .legendcard{ border:1px solid var(--border); border-radius:var(--radius-md); padding:14px 16px; background:var(--panel); }
+  .legendcard .rail{ max-width:none; margin:0 -6px 10px; }
+  .legendcard .rstep{ padding-bottom:0; margin:0 -6px; }
+  .legendcard__desc{ font-size:11.5px; color:var(--fg-mute); line-height:1.5; margin-top:2px; }
+
+  .note-list{ margin:0; padding-left:18px; font-size:12.5px; color:var(--fg-dim); line-height:1.7; max-width:680px; }
+  .note-list li{ margin-bottom:4px; }
+</style>
+</head>
+<body>
+<header class="fhead">
+  <h1>levare · foundation</h1>
+  <nav>
+    <a href="tokens.html">Tokens</a>
+    <a href="icons.html">Icons</a>
+    <a href="components.html">Components</a>
+    <a href="score.html" class="is-active">Score</a>
+  </nav>
+  <span class="sp"></span>
+  <button class="themebtn" data-theme-toggle>☼ light</button>
+</header>
+
+<div class="shell">
+  <div class="intro">
+    <p>Phase 2 cluster 3, part 2 — the score rail as the base brief's one invited aesthetic risk
+    ("the natural place to spend it — it is the product's signature and currently its plainest
+    realization"). This is a proposal, not shipped work: a standalone showcase, held for Conductor
+    approval before <code>run.ts</code> is touched. Every node below still reads through the exact
+    canonical status palette and shape vocabulary already in force — nothing here reassigns a
+    channel. The risk is spent on the node rendering, the connecting line, and the rhythm that binds
+    the state column to the avatar column, not on the semantics.</p>
+    <div class="flagbox">
+      <p><b>Open question for the Conductor:</b> the base brief lists "dashed marks the start gate"
+      as part of the score's own vocabulary, and separately flags "the start-gate dashed border is a
+      placeholder" as a known issue to solve properly. The current run view's score rail
+      (<code>derive.ts#scoreNodes</code>) only derives nodes from a unit's artifact-kind steps — it
+      has no node for "this unit hasn't started yet" today; that gate renders only as its own card in
+      the inbox/Orchestrator panel. The start-gate node below (§"A run, start to finish") is drawn to
+      show the vocabulary works, but wiring an actual start-gate node into the rail is a
+      <code>derive.ts</code> data change, outside this visual-only cluster's scope — flagging it here
+      rather than assuming a scope-of-work decision.</p>
+    </div>
+  </div>
+
+  <section class="rsec">
+    <h2>Node &amp; line vocabulary</h2>
+    <p class="sub">Every state the canonical palette defines, isolated. Colour is never hand-picked
+    here — every hue is <code>--status-done</code> / <code>--status-active</code> /
+    <code>--danger</code> / <code>--gate</code>, the same tokens every other status marker in the
+    product draws from.</p>
+    <div class="legendgrid" id="legend-grid"></div>
+  </section>
+
+  <section class="rsec">
+    <h2>A run, start to finish</h2>
+    <p class="sub">The connecting line now carries real information: solid <b style="color:var(--status-done)">green thread</b>
+    behind you, a tinted dashed frontier at wherever the run currently sits, hairline dashed ahead —
+    a literal read of how far the score has played. Team colour stays exactly where the base brief
+    puts it: the avatar disc only, never the node. Same six-step run, two moments in its life: the
+    spec step live (tier 3, a long-running loop), and later, once that step lands and its review
+    opens a gate.</p>
+    <div class="modepair">
+      <div class="modepanel" data-theme="light">
+        <div class="modepanel__label">light &middot; spec running (tier 3)</div>
+        <div class="rail" id="run-live-light"></div>
+      </div>
+      <div class="modepanel" data-theme="dark">
+        <div class="modepanel__label">dark &middot; spec running (tier 3)</div>
+        <div class="rail" id="run-live-dark"></div>
+      </div>
+    </div>
+    <div class="modepair" style="margin-top:16px">
+      <div class="modepanel" data-theme="light">
+        <div class="modepanel__label">light &middot; spec landed, review gate open</div>
+        <div class="rail" id="run-settled-light"></div>
+      </div>
+      <div class="modepanel" data-theme="dark">
+        <div class="modepanel__label">dark &middot; spec landed, review gate open</div>
+        <div class="rail" id="run-settled-dark"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="rsec">
+    <h2>Live-loop state, close up</h2>
+    <p class="sub">Amendment 1 §2 R4, tier 3 (10s+): "a spinner would be a lie" — the active node
+    already carries the canonical blue+pulse; the run view's own full expression adds the live strip
+    beneath it — round n/m, elapsed, tokens ticking. The numbers below actually tick (a
+    <code>setInterval</code>, showcase-only) so the motion reads before it ships.</p>
+    <div class="modepair">
+      <div class="modepanel" data-theme="light">
+        <div class="modepanel__label">light</div>
+        <div class="rail" id="live-light"></div>
+      </div>
+      <div class="modepanel" data-theme="dark">
+        <div class="modepanel__label">dark</div>
+        <div class="rail" id="live-dark"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="rsec">
+    <h2>Constraint check</h2>
+    <p class="sub">What changed and what didn't, for review against the base brief + amendment 1.</p>
+    <ul class="note-list">
+      <li><b>Unchanged (hard constraints):</b> canonical status→colour map; circle=step/diamond=gate/dashed=start-gate; team-tint scoped to the avatar, never the node; pulse reserved for the active node (the only attention-seeking motion, per the base brief's motion rules).</li>
+      <li><b>New — node rendering:</b> the active node's centre dot (the "ictus") reuses the identity's own baton/ictus vocabulary rather than inventing a new motif; the gate diamond gets a static (non-animated) brass halo matching the base brief's "its scarcity is the product's personality"; blocked is now a dashed hollow ring (still hollow neutral, still explicitly labelled below it) so it reads distinctly from waiting without touching colour.</li>
+      <li><b>New — the line:</b> three states (settled / frontier / future) instead of one flat hairline, all derived from tokens the palette already owns (green-tinted thread, active-or-gate-tinted frontier, neutral dashed future) — a richer drawing of existing semantics, not a new channel.</li>
+      <li><b>New — row wash:</b> the active/needs-you row gets the same actionable-tint treatment already shipped for gate cards and stat cells (<code>--gate-panel</code>) — generalised to <code>--active-panel</code> for "this step is live right now", not a new idea.</li>
+      <li><b>New — rhythm:</b> node, avatar, and title share one fixed centerline (part 1's fix, carried forward); the avatar gets a 2px paper-coloured ring so it reads as its own disc against the new row washes.</li>
+      <li><b>Not yet decided:</b> whether the start-gate node actually gets wired into <code>scoreNodes()</code> — flagged above, a data-layer question for the Conductor, not a rendering one.</li>
+    </ul>
+  </section>
+</div>
+
+<script src="team-color.js"></script>
+<script src="shared.js"></script>
+<script>
+  function avatar(initials, hex) {
+    if (!hex) return '<span class="rstep__av rstep__av--empty"></span>';
+    var s = levareTeamColor.deriveTeamStyle(hex);
+    return '<span class="rstep__av" style="background:' + s.hue + ';color:' + s.avatarText + '">' + initials + '</span>';
+  }
+
+  var KESTREL = "#2E6FB0";
+  var LYRA_TEAM = "#8C3F7A";
+
+  // lineClassFor(state) — the segment BELOW a node is styled by what that node itself represents:
+  // done => settled (solid green thread); active/gate (needs-you) => the frontier (dashed, tinted to
+  // that node's own colour); everything else (waiting/blocked/failed/start) => unplayed (dashed, neutral).
+  function lineClassFor(state) {
+    if (state === "done") return "is-past";
+    if (state === "active") return "is-frontier";
+    if (state === "gate") return "is-frontier-gate";
+    return "is-future";
+  }
+
+  function nodeMarkup(state) {
+    if (state === "done") return '<span class="rnode is-done"></span>';
+    if (state === "active") return '<span class="rnode is-active"></span>';
+    if (state === "waiting") return '<span class="rnode is-waiting"></span>';
+    if (state === "blocked") return '<span class="rnode is-blocked"></span>';
+    if (state === "failed") return '<span class="rnode is-failed"></span>';
+    if (state === "gate") return '<span class="rnode is-gate"></span>';
+    if (state === "startgate") return '<span class="rnode is-startgate"></span>';
+  }
+
+  function chip(status, label) {
+    var cls = { done: "is-done", active: "is-active", waiting: "is-waiting", blocked: "is-blocked", gate: "is-needsyou", failed: "is-failed" }[status];
+    if (!cls) return "";
+    var ind = status === "gate" ? '<span class="statusbadge__ind is-diamond"></span>' : '<span class="statusbadge__ind"></span>';
+    return '<span class="statusbadge ' + cls + ' rstep__chip">' + ind + label + '</span>';
+  }
+
+  function renderRail(el, steps, opts) {
+    opts = opts || {};
+    el.innerHTML = steps.map(function (s, i) {
+      var last = i === steps.length - 1;
+      var rowCls = s.state === "active" ? " is-live" : s.state === "gate" ? " is-open" : "";
+      var lineHtml = last ? "" : '<span class="rstep__line ' + lineClassFor(s.state) + '" aria-hidden="true"></span>';
+      var avHtml = s.av !== undefined ? avatar(s.av.initials, s.av.color) : '<span class="rstep__av rstep__av--empty"></span>';
+      var chipHtml = s.chipLabel ? chip(s.state, s.chipLabel) : "";
+      var liveHtml = s.live ? '<div class="rstep__live" data-live="' + i + '"><span class="ld"></span><span><b data-live-round>' + s.live.round + '</b>/' + s.live.max + ' &middot; <span data-live-elapsed>' + s.live.elapsed + '</span> &middot; <span data-live-tok>' + s.live.tok + '</span> tok</span></div>' : "";
+      var upcomingCls = (s.state === "waiting" || s.state === "blocked") ? " is-upcoming" : "";
+      return '<div class="rstep' + rowCls + upcomingCls + '">' +
+        '<div class="rstep__head">' +
+          '<div class="rstep__rail">' + nodeMarkup(s.state) + lineHtml + '</div>' +
+          avHtml +
+          '<span class="rstep__label">' + s.label + '</span>' +
+        '</div>' +
+        '<div class="rstep__meta"><span class="rstep__sub">' + s.sub + '</span>' + chipHtml + liveHtml + '</div>' +
+      '</div>';
+    }).join("");
+  }
+
+  // ---- Section: node & line vocabulary ----
+  var LEGEND = [
+    { state: "done", title: "done", desc: "solid green — approved, settled, behind you." },
+    { state: "active", title: "active", desc: "blue, pulsing ring around a paper-cut centre dot — the ictus: the precise instant the beat lands." },
+    { state: "waiting", title: "waiting", desc: "hollow neutral ring — honestly nothing happening yet, never orange." },
+    { state: "blocked", title: "blocked", desc: "hollow neutral, dashed — same hollow-neutral hue as waiting, distinguished by stroke, not colour, plus the explicit label below." },
+    { state: "gate", title: "needs you", desc: "brass diamond with a static brass halo — scarce by construction, never animated (pulse stays reserved for active/live)." },
+    { state: "startgate", title: "start gate", desc: "dashed brass diamond, unfilled — the unit hasn't begun." },
+    { state: "failed", title: "failed", desc: "solid red — flat, matter-of-fact, no embellishment." },
+  ];
+  document.getElementById("legend-grid").innerHTML = LEGEND.map(function (l) {
+    return '<div class="legendcard">' +
+      '<div class="rail"><div class="rstep" style="padding-bottom:0">' +
+        '<div class="rstep__head"><div class="rstep__rail">' + nodeMarkup(l.state) + '</div><span class="rstep__label">' + l.title + '</span></div>' +
+      '</div></div>' +
+      '<div class="legendcard__desc">' + l.desc + '</div>' +
+    '</div>';
+  }).join("");
+
+  // ---- Section: a run, start to finish ----
+  function runSteps(liveActive) {
+    return [
+      { state: "startgate", label: "Start", sub: "awaiting the beat" },
+      { state: "done", label: "product-brief", sub: "kestrel/wren &middot; product-brief-v1.md", av: { initials: "wr", color: KESTREL }, chipLabel: "approved" },
+      { state: "done", label: "design", sub: "kestrel/lyra &middot; design-checkout-v1.md", av: { initials: "ly", color: LYRA_TEAM }, chipLabel: "approved" },
+      liveActive
+        ? { state: "active", label: "spec", sub: "kestrel/lyra &middot; writing spec-checkout-flow-v2.md", av: { initials: "ly", color: LYRA_TEAM }, live: { round: 2, max: 4, elapsed: "1m 42s", tok: "4.2k" } }
+        : { state: "done", label: "spec", sub: "kestrel/lyra &middot; spec-checkout-flow-v2.md", av: { initials: "ly", color: LYRA_TEAM }, chipLabel: "approved" },
+      liveActive
+        ? { state: "waiting", label: "review", sub: "queued" }
+        : { state: "gate", label: "review", sub: "awaiting you", chipLabel: "needs you" },
+      { state: "waiting", label: "build", sub: "queued" },
+    ];
+  }
+  renderRail(document.getElementById("run-live-light"), runSteps(true));
+  renderRail(document.getElementById("run-live-dark"), runSteps(true));
+  renderRail(document.getElementById("run-settled-light"), runSteps(false));
+  renderRail(document.getElementById("run-settled-dark"), runSteps(false));
+  renderRail(document.getElementById("live-light"), [runSteps(true)[3]]);
+  renderRail(document.getElementById("live-dark"), [runSteps(true)[3]]);
+
+  // ---- live ticking demo (showcase-only motion proof) ----
+  var tickState = { elapsedS: 102, tok: 4200, round: 2 };
+  setInterval(function () {
+    tickState.elapsedS += 1;
+    tickState.tok += Math.round(20 + Math.random() * 40);
+    document.querySelectorAll("[data-live]").forEach(function (n) {
+      var m = Math.floor(tickState.elapsedS / 60), s = tickState.elapsedS % 60;
+      n.querySelector("[data-live-elapsed]").textContent = m + "m " + (s < 10 ? "0" : "") + s + "s";
+      n.querySelector("[data-live-tok]").textContent = (tickState.tok / 1000).toFixed(1) + "k";
+    });
+  }, 1000);
+</script>
+</body>
+</html>
