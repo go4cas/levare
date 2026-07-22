@@ -19,6 +19,7 @@ import { getVersionInfo } from "../../version.ts";
 import { statusLabel } from "../status.ts";
 import { statusBadge, counter, pendingState, card, confirmModal, orchTurn, renderPersistedTurns, tag, callout } from "../components.ts";
 import { loadConversationTail } from "../../conversation.ts";
+import { deriveTeamStyle } from "../team-color.ts";
 
 // levare's own release version (item 3: "the release version as a quiet muted mono chip" beside the
 // wordmark) — never from a project's data (that's the `pace`/`deploy`/release vocabulary, a
@@ -166,12 +167,26 @@ export function orchestratorPanel(scope: string, status: OrchestratorStatus, bri
   </aside>`;
 }
 
+// Phase 2 cluster 1 (avatar correctness fix): a team's raw declared hex has no contrast floor — the
+// illegibility the base brief flags ("low-saturation team hues make tinted avatar discs illegible").
+// `deriveTeamStyle` (team-color.ts, ported from dev/foundation/team-color.js) is the ONE place that
+// correction happens: it corrects lightness/chroma into a legible band, keeps a minimum perceptual
+// distance from the Podium accent and gate brass so a declared hue can't impersonate a system colour,
+// and picks whichever of white/ink actually clears the WCAG floor against the corrected hue — instead
+// of every avatar hard-coding white text (`.avatar{color:#fff}`) regardless of how light the team's
+// hue is. No declared colour (an unassigned member, the Runner's own callers) keeps the previous
+// neutral grey/white pairing unchanged, since there is no team hue to correct.
+function teamAvatarStyle(color: string | undefined): string {
+  if (!color || !color.trim()) return "background:#666;color:#fff";
+  const { hue, avatarText } = deriveTeamStyle(color);
+  return `background:${hue};color:${avatarText}`;
+}
+
 export function avatar(initials: string, color: string | undefined, opts: { size?: "sm" | "lg"; blink?: boolean; title?: string } = {}): string {
   const size = opts.size ?? "sm";
-  const bg = color && color.trim() ? color : "#666";
   const blinkCls = opts.blink ? " blink" : "";
   const titleAttr = opts.title ? ` title="${esc(opts.title)}"` : "";
-  return `<span class="avatar ${size}${blinkCls}"${titleAttr} style="background:${esc(bg)}">${esc(initials.toLowerCase())}</span>`;
+  return `<span class="avatar ${size}${blinkCls}"${titleAttr} style="${teamAvatarStyle(color)}">${esc(initials.toLowerCase())}</span>`;
 }
 
 export function memberAvatar(repo: Repo, producedBy: string, opts: { size?: "sm" | "lg"; blink?: boolean } = {}): string {

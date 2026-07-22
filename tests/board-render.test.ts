@@ -280,8 +280,12 @@ describe("run screen", () => {
     expect(snodeCount).toBeGreaterThanOrEqual(5); // one per expected kind (feature: 5)
     expect(html).toContain('class="snode done"');
     expect(html).toContain('class="snode is-gate-open"');
-    // team-avatar column: at least one sstep__av holding a real avatar tinted with the team color
-    expect(html).toMatch(/class="sstep__av"><span class="avatar sm" style="background:#2E6FB0">/);
+    // team-avatar column: at least one sstep__av holding a real avatar tinted with the team color.
+    // Phase 2 cluster 1: avatar() now routes the team hex through team-color.ts's contrast-floored
+    // derivation (dev/foundation/team-color.js, ported) — #2E6FB0 is already inside the safe band, so
+    // the derived hue is unchanged; the markup gains an explicit `color` (white text) alongside it,
+    // since text colour is no longer a single hard-coded `.avatar{color:#fff}` CSS rule.
+    expect(html).toMatch(/class="sstep__av"><span class="avatar sm" style="background:#2E6FB0;color:#FFFFFF">/);
   });
 
   test("open gate renders as a full gate card with origin, consumes, age, and cost", () => {
