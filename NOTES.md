@@ -13163,3 +13163,54 @@ credential in this environment, consistent with every prior cluster's own postur
 
 This is the last screen-cluster goal per the Conductor's own scoping; only the loading/motion wrap-up
 and a final consistency sweep remain across the whole Phase 2 rework.
+
+## Addendum — a seal-time regression: the edit modal silently auto-closing
+
+Live review caught a blocker before seal: the edit-source modal appeared to open then immediately
+auto-close, no console error, no exception — the registry's one write action was unusable. The
+Conductor's own hypothesis (event propagation — the opening click bubbling into a dismiss handler)
+was a reasonable read of "silent" but turned out not to be the mechanism: an extensive reproduction
+pass (headless AND headed real-mouse-click Playwright sessions, every registry kind, a
+`MutationObserver` on the overlay's own `hidden` attribute to catch the exact call site if one fired)
+never once reproduced a same-click open-then-close. What DID reproduce it, directly: touching a file
+in the served repo while the modal was open closed it within about half a second, every time.
+
+Root cause was architectural, not propagation: `swapFragment()` (`assets/app.js`) — the SSE `reload`
+handler's own refresh path, which fires on ANY repo change, not just this tab's own writes —
+unconditionally replaced `[data-extras-host]` (which holds the registry's one editor overlay) with a
+freshly server-rendered, hidden-by-default copy, discarding whatever was there. `levare serve` (not
+`--no-daemon`) runs its own tick shortly after boot; a fast navigate-then-click into "Edit source" can
+land inside that window often enough that the destruction reads as instantaneous and tied to the very
+click that opened it — exactly the "silent" signature the Conductor's report described, just from a
+different cause than the stated hypothesis.
+
+**Fix:** `swapFragment()` now checks whether `#editor-overlay` is currently open (`!hidden`) and, if
+so, skips both the extras-host replacement and the `bindEditorOverlay()` rebind (rebinding alone would
+reset its closure's `current`/`checkTimer` state out from under the still-open DOM node even without
+touching the DOM itself) — `.main` still updates unconditionally, as before; only the open overlay
+survives. `extras` is entirely static/repo-independent for the registry page (its title/kind/buffer
+are populated by `openEditor()`, never server-rendered per request), so deferring this one swap costs
+nothing: the next natural refresh — the save flow's own `setTimeout(refreshCurrent, 400)`, or the next
+SSE tick once the Conductor closes it via Cancel/Escape/backdrop — catches the extras region up
+normally.
+
+New regression coverage in `tests/board-editor-overlay.test.ts` exercises the real
+`navigate()`/`swapFragment()` path directly (a real requirement no prior test in this file had — the
+existing overlay-only fixture puts `#editor-overlay` straight on `body`, sufficient for the
+open/close/save tests but not for a swap test, which needs `pageBody()`'s real `.main` +
+`[data-extras-host]` nesting). This required extending the file's hand-rolled fake-DOM harness with
+`firstElementChild`/`parentNode`/`replaceChild` (none of which any earlier test needed) and a small,
+purpose-scoped real HTML-fragment parser backing `innerHTML`'s setter (the prior implementation only
+ever stripped tags for `.textContent`, sufficient for the validity chip but not for building an actual
+queryable tree) — verified the new tests catch the regression for real by reverting the `app.js` fix
+alone and re-running them (fails, as expected, restoring the fix makes them pass again).
+
+**Verified:** `bun test` → 1284 pass (up from 1282), 9 skip, 0 fail, across 92 files. `bunx tsc
+--noEmit` → clean. `bun run deps:check` → `deps ok`. `bun run build` → succeeds. `bun run src/cli.ts
+validate fixtures/golden` → `valid`, same two pre-existing warnings. `bun run src/cli.ts replay
+fixtures/golden --stubs` → oracle match, byte-for-byte. Live-verified end-to-end against a writable
+scratch repo (`levare serve`, daemon on, not read-only), both themes: opened the modal, triggered a
+real external file change while it was open (standing in for the daemon's own activity), confirmed the
+modal stayed open and the in-progress buffer was untouched, typed an edit, confirmed the dirty marker
+and the dirty+valid Save gate, clicked Save, and confirmed via `git log` in the scratch repo that the
+commit actually landed — the registry's one write action works, start to finish, in both themes.
