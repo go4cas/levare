@@ -584,6 +584,33 @@
       }
     }
 
+    /* Amendment 1 §2 R5, review F28: "skeletons shaped like the real anatomy... no gray boxes, no
+       full-page spinners" for initial load/refetch. This app's pages are synchronous server renders
+       (a local file read, not a slow network call) — the one place a genuine loading GAP exists is the
+       client-side navigation fetch itself. Mirrors tier 1's own honesty rule (amendment 1 §2 R4): the
+       skeleton only appears after a short delay, so a fast local navigation (the overwhelming common
+       case) never flashes one — it's reserved for the rare slow case, never decoration. */
+    var SKELETON_DELAY_MS = 400;
+    function maybeShowSkeleton() {
+      var main = document.querySelector('.main');
+      if (!main) return null;
+      return setTimeout(function () {
+        var overlay = document.createElement('div');
+        overlay.setAttribute('data-skeleton', '1');
+        overlay.className = 'skeleton-overlay';
+        overlay.innerHTML =
+          '<div class="skeleton-block" style="width:38%;height:22px"></div>' +
+          '<div class="skeleton-block" style="height:64px"></div>' +
+          '<div class="skeleton-block" style="height:64px"></div>' +
+          '<div class="skeleton-block" style="height:64px"></div>';
+        main.appendChild(overlay);
+      }, SKELETON_DELAY_MS);
+    }
+    function clearSkeleton(timer) {
+      clearTimeout(timer);
+      document.querySelectorAll('[data-skeleton]').forEach(function (el) { el.remove(); });
+    }
+
     function fetchFragment(url) {
       return fetch(url, { headers: { 'X-Levare-Fragment': '1' } }).then(function (res) {
         var ct = (res.headers && res.headers.get && res.headers.get('content-type')) || '';
@@ -612,19 +639,53 @@
       if (tail && typeof data.orchTail === 'string') tail.innerHTML = data.orchTail;
     }
 
+    /* amendment 1 §2 R4, tier 2 (card, 1-10s resolution/refetch): a same-URL refresh (the SSE reload
+       trigger below, a post-save content refresh) is a card RESOLVING, not a page transition — the
+       Conductor's scroll position and reading context should survive it, and whatever visibly changed
+       (a stat's count, a work-unit's status badge) should read as having just ticked, not as having
+       silently been someone else's page all along. `swapFragment` itself keeps doing the ONE atomic
+       DOM replacement it always did (already correct — a single `replaceChild` never renders a blank
+       frame); `sameUrl` only gates the two things that differ between "I resolved" and "I navigated":
+       scroll position (kept vs reset) and the flash pass below (on vs off — a cross-page navigation
+       has nothing meaningful to compare against, every field is legitimately new). */
+    function snapshotLiveValues(mainEl) {
+      var snap = { stats: [], units: {} };
+      mainEl.querySelectorAll('.statstrip .n').forEach(function (n) { snap.stats.push(n.textContent); });
+      mainEl.querySelectorAll('.units > .unit[data-unit]').forEach(function (u) {
+        var chip = u.querySelector('.unit__head .chip');
+        snap.units[u.getAttribute('data-unit')] = chip ? chip.textContent + '|' + chip.className : null;
+      });
+      return snap;
+    }
+
+    function flashLiveChanges(before, mainEl) {
+      mainEl.querySelectorAll('.statstrip .n').forEach(function (n, i) {
+        if (before.stats[i] !== undefined && before.stats[i] !== n.textContent) n.classList.add('tick-flash');
+      });
+      mainEl.querySelectorAll('.units > .unit[data-unit]').forEach(function (u) {
+        var key = u.getAttribute('data-unit');
+        if (!(key in before.units)) return; // a brand-new row — nothing to compare, nothing to flash
+        var chip = u.querySelector('.unit__head .chip');
+        var now = chip ? chip.textContent + '|' + chip.className : null;
+        if (before.units[key] !== null && before.units[key] !== now) u.querySelector('.unit__head').classList.add('tick-flash');
+      });
+    }
+
     /* Replaces `.main` outright (its own opening-tag attributes, e.g. `data-highlight`, differ per
        page) and re-fills `[data-extras-host]` — never the rail or the app header, which this function
        never even looks at. The Orchestrator `<aside>` itself is untouched too (UI10's own conversation-
        preserving guarantee) except for the persisted-tail resync above, scoped to exactly the one
        region that can legitimately differ per page. */
-    function swapFragment(data) {
+    function swapFragment(data, sameUrl) {
       var oldMain = document.querySelector('.main');
       if (!oldMain || !oldMain.parentNode) return false;
+      var before = sameUrl ? snapshotLiveValues(oldMain) : null;
       var wrap = document.createElement('div');
       wrap.innerHTML = data.main;
       var newMain = wrap.firstElementChild;
       if (!newMain) return false;
       oldMain.parentNode.replaceChild(newMain, oldMain);
+      if (before) flashLiveChanges(before, newMain);
 
       var extrasHost = document.querySelector('[data-extras-host]');
       if (extrasHost) extrasHost.innerHTML = data.extras || '';
@@ -637,7 +698,10 @@
 
       if (typeof data.title === 'string' && data.title) document.title = decodeTitleEntities(data.title);
       applyHighlight(newMain);
-      if (window.scrollTo) window.scrollTo(0, 0);
+      // A genuine navigation lands the Conductor at the top of a new page, same as ever; a same-URL
+      // resolve leaves them exactly where they were reading (tier 2 — a card resolving must not yank
+      // the page out from under whatever the Conductor is doing).
+      if (!sameUrl && window.scrollTo) window.scrollTo(0, 0);
       return true;
     }
 
@@ -645,9 +709,11 @@
     function navigate(url, opts) {
       opts = opts || {};
       var token = ++navToken;
+      var skeletonTimer = maybeShowSkeleton();
       return fetchFragment(url).then(function (data) {
+        clearSkeleton(skeletonTimer);
         if (token !== navToken) return; // superseded by a newer navigation — never apply a stale swap
-        if (!data || !swapFragment(data)) {
+        if (!data || !swapFragment(data, opts.sameUrl)) {
           location.href = url; // FAILURE HONESTY: never a broken half-swap — a real navigation instead
           return;
         }
@@ -658,7 +724,7 @@
     /* Used for a same-URL content refresh (the SSE reload trigger below, and a successful registry
        save) — never pushes a new history entry, since the URL itself hasn't changed. */
     function refreshCurrent() {
-      return navigate(location.pathname + location.search, { push: false });
+      return navigate(location.pathname + location.search, { push: false, sameUrl: true });
     }
 
     document.addEventListener('click', function (e) {

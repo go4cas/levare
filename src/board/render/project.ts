@@ -151,6 +151,10 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
       // the STRUCTURE is shared, the CSS vocabulary stays per-surface — see components.ts#card).
       return card({
         cls: `unit${openCls}`,
+        // Tier 2 (amendment 1 §2 R4, 1-10s resolution/refetch): a stable key a same-URL client-side
+        // refresh (assets/app.js's `flashLiveChanges`) uses to notice THIS row's status changed and
+        // flash it, without needing to guess from title text.
+        attrs: { "data-unit": u.unit },
         topCls: "unit__head",
         // Amendment 1 §1/R3: the base brief's work-unit-type glyph, from the same entity-icon family
         // the gate card's own marker already draws (Phase 2 cluster 3 part 3 — this used to render the

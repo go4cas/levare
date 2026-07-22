@@ -186,6 +186,15 @@ describe("project screen", () => {
     expect(html).toContain('class="chip is-gate">at gate</span>');
   });
 
+  // Tier 2 (amendment 1 §2 R4, 1-10s resolution/refetch): a stable per-row key so a same-URL client
+  // refresh (assets/app.js#flashLiveChanges) can notice a specific row's status changed and flash
+  // exactly that row, without guessing from title text.
+  test("every work-unit row carries a stable data-unit key", () => {
+    expect(html).toContain('data-unit="checkout-flow"');
+    expect(html).toContain('data-unit="loyalty-flow"');
+    expect(html).toContain('data-unit="cart-icon-fix"');
+  });
+
   // Amendment 1 §3, review F13: "a stat tints only when actionable" — the Studio page's own "Gates on
   // you" stat already gets this; the project page's identical "Gates open" stat was the one holdout.
   // The fixture has 2 open gates, so this is asserted against the real, non-zero case.

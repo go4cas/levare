@@ -87,7 +87,7 @@ button{ font-family:inherit; }
 .app--run{ grid-template-columns:308px 1fr 360px; }
 .rail{ background:var(--panel); border-right:1px solid var(--border); padding:18px 16px 20px;
   display:flex; flex-direction:column; gap:24px; position:sticky; top:var(--headerh); height:calc(100vh - var(--headerh)); overflow-y:auto; }
-.main{ padding:26px 34px 60px; display:flex; flex-direction:column; gap:26px; min-width:0; }
+.main{ padding:26px 34px 60px; display:flex; flex-direction:column; gap:26px; min-width:0; position:relative; }
 .orch{ background:var(--panel); border-left:1px solid var(--border); display:flex; flex-direction:column;
   position:sticky; top:var(--headerh); height:calc(100vh - var(--headerh)); }
 
@@ -749,7 +749,31 @@ button{ font-family:inherit; }
 .tlrow__text .avatar, .tlrow__text .diamond{ vertical-align:middle; margin-right:8px; position:relative; top:-1px; }
 .tok{ font-family:var(--mono); font-size:.84em; background:var(--panel-2); border:1px solid var(--border); padding:1px 6px; border-radius:5px; color:var(--fg-dim); white-space:nowrap; text-decoration:none; cursor:pointer; transition:border-color .12s, color .12s; }
 .tok:hover{ border-color:var(--border-strong); color:var(--fg); }
-.sstep__av{ flex:none; width:22px; display:flex; justify-content:center; padding-top:1px; }
-.sstep__av--sys{ color:var(--fg-mute); }
 .cost{ font-family:var(--mono); font-size:.92em; color:var(--fg-mute); }
+
+/* ---------- loading tier 2 (amendment 1 §2 R4, card/1-10s resolution+refetch) ----------
+   A same-URL client-side refresh (assets/app.js#flashLiveChanges) flashes whichever stat or work-unit
+   status badge actually changed — a quiet, single wash, the same neutral-ring vocabulary
+   `.entity.is-highlighted` already uses for a deep-link flash, not a new attention-grabbing colour. */
+.tick-flash{ animation:tick-flash 900ms ease-out; border-radius:6px; }
+@keyframes tick-flash{
+  0%{ background:color-mix(in oklab, var(--active) 14%, transparent); }
+  100%{ background:transparent; }
+}
+@media (prefers-reduced-motion: reduce){ .tick-flash{ animation:none; } }
+
+/* ---------- loading tier 2/3 skeleton (amendment 1 §2 R5, review F28) ----------
+   "Skeletons shaped like the real anatomy... no gray boxes, no full-page spinners." Shown only after
+   assets/app.js's own short delay (mirroring tier 1's honesty rule — never for a fast local read, only
+   the rare slow one), covering `.main` in place rather than blanking it. Warm sheen, not a flat gray
+   box: a slow left-to-right highlight sweep across each block. */
+.skeleton-overlay{ position:absolute; inset:0; background:var(--bg); padding:26px 34px 60px;
+  display:flex; flex-direction:column; gap:14px; z-index:5; }
+.skeleton-block{ border-radius:var(--radius-lg,12px); background:var(--panel-2); position:relative; overflow:hidden; }
+.skeleton-block::after{ content:""; position:absolute; inset:0;
+  background:linear-gradient(100deg, transparent 30%, color-mix(in oklab, var(--gate) 10%, var(--panel-2)) 50%, transparent 70%);
+  animation:skeleton-sheen 1.6s ease-in-out infinite; }
+@keyframes skeleton-sheen{ 0%{ transform:translateX(-100%); } 100%{ transform:translateX(100%); } }
+@media (prefers-reduced-motion: reduce){ .skeleton-block::after{ animation:none; } }
+
 a:focus-visible, .link:focus-visible, .tok:focus-visible, button:focus-visible, .verb:focus-visible, .togglebtn:focus-visible, .composer input:focus-visible, .reg-nav a:focus-visible, .pcard:focus-visible, .unit__head:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; border-radius:4px; }
