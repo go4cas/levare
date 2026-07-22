@@ -12825,3 +12825,142 @@ a deterministic proof of the supported path (already partially proven in `tests/
 also proven through the FULL board/gate pipeline this file uniquely covers) plus a deterministic proof
 that the unsupported path is correctly, plainly refused — never silently accepted, never a silent 60s
 stall.
+
+# NOTES UI-PHASE2-C3 (2026-07-22) — score rail signature, project/run reconciled to foundation, loading tiers 2/3
+
+UI rework Phase 2, cluster 3 — the score rail as the base brief's one invited aesthetic risk, plus
+project/run restyled to the foundation, plus loading tiers 2/3 (tier 1 shipped in cluster 2). Governed by
+`docs/levare-design-brief.md` + amendment 1. Four parts, one mandatory checkpoint mid-way.
+
+## Part 1 — alignment fixes (deferred from cluster 1)
+
+The score rail's status node, avatar disc, and step title didn't share a true centerline — two
+independently hand-tuned top offsets (`margin-top:1px` on the node, `padding-top:1px` on the avatar)
+that didn't actually land on the same y. Fixed by hoisting the title out of `.sstep__body` into a
+`.sstep__head` row alongside the rail/avatar and letting flexbox's `align-items:center` do the centering
+— self-correcting for any marker size, replacing the per-shape magic-number approach. The connecting
+line moved from a row-height-derived offset to the node's own fixed centerline, so it passes cleanly
+through every node regardless of shape. The timeline's date-stamp/event baseline moved from
+`align-items:flex-start` + a guessed `padding-top` to `align-items:baseline`.
+
+## Part 2 — the score rail, proposed then approved
+
+Built `dev/foundation/score.html` (same pattern as cluster 1's tokens/icons/components showcases) —
+every canonical node state isolated, a full example run in two moments (a tier-3-live step, and later
+once that step lands and its review opens a gate), a live-loop close-up with an actually-ticking strip,
+both themes, a "constraint check" section stating what's unchanged (hard semantics) vs. new (the risk).
+Stopped there per the goal's mandatory checkpoint and presented it for Conductor review before touching
+`run.ts` — the icon-sheet pattern cluster 1 established.
+
+**Approved**, with one scope ruling: the visual vocabulary for a dashed start-gate node is approved and
+built into the rail's CSS, but wiring an actual start-gate node into `derive.ts#scoreNodes()` is
+explicitly OUT of this cluster (a data-layer change, not a rendering one). **Recorded as a follow-up**:
+*wire the start-gate as a real `scoreNodes()` node (a `derive.ts` change) so the dashed-start-gate
+vocabulary the rail already supports actually gets used.* Nothing in this cluster attempts it — the rail
+renders it correctly if the data ever emits one, but the data never does yet.
+
+The risk, wired into the real `.score2`/`.sstep`/`.snode` CSS (reconciled into the shipped class family,
+never forked into a second one): the active node's centre dot (the "ictus" — the identity's own
+baton/ictus vocabulary, base brief Identity §Logo, reused rather than inventing a new motif); the
+connecting line reading as literal progress (solid green thread behind you, a state-tinted dashed
+frontier at the current node, hairline dashed ahead); the actionable-tint row wash already shipped for
+gate cards, generalised to the run view's own live signal; a dashed hollow ring distinguishing "blocked"
+from "waiting" by stroke, never colour.
+
+Part 4 turned out to be entangled with this: the rail's "active" canonical state was previously
+UNREACHABLE from real data — `scoreNodes()` only ever returned done/gate/rejected/blocked/wait, so a step
+a member was genuinely producing rendered as a plain hollow "wait". `scoreNodes(repo, unit, running)` now
+cross-references the daemon's live-invocation projection against each artifact-less kind, resolving the
+real producer (via `responsibleTeamsFor`, since a `DaemonInvocation` only names a bare member — a real
+gotcha: `ledger.ndjson`'s own `member` field is ALREADY `team/member`, a different convention from
+`DaemonInvocation.member`, which is bare — cost one visible bug, a timeline avatar reading "ke" instead
+of "wr"/"ly", caught by an actual browser screenshot, not just types). The live strip states round n/m
+(only when the kind belongs to a declared review loop) and real elapsed time — deliberately no token
+count: no live token stream exists anywhere in the system (usage is only known once a member's call
+completes and the ledger is written), and inventing a ticking number would violate the board's own
+"never lie" projection invariant.
+
+## Part 3 — project + run reconciled, not forked
+
+Both screens were already close to the foundation's own anatomy (most restructuring landed in earlier
+gate-review rounds); this closed the SPECIFIC gaps a side-by-side read against the shipped gate card and
+`dev/foundation/components.css` actually turned up — deliberately NOT wiring in `.lvcard`/`.statusbadge`/
+`.pageheader`/`.statband` (still design-only; the shipped `.card`/`.chip`/`.phead`/`.statstrip` stay the
+one real system):
+
+- Timeline actor avatars (base brief: "agent initials on team tint, the Conductor as the only
+  solid-filled disc, the Runner deliberately gray") were entirely missing, despite the CSS and the old
+  prototype already anticipating one, and studio.ts's own Running Now section already proving the exact
+  inline pattern. `timeline.ts` now carries a structured `actor` per row, resolved from the real git
+  identities every commit funnels through (`git.ts#CONDUCTOR_NAME`/`RUNNER_NAME`) — an unrecognised git
+  author renders no avatar rather than inventing a fourth treatment the brief never named.
+- The work-unit-type glyph (scoped by the base brief to exactly three places) was SVG in the gate card
+  since cluster 1/2 but still the raw `type.glyph` unicode character in the other two. Factored the gate
+  card's own `gateMarkerSvg` out into a shared, exported `typeGlyphSvg` — one function, all three places.
+- The mini-score's "blocked"/"waiting" dots were visually identical, the same gap the rail's own node
+  just closed — both stay hollow neutral, blocked is now dashed.
+- The project page's own "Gates open" stat never got the actionable-tint treatment the Studio page's
+  identical stat already has (amendment 1 §3 F13).
+
+**Deliberately not done**: forcing project.ts's stat labels into "noun · window" grammar to match
+studio.ts's wording. Checked first — studio's own "Spend · 30d"/"Units shipped · 30d" labels are actually
+UNWINDOWED (`repoSpend`/`shippedUnits` sum all-time, no date filtering at all), so that label is already
+inaccurate there. Copying the same wording onto project.ts would trade one inconsistency for a second,
+dishonest one. Left as an observation; studio.ts itself is cluster 4 territory.
+
+## Part 4 — loading tiers 2/3
+
+Tier 3 shipped as part of Part 2 (above — the live strip is real, tokens deliberately omitted). Tier 2
+(card, 1-10s resolution/refetch): this app's pages are synchronous server renders (a local file read, not
+a slow fetch), and the existing SSE-triggered refresh already did one atomic DOM replacement — never
+literally blank. What was missing was the FEEL of a card resolving. `assets/app.js#swapFragment` now
+takes a `sameUrl` flag (true only for a genuine same-URL refresh, never a real navigation): a snapshot of
+the stat-strip numbers and each work-unit row's status badge, taken just before the swap, is compared
+after, and whatever changed gets a brief `.tick-flash` wash (the same neutral-ring vocabulary
+`.entity.is-highlighted` already uses). Scroll position is now preserved on a same-URL refresh instead of
+being unconditionally reset to the top — a real, if minor, pre-existing bug (an unrelated repo change
+anywhere used to yank the Conductor back to the top of whatever they were reading).
+
+"If a card changes section it animates the move" (amendment R4's own canonical Needs-you→Running-now
+example) has no literal analog on the project page — no sections a unit moves between, only a fixed-
+position row's own badge — noted rather than fabricated.
+
+Skeleton (review F28): the one genuine loading gap in a synchronous-render app is the client-side
+navigation fetch itself. Shown only after a short delay, mirroring tier 1's own honesty rule.
+
+## Verified
+
+`bun test` → 1279 pass, 9 skip, 0 fail, across 92 files (new: the active-state derivation including loop-
+round count and cross-kind isolation, the live strip's markup, `scoreLineClass`/`elapsedLabel`, the SVG
+glyph reconciliation, the actionable gate stat, both mini-score dot rules differing by stroke, the
+`data-unit` key). `bunx tsc --noEmit` → clean. `bun run deps:check` → `deps ok`. `bun run build` →
+succeeds. `bun run src/cli.ts validate fixtures/golden` → `valid`, same two pre-existing
+`SANDBOX_UNAVAILABLE` warnings, unchanged. `bun run src/cli.ts replay fixtures/golden --stubs` → oracle
+match, byte-for-byte (this cluster never touches replay/dagwalk/runner logic).
+
+Live-rendered, not just typechecked: the score rail's every node state including the active/ictus path
+(a direct `renderRun()` smoke render exercising a synthetic `running` invocation, screenshotted), the
+gate-open state against real fixture data, project + run in both themes. Tier 2 verified end-to-end with
+a real mechanism, not a mock: a Playwright session scrolled mid-page on the project view, a direct
+on-disk artifact mutation (bypassing the write routes, simulating an external repo change) to trigger the
+real fs.watch → SSE → `refreshCurrent()` path, confirmed the status badge and the Gates-open stat both
+flashed and updated correctly, scroll was not artificially reset, zero console errors.
+
+Found and fixed in passing: a pre-existing, unrelated `.sstep__av` duplicate rule in assets/styles.css
+(dating to the file's first commit, in the timeline section) was silently overriding part of the new
+rail's avatar sizing via cascade order the whole time this cluster was underway — never noticed because
+the surviving properties happened to look right in screenshots. Removed, along with the fully-unused
+`.sstep__av--sys`.
+
+## What this cluster does NOT claim
+
+The skeleton (F28) is real code but essentially untriggerable in normal use — this app's navigation is a
+local file read, not a slow network call, so the delayed-skeleton path is exercised by inspection and
+reasoning about the code, not by a live slow-network reproduction. The tier-2 flash pass has real,
+verified coverage on the project page's own stat strip + work-unit rows (the surfaces this cluster
+touched) — it is not a general reconciliation framework, and a future page with different live-updating
+fields would need its own snapshot keys added to `snapshotLiveValues`/`flashLiveChanges`, not get one for
+free. Client-side JS in this app has zero automated test coverage (no jsdom/happy-dom — `deps:check`
+forbids a new dependency) — every claim about `assets/app.js`'s behaviour in this entry is a real,
+screenshotted Playwright run, never a unit test, and should be read with that in mind on a future change
+to the same code.
