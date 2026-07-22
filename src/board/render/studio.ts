@@ -107,7 +107,7 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date(), r
       <h1>Studio</h1>
     </header>
     ${statStrip([
-      { value: `${gates.length}`, label: "Gates on you", cls: "is-gate", attr: { name: "data-gatestat", value: gates.length } },
+      { value: `${gates.length}`, label: "Gates on you", cls: "is-gate", actionable: gates.length > 0, attr: { name: "data-gatestat", value: gates.length } },
       { value: `${running.length}`, label: "Members running", attr: { name: "data-runningstat", value: running.length } },
       { value: `${shippedUnits}`, label: "Units shipped &middot; 30d" },
       { value: median === null ? "&mdash;" : `${median.toFixed(median % 1 === 0 ? 0 : 1)}d`, label: "Median gate response" },

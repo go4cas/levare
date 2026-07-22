@@ -116,13 +116,18 @@ export interface Stat {
   label: string;
   cls?: string;
   attr?: { name: string; value: string | number };
+  /** Foundation stat-band rule (amendment 1 consistency audit F13): a stat tints ONLY when
+   * actionable, and "actionable" means gate-brass specifically — never a general-purpose amber.
+   * Tints the whole cell (background + number), never just the number alone. */
+  actionable?: boolean;
 }
 export function statStrip(stats: Stat[]): string {
   const items = stats
     .map((s) => {
+      const cellCls = s.actionable ? " stat--actionable" : "";
       const clsAttr = s.cls ? ` ${s.cls}` : "";
       const dataAttr = s.attr ? ` ${esc(s.attr.name)}="${esc(String(s.attr.value))}"` : "";
-      return `<div class="stat"><div class="n${clsAttr}"${dataAttr}>${s.value}</div><div class="l">${s.label}</div></div>`;
+      return `<div class="stat${cellCls}"><div class="n${clsAttr}"${dataAttr}>${s.value}</div><div class="l">${s.label}</div></div>`;
     })
     .join("");
   return `<div class="statstrip" style="grid-template-columns:repeat(${stats.length},1fr)">${items}</div>`;
