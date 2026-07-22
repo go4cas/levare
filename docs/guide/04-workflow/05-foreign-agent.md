@@ -209,6 +209,46 @@ None of this is levare talking to the CLI — it's the OS sandbox wrapping the p
 applies on a host where [Operations](../06-operations.md) reports a working sandbox primitive. Where
 none exists, the member runs unconfined and none of the above kicks in.
 
+## MCP servers under the sandbox: pre-installed only, never fetched at dispatch
+
+A `kind: remote` member's `kind: mcp` connector gets the identical sandbox wrap a `cli` member's spawn
+gets (above) — same OS-level confinement, same `home:` mechanism for a real-HOME path the server
+legitimately needs. One shape is not supported under it: **`argv:` naming a package runner that fetches
+and executes a package at dispatch time** — `npx` (especially with `-y`/`--yes`), `bunx`, `pnpm dlx`,
+`yarn dlx` — over a bare package spec, e.g.:
+
+```yaml
+# Rejected under a working sandbox — a fetch-at-dispatch launcher
+argv: ["npx", "-y", "@modelcontextprotocol/server-everything", "stdio"]
+```
+
+**Why:** `npx -y <pkg>` means "download whatever is at this name right now and execute it" — the exact
+untrusted-code problem the sandbox exists to contain, now happening at dispatch instead of at install.
+A pre-installed, path-referenced server is auditable and gets a narrow, per-connector filesystem grant
+(the interpreter's own script path); a fetch-at-dispatch server's real code lands in an npm/npx/bun
+cache under the operator's own `$HOME` — a location nothing in the connector's `argv` ever references,
+so the sandbox has nothing to grant a narrow path to. Left alone, this doesn't fail cleanly: the spawned
+interpreter blocks trying to read a denied cache path and hangs rather than exiting.
+
+**What to do instead:** install the server locally and reference its resolved script or binary path
+directly:
+
+```yaml
+# Accepted — a pre-installed server, referenced by its resolved path
+argv: ["/usr/local/bin/mcp-server-everything", "stdio"]
+# or an interpreter + local script, exactly like the cli case above:
+argv: ["node", "/opt/mcp-servers/everything/dist/index.js", "stdio"]
+```
+
+A locally-installed server invoked *through* a runner (`npx /abs/path/to/installed-server.js`) is fine
+— it's the bare-package-name fetch that's unsupported, not the runner binary itself.
+
+**When this bites:** `levare validate` warns on this declaration unconditionally (`MCP_FETCH_AT_DISPATCH`)
+— it's a legal declaration, just one that won't survive contact with a working sandbox, the same
+"tell plainly, never reject" posture every other REV1-era warning takes. Dispatch itself only refuses it
+on a host where a working sandbox primitive is actually present — on a host with none, the connector
+runs exactly as it always has, unconfined. See NOTES MCP-1C addendum 6 for the full ruling.
+
 ---
 
 Next: **[4.6 · Your first loop](06-first-loop.md)** — where the two of them argue.

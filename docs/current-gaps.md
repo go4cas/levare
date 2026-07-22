@@ -57,6 +57,14 @@ The MCP-1C sandbox wrap's own live-host verification (`scripts/repro-mcp-1c-sand
 Conductor's standing macOS gate, the same posture NOTES R4-SANDBOX's own live rounds established for
 `kind: cli` — this container can only prove the wiring, never the primitive.
 
+A `kind: mcp` connector whose `argv:` invokes a fetch-and-run package launcher (`npx -y`, `bunx`, `pnpm
+dlx`, `yarn dlx` over a bare package spec) is a deliberately unsupported declaration under the sandbox
+(NOTES MCP-1C addendum 6, closing item #4): `levare validate` warns (`MCP_FETCH_AT_DISPATCH`), and
+`createAsyncStdioRemoteBoundary` refuses to dispatch it outright on a host with a working sandbox
+primitive, rather than the 60s hang this used to be. A pre-installed server referenced by its resolved
+path remains the only supported `kind: mcp` shape under a working sandbox — see
+docs/guide/04-workflow/05-foreign-agent.md.
+
 ## Conversation persistence — closed (NOTES V11-CONV), two narrower gaps remain
 
 The Orchestrator conversation now persists to `conversations/<scope>/<YYYY-MM>.md` — an append-only,

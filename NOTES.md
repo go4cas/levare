@@ -12671,3 +12671,157 @@ missing HOME in the shared test env builder — both fixed) and one unrelated fl
 one still-open non-blocking optional item, and a final trailing-newline assertion fix — arriving at both
 core security proofs holding live. Recorded in full across this entry and its five addenda so a future
 reader has the complete evidentiary chain, not just the closing line.
+
+## Addendum 6 — item #4 (the bunx/npx e2e hang) closed by Conductor ruling: fetch-at-dispatch MCP servers refused under the sandbox, never supported
+
+Addendum 4/5 left item 4 — `tests/mcp-remote-e2e.test.ts`'s live, optional `npx -y @modelcontextprotocol/
+server-everything` dispatch — open, evidence-gated, non-blocking. Live-macOS evidence since then: the
+failing test's connector spawns `["npx", "-y", "@modelcontextprotocol/server-everything", "stdio"]` —
+argv[1:] is a flag, a package NAME, and a transport string, never an absolute script path, so
+`argvScriptReadOnlyPaths` (addendum 3) grants nothing, and the fetched server's real code — sitting in
+`~/.npm/_npx/...`/Volta's `~/.volta/tools/...` under the operator's own HOME — is denied. The spawned
+interpreter blocks on that denial rather than exiting cleanly, HANGS, and the test rides out its own 60s
+`LIVE_TIMEOUT_MS` ceiling to a failure that names nothing about WHY.
+
+**The Conductor's ruling: this is a security stance, not a bug.** `npx -y`/`bunx`/`pnpm dlx`/`yarn dlx`
+all mean "download whatever is at this name right now and execute it" — exactly the untrusted-code
+problem the R4 sandbox exists to contain, now happening at MCP dispatch time instead of at `npm install`
+time. A pre-installed server, spawned by a resolved path, is auditable and gets a narrow, per-connector
+grant (`argvScriptReadOnlyPaths`, addendum 3 — already proven, live, in addendum 5). A fetch-at-dispatch
+server's real code is unreachable and unreferenced anywhere in `argv` — there is nothing this sandbox
+could ever grant a narrow path to. **The fix is NOT widening the sandbox to grant the npm/npx/Volta
+caches** — that was the rejected option; it would reopen exactly the untrusted-code hole R4 exists to
+close, just relocated to a cache directory instead of the operator's dotfiles. The fix is refusing the
+declaration, principled and extensible, at both the layer that can tell a studio author plainly
+(`validate`) and the layer that would otherwise hang (`dispatch`).
+
+### Detection — `validate.ts#detectFetchAtDispatchLauncher`, a named runner set + a bare-spec heuristic, not a one-off npx match
+
+A `FETCH_AND_RUN_LAUNCHERS` table (`{ basename, subcommand? }[]`) names today's known fetch-and-run
+package runners — `npx`, `bunx` (the launcher itself IS the fetch-and-run mode) and `pnpm`/`yarn` with
+`subcommand: "dlx"` (general-purpose CLIs that only fetch-and-run under that one subcommand — `pnpm run
+start` is an ordinary invocation, never flagged). `detectFetchAtDispatchLauncher(argv)` resolves
+`basename(argv[0])`, matches it against the table (literal basename match — `/usr/local/bin/npx` matches
+exactly like bare `npx`, so this can never be defeated by where the launcher happens to live, only by
+what it's actually a launcher FOR), and — UNLESS `argv` also names a resolvable, absolute path to an
+EXISTING local file (the identical existing-file scan `argvScriptReadOnlyPaths` already performs, so a
+locally-installed server invoked *through* a runner, e.g. `npx /abs/path/to/installed-server.js`, is
+correctly left alone) — reports the match. New runners belong in the table, never a second, independently
+-drifting string match bolted onto the function itself.
+
+### Two enforcement layers, mirroring the REV1 honesty-layer convention (`kind: remote`'s own
+### REMOTE_NOT_IMPLEMENTED/SANDBOX_UNAVAILABLE, above)
+
+This is a legal-but-unsupported-under-sandbox declaration, exactly the shape those two warnings already
+established: tell plainly, never reject the declaration itself, because whether it actually MATTERS
+depends on the host that ends up dispatching it.
+
+1. **`validate.ts#validateConnectorFetchAtDispatch`** (wired into `validateSingleFile`'s existing
+   `kind.schema === CONNECTOR_SCHEMA` chain) — a `kind: mcp` connector matching the detection above gets a
+   new `MCP_FETCH_AT_DISPATCH` WARNING, never an error (`r.ok` stays `true`): names the matched invocation,
+   WHY (the fetched server's code lands in an ungranted cache), and WHAT to do instead (install locally,
+   reference the resolved path, points at docs/guide/04-workflow/05-foreign-agent.md's new section). A
+   host with no working sandbox primitive runs the connector exactly as before — this warning is
+   informational there, matching `SANDBOX_UNAVAILABLE`'s own "told, never blocked" posture for that case.
+2. **`adapters.ts#createAsyncStdioRemoteBoundary`** re-runs the SAME `detectFetchAtDispatchLauncher` at
+   actual dispatch time, gated on `detection.level !== "none"` (a working sandbox primitive is genuinely
+   present) — and when both conditions hold, throws `AdapterError` immediately, BEFORE `wrapForSandbox`/
+   `connect` are ever reached (scratch dir and scoped HOME, both already created earlier in the same `if
+   (real && scratchDir)` block, are cleaned up first). This is where the warning becomes an actual
+   constraint: a fast, named refusal instead of a 60s hang. A host with `detection.level === "none"` is
+   completely unaffected — the exact `!== "none"` gate that makes `SANDBOX_UNAVAILABLE` fire only tells,
+   never blocks, on that same host now also means this refusal never fires there either; the
+   fetch-at-dispatch connector dispatches exactly as it always has, unconfined.
+
+### The test fix (`tests/mcp-remote-e2e.test.ts`) — option (b), the honest fallback
+
+A stable local resolution (adding `@modelcontextprotocol/server-everything` as a devDependency, resolving
+its installed path) was considered and rejected: it would make `bun install` itself require network
+access for every checkout, unconditionally, to support one opt-in live test — a strictly WORSE failure
+surface than the live-fetch-and-skip-honestly shape this file already had. Taken instead: `seedScratchRepo`
+now takes the connector's own `argv` directly (rather than deriving one from `Bun.which("npx") ??
+Bun.which("bunx")`), and the acceptance test spawns `[process.execPath, FAKE_MCP_SERVER, "normal"]` — this
+repo's own `fixtures/stubs/fake-mcp-server.ts`, the SAME fixture `tests/adapters.test.ts`'s own
+sandboxed-real-spawn suite already proves works live under a working sandbox (addenda 3-5) — through the
+FULL production pipeline (`createBoard`, a real gate, real approve) this file's own test uniquely covers.
+Deterministic, offline, no registry fetch, no 60s ceiling; runs unconditionally, never skips. A second,
+new test in the same file rewires the identical fixture's connector to `["npx", "-y",
+"@modelcontextprotocol/server-everything", "stdio"]` and asserts `MCP_FETCH_AT_DISPATCH` fires at
+`validatePath` — turning item #4 from "unsupported hang" into "correctly refused, with the supported path
+proven right alongside it." `Bun.which`/the 60s `LIVE_TIMEOUT_MS`/the live network dependency are gone
+from this file entirely.
+
+`tests/mcp-handshake.test.ts` (Phase 1a's own real-handshake proof, live `npx`/`bunx`-gated, skips
+honestly) is UNTOUCHED — it proves the wire-protocol handshake against a real reference server, a
+different claim than this goal's own dispatch-boundary scope, and was never the file item #4 named.
+
+### New tests
+
+`tests/validate.test.ts` — new `describe("MCP_FETCH_AT_DISPATCH — fetch-at-dispatch MCP launchers
+(NOTES MCP-1C addendum 6)")`: fires for `npx -y`/bare `bunx`/`pnpm dlx`/`yarn dlx` over a bare package
+spec (four cases, `test.each`); never fires for `pnpm run start` (no `dlx` subcommand — an ordinary
+invocation); never fires for a resolved, path-referenced connector (no runner at all); never fires for a
+runner invocation naming a resolvable, existing local file (the locally-installed-through-a-runner
+carve-out, using this test file's own module path as the probe); never fires for a `kind: cli` connector
+(this ruling is `kind: mcp`-specific, mirroring addendum 3's own "no evidence `cli` takes this shape").
+The two PRE-EXISTING `kind: mcp` fixtures in this file that used `bunx -y ...` as their own "everything's
+fine, fully implemented" canonical example (`"...carries NO remote warning"`,
+`describe("SANDBOX_UNAVAILABLE...")`'s own `implementedRemoteDir()`) are switched to a path-referenced
+argv — neither test asserted total warning-array emptiness (both only check for absence of their own
+specific code), so this was never a required fix, but leaving a now-flagged pattern as the canonical
+"good" example would read as self-contradictory to a future reader.
+
+`tests/adapters.test.ts` — three new tests alongside the pre-existing "dispatch through a REAL (if fake)
+working sandbox primitive completes without hanging" test: (1) a fetch-at-dispatch connector under a
+forced `level: "full"` (via the pre-existing `fakeWorkingPrimitive()`) is refused with `AdapterError`
+naming `npx` — `opts.connect` is deliberately left at its REAL default (never overridden), so this test
+itself would hang if the refusal ever regressed to firing too late; (2) the identical forced-`"full"`
+condition does NOT refuse a path-referenced connector (`fakeServerConnector`'s own default argv) — the
+refusal is specific to fetch-at-dispatch shape, never a blanket rejection once a sandbox is present; (3)
+`detection.level === "none"` does NOT refuse a fetch-at-dispatch-SHAPED argv (`["npx", "-y", ...]`) — a
+new `fakeNpxShim()` helper (this file's own `fakeWorkingPrimitive` pattern, applied to the LAUNCHER rather
+than the sandbox primitive) places a fake `npx` first on `PATH` that unconditionally execs this repo's own
+fixture server, so this exercises a REAL `Bun.spawn`-resolved-off-`PATH` dispatch without ever depending
+on a real npx being installed or reaching the network — proving the `!== "none"` gate is real code, not
+merely asserted.
+
+### Docs
+
+`docs/guide/04-workflow/05-foreign-agent.md` gains a new "MCP servers under the sandbox: pre-installed
+only, never fetched at dispatch" section, right after the existing vendor-CLI sandbox-reality section this
+goal's own instruction pointed at — the rejected/accepted `argv:` shapes side by side, WHY (the ungranted-
+cache problem) and WHAT to do instead (install locally, reference the resolved path), and when this
+actually bites (warned always, refused only under a working sandbox). `docs/current-gaps.md`'s own
+"Remote/MCP members" entry gains a short paragraph naming the same ruling, so a reader of that register
+sees the restriction without needing to find this NOTES entry first.
+
+### Verification
+
+`bun test` → 1258 pass, 9 skip, 0 fail, across 92 files, this goal's own new tests included: 8 in
+`tests/validate.test.ts`'s new `MCP_FETCH_AT_DISPATCH` describe block (four positive cases via
+`test.each` + four negative/carve-out cases) + 3 in `tests/adapters.test.ts` + 2 rewritten in
+`tests/mcp-remote-e2e.test.ts`, replacing its own prior single-test, `test.skipIf(!live.ok)` shape — none
+of this goal's new tests skip, on any host, by
+construction). `bunx tsc --noEmit` → exit 0. `bun run deps:check` → `deps ok` (no new dependency — the
+devDependency route was considered and rejected, see above). `bun run build` → succeeds. `bun run src/
+cli.ts validate fixtures/golden` → `valid`, the same two pre-existing `SANDBOX_UNAVAILABLE` warnings
+(finch/rook, `kind: cli`) — unchanged; no fixture connector declares `argv:` at all, so this goal's new
+warning never fires against the golden fixture. `bun run src/cli.ts replay fixtures/golden --stubs` →
+oracle match, byte-for-byte (this goal touches only the connector-validation and remote-dispatch paths,
+never the phase-2 batch `Runner`/`stubAdapterRunner`/golden-fixture entities). `bun run docs:generate` →
+wrote 13 cheatsheet files, zero diff against what was already committed — no schema field changed here,
+only a new cross-field validator and its message, so no cheatsheet drift was possible.
+
+### What this addendum does NOT claim
+
+The live-sandbox leg — a real, path-referenced MCP server dispatched under a genuinely working `bwrap`/
+`sandbox-exec` primitive — remains the Conductor's own macOS gate, unchanged from every prior addendum's
+own posture; this container can prove the detection, the refusal's gating condition, and the full
+production pipeline against a local fixture, but not that a live host's real sandbox primitive itself
+behaves as `sandbox.ts` predicts. Nothing new to prove there beyond what addendum 5 already sealed (the
+decoy-deny/`home:`-grant proofs) — this addendum adds a REFUSAL for a shape that was never part of that
+seal to begin with. **MCP-1C item #4 is now closed**: the failing/hanging live test is gone, replaced by
+a deterministic proof of the supported path (already partially proven in `tests/adapters.test.ts`, now
+also proven through the FULL board/gate pipeline this file uniquely covers) plus a deterministic proof
+that the unsupported path is correctly, plainly refused — never silently accepted, never a silent 60s
+stall.
