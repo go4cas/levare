@@ -786,6 +786,7 @@ function validateSingleFile(
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorHomeSafety(data, file, errors);
   if (kind.schema === CONNECTOR_SCHEMA) validateActionPlaceholderPosition(data, file, warnings);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorEffects(data, file, errors);
+  if (kind.schema === CONNECTOR_SCHEMA) validateConnectorFetchAtDispatch(data, file, warnings);
 }
 
 function discoverFolderArtifacts(root: string, errors: ValidationError[], artifacts: DiscoveredArtifact[]): void {
@@ -1512,6 +1513,98 @@ function validateConnectorEffects(data: Record<string, YamlValue>, file: string,
       file,
     });
   }
+}
+
+// ---------------------------------------------------------------------------
+// Fetch-at-dispatch MCP launcher detection (NOTES MCP-1C addendum 6)
+// ---------------------------------------------------------------------------
+//
+// The Conductor's ruling on closing MCP-1C item #4 (a live-macOS `npx -y`-spawned connector hanging for
+// 60s under a working sandbox): this is a SECURITY ruling, not a bug to engineer around by widening the
+// sandbox. `npx -y`/`bunx`/`pnpm dlx`/`yarn dlx` all mean the same thing — "download whatever is at this
+// name right now and execute it" — the exact untrusted-code shape the R4 sandbox exists to contain,
+// happening at dispatch time instead of at `npm install` time. A pre-installed server, spawned by a
+// resolved path, is auditable and gets a narrow, per-connector grant (adapters.ts#
+// argvScriptReadOnlyPaths, NOTES MCP-1C addendum 3); a fetch-at-dispatch server's real code lands in an
+// npm/npx/bun cache under the operator's own HOME — unreachable and unreferenced anywhere in argv, so
+// there is nothing this sandbox could ever grant a narrow path to. That gap is WHY it hung rather than
+// erred: the interpreter blocked on a denied read instead of exiting cleanly (the same "blocked process,
+// not a crash" shape addendum 3 already found one layer down, for a local script instead of a cache dir).
+
+interface FetchRunnerSpec {
+  /** The launcher's resolved basename (argv[0], stripped of any directory prefix) — matched literally,
+   *  never a substring, so e.g. "npx" never accidentally matches a connector's own "my-npx-wrapper". */
+  basename: string;
+  /** When set, this launcher is a general-purpose CLI (pnpm, yarn) that only fetches-and-runs under a
+   *  specific SUBCOMMAND — the launcher's mere presence in argv[0] says nothing on its own. Absent means
+   *  the launcher IS the fetch-and-run mode by itself (npx, bunx have no other purpose). */
+  subcommand?: string;
+}
+
+// The named, extensible runner set — new package runners belong here, never as a one-off string match
+// bolted onto the detection function itself. Today's known fetch-and-run launchers; not an exhaustive
+// claim about every package runner that will ever exist.
+const FETCH_AND_RUN_LAUNCHERS: FetchRunnerSpec[] = [
+  { basename: "npx" }, // esp. dangerous with -y/--yes, which skips the "install this?" confirmation too
+  { basename: "bunx" },
+  { basename: "pnpm", subcommand: "dlx" },
+  { basename: "yarn", subcommand: "dlx" },
+];
+
+export interface FetchAtDispatchLauncher {
+  /** The matched launcher's own basename, e.g. "npx". */
+  runner: string;
+  /** The matched subcommand, when the launcher needed one (e.g. "dlx"). Undefined for npx/bunx. */
+  subcommand?: string;
+}
+
+/**
+ * Detects a `kind: mcp` connector's argv invoking a known package-runner in fetch-and-run mode. Matches
+ * on the resolved BASENAME of argv[0] (never the full path — a connector may legitimately reference an
+ * absolute install of npx, e.g. `/usr/local/bin/npx`), so this can never be defeated by where the
+ * launcher itself happens to live on a given host, only by what it's actually a launcher FOR.
+ *
+ * A match is treated as fetch-at-dispatch UNLESS argv also names a resolvable, absolute path to an
+ * EXISTING local file — the same "interpreter + local script" shape adapters.ts#argvScriptReadOnlyPaths
+ * already grants narrowly. That carve-out is deliberate: a locally-installed server invoked THROUGH a
+ * runner (e.g. `npx /abs/path/to/installed-server.js`) is a resolved-path dispatch like any other, not a
+ * bare-package fetch — it's the "download a package NAME" case this function exists to catch, not every
+ * invocation of npx/bunx/etc. on principle.
+ */
+export function detectFetchAtDispatchLauncher(argv: string[]): FetchAtDispatchLauncher | null {
+  if (argv.length === 0) return null;
+  const launcherBase = basename(argv[0]);
+  const spec = FETCH_AND_RUN_LAUNCHERS.find((s) => s.basename === launcherBase);
+  if (!spec) return null;
+  const rest = argv.slice(1);
+  if (spec.subcommand && !rest.includes(spec.subcommand)) return null;
+  const hasResolvableLocalPath = rest.some((el) => isAbsolute(el) && existsSync(el) && statSync(el).isFile());
+  if (hasResolvableLocalPath) return null;
+  return { runner: launcherBase, subcommand: spec.subcommand };
+}
+
+// A legal-but-unsupported-under-sandbox declaration — the SAME honesty-layer posture
+// REMOTE_NOT_IMPLEMENTED/SANDBOX_UNAVAILABLE above take: tell plainly at validate time, never reject the
+// declaration outright, because whether it actually matters depends on the host that ends up dispatching
+// it. A host with no working sandbox primitive at all (this container's own standing reality) runs it
+// exactly as before — no regression for that case. `adapters.ts#createAsyncStdioRemoteBoundary` re-runs
+// this SAME detection at dispatch time and turns it into a hard, fail-fast AdapterError specifically when
+// a working sandbox primitive IS present — replacing what used to be a silent 60s hang against a denied
+// cache with an immediate, named refusal, mirroring how `kind: remote`'s own REV1 warnings stay warnings
+// here and only bite as an actual constraint once something tries to really run under confinement.
+function validateConnectorFetchAtDispatch(data: Record<string, YamlValue>, file: string, warnings: ValidationWarning[]): void {
+  if (data.kind !== "mcp") return;
+  const argv = data.argv;
+  if (!Array.isArray(argv) || argv.length === 0 || !argv.every((x) => typeof x === "string")) return;
+  const launcher = detectFetchAtDispatchLauncher(argv as string[]);
+  if (!launcher) return;
+  const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+  const invocation = launcher.subcommand ? `${launcher.runner} ${launcher.subcommand}` : launcher.runner;
+  warnings.push({
+    code: "MCP_FETCH_AT_DISPATCH",
+    message: `connector '${name}' spawns its server via '${invocation}', a package runner that fetches and executes a package at dispatch time — the same untrusted-code shape the R4 sandbox exists to contain, now happening at dispatch instead of at install. This cannot be confined under a working sandbox: the fetched server's real code lands in an npm/npx/bun cache under the operator's own HOME, a location no connector argv references and none is granted. Install the server locally instead and reference its resolved script or binary path directly in this connector's argv (a locally-installed server invoked THROUGH a runner is unaffected by this warning) — see docs/guide/04-workflow/05-foreign-agent.md. Dispatching this connector on a host with a working sandbox primitive is refused outright rather than left to hang.`,
+    file,
+  });
 }
 
 // ---------------------------------------------------------------------------

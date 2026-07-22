@@ -44,7 +44,7 @@ import { assembleContext, unitArtifactPaths } from "./context.ts";
 import { asyncSdkTransport, bunSdkTransport, resolveNativeBinary, type AsyncSdkTransport, type SdkTransport } from "./sdk-transport.ts";
 import { repoCapabilities } from "./repo.ts";
 import { resolveProjectRepoPath, workBranchName, branchExists, createDispatchWorktree } from "./merge.ts";
-import { isSafeHomeDotpath } from "./validate.ts";
+import { isSafeHomeDotpath, detectFetchAtDispatchLauncher } from "./validate.ts";
 import { detectSandbox, wrapForSandbox, resolveDarwinUserTempDir, type SandboxDetection, type SandboxLevel, type SandboxPolicy, type WrappedSpawn } from "./sandbox.ts";
 import type { Pricing } from "./pricing.ts";
 import type { Repo } from "./repo.ts";
@@ -500,6 +500,30 @@ export function createAsyncStdioRemoteBoundary(repo: Repo, opts: StdioRemoteBoun
         // un-cached probe there, exactly like `AdapterRunner#sandboxWrap`'s own identical line.
         const detection = opts.sandboxDetection ?? detectSandbox();
         logRemoteSandboxDebug(`level: ${detection.level} (primitive: ${detection.primitive})`);
+        // NOTES MCP-1C addendum 6: the Conductor's ruling on the bunx/npx e2e hang (item #4) — a
+        // fetch-at-dispatch connector (npx -y, bunx, pnpm dlx, yarn dlx over a bare package spec) cannot
+        // be confined by a working sandbox primitive at all: its real code lands in an npm/npx/bun cache
+        // under the operator's own HOME, a location argvScriptReadOnlyPaths never grants (only a
+        // resolved, existing local file path in argv is). Left alone, the spawned interpreter blocks on
+        // that denied read and hangs rather than exiting — the same class of finding addendum 3 already
+        // found one layer down, for a local script instead of a cache dir. Refused HERE, before ever
+        // reaching `wrapForSandbox`/`connect`, so this is a fast, named error instead of a 60s stall —
+        // validate.ts#detectFetchAtDispatchLauncher is the SAME detection validate.ts already warns with
+        // at validate time (a legal-but-unsupported-under-sandbox declaration); this is where that
+        // warning becomes an actual constraint, exactly when a working primitive is present to enforce
+        // it. A host with no working primitive (`detection.level === "none"`) is unaffected — the
+        // fetch-at-dispatch server runs exactly as it always has, unconfined.
+        if (detection.level !== "none") {
+          const launcher = detectFetchAtDispatchLauncher(connector.argv);
+          if (launcher) {
+            scopedHome?.cleanup();
+            rmSync(scratchDir, { recursive: true, force: true });
+            const invocation = launcher.subcommand ? `${launcher.runner} ${launcher.subcommand}` : launcher.runner;
+            throw new AdapterError(
+              `remote member '${req.member}''s connector '${serverName}' spawns its server via '${invocation}', a fetch-and-run package launcher — refused under this host's working sandbox primitive (${detection.primitive}), rather than left to hang (NOTES MCP-1C addendum 6). A fetch-at-dispatch server's real code lands in an npm/npx/bun cache under the operator's own HOME, which the sandbox denies and no connector argv references. Install the server locally and reference its resolved script/binary path directly in this connector's argv instead — see docs/guide/04-workflow/05-foreign-agent.md.`,
+            );
+          }
+        }
         const policy = buildRemoteSandboxPolicy(repo, req, connector, scratchDir, spawnEnv);
         // `wrapForSandbox` itself prints (under the SAME LEVARE_SANDBOX_DEBUG=1 gate) the composed
         // argv/cwd/home for every tier, and — for `sandbox-exec` specifically — the darwin profile's own
