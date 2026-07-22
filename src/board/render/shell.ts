@@ -20,6 +20,7 @@ import { statusLabel } from "../status.ts";
 import { statusBadge, counter, pendingState, card, confirmModal, orchTurn, renderPersistedTurns, tag, callout } from "../components.ts";
 import { loadConversationTail } from "../../conversation.ts";
 import { deriveTeamStyle } from "../team-color.ts";
+import { registryKindIconBody } from "./entity-icons.ts";
 
 // levare's own release version (item 3: "the release version as a quiet muted mono chip" beside the
 // wordmark) — never from a project's data (that's the `pace`/`deploy`/release vocabulary, a
@@ -362,10 +363,18 @@ export function dispatchingFor(running: DaemonInvocation[], gate: OpenGate): { m
   return inv ? { member: inv.member, kind: inv.kind } : undefined;
 }
 
+// Amendment 1 §1/R3: the gate card's kind marker is the work-unit-type glyph from the entity-icon
+// family (the same thin geometric line-glyph `registryKindIconBody` already draws for a "types" entry
+// in the registry) — never a bare unicode character. Monochrome, carries type only (Ruling R1); colour
+// comes entirely from `.gate__marker`'s own CSS (the gate-brass ink), never baked into the glyph.
+function gateMarkerSvg(typeName: string | undefined): string {
+  return `<svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true">${registryKindIconBody("types", typeName)}</svg>`;
+}
+
 export function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: boolean; dispatching?: { member: string; kind: string } } = {}): string {
   const unit = repo.units.find((u) => u.project === gate.project && u.unit === gate.unit);
   const type = unit ? repo.types.get(unit.type) : undefined;
-  const glyph = type?.glyph ?? "&#9702;";
+  const glyph = gateMarkerSvg(type?.name);
   const dispatching = opts.dispatching;
 
   if (gate.type === "start") {
@@ -551,7 +560,7 @@ function mergeGateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: 
   const merge = art.merge;
   const unit = repo.units.find((u) => u.project === gate.project && u.unit === gate.unit);
   const type = unit ? repo.types.get(unit.type) : undefined;
-  const glyph = type?.glyph ?? "&#9702;";
+  const glyph = gateMarkerSvg(type?.name);
   const dispatching = opts.dispatching;
   const age = ageLabel(art.created, now);
 

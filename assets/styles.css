@@ -27,6 +27,9 @@
   --radius-sm:5px; --radius-md:8px; --radius-lg:12px; --radius-xl:14px; --radius-pill:999px;
   --motion-instant:80ms; --motion-fast:120ms; --motion-base:180ms;
   --ease-standard:cubic-bezier(.2,.7,.3,1);
+  /* gate-panel — the whole-cell wash the foundation's stat-band/gate-card treatments derive from
+     --gate via color-mix, never a hand-picked literal (both themes stay correct by construction). */
+  --gate-panel:color-mix(in oklab, var(--gate) 7%, var(--panel));
   color-scheme:light;
 }
 [data-theme="dark"]{
@@ -184,7 +187,11 @@ button{ font-family:inherit; }
   display:flex; flex-direction:column; gap:12px; box-shadow:var(--shadow); }
 .gate--start{ border:1px dashed color-mix(in oklab, var(--gate) 50%, var(--border)); box-shadow:none; }
 .gate__top{ display:flex; align-items:flex-start; gap:12px; }
-.gate__marker{ font-family:var(--mono); color:var(--gate); font-size:15px; line-height:1; margin-top:3px; flex:none; }
+/* Amendment 1 §1/R3: the kind marker is the entity-icon family's work-unit-type glyph (an inline SVG,
+   `stroke="currentColor"`) — monochrome, colour supplied entirely here (gate brass), never baked into
+   the glyph itself (Ruling R1: glyph carries type only, never state/identity). */
+.gate__marker{ color:var(--gate); margin-top:1px; flex:none; display:inline-flex; }
+.gate__marker svg{ display:block; }
 .gate__body{ flex:1; min-width:0; display:flex; flex-direction:column; gap:6px; }
 /* UI2 item 1: the unit title — top-left of the card, per the card contract (title top-left, status
    top-right, established UI1). Distinct from the secondary name-row below it, which names the
@@ -282,7 +289,7 @@ button{ font-family:inherit; }
 .pcard__gate{ display:inline-flex; align-items:center; gap:5px; color:var(--gate); font-weight:500; }
 
 /* Needs You gate cards carry a light gate wash — call to action */
-#needs .gate:not(.is-resolved){ background:color-mix(in oklab, var(--gate) 7%, var(--panel));
+#needs .gate:not(.is-resolved){ background:var(--gate-panel);
   border-color:color-mix(in oklab, var(--gate) 26%, var(--border)); }
 #needs .gate--start:not(.is-resolved){ background:color-mix(in oklab, var(--gate) 5%, var(--panel)); }
 
