@@ -13,6 +13,20 @@
   --sans:'Hanken Grotesk', system-ui, -apple-system, sans-serif;
   --mono:'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
   --headerh:52px;
+  /* ---------- Phase 2 cluster 1 — dev/foundation/tokens.css merged in ----------
+     Ink/Paper named explicitly (identical to --fg/--bg's light values above — the base brief's own
+     fixed-neutral constants, spelled out for anything written against the foundation's vocabulary).
+     The neutral/status scale above already matches the foundation's color-mix derivation numerically
+     (see the Phase 2 cluster 1 goal notes) and is deliberately kept as hand-tuned literals rather than
+     switched to a live formula — switching would nudge every screen's hairline borders/muted text a
+     few percent, a shared-layer visual change this registry-only cluster has no reason to force on
+     studio/project/run. The spacing/radius/motion scale is genuinely new vocabulary — additive tokens,
+     used below by the registry's own kind-tag/card treatment. */
+  --ink:#191B21; --paper:#F5F6F7;
+  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px; --space-5:20px; --space-6:24px; --space-8:32px;
+  --radius-sm:5px; --radius-md:8px; --radius-lg:12px; --radius-xl:14px; --radius-pill:999px;
+  --motion-instant:80ms; --motion-fast:120ms; --motion-base:180ms;
+  --ease-standard:cubic-bezier(.2,.7,.3,1);
   color-scheme:light;
 }
 [data-theme="dark"]{
