@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRepo } from "../src/repo.ts";
-import { renderStudio, renderProject, renderRun, renderRegistry, renderArtifact, renderIdea, scoreNodeClass, projectStatusChip } from "../src/board/render.ts";
+import { renderStudio, renderProject, renderRun, renderRegistry, renderArtifact, renderIdea, scoreNodeClass, scoreLineClass, elapsedLabel, projectStatusChip } from "../src/board/render.ts";
 import { scoreNodes, type NodeState } from "../src/derive.ts";
 import { resolveGate } from "../src/board/gateops.ts";
 import type { OrchestratorStatus } from "../src/orchestrator-status.ts";
@@ -605,6 +605,105 @@ describe("run screen — score rail node markers survive a real gate resolution"
     // must still render their hollow "upcoming" marker, not a missing/mismatched one.
     expect(snodeClassesOf(afterScore).length).toBe(5);
     expect(snodeClassesOf(afterScore)).toEqual(["snode done", "snode done", "snode done", "snode upcoming", "snode upcoming"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 2 cluster 3, part 4 (tier 3, amendment 1 §2 R4): the score rail's "active" canonical state was
+// previously unreachable from real data (derive.ts#scoreNodes only ever emitted done/gate/rejected/
+// blocked/wait) — a step a member is genuinely producing right now used to render as a plain hollow
+// "wait", indistinguishable from a step nothing is happening on. `running` (the daemon's live-
+// invocation projection, already threaded through renderRun/renderProject) now overrides that.
+// ---------------------------------------------------------------------------
+
+describe("scoreNodes — a genuinely in-flight step reaches the canonical 'active' state", () => {
+  let scratchRoot: string | undefined;
+  afterEach(() => {
+    if (scratchRoot) rmSync(scratchRoot, { recursive: true, force: true });
+    scratchRoot = undefined;
+  });
+
+  test("a running invocation on an artifact-less kind overrides 'wait' with 'active', a real producer, and a real startedAt", () => {
+    scratchRoot = seedScratchRepo();
+    const repo2 = loadRepo(scratchRoot);
+    const unit = repo2.units.find((u) => u.unit === "checkout-flow")!;
+    const startedAt = "2026-07-11T19:58:18.000Z";
+    // "code" (like "review") has no artifact at all yet in this fixture (pinned above); no team
+    // declares it in `produces` either — proving team resolution comes from unit responsibility +
+    // member list, not a coincidental kind match.
+    const running = [{ project: "storefront", unit: "checkout-flow", member: "lyra", kind: "code", startedAt }];
+
+    const nodes = scoreNodes(repo2, unit, running);
+    const codeNode = nodes.find((n) => n.kind === "code")!;
+    expect(codeNode.state).toBe("active");
+    expect(codeNode.shape).toBe("dot");
+    expect(codeNode.producedBy).toBe("kestrel/lyra");
+    expect(codeNode.live?.startedAt).toBe(startedAt);
+    expect(codeNode.live?.loop).toBeUndefined(); // "code" belongs to no declared loop — no round to fabricate
+
+    // A running invocation naming a DIFFERENT kind never touches this one (per-kind, never global).
+    const reviewNode = nodes.find((n) => n.kind === "review")!;
+    expect(reviewNode.state).toBe("wait");
+  });
+
+  test("an in-flight loop member carries a real round count (never fabricated)", () => {
+    scratchRoot = seedScratchRepo();
+    const repo2 = loadRepo(scratchRoot);
+    const unit = repo2.units.find((u) => u.unit === "checkout-flow")!;
+    // "review" is the loop's companion kind (kestrel's flow: `loop: {between: [spec, review], ...
+    // max_rounds: 3}`) — no review artifact exists yet in the fresh fixture, so the round in progress
+    // is round 1.
+    const running = [{ project: "storefront", unit: "checkout-flow", member: "finch", kind: "review", startedAt: now.toISOString() }];
+
+    const nodes = scoreNodes(repo2, unit, running);
+    const reviewNode = nodes.find((n) => n.kind === "review")!;
+    expect(reviewNode.state).toBe("active");
+    expect(reviewNode.producedBy).toBe("kestrel/finch");
+    expect(reviewNode.live?.loop).toEqual({ round: 1, maxRounds: 3 });
+  });
+
+  test("renderRun wires the invocation through: the ictus node, the is-live row wash, and the tier-3 live strip — round + real elapsed, no fabricated token count", () => {
+    scratchRoot = seedScratchRepo();
+    const startedAt = new Date(now.getTime() - (60_000 + 42_000)).toISOString(); // 1m 42s before `now`
+    const running = [{ project: "storefront", unit: "checkout-flow", member: "lyra", kind: "code", startedAt }];
+    const html = renderRun(loadRepo(scratchRoot), "storefront", "checkout-flow", scratchRoot, now, running);
+    const score = scoreBlock(html);
+
+    expect(score).toContain('class="sstep is-live"');
+    expect(score).toContain('class="snode active"');
+    expect(score).toContain("kestrel/lyra &middot; producing&hellip;");
+
+    const liveStripMatch = /<div class="sstep__live">.*?<\/div>/s.exec(score);
+    expect(liveStripMatch).not.toBeNull();
+    expect(liveStripMatch![0]).toContain("1m 42s");
+    // "code" carries no loop membership in this fixture, so no round segment either — and no live
+    // token count anywhere, ever (ScoreNode.live's own doc comment: no live token stream exists).
+    expect(liveStripMatch![0]).not.toMatch(/\d\/\d/); // no "n/m" round fragment
+    expect(liveStripMatch![0]).not.toMatch(/tok/i);
+  });
+});
+
+describe("scoreLineClass — every reachable state maps to a class assets/styles.css defines", () => {
+  const states: NodeState[] = ["done", "active", "gate", "wait", "rejected", "blocked"];
+  for (const s of states) {
+    test(`"${s}" → a line-progress class with a matching, non-empty assets/styles.css rule`, () => {
+      expect(hasCssRuleFor(scoreLineClass(s))).toBe(true);
+    });
+  }
+});
+
+describe("elapsedLabel — real elapsed time computed from a real anchor, never a placeholder", () => {
+  test("seconds only", () => {
+    expect(elapsedLabel(new Date(now.getTime() - 5_000).toISOString(), now)).toBe("0m 05s");
+  });
+  test("minutes and seconds", () => {
+    expect(elapsedLabel(new Date(now.getTime() - 102_000).toISOString(), now)).toBe("1m 42s");
+  });
+  test("over an hour", () => {
+    expect(elapsedLabel(new Date(now.getTime() - 3_900_000).toISOString(), now)).toBe("1h 05m");
+  });
+  test("never negative (a clock skew doesn't produce a negative elapsed)", () => {
+    expect(elapsedLabel(new Date(now.getTime() + 10_000).toISOString(), now)).toBe("0m 00s");
   });
 });
 

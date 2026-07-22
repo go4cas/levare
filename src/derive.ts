@@ -11,8 +11,9 @@
 import type { Artifact, ArtifactStatus, Team, TypeTemplate, Usage, WorkUnit } from "./types.ts";
 import type { Repo } from "./repo.ts";
 import { firstParagraph, repoCapabilities } from "./repo.ts";
-import { isLoopCompanionKind, loopMembershipFor } from "./gates.ts";
+import { isLoopCompanionKind, loopMembershipFor, responsibleTeamsFor } from "./gates.ts";
 import { roundOf } from "./runner.ts";
+import type { DaemonInvocation } from "./daemon.ts";
 
 export function esc(s: string): string {
   return String(s)
@@ -199,23 +200,54 @@ export interface ScoreNode {
   state: NodeState;
   artifact?: Artifact;
   producedBy?: string;
+  /** Set only on a genuinely in-flight "active" node (Phase 2 cluster 3, part 4 — amendment 1 §2 R4
+   * tier 3): the daemon invocation actually producing this kind right now, so the run view's live
+   * strip has real anchors — an actual `startedAt` to compute elapsed from, and (when this kind
+   * belongs to a review loop) a real round count — rather than fabricated numbers. There is no live
+   * token count anywhere in the system (usage is only known once a member's call completes and the
+   * ledger is written), so the live strip deliberately never shows one — inventing a ticking number
+   * with nothing behind it would violate the board's own "never lie" projection invariant. */
+  live?: { startedAt: string; loop?: { round: number; maxRounds: number } };
 }
 
 /**
  * One node per kind in the unit's type `expects:` list, derived from the current (non-superseded)
- * artifact of that kind. A kind with no artifact yet is "wait"; an artifact at in-review is the
- * gate itself (diamond, ruling C2) — never a plain "active" circle.
+ * artifact of that kind. A kind with no artifact yet is "wait" — unless a daemon invocation is
+ * genuinely producing it right now (`running`), in which case it is the canonical palette's real
+ * "active" (Phase 2 cluster 3 part 4: this was previously unreachable — see `live` above). An
+ * artifact at in-review is the gate itself (diamond, ruling C2) — never a plain "active" circle.
+ * `running` defaults to `[]` so every pre-existing call site (which has no daemon invocation to pass)
+ * is unaffected.
  */
-export function scoreNodes(repo: Repo, unit: WorkUnit): ScoreNode[] {
+export function scoreNodes(repo: Repo, unit: WorkUnit, running: DaemonInvocation[] = []): ScoreNode[] {
   const type = repo.types.get(unit.type);
   const expects = type?.expects ?? [];
   const artifacts = [...(repo.artifacts.get(`${unit.project}/${unit.unit}`)?.values() ?? [])];
+  const inv = running.find((r) => r.project === unit.project && r.unit === unit.unit);
+  const capabilities = repoCapabilities(repo);
   return expects.map((kind) => {
     // Prefer the live (non-superseded) artifact of this kind; fall back to the most recent one so a
     // rejected/blocked kind still renders its true state rather than reading as untouched.
     const live = artifacts.filter((a) => a.kind === kind);
     const current = live.find((a) => a.status !== "superseded") ?? live[live.length - 1];
-    if (!current) return { kind, shape: "dot", state: "wait" };
+    if (!current) {
+      if (inv && inv.kind === kind) {
+        // The invocation names a bare member, not `team/member` (dagwalk.ts's own `action.member`) —
+        // resolve which responsible team actually owns it so the avatar column reads exactly like an
+        // artifact's own `produced_by` does everywhere else on the board.
+        const team = responsibleTeamsFor(repo, unit).find((t) => t.members.includes(inv.member));
+        const membership = team ? loopMembershipFor(team, kind, capabilities) : undefined;
+        const loop = membership ? { round: live.length + 1, maxRounds: membership.loop.maxRounds } : undefined;
+        return {
+          kind,
+          shape: "dot",
+          state: "active",
+          producedBy: team ? `${team.name}/${inv.member}` : inv.member,
+          live: { startedAt: inv.startedAt, loop },
+        };
+      }
+      return { kind, shape: "dot", state: "wait" };
+    }
     const state = nodeStateFor(current.status);
     return {
       kind,

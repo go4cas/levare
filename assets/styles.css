@@ -30,6 +30,12 @@
   /* gate-panel — the whole-cell wash the foundation's stat-band/gate-card treatments derive from
      --gate via color-mix, never a hand-picked literal (both themes stay correct by construction). */
   --gate-panel:color-mix(in oklab, var(--gate) 7%, var(--panel));
+  /* Phase 2 cluster 3 part 2 — the score rail's own derived tokens, same discipline as gate-panel
+     above: active-panel is the row wash for a live step, active-border tints the line's frontier
+     segment, done-thread is the settled-progress line colour. Never hand-picked literals. */
+  --active-panel:color-mix(in oklab, var(--active) 6%, var(--panel));
+  --active-border:color-mix(in oklab, var(--active) 28%, var(--border));
+  --done-thread:color-mix(in oklab, var(--ok) 55%, var(--border-strong));
   color-scheme:light;
 }
 [data-theme="dark"]{
@@ -41,6 +47,9 @@
   --warning:#E2A25A;
   --active:#5E9BE6; --ok:#4FB07E; --danger:#EC6A62;
   --shadow:0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.35);
+  --active-panel:color-mix(in oklab, var(--active) 10%, var(--panel));
+  --active-border:color-mix(in oklab, var(--active) 34%, var(--border));
+  --done-thread:color-mix(in oklab, var(--ok) 60%, var(--border-strong));
   color-scheme:dark;
 }
 
@@ -654,44 +663,73 @@ button{ font-family:inherit; }
 @keyframes lv-blink{ 0%,100%{ opacity:1; } 50%{ opacity:.4; } }
 @media (prefers-reduced-motion:reduce){ *{ animation:none !important; } }
 
-/* ---------- score (rich, run view) ---------- */
+/* ---------- score (rich, run view) — Phase 2 cluster 3 part 2, the approved rail swing ----------
+   Proposed and reviewed as dev/foundation/score.html; this is that proposal ported into the shipped
+   class family (reconcile, don't fork — the run view still emits `.score2`/`.sstep`/`.snode`, only
+   their CSS grew richer). Hard semantic constraints are unchanged throughout: the canonical status
+   palette drives every node's colour, circle=step/diamond=gate/dashed=start-gate, team-tint stays on
+   the avatar only. The risk is spent on the node rendering (the "ictus" active marker — the identity's
+   own baton/ictus vocabulary, base brief Identity §Logo), the connecting line reading as literal run
+   progress, and the actionable-tint row wash already used elsewhere for gate cards/stat cells,
+   generalised here to the run view's own live signal. */
 .legend{ font-family:var(--mono); font-size:10.5px; color:var(--fg-mute); line-height:1.5; margin-top:3px; }
 .score2{ display:flex; flex-direction:column; }
-/* Phase 2 cluster 3, part 1 (deferred from cluster 1): the status node, the avatar disc, and the
-   step title now share ONE centerline per row. Previously `.sstep` was a single flex row whose three
-   children (rail/avatar/body) each stretched to the row's full (content-driven) height and positioned
-   their own marker inside via a hand-tuned top offset (`margin-top:1px` on the node, `padding-top:1px`
-   on the avatar) — two independently-guessed numbers that didn't actually land on the same y, which is
-   exactly why the avatar read as slightly off the node/title line. The fix: hoist the title out of the
-   body stack into a `.sstep__head` row alongside the rail and avatar, give rail/avatar a matching fixed
-   height, and let flexbox's own `align-items:center` do the centering — self-correcting for any marker
-   size (circle or diamond) instead of a per-shape magic-number hack. `.sstep__meta` (sub + chip) then
-   sits below, indented to start under the title rather than under the rail/avatar columns. */
-.sstep{ display:flex; flex-direction:column; position:relative; padding-bottom:20px; }
-.sstep:last-child{ padding-bottom:0; }
-.sstep__head{ display:flex; align-items:center; gap:13px; }
-.sstep__rail{ position:relative; width:16px; height:22px; flex:none; display:flex; align-items:center; justify-content:center; }
-/* Anchored to the node's own centerline (half the rail's fixed 22px height), not a row-height-derived
-   magic number — the line now passes cleanly through every node's true center regardless of shape,
-   and the same top/bottom offsets are correct for every row since the rail height never varies. */
-.sstep__line{ position:absolute; top:11px; bottom:-11px; left:50%; width:1.5px; transform:translateX(-50%); background:var(--border-strong); }
+
+/* Part 1's centerline fix, carried forward: node, avatar, and title share one fixed row height via
+   `.sstep__head`'s `align-items:center` — self-correcting for any marker size, never a per-shape
+   magic-number hack. `.sstep__meta` (sub/chip/live-strip) sits below, indented under the title. */
+.sstep{ display:flex; flex-direction:column; position:relative; margin:0 -10px; padding:2px 10px 22px;
+  border-radius:var(--radius-lg,12px); transition:background .18s cubic-bezier(.2,.7,.3,1); }
+.sstep:last-child{ padding-bottom:2px; }
+/* The row wash — the SAME "tint only when actionable" vocabulary already shipped for gate cards
+   (`--gate-panel`) and the stat band, generalised to the run view's own "this step is live right now"
+   signal (`--active-panel`). Never a third hue: both are colour-mixed from tokens the palette owns. */
+.sstep.is-live{ background:var(--active-panel); }
+.sstep.is-open{ background:var(--gate-panel); }
+.sstep__head{ display:flex; align-items:center; gap:14px; }
+.sstep__rail{ position:relative; width:18px; height:24px; flex:none; display:flex; align-items:center; justify-content:center; }
+/* Anchored to the node's own centerline (half the rail's fixed 24px row height) — the line passes
+   cleanly through every node's true center regardless of shape, every row, by construction. */
+.sstep__line{ position:absolute; top:12px; bottom:-22px; left:50%; width:0; margin-left:-1px; border-left:2px solid var(--border-strong); }
 .sstep:last-child .sstep__line{ display:none; }
-.snode{ width:15px; height:15px; border-radius:50%; z-index:1; box-sizing:border-box; }
+/* Three states instead of one flat hairline — a literal read of how far the score has played. All
+   three derive from tokens the palette already owns (never a new hue). */
+.sstep__line--past{ border-left-style:solid; border-left-color:var(--done-thread); }
+.sstep__line--frontier{ border-left-style:dashed; border-left-color:var(--active-border); }
+.sstep__line--frontier-gate{ border-left-style:dashed; border-left-color:var(--gate); }
+.sstep__line--future{ border-left-style:dashed; border-left-color:var(--border-strong); }
+
+.snode{ width:16px; height:16px; border-radius:50%; z-index:1; box-sizing:border-box; position:relative; }
 .snode.done{ background:var(--ok); }
-.snode.is-gate{ border-radius:2px; transform:rotate(45deg); background:var(--fg-mute); width:9px; height:9px; }
-.snode.is-gate-open{ border-radius:2px; transform:rotate(45deg); background:var(--gate); width:9px; height:9px; }
+.snode.is-gate{ border-radius:3px; transform:rotate(45deg); background:var(--fg-mute); width:12px; height:12px; }
+/* Scarce by construction ("its scarcity is the product's personality") — a static (never animated;
+   pulse stays reserved for active/live) brass halo gives the open gate real gravity. */
+.snode.is-gate-open{ border-radius:3px; transform:rotate(45deg); background:var(--gate); width:12px; height:12px;
+  box-shadow:0 0 0 3px color-mix(in oklab, var(--gate) 14%, transparent); }
+/* The "ictus" — the identity's own baton/ictus vocabulary ("the precise instant the beat lands under
+   the baton"), reused here rather than inventing a new motif: the pulse ring is the anticipation, the
+   small paper-cut centre dot is the beat landing. Same canonical blue, same canonical pulse motion. */
 .snode.active{ background:var(--active); --pulse-c:var(--active); animation:lv-pulse 1.9s infinite; }
-.snode.blocked{ background:transparent; border:2px solid var(--border-strong); }
+.snode.active::after{ content:""; position:absolute; inset:5px; border-radius:50%; background:var(--panel); }
+/* "blocked" stays hollow neutral (never orange/red) but is now dashed — distinguished from "waiting"
+   by stroke, not colour, on top of the explicit label chip both already carry. */
+.snode.blocked{ background:transparent; border:2px dashed var(--border-strong); }
 .snode.upcoming{ background:transparent; border:2px solid var(--border-strong); }
 .snode.is-danger{ background:var(--danger); }
-.sstep__av{ flex:none; width:22px; height:22px; display:flex; align-items:center; justify-content:center; }
-.sstep__label{ font-size:14px; font-weight:600; line-height:1.2; }
+.sstep__av{ flex:none; width:24px; height:24px; display:flex; align-items:center; justify-content:center;
+  box-shadow:0 0 0 2px var(--panel); border-radius:50%; }
+.sstep__label{ font-size:14.5px; font-weight:600; line-height:1.2; }
 .sstep.upcoming .sstep__label, .sstep.blocked .sstep__label{ color:var(--fg-dim); }
-/* 51px = rail (16) + gap (13) + avatar (22) — lines the sub/chip block up under the title, which
-   starts right after the avatar column in `.sstep__head`. */
-.sstep__meta{ display:flex; flex-direction:column; gap:3px; padding-left:51px; padding-top:3px; }
+/* 56px = rail (18) + gap (14) + avatar (24) — lines the sub/chip/live-strip block up under the title. */
+.sstep__meta{ display:flex; flex-direction:column; gap:5px; padding-left:56px; padding-top:5px; }
 .sstep__sub{ font-family:var(--mono); font-size:11px; color:var(--fg-mute); line-height:1.4; }
 .sstep__chip{ align-self:flex-start; }
+/* Tier 3 (10s+, amendment 1 §2 R4): "a spinner would be a lie" — the live strip under the active
+   node's own sub-line. Round n/m + real elapsed time only; no fabricated token count (run.ts's own
+   `ScoreNode.live` doc comment explains why — no live token stream exists anywhere in the system). */
+.sstep__live{ display:flex; align-items:center; gap:8px; font-family:var(--mono); font-size:11px; color:var(--active); }
+.sstep__live .ld{ width:6px; height:6px; border-radius:50%; background:var(--active); flex:none; animation:lv-pulse 1.9s infinite; --pulse-c:var(--active); }
+.sstep__live b{ font-weight:600; color:var(--fg); }
 
 /* ---------- timeline (timestamped) ---------- */
 .tl-date{ font-family:var(--mono); font-size:12px; color:var(--fg-dim); padding:2px 0 10px; border-bottom:1px solid var(--border); }

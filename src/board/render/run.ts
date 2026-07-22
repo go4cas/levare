@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { Repo } from "../../repo.ts";
-import { esc, openGates, scoreNodes, captionTime, type ScoreNode } from "../../derive.ts";
+import { esc, openGates, scoreNodes, captionTime, type ScoreNode, type NodeState } from "../../derive.ts";
 import { loadExtras } from "../../extra.ts";
 import { buildTimeline } from "../../timeline.ts";
 import type { DaemonInvocation } from "../../daemon.ts";
@@ -33,17 +33,52 @@ export function scoreNodeClass(n: Pick<ScoreNode, "state">, isGate: boolean): st
   return `snode ${snodeClass(fromNodeState(n.state, isGate))}`;
 }
 
+// Phase 2 cluster 3, part 2/4 (the approved score-rail swing): the connecting line now reads as
+// literal run progress — a settled thread behind a done node, a state-tinted frontier at wherever the
+// run currently sits (active or an open gate), a plain dashed rest ahead. Keyed on the CURRENT node's
+// own state (the segment below it), exactly the rule the approved dev/foundation/score.html showcase
+// demonstrated — exported so a test can assert every reachable class has a matching styles.css rule,
+// the same discipline scoreNodeClass above already gets.
+export function scoreLineClass(state: NodeState): string {
+  if (state === "done") return "sstep__line--past";
+  if (state === "active") return "sstep__line--frontier";
+  if (state === "gate") return "sstep__line--frontier-gate";
+  return "sstep__line--future";
+}
+
+// "1m 42s" / "1h 04m" — elapsed since a live invocation's real `startedAt` (never a fabricated
+// number; see ScoreNode.live's own doc comment on why the live strip has no token count).
+export function elapsedLabel(startedAtIso: string, now: Date): string {
+  const totalS = Math.max(0, Math.floor((now.getTime() - new Date(startedAtIso).getTime()) / 1000));
+  const h = Math.floor(totalS / 3600);
+  const m = Math.floor((totalS % 3600) / 60);
+  const s = totalS % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
+  return `${m}m ${String(s).padStart(2, "0")}s`;
+}
+
 export function renderRun(repo: Repo, project: string, unitId: string, root: string, now: Date = new Date(), running: DaemonInvocation[] = [], status: OrchestratorStatus = resolveOrchestratorStatus()): string {
   const unit = repo.units.find((u) => u.project === project && u.unit === unitId);
   if (!unit) throw new Error(`unknown unit '${project}/${unitId}'`);
   const type = repo.types.get(unit.type);
-  const nodes = scoreNodes(repo, unit);
+  // `running` threads the daemon's live-invocation projection into scoreNodes (Phase 2 cluster 3 part
+  // 4) — the score rail's "active" state was previously unreachable from real data (a step with no
+  // artifact yet always read as plain "wait"); a step a member is genuinely producing right now shows
+  // the canonical blue+pulse, with the real producer in the avatar column, instead of a false hollow.
+  const nodes = scoreNodes(repo, unit, running);
   const gates = openGates(repo).filter((g) => g.project === project && g.unit === unitId);
 
   const scoreSteps = nodes
     .map((n) => {
       const isGate = n.shape === "diamond";
-      const nodeCls = n.state === "done" ? "done" : isGate ? "" : "";
+      // Row-level modifier classes: "done"/"upcoming"/"blocked" dim/style the whole step (fixes a
+      // dormant rule — assets/styles.css's `.sstep.upcoming`/`.sstep.blocked` label-dimming was never
+      // actually reachable before this: the prior computation only ever emitted "done" or ""). "is-live"/
+      // "is-open" carry the approved rail's actionable-tint row wash (--active-panel/--gate-panel) —
+      // the same "tint only when actionable" vocabulary the stat band and gate cards already use.
+      const rowStateCls = n.state === "done" ? "done" : n.state === "wait" ? "upcoming" : n.state === "blocked" ? "blocked" : "";
+      const rowLiveCls = n.state === "active" ? "is-live" : n.state === "gate" ? "is-open" : "";
+      const rowCls = ["sstep", rowStateCls, rowLiveCls].filter(Boolean).join(" ");
       const snodeCls = scoreNodeClass(n, isGate);
       const av = n.producedBy ? `<div class="sstep__av">${memberAvatar(repo, n.producedBy)}</div>` : `<div class="sstep__av"></div>`;
       // NOTES UI1: "blocked" used to render with the SAME red inline style as "rejected" — a direct
@@ -61,14 +96,26 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
         : "";
       const sub = n.artifact
         ? `${esc(n.artifact.produced_by)} &middot; ${artifactTokenLink(n.artifact.project, n.artifact.unit, n.artifact.id, artifactFileName(n.artifact))}`
-        : "queued";
-      return `<div class="sstep ${nodeCls}">
+        : n.state === "active" && n.producedBy
+          ? `${esc(n.producedBy)} &middot; producing&hellip;`
+          : "queued";
+      // Tier 3 (amendment 1 §2 R4, 10s+): the live strip — round n/m (only when this kind belongs to
+      // a review loop; a plain one-shot step has no round to state), plus real elapsed time. No token
+      // count (see ScoreNode.live's doc comment) — the strip states only what's actually known.
+      const liveStrip =
+        n.state === "active" && n.live
+          ? `<div class="sstep__live"><span class="ld" aria-hidden="true"></span><span>${
+              n.live.loop ? `<b>${n.live.loop.round}</b>/${n.live.loop.maxRounds} &middot; ` : ""
+            }${elapsedLabel(n.live.startedAt, now)}</span></div>`
+          : "";
+      const lineHtml = `<span class="sstep__line ${scoreLineClass(n.state)}" aria-hidden="true"></span>`;
+      return `<div class="${rowCls}">
         <div class="sstep__head">
-          <div class="sstep__rail"><span class="${snodeCls}" aria-hidden="true"></span><span class="sstep__line" aria-hidden="true"></span></div>
+          <div class="sstep__rail"><span class="${snodeCls}" aria-hidden="true"></span>${lineHtml}</div>
           ${av}
           <span class="sstep__label">${esc(n.kind)}</span>
         </div>
-        <div class="sstep__meta"><span class="sstep__sub">${sub}</span>${chip}</div>
+        <div class="sstep__meta"><span class="sstep__sub">${sub}</span>${chip}${liveStrip}</div>
       </div>`;
     })
     .join("\n");

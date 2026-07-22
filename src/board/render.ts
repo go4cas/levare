@@ -16,7 +16,7 @@
 // actually uses instead of sharing one 1290-line scope.
 export { renderStudio } from "./render/studio.ts";
 export { renderProject } from "./render/project.ts";
-export { renderRun, scoreNodeClass } from "./render/run.ts";
+export { renderRun, scoreNodeClass, scoreLineClass, elapsedLabel } from "./render/run.ts";
 export { renderArtifact } from "./render/artifact.ts";
 export { renderIdea } from "./render/idea.ts";
 export { renderRegistry } from "./render/registry.ts";

@@ -119,7 +119,10 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
   const unitRows = units
     .map((u) => {
       const type = repo.types.get(u.type);
-      const nodes = scoreNodes(repo, u);
+      // `running` threads the daemon's live-invocation projection through, same as run.ts — a unit
+      // whose current step is genuinely being produced shows the canonical active (blue+pulse) dot in
+      // its mini-score instead of a false hollow "wait" one.
+      const nodes = scoreNodes(repo, u, running);
       const gate = gates.find((g) => g.unit === u.unit);
       // Item 6e: the canonical status→colour map, not a hand-picked class — the same active-must-be-
       // blue fix as the Studio card (projectStatusChip).
