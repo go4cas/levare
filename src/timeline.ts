@@ -6,11 +6,27 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { spawnSync } from "node:child_process";
+import { CONDUCTOR_NAME, RUNNER_NAME } from "./git.ts";
+
+/** Phase 2 cluster 3 part 3: who a timeline row is attributed to, structured rather than baked only
+ * into `text`'s HTML — the run view uses this to render the design brief's own actor-avatar rule
+ * ("agent initials on team tint, the Conductor as the only solid-filled disc, the Runner deliberately
+ * gray"). `member` needs a repo lookup (a bare agent name, no team prefix) to tint correctly — that
+ * lookup belongs to the render layer (which has `repo`), not here (which only has a raw ledger line/
+ * git author). `conductor`/`runner` are resolved right here, from the exact identities every real
+ * commit in the app funnels through (`git.ts#CONDUCTOR_NAME`/`RUNNER_NAME`) — never guessed. `unknown`
+ * is an honest fallback for a git author that is neither (e.g. a human editing files directly outside
+ * the board) — no avatar tint is fabricated for it. */
+export interface TimelineActor {
+  kind: "member" | "conductor" | "runner" | "unknown";
+  name: string;
+}
 
 export interface TimelineRow {
   ts: string; // ISO
   kind: "produce" | "commit";
   text: string;
+  actor: TimelineActor;
 }
 
 interface LedgerLine {
@@ -37,7 +53,7 @@ export function ledgerRows(unitDir: string): TimelineRow[] {
       continue;
     }
     const cost = typeof l.usd === "number" ? ` &middot; ${(l.tokens_in ?? 0) + (l.tokens_out ?? 0)} tok &middot; ~$${l.usd.toFixed(2)}` : "";
-    rows.push({ ts: l.ts, kind: "produce", text: `<span class="who">${l.member}</span> ${l.event}d <span class="mono">${l.kind ?? ""}</span>${cost}` });
+    rows.push({ ts: l.ts, kind: "produce", text: `<span class="who">${l.member}</span> ${l.event}d <span class="mono">${l.kind ?? ""}</span>${cost}`, actor: { kind: "member", name: l.member } });
   }
   return rows;
 }
@@ -52,7 +68,8 @@ export function gitLogRows(root: string, unitDir: string): TimelineRow[] {
     .map((line) => {
       const [ts, author, ...subjectParts] = line.split("|");
       const subject = subjectParts.join("|");
-      return { ts, kind: "commit" as const, text: `<span class="who">${author}</span> committed &mdash; ${subject}` };
+      const actorKind: TimelineActor["kind"] = author === CONDUCTOR_NAME ? "conductor" : author === RUNNER_NAME ? "runner" : "unknown";
+      return { ts, kind: "commit" as const, text: `<span class="who">${author}</span> committed &mdash; ${subject}`, actor: { kind: actorKind, name: author } };
     });
 }
 

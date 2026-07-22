@@ -314,7 +314,10 @@ button{ font-family:inherit; }
 .dot{ width:7px; height:7px; border-radius:50%; flex:none; }
 .dot.is-done{ background:var(--ok); }
 .dot.is-active{ background:var(--active); --pulse-c:var(--active); animation:lv-pulse 1.9s infinite; }
-.dot.is-blocked{ border:1.5px solid var(--border-strong); }
+/* Phase 2 cluster 3 part 3: "blocked" and "waiting" used to be the SAME hollow ring — the same gap
+   the score rail's own node just closed (dashed, not a new colour — both stay hollow neutral). The
+   mini-score is the score's own dot-strip compression (design brief), so it shares the rail's grammar. */
+.dot.is-blocked{ border:1.5px dashed var(--border-strong); }
 .dot.is-wait{ border:1.5px solid var(--border-strong); }
 .dot.is-danger{ background:var(--danger); }
 .diamond{ width:8px; height:8px; transform:rotate(45deg); flex:none; }
@@ -476,7 +479,9 @@ button{ font-family:inherit; }
 .units{ display:flex; flex-direction:column; gap:10px; }
 .unit{ background:var(--panel); border:1px solid var(--border); border-radius:12px; overflow:hidden; }
 .unit__head{ display:flex; align-items:flex-start; gap:11px; padding:15px 17px 0; cursor:pointer; }
-.unit__glyph{ font-family:var(--mono); font-size:15px; color:var(--fg); flex:none; width:16px; text-align:center; margin-top:1px; }
+/* Phase 2 cluster 3 part 3: now an entity-icon SVG (amendment 1 §1/R3), not the raw `type.glyph`
+   unicode character — reconciled with the gate card's own already-migrated marker. */
+.unit__glyph{ display:inline-flex; align-items:center; justify-content:center; color:var(--fg-mute); flex:none; width:16px; margin-top:1px; }
 .unit__titlewrap{ display:flex; align-items:baseline; gap:11px; flex:1; min-width:0; flex-wrap:wrap; }
 .unit__name{ font-size:15px; font-weight:600; }
 .unit__path{ font-family:var(--mono); font-size:11.5px; }

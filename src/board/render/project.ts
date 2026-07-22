@@ -35,6 +35,7 @@ import {
   artifactHref,
   artifactTokenLink,
   tokenLink,
+  typeGlyphSvg,
 } from "./shell.ts";
 
 // NOTES UI1: every dot is now routed through status.ts's `fromNodeState`/`dotClass` — previously this
@@ -151,7 +152,10 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
       return card({
         cls: `unit${openCls}`,
         topCls: "unit__head",
-        pre: `<span class="unit__glyph">${type?.glyph ?? ""}</span>`,
+        // Amendment 1 §1/R3: the base brief's work-unit-type glyph, from the same entity-icon family
+        // the gate card's own marker already draws (Phase 2 cluster 3 part 3 — this used to render the
+        // raw `type.glyph` unicode character, the one holdout of the three designated places).
+        pre: `<span class="unit__glyph">${typeGlyphSvg(type?.name)}</span>`,
         title: `<div class="unit__titlewrap"><span class="unit__name">${esc(u.unit)}</span><a class="unit__path link mono" href="/run/${esc(u.project)}/${esc(u.unit)}">work/${esc(u.project)}/${esc(u.unit)}/</a></div>`,
         status: chip,
         body: `<div class="unit__desc">${esc(unitSummary(repo, u))}</div>\n        ${miniScoreHtml(nodes)}`,
@@ -185,7 +189,10 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
     ${statStrip([
       { value: `${units.filter((u) => u.status === "shipped").length}`, label: "Shipped units" },
       { value: `${units.filter((u) => u.status === "active").length}`, label: "Active" },
-      { value: `${gates.length}`, label: "Gates open" },
+      // Amendment 1 §3, review F13: a stat tints only when actionable, gate-brass only — the same
+      // rule the Studio page's own "Gates on you" stat already gets (Phase 2 cluster 3 part 3: this
+      // page's identical stat was the one holdout, never actually tinted).
+      { value: `${gates.length}`, label: "Gates open", actionable: gates.length > 0 },
       { value: reviewMedian === null ? "&mdash;" : `${reviewMedian}`, label: "Median review rounds" },
       { value: `$${projectSpend(repo, projectName).toFixed(2)}`, label: "Spend" },
     ])}

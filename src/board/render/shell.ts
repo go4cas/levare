@@ -363,18 +363,22 @@ export function dispatchingFor(running: DaemonInvocation[], gate: OpenGate): { m
   return inv ? { member: inv.member, kind: inv.kind } : undefined;
 }
 
-// Amendment 1 §1/R3: the gate card's kind marker is the work-unit-type glyph from the entity-icon
-// family (the same thin geometric line-glyph `registryKindIconBody` already draws for a "types" entry
-// in the registry) — never a bare unicode character. Monochrome, carries type only (Ruling R1); colour
-// comes entirely from `.gate__marker`'s own CSS (the gate-brass ink), never baked into the glyph.
-function gateMarkerSvg(typeName: string | undefined): string {
-  return `<svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true">${registryKindIconBody("types", typeName)}</svg>`;
+// Amendment 1 §1/R3: the work-unit-type glyph from the entity-icon family (the same thin geometric
+// line-glyph `registryKindIconBody` already draws for a "types" entry in the registry) — never a bare
+// unicode character. Monochrome, carries type only (Ruling R1); colour comes entirely from the
+// caller's own CSS context, never baked into the glyph. The base brief scopes this glyph to exactly
+// three places — "project view unit rows, the gate inbox, and the run view header" — this is the one
+// function all three call (Phase 2 cluster 3 part 3: project.ts's row glyph and run.ts's header glyph
+// previously still rendered the raw `type.glyph` unicode character, reconciled here to match the gate
+// card, which migrated in cluster 1/2).
+export function typeGlyphSvg(typeName: string | undefined, size = 15): string {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true">${registryKindIconBody("types", typeName)}</svg>`;
 }
 
 export function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: boolean; dispatching?: { member: string; kind: string } } = {}): string {
   const unit = repo.units.find((u) => u.project === gate.project && u.unit === gate.unit);
   const type = unit ? repo.types.get(unit.type) : undefined;
-  const glyph = gateMarkerSvg(type?.name);
+  const glyph = typeGlyphSvg(type?.name);
   const dispatching = opts.dispatching;
 
   if (gate.type === "start") {
@@ -560,7 +564,7 @@ function mergeGateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: 
   const merge = art.merge;
   const unit = repo.units.find((u) => u.project === gate.project && u.unit === gate.unit);
   const type = unit ? repo.types.get(unit.type) : undefined;
-  const glyph = gateMarkerSvg(type?.name);
+  const glyph = typeGlyphSvg(type?.name);
   const dispatching = opts.dispatching;
   const age = ageLabel(art.created, now);
 

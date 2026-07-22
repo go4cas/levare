@@ -178,9 +178,32 @@ describe("project screen", () => {
   const html = renderProject(repo, "storefront", root, now);
 
   test("unit row has a type glyph, a mini-score, and a gate chip", () => {
-    expect(html).toContain('class="unit__glyph">▸<');
+    // Phase 2 cluster 3 part 3: the row glyph is now the entity-icon SVG family (amendment 1 §1/R3),
+    // reconciled with the gate card's own marker — never the raw `type.glyph` unicode character.
+    expect(html).toContain('class="unit__glyph"><svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true">');
+    expect(html).not.toContain('class="unit__glyph">▸<');
     expect(html).toContain('class="miniscore unit__score"');
     expect(html).toContain('class="chip is-gate">at gate</span>');
+  });
+
+  // Amendment 1 §3, review F13: "a stat tints only when actionable" — the Studio page's own "Gates on
+  // you" stat already gets this; the project page's identical "Gates open" stat was the one holdout.
+  // The fixture has 2 open gates, so this is asserted against the real, non-zero case.
+  test("the Gates open stat tints actionable when the project genuinely has an open gate", () => {
+    expect(html).toContain('<div class="stat stat--actionable"><div class="n">2</div><div class="l">Gates open</div></div>');
+  });
+
+  // Phase 2 cluster 3 part 3: "blocked" and "waiting" mini-score dots used to be visually identical
+  // (both a plain solid hollow ring) — the same gap the score rail's own node just closed. Both stay
+  // hollow neutral (never a new colour); only the stroke style now differs.
+  test("mini-score blocked and waiting dots are both hollow neutral but visually distinct (dashed vs solid)", () => {
+    expect(hasCssRuleFor("dot is-blocked")).toBe(true);
+    expect(hasCssRuleFor("dot is-wait")).toBe(true);
+    const blockedRule = /\.dot\.is-blocked\{([^}]*)\}/.exec(STYLES)![1];
+    const waitRule = /\.dot\.is-wait\{([^}]*)\}/.exec(STYLES)![1];
+    expect(blockedRule).toContain("dashed");
+    expect(waitRule).toContain("solid");
+    expect(blockedRule).not.toBe(waitRule);
   });
 
   test("constitution shows founding artifacts with citation counts", () => {
@@ -196,7 +219,10 @@ describe("project screen", () => {
   // five-column grid (was three stats in a four-column grid, leaving one dark cell).
   test("stat strip has no empty grid cells — five stats, five columns", () => {
     expect(html).toContain('style="grid-template-columns:repeat(5,1fr)"');
-    const statCount = (html.match(/class="stat"/g) || []).length;
+    // Matches both a plain `class="stat"` cell and an actionable `class="stat stat--actionable"` one
+    // (amendment 1 §3 F13: the gate stat now tints when actionable, same as the Studio page's own) —
+    // a literal `class="stat"` match alone would undercount once any cell carries the modifier.
+    const statCount = (html.match(/<div class="stat( stat--actionable)?">/g) || []).length;
     expect(statCount).toBe(5);
     expect(html).toContain("Median review rounds");
     expect(html).toContain("Spend");
