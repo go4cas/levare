@@ -84,8 +84,8 @@
     /* ---------- gate cards ---------- */
     /* The board is a stateless projection (PRD invariant 2): a gate verb POSTs to the real route,
        flips frontmatter server-side and commits as the Conductor; the SSE listener below reloads on
-       the fs.watch-driven re-render trigger. The local resolveGate() call is purely the felt, quiet
-       motion the design brief asks for while that round-trip is in flight. */
+       the fs.watch-driven re-render trigger. The local pending/resolved treatment below is purely the
+       felt, quiet motion the design brief asks for while that round-trip is in flight. */
     function postGate(card, verb, note) {
       var project = card.getAttribute('data-gate-project');
       var target = card.getAttribute('data-gate-target');
@@ -94,13 +94,117 @@
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ note: note || undefined })
-      // NOTES MERGE-2: the response body is now read (`{ ok, error }`, board/serve.ts's own gate
-      // route shape) — a merge gate's `approve` is EXECUTION (a real git merge, and where declared a
-      // push), the one verb in this whole table that can still fail after the Conductor's click
-      // resolved server-side successfully-dispatched; every other verb resolves synchronously with no
-      // further failure mode worth surfacing, so this parse is otherwise unused.
+      // The response body (`{ ok, error }`, board/serve.ts's own gate route shape) is read for EVERY
+      // verb now, not just a merge gate's own execution-on-approval (amendment 1 §2 R5 — "failure
+      // keeps state and offers retry" applies to every gate verb, not one special case).
       }).then(function (res) { return res.json().catch(function () { return null; }); })
         .catch(function (err) { console.error('gate verb failed', err); return null; });
+    }
+
+    // amendment 1 §2 R4 (tier 1 — button, 0-1s, decision writes): pressed state is instant; the
+    // spinner only appears after a short delay so a fast op (an ordinary approve/reject, a plain
+    // frontmatter commit) never flashes one. `start`/`request`/`retry`/`recheck`/a merge gate's own
+    // `approve` dispatch a real member or repository-scale operation the daemon itself tracks as
+    // `dispatching` (NOTES F10 defect 3) — those are never "fast", so their loading state has always
+    // shown instantly and keeps doing so; everything else is new to this delayed treatment.
+    var SPINNER_DELAY_MS = 350;
+
+    function isDispatchVerb(realVerb, isMergeGate) {
+      return realVerb === 'start' || realVerb === 'request' || realVerb === 'retry' || realVerb === 'recheck' || (isMergeGate && realVerb === 'approve');
+    }
+
+    // The resolved-line label a FAST verb collapses to on success (resolveGate, below) — dispatch
+    // verbs never call resolveGate locally; their card is replaced wholesale by the next SSE-driven
+    // re-render once the daemon's own production finishes.
+    var RESOLVED_LABEL = {
+      approve: ['approved', 'is-ok'],
+      reject: ['rejected', 'is-danger'],
+      notyet: ['not yet', 'is-neutral'],
+      skip: ['skipped', 'is-neutral'],
+      abandon: ['abandoned', 'is-danger'],
+      rescope: ['re-scoped', 'is-neutral']
+    };
+    // The progressive label a fast verb's spinner reads once shown (SPINNER_DELAY_MS in) — dispatch
+    // verbs keep the existing generic "dispatching…" regardless of which one fired.
+    var FAST_PENDING_LABEL = {
+      approve: 'approving…',
+      reject: 'rejecting…',
+      notyet: 'noting…',
+      skip: 'skipping…',
+      abandon: 'abandoning…',
+      rescope: 're-scoping…'
+    };
+
+    function pendingEl(label) {
+      var pending = document.createElement('span');
+      pending.classList.add('pending');
+      var dots = document.createElement('span');
+      dots.classList.add('turn--pending');
+      var dotsInner = document.createElement('span');
+      dotsInner.classList.add('turn__dots');
+      for (var i = 0; i < 3; i++) dotsInner.appendChild(document.createElement('span'));
+      dots.appendChild(dotsInner);
+      var labelEl = document.createElement('span');
+      labelEl.classList.add('pending__label');
+      labelEl.textContent = label;
+      pending.appendChild(dots);
+      pending.appendChild(labelEl);
+      return pending;
+    }
+
+    /* Tier-1 button state (R4) AND no-double-submit (R5): the WHOLE verb group disables the instant
+       any one of its buttons is clicked — never just the clicked button — and the clicked one is
+       marked pressed immediately. The dots+label pending treatment only replaces the row's content
+       once `delayMs` elapses and the action is still in flight; a response that lands before then
+       never shows a spinner at all. Mirrors render/components.ts#pendingState's own shape (only the
+       verbs row's content changes; title/producer/context stay exactly where they were) so a locally
+       shown pending state and the server-rendered `dispatchingHtml` one read identically. */
+    function beginPending(card, verbsRow, btn, delayMs, label) {
+      var buttons = verbsRow.querySelectorAll('button');
+      buttons.forEach(function (b) { b.disabled = true; });
+      btn.classList.add('is-pressed');
+      var note = card._note ? card._note.querySelector('.gate__note') : null;
+      if (note) note.disabled = true;
+
+      var state = { settled: false, timer: null };
+      function showSpinner() {
+        if (state.settled) return;
+        verbsRow.classList.add('gate__verbs--pending');
+        verbsRow.textContent = '';
+        verbsRow.appendChild(pendingEl(label));
+      }
+      if (delayMs <= 0) showSpinner();
+      else state.timer = setTimeout(showSpinner, delayMs);
+      state.cancel = function () {
+        state.settled = true;
+        if (state.timer) { clearTimeout(state.timer); state.timer = null; }
+      };
+      return state;
+    }
+
+    /* amendment 1 §2 R5 — "failure keeps state and offers retry": a failed write never silently
+       resets the card. The verb returns to idle (a fresh button, never the old disabled ones — this
+       IS the idle state, not a resurrection of stale DOM) and a danger-toned notice states what
+       happened, exactly the treatment render/components.ts#callout gives every other danger message
+       on the board. `retryVerb`/`retryLabel` let a merge gate's own `approve` — an EXECUTION that can
+       fail for reasons a bare re-click can't fix — offer Re-check instead of repeating the identical
+       doomed attempt; every other verb retries itself. */
+    function settleFailure(card, verbsRow, message, retryVerb, retryLabel) {
+      card.classList.remove('is-dispatching');
+      verbsRow.classList.remove('gate__verbs--pending');
+      var notice = document.createElement('div');
+      notice.className = 'notice notice--danger';
+      var text = document.createElement('span');
+      text.className = 'notice__text';
+      text.textContent = message || 'the request failed';
+      notice.appendChild(text);
+      verbsRow.parentNode.insertBefore(notice, verbsRow);
+      verbsRow.textContent = '';
+      var retry = document.createElement('button');
+      retry.className = 'verb is-primary';
+      retry.setAttribute('data-verb', retryVerb);
+      retry.textContent = retryLabel;
+      verbsRow.appendChild(retry);
     }
 
     document.addEventListener('click', function (e) {
@@ -111,113 +215,47 @@
 
       if (verb === 'request' || verb === 'rescope') { openNote(card, verb); return; }
       if (verb === 'cancel') { closeNote(card); return; }
+      if (card._inflight) return; // R5: one in-flight action per gate card — a second click is a no-op.
 
-      var map = {
-        approve: ['approved', 'is-ok'],
-        reject:  ['rejected', 'is-danger'],
-        notyet:  ['not yet', 'is-neutral'],
-        send:    ['changes sent', 'is-neutral'],
-        skip:    ['skipped', 'is-neutral'],
-        abandon: ['abandoned', 'is-danger']
-      };
       var realVerb = verb === 'send' ? (card._pendingVerb || 'request') : verb;
       var note = verb === 'send' && card._note ? card._note.querySelector('.gate__note').value : undefined;
-      // NOTES MERGE-2: a merge gate's own `approve` is EXECUTION at repository scale (a real merge,
-      // and where declared a push) — never the instant, always-true "approved" the generic map below
-      // claims for every other kind. It gets the same quiet dispatching treatment as start/request/
-      // retry instead, and `recheck` (re-running the trial merge; not a member dispatch, but still a
-      // git/worktree round-trip worth acknowledging locally) joins it — neither verb existed in this
-      // table before this goal.
+      // `btn.closest('.gate__verbs')` finds whichever row is actually visible — the original approve/
+      // request/reject row, or (once `request`/`rescope` opened a note) its Send/Cancel replacement.
+      var verbsRow = btn.closest('.gate__verbs');
       var isMergeGate = card.classList.contains('gate--merge');
       var isMergeApprove = isMergeGate && realVerb === 'approve';
-      var promise = postGate(card, realVerb, note);
-      // `start`, `send` (re-invokes the producer), and `retry` (NOTES F19 — re-invokes the same
-      // member, costing money again) all dispatch a real member call that can take seconds to
-      // minutes — an immediate resolved-line would be a premature claim of completion. Show the quiet
-      // pending state instead (NOTES F10 defect 3) and let the SSE-driven reload replace it with the
-      // server's real post-production render; every other verb resolves synchronously server-side, so
-      // its immediate optimistic label stays accurate.
-      if (realVerb === 'start' || realVerb === 'request' || realVerb === 'retry' || realVerb === 'recheck' || isMergeApprove) {
-        markDispatching(card);
-        // M5's rollback on a push/merge failure is byte-perfect — nothing is written to disk, so the
-        // next server render (or SSE reload) would show this card completely unchanged, with no trace
-        // of the failed attempt. The established blocked-unit treatment (a named reason, danger-toned)
-        // is surfaced here instead, client-side and session-only, so the Conductor sees WHY the click
-        // didn't land rather than a card that silently reverted with no explanation.
-        if (isMergeApprove) {
-          promise.then(function (result) {
-            if (result && result.ok === false) showMergeExecutionFailure(card, result.error);
-          });
-        }
-        return;
+      var dispatchVerb = isDispatchVerb(realVerb, isMergeGate);
+      var retryVerb = isMergeApprove ? 'recheck' : realVerb;
+      var retryLabel = isMergeApprove ? 'Re-check' : 'Retry';
+
+      card._inflight = true;
+      if (dispatchVerb) {
+        card.classList.add('is-dispatching');
+        // Only the start-gate badge's text ever reads "dispatching" server-side (render.ts#gateCardHtml:
+        // the default/artifact-blocked badges never change on dispatch, only their verbs row does).
+        var badge = card.querySelector('.gate__badge.is-start');
+        if (badge) badge.textContent = 'dispatching';
       }
-      var m = map[verb];
-      if (!m) return;
-      resolveGate(card, m[0], m[1]);
+      var label = dispatchVerb ? 'dispatching…' : (FAST_PENDING_LABEL[realVerb] || 'working…');
+      var pending = beginPending(card, verbsRow, btn, dispatchVerb ? 0 : SPINNER_DELAY_MS, label);
+
+      postGate(card, realVerb, note).then(function (result) {
+        card._inflight = false;
+        pending.cancel();
+        var failed = !result || result.ok === false;
+        if (failed) {
+          var message = (result && result.error) || 'could not reach the board — check your connection and try again.';
+          settleFailure(card, verbsRow, message, retryVerb, retryLabel);
+          return;
+        }
+        // A dispatch verb's production continues asynchronously server-side; the SSE reload below
+        // replaces this card with the daemon's real post-production render once it lands — an
+        // immediate resolved-line here would be a premature claim of completion.
+        if (dispatchVerb) return;
+        var m = RESOLVED_LABEL[realVerb];
+        resolveGate(card, m ? m[0] : realVerb, m ? m[1] : 'is-neutral');
+      });
     });
-
-    // NOTES MERGE-2: the one place a gate verb's FAILURE is shown at all — see the comment above this
-    // function's one call site. `.notice.notice--danger` mirrors render/components.ts#callout's own
-    // markup (minus its svg icon, an ephemeral client notice never needing exact byte parity with a
-    // server-rendered one) so the severity reads identically to every other danger callout on the board.
-    function showMergeExecutionFailure(card, message) {
-      var verbs = card.querySelector('.gate__verbs');
-      if (!verbs) return;
-      card.classList.remove('is-dispatching');
-      verbs.classList.remove('gate__verbs--pending');
-      var notice = document.createElement('div');
-      notice.className = 'notice notice--danger';
-      var text = document.createElement('span');
-      text.className = 'notice__text';
-      text.textContent = message || 'merge execution failed';
-      notice.appendChild(text);
-      verbs.parentNode.insertBefore(notice, verbs);
-      verbs.textContent = '';
-      var retry = document.createElement('button');
-      retry.className = 'verb is-primary';
-      retry.setAttribute('data-verb', 'recheck');
-      retry.textContent = 'Re-check';
-      verbs.appendChild(retry);
-    }
-
-    /* Local, in-place pending feedback (NOTES UI6 — the goal's one intended behaviour change):
-       a Start/Request-changes/Retry click used to wipe the WHOLE card's innerHTML with a bare
-       "dispatching…" line, losing the title/producer/context underneath it until the next SSE
-       reload — the anti-pattern the Conductor flagged. Mirrors render.ts#dispatchingHtml's own
-       server-rendered dispatching state exactly (components.ts#pendingState's shape): only the
-       verbs row and the badge text change; everything else on the card stays exactly where it was. */
-    function markDispatching(card) {
-      card.classList.add('is-dispatching');
-      // Only the start-gate badge's text ever reads "dispatching" server-side (render.ts#gateCardHtml:
-      // the default/artifact-blocked badges — "on you"/"exhausted"/"blocked" — never change on
-      // dispatch, only their verbs row does) — match that exactly rather than overwriting a badge
-      // whose text the server would never have changed either.
-      var badge = card.querySelector('.gate__badge.is-start');
-      if (badge) badge.textContent = 'dispatching';
-      // `request`/`rescope` open a note (openNote, below) that appends a SECOND `.gate__verbs` (its
-      // own Send/Cancel row) alongside the original, now-hidden one — target whichever is the one
-      // actually on screen, via `card._note` when a note is open.
-      var verbs = card._note ? card._note.querySelector('.gate__verbs') : card.querySelector('.gate__verbs');
-      if (!verbs) return;
-      var note = card._note ? card._note.querySelector('.gate__note') : null;
-      if (note) note.disabled = true;
-      verbs.classList.add('gate__verbs--pending');
-      verbs.textContent = '';
-      var pending = document.createElement('span');
-      pending.classList.add('pending');
-      var dots = document.createElement('span');
-      dots.classList.add('turn--pending');
-      var dotsInner = document.createElement('span');
-      dotsInner.classList.add('turn__dots');
-      for (var i = 0; i < 3; i++) dotsInner.appendChild(document.createElement('span'));
-      dots.appendChild(dotsInner);
-      var label = document.createElement('span');
-      label.classList.add('pending__label');
-      label.textContent = 'dispatching…';
-      pending.appendChild(dots);
-      pending.appendChild(label);
-      verbs.appendChild(pending);
-    }
 
     function openNote(card, verb) {
       card._pendingVerb = verb;

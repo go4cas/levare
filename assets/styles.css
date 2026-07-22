@@ -221,6 +221,11 @@ button{ font-family:inherit; }
 .verb{ background:transparent; color:var(--fg-mute); border:1px solid var(--border-strong); padding:7px 14px;
   border-radius:7px; font-size:12.5px; font-weight:500; cursor:pointer; transition:.12s; }
 .verb:hover{ color:var(--fg-dim); border-color:var(--fg-dim); }
+/* amendment 1 §2 R4/R5: tier-1 button state — the instant press feedback (before the spinner, which
+   only shows after a short delay so a fast op never flashes one) and the whole-group disabled state
+   double-submit prevention puts every button in the row into. */
+.verb:disabled{ opacity:.55; cursor:not-allowed; }
+.verb.is-pressed{ opacity:.8; }
 .verb.is-primary{ background:var(--fg); color:var(--bg); border-color:var(--fg); }
 .verb.is-primary:hover{ opacity:.88; color:var(--bg); }
 .verb.is-secondary{ color:var(--fg-dim); }

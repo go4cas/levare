@@ -124,6 +124,13 @@ class FakeElement extends FakeEventTarget {
     this.children.push(c);
     return c;
   }
+  insertBefore(c: FakeElement, ref: FakeElement | null): FakeElement {
+    c.parent = this;
+    const i = ref ? this.children.indexOf(ref) : -1;
+    if (i >= 0) this.children.splice(i, 0, c);
+    else this.children.push(c);
+    return c;
+  }
   remove(): void {
     if (!this.parent) return;
     const i = this.parent.children.indexOf(this);
@@ -381,6 +388,53 @@ function setup() {
   return { doc, fetchCalls };
 }
 
+// ---------------------------------------------------------------------------
+// A richer harness for the amendment-1 §2 R4/R5 suite below: a real (fake-timer-controlled) `fetch`
+// so success/failure resolution can be exercised, and a `setTimeout` that records scheduled callbacks
+// instead of either dropping them (the harness above) or firing them immediately — `flush()` runs the
+// oldest still-pending one, mirroring exactly one real timer tick (the tier-1 spinner-delay timer).
+// ---------------------------------------------------------------------------
+function setupWithControls(fetchImpl?: (url: string) => Promise<any>) {
+  const doc = new FakeDocument();
+  const fetchCalls: Array<{ url: string }> = [];
+  const timers: Array<{ fn: (() => void) | null }> = [];
+  const context = {
+    document: doc,
+    window: { matchMedia: undefined, EventSource: undefined },
+    location: { reload: () => {} },
+    fetch: (url: string) => {
+      fetchCalls.push({ url });
+      return fetchImpl ? fetchImpl(url) : new Promise(() => {});
+    },
+    setTimeout: (fn: () => void) => {
+      timers.push({ fn });
+      return timers.length; // 1-based id, matching the `clearTimeout` lookup below
+    },
+    clearTimeout: (id: number) => {
+      const t = timers[id - 1];
+      if (t) t.fn = null;
+    },
+    console,
+  };
+  vm.createContext(context);
+  vm.runInContext(APP_JS_SOURCE, context);
+  (doc as any).dispatchEvent({ type: "DOMContentLoaded" });
+  return {
+    doc,
+    fetchCalls,
+    flush() {
+      const t = timers.shift();
+      if (t && t.fn) t.fn();
+    },
+  };
+}
+
+// A real macrotask boundary — drains every microtask a resolved-promise `.then()` chain queues, the
+// same "never a fixed number of Promise.resolve() ticks" idiom board-merge-gate-card.test.ts uses.
+function drain(): Promise<void> {
+  return new Promise((r) => setTimeout(r, 0));
+}
+
 function click(doc: FakeDocument, target: FakeElement) {
   doc.dispatchEvent({ type: "click", target, preventDefault() {} });
 }
@@ -450,5 +504,101 @@ describe("gate-card pending feedback is local, not a whole-card replacement (NOT
     // The submitted note text is left in place, frozen (disabled), not wiped.
     expect(note.value).toBe("please tighten the payments section");
     expect(note.disabled).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Amendment 1 §2 R4 (tier-1 button state) / R5 (no double-submit; failure keeps state and offers
+// retry) — cluster 2's own interaction-safety additions, built onto the existing `dispatching`
+// concept and the existing gate-verb click pipeline exercised above, not a parallel mechanism.
+// ---------------------------------------------------------------------------
+describe("gate-card verb interaction safety (amendment 1 §2 R4/R5)", () => {
+  test("clicking Approve disables every verb in the group instantly (no double-submit)", () => {
+    const { doc, fetchCalls } = setupWithControls();
+    const card = buildDefaultGateCard(doc);
+    const approveBtn = card.querySelector('[data-verb="approve"]')!;
+
+    click(doc, approveBtn);
+
+    expect(fetchCalls.length).toBe(1);
+    expect(approveBtn.classList.contains("is-pressed")).toBe(true);
+    // Every button in the row — not just the clicked one — is disabled the instant a verb fires.
+    card.querySelectorAll(".gate__verbs button").forEach((b) => expect(b.disabled).toBe(true));
+
+    // A fast op (a plain approve) never flashes a spinner instantly — R4's whole point.
+    expect(card.querySelector(".pending")).toBeNull();
+  });
+
+  test("a second verb click on the same card while one is in flight is ignored", () => {
+    const { doc, fetchCalls } = setupWithControls();
+    const card = buildDefaultGateCard(doc);
+
+    click(doc, card.querySelector('[data-verb="approve"]')!);
+    // The buttons are disabled synchronously, but even a click event the disabled-button semantics
+    // didn't stop (this harness has no native `disabled` click-suppression) is still refused —
+    // `card._inflight` is the actual guard, not reliance on the browser's own disabled-button behavior.
+    click(doc, card.querySelector('[data-verb="reject"]')!);
+
+    expect(fetchCalls.length).toBe(1);
+  });
+
+  test("Approve's spinner only appears after the delay, not instantly — a fast resolution never shows one", () => {
+    const { doc, flush } = setupWithControls();
+    const card = buildDefaultGateCard(doc);
+    click(doc, card.querySelector('[data-verb="approve"]')!);
+
+    expect(card.querySelector(".pending")).toBeNull();
+    flush(); // fires the spinner-delay timer
+    const verbs = card.querySelector(".gate__verbs")!;
+    expect(verbs.classList.contains("gate__verbs--pending")).toBe(true);
+    expect(verbs.querySelector(".pending__label")!.textContent).toContain("approving");
+  });
+
+  test("a successful Approve collapses the card to the resolved line", async () => {
+    const { doc } = setupWithControls(() => Promise.resolve({ json: () => Promise.resolve({ ok: true }) }));
+    const card = buildDefaultGateCard(doc);
+    click(doc, card.querySelector('[data-verb="approve"]')!);
+    await drain();
+
+    expect(card.classList.contains("is-resolved")).toBe(true);
+    expect(card.textContent).toContain("approved");
+  });
+
+  test("a failed Approve keeps the card's state and offers a Retry affordance — never a silent reset", async () => {
+    const { doc } = setupWithControls(() =>
+      Promise.resolve({ json: () => Promise.resolve({ ok: false, error: "artifact 'spec-checkout-flow-v1' is not at an open gate (status: approved)" }) }),
+    );
+    const card = buildDefaultGateCard(doc);
+    click(doc, card.querySelector('[data-verb="approve"]')!);
+    await drain();
+
+    // Never a silent reset: the card is not resolved, and the failure is stated, not swallowed.
+    expect(card.classList.contains("is-resolved")).toBe(false);
+    const notice = card.querySelector(".notice--danger")!;
+    expect(notice).not.toBeNull();
+    expect(notice.textContent).toContain("not at an open gate");
+    // The retry affordance re-fires the SAME decision — a plain approve, not a different verb.
+    const retryBtn = card.querySelector('[data-verb="approve"]')!;
+    expect(retryBtn).not.toBeNull();
+    expect(retryBtn.disabled).toBe(false);
+  });
+
+  test("a failed Start (a dispatch verb) keeps the dispatching card honest and offers Retry, rather than sitting stuck forever", async () => {
+    const { doc } = setupWithControls(() =>
+      Promise.resolve({ json: () => Promise.resolve({ ok: false, error: "unit 'loyalty-flow' has nothing left for team 'kestrel' to produce" }) }),
+    );
+    const card = buildStartGateCard(doc);
+    click(doc, card.querySelector('[data-verb="start"]')!);
+    expect(card.classList.contains("is-dispatching")).toBe(true);
+    await drain();
+
+    // The dispatching state is cleared honestly — the failure is shown, not left as a stuck spinner
+    // with no trace of what went wrong (the pre-cluster-2 gap for every dispatch verb but a merge's
+    // own `approve`).
+    expect(card.classList.contains("is-dispatching")).toBe(false);
+    const notice = card.querySelector(".notice--danger")!;
+    expect(notice).not.toBeNull();
+    expect(notice.textContent).toContain("nothing left for team");
+    expect(card.querySelector('[data-verb="start"]')).not.toBeNull();
   });
 });
