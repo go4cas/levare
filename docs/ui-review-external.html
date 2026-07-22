@@ -1,0 +1,1089 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>levare — UI consistency recommendations</title>
+<style>
+:root{
+  --paper:#FAFAF7; --surface:#FFFFFF; --line:#E7E4DC; --line-strong:#D8D4C9;
+  --ink:#1B1A17; --body:#45423B; --muted:#6E6A5F; --faint:#9B9588;
+  --ok:#2E6B4E; --ok-bg:#EDF4EF; --ok-line:#C9DCD1;
+  --warn:#B45309; --warn-bg:#FAF0E2; --warn-line:#EAD5B8;
+  --danger:#B3402A; --danger-bg:#F9ECE8; --danger-line:#EAC9BF;
+  --info:#3D5A80; --info-bg:#EDF1F6; --info-line:#CBD6E2;
+  --chip-bg:#F4F2ED;
+  --dur-press:100ms; --dur-swap:200ms; --dur-move:240ms;
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{background:var(--paper);color:var(--body);font:14px/1.55 var(--sans)}
+.wrap{max-width:1160px;margin:0 auto;padding:0 28px 80px}
+
+/* ---------- document scaffolding ---------- */
+.doc-head{padding:40px 0 22px;border-bottom:1px solid var(--line)}
+.doc-kicker{font:600 10px var(--sans);letter-spacing:.16em;text-transform:uppercase;color:var(--faint);margin-bottom:10px}
+.doc-title{font:400 34px/1.15 var(--serif);color:var(--ink)}
+.doc-sub{margin-top:10px;max-width:760px;font-size:13px;color:var(--muted)}
+.doc-nav{position:sticky;top:0;z-index:20;background:rgba(250,250,247,.94);backdrop-filter:blur(6px);border-bottom:1px solid var(--line);margin:0 -28px;padding:0 28px}
+.doc-nav a{display:inline-block;padding:11px 14px 10px;font-size:12px;color:var(--muted);text-decoration:none;border-bottom:2px solid transparent}
+.doc-nav a:hover{color:var(--ink);border-bottom-color:var(--ink)}
+.h-sec{display:flex;align-items:baseline;gap:12px;margin:44px 0 4px;flex-wrap:wrap}
+.h-sec .n{font:11px var(--mono);color:var(--faint)}
+.h-sec b{font:400 24px var(--serif);color:var(--ink);font-weight:400}
+.h-sec p{width:100%;font-size:12.5px;color:var(--muted)}
+.h-sub{font:600 10.5px var(--sans);letter-spacing:.13em;text-transform:uppercase;color:var(--muted);margin:28px 0 10px}
+.note{font-size:12px;color:var(--muted);margin:6px 0 14px;max-width:760px}
+.demo{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:20px}
+.cap{font-size:11.5px;color:var(--muted);margin-top:10px}
+.cap b{color:var(--body)}
+.row-flex{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+
+/* ---------- tokens ---------- */
+.swatches{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.sw{background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.sw i{display:block;height:44px}
+.sw div{padding:8px 10px;font:10.5px var(--mono);color:var(--body)}
+.sw div span{display:block;color:var(--faint);font-size:10px}
+.type-spec{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:10px}
+.type-spec .rule{font:10.5px var(--mono);color:var(--muted);margin-top:8px}
+.t-serif{font:400 24px var(--serif);color:var(--ink)}
+.t-sans{font:400 14px var(--sans);color:var(--body)}
+.t-mono{font:500 13px var(--mono);color:var(--ink)}
+
+/* ---------- components ---------- */
+.btn{font:500 12px var(--sans);padding:7px 14px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface);color:var(--ink);cursor:pointer;display:inline-flex;align-items:center;gap:7px}
+.btn-primary{background:var(--ink);border-color:var(--ink);color:#fff}
+.btn-danger{color:var(--danger);border-color:var(--danger-line)}
+.btn-danger:hover{background:var(--danger-bg)}
+.btn[disabled]{opacity:.55;cursor:default;pointer-events:none}
+.btn:active{transform:translateY(1px)}
+.chip{display:inline-flex;align-items:center;gap:5px;font:11px var(--mono);color:var(--body);background:var(--chip-bg);border:1px solid var(--line);padding:2px 9px;border-radius:999px;white-space:nowrap}
+.chip-env{background:transparent;border-style:dashed;color:var(--muted)}
+.kindtag{display:inline-flex;align-items:center;font:600 9.5px var(--sans);letter-spacing:.13em;text-transform:uppercase;color:var(--muted);border:1px solid var(--line);background:var(--paper);padding:3px 8px;border-radius:999px;white-space:nowrap}
+.status{display:inline-flex;align-items:center;gap:6px;font:600 9.5px var(--sans);letter-spacing:.1em;text-transform:uppercase;padding:3px 10px;border-radius:999px;border:1px solid;white-space:nowrap;transition:background var(--dur-swap),color var(--dur-swap),border-color var(--dur-swap)}
+.status::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+.st-ok{color:var(--ok);background:var(--ok-bg);border-color:var(--ok-line)}
+.st-warn{color:var(--warn);background:var(--warn-bg);border-color:var(--warn-line)}
+.st-danger{color:var(--danger);background:var(--danger-bg);border-color:var(--danger-line)}
+.st-neutral{color:var(--muted);background:var(--chip-bg);border-color:var(--line)}
+.st-info{color:var(--info);background:var(--info-bg);border-color:var(--info-line)}
+
+/* loading primitives */
+.spin{width:11px;height:11px;flex:none;border-radius:50%;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;animation:rot .7s linear infinite}
+.btn:not(.btn-primary):not(.btn-danger) .spin{border-color:rgba(27,26,23,.2);border-top-color:var(--ink)}
+.btn-danger .spin{border-color:rgba(179,64,42,.25);border-top-color:var(--danger)}
+@keyframes rot{to{transform:rotate(360deg)}}
+.status.st-live::before{animation:pulse 1.6s ease-out infinite}
+.live-dot{width:8px;height:8px;flex:none;border-radius:50%;background:var(--info);animation:pulse 1.6s ease-out infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(61,90,128,.45)}70%{box-shadow:0 0 0 7px rgba(61,90,128,0)}100%{box-shadow:0 0 0 0 rgba(61,90,128,0)}}
+.skel{position:relative;overflow:hidden;background:var(--chip-bg);border-radius:6px}
+.skel::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.8),transparent);animation:sheen 1.4s infinite}
+@keyframes sheen{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+.cursor{display:inline-block;width:7px;height:11px;background:var(--ink);vertical-align:-1px;animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.live-strip{display:flex;align-items:center;gap:10px;background:var(--info-bg);border:1px solid var(--info-line);border-radius:10px;padding:8px 12px;font:11px var(--mono);color:var(--info)}
+.logbox{font:11px/1.8 var(--mono);color:var(--body);background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:8px;max-height:160px;overflow:auto}
+#toasts{position:fixed;right:20px;bottom:20px;display:flex;flex-direction:column;gap:8px;z-index:60}
+.toast{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--ink);border-radius:10px;padding:9px 14px;font-size:12px;color:var(--ink);box-shadow:0 8px 24px rgba(27,26,23,.12);transition:opacity .3s;max-width:360px}
+.toast.t-ok{border-left-color:var(--ok)}
+.toast.t-info{border-left-color:var(--info)}
+.toast.t-danger{border-left-color:var(--danger)}
+.toast.out{opacity:0}
+.toast .retry{margin-left:10px;font:600 11px var(--sans);color:var(--danger);text-decoration:underline;cursor:pointer}
+@media (prefers-reduced-motion:reduce){.spin,.status.st-live::before,.live-dot,.skel::after,.cursor{animation:none}}
+
+.stats{display:grid;grid-template-columns:repeat(5,1fr);background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.stat{padding:14px 18px;border-left:1px solid var(--line)}
+.stat:first-child{border-left:0}
+.stat b{display:block;font:500 21px var(--sans);color:var(--ink);letter-spacing:-.01em;transition:color var(--dur-swap)}
+.stat span{font-size:11px;color:var(--muted)}
+.stat.alert b{color:var(--warn)}
+
+.rows{background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.ritem{display:flex;align-items:center;gap:10px;padding:9px 14px;border-top:1px solid var(--line);font:12px var(--mono)}
+.ritem:first-child{border-top:0}
+.ritem .nm{color:var(--ink)}
+.ritem .rt{margin-left:auto}
+.ritem .word{font:11px var(--sans);color:var(--muted)}
+.ritem.dead .nm{color:var(--faint);text-decoration:line-through}
+.ritem.dead .word{color:var(--faint)}
+.mk{width:9px;height:9px;flex:none}
+.mk-dot{border-radius:50%;border:1.5px solid var(--line-strong)}
+.mk-fill-ok{border-radius:50%;background:var(--ok)}
+.mk-dia-warn{transform:rotate(45deg);background:var(--warn);border-radius:2px}
+
+.label{font:600 10px var(--sans);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
+.kv{display:flex;gap:14px;align-items:baseline;font-size:12px;padding:3px 0}
+.kv .k{width:74px;flex:none;font:11px var(--mono);color:var(--faint)}
+.kv .v{color:var(--body)}
+.empty{border:1.5px dashed var(--line-strong);border-radius:12px;padding:30px 20px;text-align:center;color:var(--muted)}
+.empty .t{font:400 15px var(--serif);color:var(--body);margin-bottom:3px}
+.empty .s{font-size:12px}
+
+/* ---------- card standard ---------- */
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;display:flex;flex-direction:column;min-width:0}
+.card-head{display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid var(--line)}
+.avatar{width:26px;height:26px;flex:none;border-radius:50%;background:var(--chip-bg);border:1px solid var(--line-strong);color:var(--body);font:600 10px var(--mono);display:flex;align-items:center;justify-content:center}
+.card-title{font:600 13px var(--mono);color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card-head .kindtag{margin-left:auto}
+.card-body{padding:12px 16px;flex:1}
+.card-body .sec{margin-bottom:12px}
+.card-body .sec:last-child{margin-bottom:0}
+.card-foot{display:flex;align-items:center;gap:8px;padding:10px 16px;border-top:1px solid var(--line)}
+.meta{font:10.5px var(--mono);color:var(--muted)}
+.card-foot .actions{margin-left:auto;display:flex;gap:8px}
+.prose{font-size:12.5px;color:var(--body)}
+.anatomy-wrap{position:relative}
+.pin{position:absolute;width:20px;height:20px;border-radius:50%;background:var(--ink);color:#fff;font:600 10.5px var(--sans);display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 3px var(--paper)}
+.legend{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:6px 18px;margin-top:14px}
+.legend div{font-size:12px;color:var(--muted)}
+.legend b{display:inline-flex;width:18px;height:18px;border-radius:50%;background:var(--ink);color:#fff;font:600 10px var(--sans);align-items:center;justify-content:center;margin-right:8px}
+
+/* gate card (unified) */
+.gate{background:var(--surface);border:1px solid var(--warn-line);border-left:3px solid var(--warn);border-radius:12px;transition:opacity var(--dur-move)}
+.gate-title{font:600 13px var(--mono);color:var(--ink)}
+.gate-sub{font:11px var(--mono);color:var(--muted)}
+
+/* frames / screens */
+.frame{border:1px solid var(--line-strong);border-radius:14px;overflow:hidden;background:var(--paper);margin-top:10px}
+.frame-bar{display:flex;align-items:center;gap:8px;padding:8px 14px;background:var(--surface);border-bottom:1px solid var(--line);font:10.5px var(--mono);color:var(--faint)}
+.frame-bar .dot3{display:flex;gap:5px}
+.frame-bar .dot3 i{width:9px;height:9px;border-radius:50%;background:var(--line-strong)}
+.shell{display:grid;grid-template-columns:206px 1fr;min-height:420px}
+.shell-orch{grid-template-columns:1fr 250px}
+.sb{background:var(--surface);border-right:1px solid var(--line);padding:14px 0;font-size:12.5px}
+.sb-logo{display:flex;align-items:baseline;gap:8px;padding:2px 16px 14px;border-bottom:1px solid var(--line);margin-bottom:8px}
+.sb-logo b{font:600 14px var(--serif);color:var(--ink)}
+.sb-logo span{font:10px var(--mono);color:var(--faint)}
+.nav-sec{font:600 9.5px var(--sans);letter-spacing:.14em;text-transform:uppercase;color:var(--faint);padding:12px 16px 5px}
+.nav-it{display:flex;align-items:center;gap:8px;padding:5px 16px;color:var(--body);border-left:2px solid transparent}
+.nav-it .c{margin-left:auto;font:10px var(--mono);color:var(--faint)}
+.nav-it.on{color:var(--ink);font-weight:600;border-left-color:var(--ink);background:linear-gradient(90deg,var(--chip-bg),transparent)}
+.nav-sub{padding:2px 16px 6px 30px;display:flex;gap:10px;font:10.5px var(--mono);color:var(--muted)}
+.nav-sub i{font-style:normal;display:inline-flex;align-items:center;gap:4px}
+.nav-sub i::before{content:"";width:6px;height:6px;border-radius:50%}
+.nav-sub i.up::before{background:var(--ok)}
+.nav-sub i.down::before{border:1.5px solid var(--line-strong)}
+.orch{background:var(--surface);border-left:1px solid var(--line);display:flex;flex-direction:column}
+.orch-head{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.orch-head b{font:600 12px var(--sans);color:var(--ink)}
+.orch-scope{margin-left:auto;font:10px var(--mono);color:var(--faint)}
+.orch-body{padding:12px 14px;flex:1;font-size:12px}
+.msg-row{margin-bottom:10px}
+.msg-role{display:flex;align-items:baseline;gap:8px;font:600 10px var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:4px}
+.msg-role .t{font:10px var(--mono);color:var(--faint);letter-spacing:0;text-transform:none}
+.msg{border-radius:10px;padding:8px 10px;color:var(--body);font-size:12px}
+.msg.me{background:var(--chip-bg)}
+.msg.them{background:var(--surface);border:1px solid var(--line)}
+.orch-input{border-top:1px solid var(--line);padding:10px 12px;font:11px var(--sans);color:var(--faint)}
+.crumbs{padding:18px 26px 0;font:11px var(--mono);color:var(--faint)}
+.crumbs b{color:var(--muted);font-weight:500}
+.pg-head{display:flex;align-items:center;gap:12px;padding:10px 26px 16px;flex-wrap:wrap}
+.pg-title{font:400 26px var(--serif);color:var(--ink)}
+.pg-count{font:11px var(--mono);color:var(--muted);border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:2px 9px}
+.pg-desc{width:100%;font-size:12.5px;color:var(--muted);max-width:640px}
+.pg-actions{margin-left:auto;display:flex;gap:8px}
+.content{padding:0 26px 26px;display:grid;gap:14px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(272px,1fr));gap:14px}
+.seclab{display:flex;align-items:center;gap:8px;font:600 10.5px var(--sans);letter-spacing:.13em;text-transform:uppercase;color:var(--muted)}
+.seclab .n{font:10px var(--mono);color:var(--faint);border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:1px 7px;text-transform:none;letter-spacing:0}
+
+/* topbar + popover (S5) */
+.topbar{display:flex;align-items:center;gap:10px;padding:10px 18px;background:var(--surface);border-bottom:1px solid var(--line)}
+.topbar .wm{font:600 13px var(--serif);color:var(--ink)}
+.topbar .ver{font:10px var(--mono);color:var(--faint)}
+.topbar .sp{flex:1}
+.ghost{font:500 11px var(--sans);color:var(--muted);background:transparent;border:0;padding:5px 8px;border-radius:6px;cursor:pointer}
+.ghost:hover{background:var(--chip-bg);color:var(--ink)}
+.pop-anchor{position:relative}
+.popover{position:absolute;top:calc(100% + 8px);right:0;width:300px;background:var(--surface);border:1px solid var(--line-strong);border-radius:12px;box-shadow:0 12px 32px rgba(27,26,23,.14);z-index:30}
+.popover::before{content:"";position:absolute;top:-5px;right:26px;width:9px;height:9px;background:var(--surface);border-left:1px solid var(--line-strong);border-top:1px solid var(--line-strong);transform:rotate(45deg)}
+.pop-head{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--line)}
+.pop-head b{font:600 12px var(--sans);color:var(--ink)}
+.pop-head .x{margin-left:auto}
+.pop-body{padding:11px 14px;font-size:12px}
+.pop-foot{padding:9px 14px;border-top:1px solid var(--line);font:11px var(--mono);color:var(--info)}
+
+/* modal (S6) */
+.scrim{background:rgba(27,26,23,.28);padding:34px 22px;display:flex;justify-content:center}
+.modal{width:100%;max-width:640px;background:var(--surface);border:1px solid var(--line-strong);border-radius:14px;box-shadow:0 18px 48px rgba(27,26,23,.2);overflow:hidden}
+.modal-head{display:flex;align-items:center;gap:10px;padding:13px 18px;border-bottom:1px solid var(--line)}
+.modal-title{font:600 13px var(--mono);color:var(--ink)}
+.modal-body{padding:14px 18px;display:grid;gap:12px}
+.zone{border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.zone-h{display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--paper);border-bottom:1px solid var(--line);font:600 9.5px var(--sans);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.zone-h .fm{margin-left:auto;font:10px var(--mono);color:var(--faint);letter-spacing:0;text-transform:none}
+.zone-b{padding:10px 12px;font:11.5px/1.7 var(--mono);color:var(--body);white-space:pre;overflow:auto}
+.modal-foot{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--line)}
+.modal-foot .actions{margin-left:auto;display:flex;gap:8px}
+.err-line{font:11px var(--mono);color:var(--danger);margin-top:6px}
+
+/* fix log */
+table{width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden;font-size:12px}
+th{font:600 10px var(--sans);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);text-align:left;padding:9px 14px;border-bottom:1px solid var(--line);background:var(--paper)}
+td{padding:9px 14px;border-top:1px solid var(--line);vertical-align:top;color:var(--body)}
+td.id{font:10.5px var(--mono);color:var(--faint);white-space:nowrap}
+td.tok{font:11px var(--mono);white-space:nowrap}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="doc-head">
+    <div class="doc-kicker">levare v0.0.1 · design review</div>
+    <div class="doc-title">UI consistency recommendations</div>
+    <div class="doc-sub">Single-file static mockup. Keeps the existing warm-paper aesthetic and serif/sans/mono type system; standardises tokens, chips, status, one card anatomy, page headers, sidebar IA, the topbar popover, edit-source modal and chat rail — and adds a three-tier loading & live-state system for work units (§05, with working demos — click the buttons).</div>
+  </div>
+
+  <div class="doc-nav">
+    <a href="#foundations">01 Foundations</a>
+    <a href="#components">02 Components</a>
+    <a href="#card-standard">03 Card standard</a>
+    <a href="#screens">04 Screens</a>
+    <a href="#loading">05 Loading & live states</a>
+    <a href="#fixlog">06 Fix log</a>
+  </div>
+
+  <!-- ================= 01 FOUNDATIONS ================= -->
+  <div class="h-sec" id="foundations"><span class="n">01</span><b>Foundations</b><p>Colour = status only. Identity (agents, teams) is neutral; hue is reserved for meaning, never decoration.</p></div>
+
+  <div class="h-sub">Colour tokens</div>
+  <div class="swatches">
+    <div class="sw"><i style="background:#FAFAF7"></i><div>--paper<span>#FAFAF7 · app bg</span></div></div>
+    <div class="sw"><i style="background:#FFFFFF;border-bottom:1px solid #eee"></i><div>--surface<span>#FFFFFF · cards</span></div></div>
+    <div class="sw"><i style="background:#E7E4DC"></i><div>--line<span>#E7E4DC · borders</span></div></div>
+    <div class="sw"><i style="background:#1B1A17"></i><div>--ink<span>#1B1A17 · titles, primary</span></div></div>
+    <div class="sw"><i style="background:#45423B"></i><div>--body<span>#45423B · text</span></div></div>
+    <div class="sw"><i style="background:#6E6A5F"></i><div>--muted<span>#6E6A5F · secondary (≥4.5:1)</span></div></div>
+    <div class="sw"><i style="background:#2E6B4E"></i><div>--ok<span>#2E6B4E · approved / online</span></div></div>
+    <div class="sw"><i style="background:#B45309"></i><div>--warn<span>#B45309 · needs you / at gate</span></div></div>
+    <div class="sw"><i style="background:#B3402A"></i><div>--danger<span>#B3402A · exhausted / destructive</span></div></div>
+    <div class="sw"><i style="background:#3D5A80"></i><div>--info<span>#3D5A80 · running / informational</span></div></div>
+  </div>
+  <div class="cap"><b>Removed:</b> per-agent avatar hues, team-colour left borders, the blue-tinted <span class="chip">auto</span> chip, and near-black chips (<span class="chip">native</span>, <span class="chip">mcp</span>) that collided with primary buttons. Near-black is now reserved for exactly one thing per view: the primary action.</div>
+
+  <div class="h-sub">Type roles — three families, fixed jobs</div>
+  <div class="type-spec"><div class="t-serif">Studio</div><div class="rule">serif · page titles and project names only · never inside cards or chips</div></div>
+  <div class="type-spec"><div class="t-sans">A todo list you drive from the terminal. Add a task, list what's open, mark one done.</div><div class="rule">sans · all UI text, labels, descriptions, buttons</div></div>
+  <div class="type-spec"><div class="t-mono">product-brief-add-command-v3.md</div><div class="rule">mono · identifiers: filenames, work-unit slugs, env vars, counts, token metadata</div></div>
+
+  <!-- ================= 02 COMPONENTS ================= -->
+  <div class="h-sec" id="components"><span class="n">02</span><b>Components</b><p>One component per idea. Every variant has a documented meaning.</p></div>
+
+  <div class="h-sub">Buttons — three variants, hierarchy enforced</div>
+  <div class="demo">
+    <div class="row-flex">
+      <button class="btn btn-primary">Approve anyway</button>
+      <button class="btn">Re-scope</button>
+      <button class="btn btn-danger">Reject</button>
+    </div>
+    <div class="cap"><b>Rule:</b> one primary (dark) per view. Destructive actions always get the danger variant — previously <i>Reject</i> was styled identically to the neutral <i>Re-scope</i>. Loading behaviour is specified in §05.</div>
+  </div>
+
+  <div class="h-sub">Chips — metadata only, never status</div>
+  <div class="demo">
+    <div class="row-flex">
+      <span class="chip">product-brief</span>
+      <span class="chip">claude-sonnet-5</span>
+      <span class="chip">pace · auto</span>
+      <span class="chip chip-env">GITHUB_TOKEN</span>
+      <span class="chip chip-env">LINEAR_API_KEY</span>
+      <span class="kindtag">agent</span>
+      <span class="kindtag">eval</span>
+    </div>
+    <div class="cap"><b>Rule:</b> filled neutral chip = metadata; dashed chip = env/secret reference; uppercase pill = kind tag (top-right of every registry card, no exceptions). Dark chips are gone.</div>
+  </div>
+
+  <div class="h-sub">Status — one taxonomy, one rendering, with legend</div>
+  <div class="demo">
+    <div class="row-flex">
+      <span class="status st-ok">approved</span>
+      <span class="status st-warn">at gate</span>
+      <span class="status st-danger">exhausted</span>
+      <span class="status st-info st-live">running</span>
+      <span class="status st-neutral">superseded</span>
+      <span class="status st-neutral">offline</span>
+    </div>
+    <div class="cap"><b>Rule:</b> dot + uppercase label, tinted background, always the same geometry. <b>exhausted</b> is red (blocks the loop); <b>at gate</b> is amber (waits on you); green means healthy / approved / online, everywhere. <b>running</b> carries the only animated dot in the system — a slow pulse meaning "live right now" (see §05).</div>
+  </div>
+
+  <div class="h-sub">Stat band — fixed label grammar, colour only when actionable</div>
+  <div class="stats">
+    <div class="stat alert"><b>1</b><span>Gates on you</span></div>
+    <div class="stat"><b>0</b><span>Members running</span></div>
+    <div class="stat"><b>0</b><span>Units shipped · 30d</span></div>
+    <div class="stat"><b>0d</b><span>Median gate response</span></div>
+    <div class="stat"><b>$0.04</b><span>Spend · 30d</span></div>
+  </div>
+  <div class="cap"><b>Rule:</b> one divided card, five slots, labels always "noun · window". A value is tinted amber <i>only</i> when it demands action.</div>
+
+  <div class="h-sub">Artifact rows — marker + word, never colour alone</div>
+  <div class="rows">
+    <div class="ritem dead"><span class="mk mk-dot"></span><span class="nm">product-brief-add-command-v1.md</span><span class="rt word">superseded</span></div>
+    <div class="ritem dead"><span class="mk mk-dot"></span><span class="nm">product-brief-add-command-v2.md</span><span class="rt word">superseded</span></div>
+    <div class="ritem"><span class="mk mk-fill-ok"></span><span class="nm">product-brief-add-command-v3.md</span><span class="rt"><span class="status st-ok">approved</span></span></div>
+    <div class="ritem"><span class="mk mk-dia-warn"></span><span class="nm">review-add-command-v3.md</span><span class="rt"><span class="status st-warn">at gate</span></span></div>
+  </div>
+  <div class="cap"><b>Rule:</b> marker shape encodes lineage (circle = brief, diamond = review), the badge encodes state in words. Superseded keeps strikethrough <i>and</i> says the word.</div>
+
+  <div class="h-sub">Empty state — a component, not a sentence</div>
+  <div class="demo" style="padding:14px">
+    <div class="empty"><div class="t">Nothing running right now</div><div class="s">Work units appear here while a team is executing a loop.</div></div>
+  </div>
+
+  <!-- ================= 03 CARD STANDARD ================= -->
+  <div class="h-sec" id="card-standard"><span class="n">03</span><b>Card standard</b><p>Every card in the product — registry, work unit, gate — shares one anatomy: header / body / footer.</p></div>
+
+  <div class="h-sub">Annotated anatomy</div>
+  <div class="demo">
+    <div class="anatomy-wrap" style="max-width:340px">
+      <div class="card">
+        <div class="card-head">
+          <span class="avatar">sc</span>
+          <span class="card-title">scribe</span>
+          <span class="kindtag">agent</span>
+        </div>
+        <div class="card-body">
+          <div class="sec">
+            <div class="label">Context recipe</div>
+            <div class="row-flex"><span class="chip">house-style</span></div>
+          </div>
+          <div class="sec">
+            <div class="label">Definition</div>
+            <div class="kv"><span class="k">kind</span><span class="v"><span class="chip">native</span><span class="chip">claude-sonnet-5</span></span></div>
+            <div class="kv"><span class="k">produces</span><span class="v"><span class="chip">product-brief</span></span></div>
+          </div>
+        </div>
+        <div class="card-foot">
+          <span class="meta">edited 4d ago</span>
+          <span class="actions"><button class="btn">Edit source</button></span>
+        </div>
+      </div>
+      <span class="pin" style="top:8px;right:-10px">1</span>
+      <span class="pin" style="top:8px;left:-10px">2</span>
+      <span class="pin" style="top:58px;left:-10px">3</span>
+      <span class="pin" style="bottom:8px;left:-10px">4</span>
+      <span class="pin" style="bottom:8px;right:-10px">5</span>
+    </div>
+    <div class="legend">
+      <div><b>1</b>Kind tag — mandatory on every registry card (was missing on skills, agents, teams).</div>
+      <div><b>2</b>Identity zone — neutral avatar or glyph + mono title. No hue; colour is for status only.</div>
+      <div><b>3</b>Body zones — one label style (10px / caps / tracked / muted); label names from a fixed vocabulary.</div>
+      <div><b>4</b>Footer metadata — mono, left-aligned: rounds · tokens · spend · age.</div>
+      <div><b>5</b>Actions — right-aligned, max one primary. "Edit source" keeps its habitual spot.</div>
+    </div>
+  </div>
+
+  <!-- ================= 04 SCREENS ================= -->
+  <div class="h-sec" id="screens"><span class="n">04</span><b>Screens</b><p>The standards applied to the real pages, using the real content from the screenshots.</p></div>
+
+  <div class="h-sub">S1 · Sidebar — one source of truth per collection</div>
+  <div class="frame">
+    <div class="frame-bar"><span class="dot3"><i></i><i></i><i></i></span>localhost:4173/registry/agents</div>
+    <div class="shell">
+      <div class="sb">
+        <div class="sb-logo"><b>levare</b><span>v0.0.1</span></div>
+        <div class="nav-sec">Projects</div>
+        <div class="nav-it">todo-cli<span class="c">1</span></div>
+        <div class="nav-it">studio<span class="c">0</span></div>
+        <div class="nav-sec">Registry</div>
+        <div class="nav-it">teams<span class="c">2</span></div>
+        <div class="nav-it on">agents<span class="c">5</span></div>
+        <div class="nav-it">skills<span class="c">3</span></div>
+        <div class="nav-it">knowledge<span class="c">2</span></div>
+        <div class="nav-it">types<span class="c">5</span></div>
+        <div class="nav-it">connectors<span class="c">3</span></div>
+        <div class="nav-sub"><i class="up">codex</i><i class="down">github</i><i class="down">linear</i></div>
+        <div class="nav-it">evals<span class="c">1</span></div>
+        <div class="nav-sec">Ideas</div>
+        <div class="nav-it">todo-cli</div>
+      </div>
+      <div style="padding:26px;color:var(--faint);font-size:12px">content region →</div>
+    </div>
+  </div>
+  <div class="cap"><b>Fixes:</b> duplicate CONNECTORS section gone — health lives as inline dots under the single registry row. Active page gets a 2px ink bar + weight. Counts stay right-aligned mono.</div>
+
+  <div class="h-sub">S2 · Studio home — page header, unified gate card, chat rail to spec</div>
+  <div class="frame">
+    <div class="frame-bar"><span class="dot3"><i></i><i></i><i></i></span>localhost:4173</div>
+    <div class="shell shell-orch">
+      <div>
+        <div class="pg-head">
+          <span class="pg-title">Studio</span>
+          <span class="pg-actions"><button class="btn btn-primary">Review gate</button></span>
+          <span class="pg-desc">Your studio at a glance. One gate is waiting on your call.</span>
+        </div>
+        <div class="content">
+          <div class="stats">
+            <div class="stat alert"><b>1</b><span>Gates on you</span></div>
+            <div class="stat"><b>0</b><span>Members running</span></div>
+            <div class="stat"><b>0</b><span>Units shipped · 30d</span></div>
+            <div class="stat"><b>0d</b><span>Median gate response</span></div>
+            <div class="stat"><b>$0.04</b><span>Spend · 30d</span></div>
+          </div>
+          <div class="seclab">Needs you<span class="n">1</span></div>
+          <div class="gate">
+            <div class="card-head" style="border-bottom:1px solid var(--line)">
+              <span style="display:flex;flex-direction:column;gap:2px">
+                <span class="gate-title">add-command</span>
+                <span class="gate-sub">review-add-command-v3.md · member/corvid</span>
+              </span>
+              <span class="kindtag" style="margin-left:auto">gate</span>
+              <span class="status st-danger">exhausted</span>
+            </div>
+            <div class="card-body">
+              <div class="prose">3 of 3 rounds used — this loop cannot continue without <span class="chip">review.approved</span>.</div>
+              <div class="kv" style="margin-top:8px"><span class="k">consumes</span><span class="v"><span class="chip">product-brief-add-command-v3</span></span></div>
+            </div>
+            <div class="card-foot">
+              <span class="meta">4d · round 3/3 · 7051 tok · ~$0.04</span>
+              <span class="actions">
+                <button class="btn btn-primary">Approve anyway</button>
+                <button class="btn">Re-scope</button>
+                <button class="btn btn-danger">Reject</button>
+              </span>
+            </div>
+          </div>
+          <div class="seclab">Running now<span class="n">0</span></div>
+          <div class="empty"><div class="t">Nothing running right now</div><div class="s">Work units appear here while a team is executing a loop.</div></div>
+          <div class="seclab">In flight<span class="n">1</span></div>
+          <div class="grid" style="padding:0">
+            <div class="card">
+              <div class="card-head"><span class="card-title">todo-cli</span><span class="kindtag">project</span><span class="status st-warn">1 gate</span></div>
+              <div class="card-body"><div class="prose">The brief is not ready to build from because it explicitly leaves core command behaviour undecided.</div></div>
+              <div class="card-foot"><span class="meta">1 unit · 3 rounds</span><span class="actions"><button class="btn">Open</button></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="orch">
+        <div class="orch-head"><b>Orchestrator</b><span class="orch-scope">scope · studio</span></div>
+        <div class="orch-body">
+          <div class="msg-row">
+            <div class="msg-role">You<span class="t">1d</span></div>
+            <div class="msg me">What is the status of the todo-cli project?</div>
+          </div>
+          <div class="msg-row">
+            <div class="msg-role">Orchestrator<span class="t">1d</span><span class="kindtag">briefing</span></div>
+            <div class="msg them">One active work unit: todo-cli/add-command. product-brief-add-command-v3 is approved; review-add-command-v3 is an open gate, 2 days old, awaiting your call.</div>
+          </div>
+        </div>
+        <div class="orch-input">Message the Orchestrator</div>
+      </div>
+    </div>
+  </div>
+  <div class="cap"><b>Fixes:</b> the gate card is the same component as the project page (S4); the primary action also surfaces in the page header; "Running now" uses the empty-state component; chat messages follow the role-row spec (S7).</div>
+
+  <div class="h-sub">S3 · Registry — agents grid with full-path breadcrumb and page header</div>
+  <div class="frame">
+    <div class="frame-bar"><span class="dot3"><i></i><i></i><i></i></span>localhost:4173/registry/agents</div>
+    <div class="crumbs">studio / registry / <b>agents</b></div>
+    <div class="pg-head">
+      <span class="pg-title">Agents</span>
+      <span class="pg-count">5</span>
+      <span class="pg-actions"><button class="btn btn-primary">New agent</button></span>
+      <span class="pg-desc">Members that produce artifacts. Kind tag, context recipe and produces are part of every card.</span>
+    </div>
+    <div class="content">
+      <div class="grid">
+        <div class="card">
+          <div class="card-head"><span class="avatar">cv</span><span class="card-title">corvid</span><span class="kindtag">agent</span></div>
+          <div class="card-body">
+            <div class="sec"><div class="label">Context recipe</div><div class="prose" style="color:var(--faint)">none declared</div></div>
+            <div class="sec"><div class="label">Definition</div>
+              <div class="kv"><span class="k">kind</span><span class="v"><span class="chip">cli</span><span class="chip">gpt-5.5</span></span></div>
+              <div class="kv"><span class="k">produces</span><span class="v"><span class="chip">review</span></span></div>
+            </div>
+          </div>
+          <div class="card-foot"><span class="meta">in team · press</span><span class="actions"><button class="btn">Edit source</button></span></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="avatar">fi</span><span class="card-title">finch</span><span class="kindtag">agent</span></div>
+          <div class="card-body">
+            <div class="sec"><div class="label">Context recipe</div><div class="prose" style="color:var(--faint)">none declared</div></div>
+            <div class="sec"><div class="label">Definition</div>
+              <div class="kv"><span class="k">kind</span><span class="v"><span class="chip">cli</span></span></div>
+              <div class="kv"><span class="k">produces</span><span class="v"><span class="chip">review</span></span></div>
+            </div>
+          </div>
+          <div class="card-foot"><span class="meta">in team · kestrel</span><span class="actions"><button class="btn">Edit source</button></span></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="avatar">ly</span><span class="card-title">lyra</span><span class="kindtag">agent</span></div>
+          <div class="card-body">
+            <div class="sec"><div class="label">Context recipe</div><div class="row-flex"><span class="chip">flow-design</span><span class="chip">spec-writing</span><span class="chip">house-style</span></div></div>
+            <div class="sec"><div class="label">Definition</div>
+              <div class="kv"><span class="k">kind</span><span class="v"><span class="chip">native</span><span class="chip">claude-sonnet-5</span></span></div>
+              <div class="kv"><span class="k">produces</span><span class="v"><span class="chip">design</span><span class="chip">spec</span></span></div>
+            </div>
+          </div>
+          <div class="card-foot"><span class="meta">in team · kestrel</span><span class="actions"><button class="btn">Edit source</button></span></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="avatar">sc</span><span class="card-title">scribe</span><span class="kindtag">agent</span></div>
+          <div class="card-body">
+            <div class="sec"><div class="label">Context recipe</div><div class="prose" style="color:var(--faint)">none declared</div></div>
+            <div class="sec"><div class="label">Definition</div>
+              <div class="kv"><span class="k">kind</span><span class="v"><span class="chip">native</span><span class="chip">claude-sonnet-5</span></span></div>
+              <div class="kv"><span class="k">produces</span><span class="v"><span class="chip">product-brief</span></span></div>
+            </div>
+          </div>
+          <div class="card-foot"><span class="meta">in team · press</span><span class="actions"><button class="btn">Edit source</button></span></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="avatar">wr</span><span class="card-title">wren</span><span class="kindtag">agent</span></div>
+          <div class="card-body">
+            <div class="sec"><div class="label">Context recipe</div><div class="row-flex"><span class="chip">product-brief</span><span class="chip">house-style</span></div></div>
+            <div class="sec"><div class="label">Definition</div>
+              <div class="kv"><span class="k">kind</span><span class="v"><span class="chip">native</span><span class="chip">claude-sonnet-5</span></span></div>
+              <div class="kv"><span class="k">produces</span><span class="v"><span class="chip">product-brief</span></span></div>
+            </div>
+          </div>
+          <div class="card-foot"><span class="meta">in team · kestrel</span><span class="actions"><button class="btn">Edit source</button></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="cap"><b>Fixes:</b> breadcrumb includes the leaf; page header carries title + count + description + the collection's primary action; every card has the kind tag; avatars neutral; grid is <span class="chip">auto-fill minmax(272px, 1fr)</span>.</div>
+
+  <div class="h-sub">S4 · Project detail — one section grouping rule, gate card reused</div>
+  <div class="frame">
+    <div class="frame-bar"><span class="dot3"><i></i><i></i><i></i></span>localhost:4173/projects/todo-cli</div>
+    <div class="crumbs">studio / projects / <b>todo-cli</b></div>
+    <div class="pg-head">
+      <span class="pg-title">todo-cli</span>
+      <span class="status st-warn">1 gate</span>
+      <span class="pg-actions"><button class="btn">Open run view</button><button class="btn btn-primary">Review gate</button></span>
+      <span class="pg-desc">A todo list you drive from the terminal. No accounts, no sync, no server — just a file on disk and three commands.</span>
+    </div>
+    <div class="content">
+      <div class="stats">
+        <div class="stat"><b>0</b><span>Units shipped</span></div>
+        <div class="stat"><b>1</b><span>Units active</span></div>
+        <div class="stat alert"><b>1</b><span>Gates open</span></div>
+        <div class="stat"><b>3</b><span>Median review rounds</span></div>
+        <div class="stat"><b>$0.04</b><span>Spend · 30d</span></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><span class="card-title">project</span><span class="kindtag">meta</span></div>
+        <div class="card-body" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px">
+          <div class="sec"><div class="label">Pointer</div><div class="kv"><span class="k">pace</span><span class="v"><span class="chip">auto</span></span></div><div class="kv"><span class="k">repo</span><span class="v"><span class="chip">~/source/todo-cli</span></span></div></div>
+          <div class="sec"><div class="label">Constitution</div><div class="prose" style="color:var(--faint)">no founding artifacts yet</div></div>
+          <div class="sec"><div class="label">Releases</div><div class="prose" style="color:var(--faint)">no releases yet</div></div>
+        </div>
+      </div>
+      <div class="seclab">Work units<span class="n">1</span></div>
+      <div class="card">
+        <div class="card-head">
+          <span style="display:flex;flex-direction:column;gap:2px">
+            <span class="gate-title">add-command</span>
+            <span class="gate-sub">work/todo-cli/add-command/</span>
+          </span>
+          <span class="kindtag" style="margin-left:auto">feature</span>
+          <span class="status st-warn">at gate</span>
+        </div>
+        <div class="card-body" style="padding:0">
+          <div style="padding:12px 16px 4px" class="prose">The brief is not ready to build from because it explicitly leaves core command behaviour undecided.</div>
+          <div class="ritem dead" style="border-top:1px solid var(--line);margin-top:10px"><span class="mk mk-dot"></span><span class="nm">product-brief-add-command-v1.md</span><span class="rt word">superseded</span></div>
+          <div class="ritem dead"><span class="mk mk-dot"></span><span class="nm">product-brief-add-command-v2.md</span><span class="rt word">superseded</span></div>
+          <div class="ritem"><span class="mk mk-fill-ok"></span><span class="nm">product-brief-add-command-v3.md</span><span class="rt"><span class="status st-ok">approved</span></span></div>
+          <div class="ritem dead"><span class="mk mk-dot"></span><span class="nm">review-add-command-v1.md</span><span class="rt word">superseded</span></div>
+          <div class="ritem dead"><span class="mk mk-dot"></span><span class="nm">review-add-command-v2.md</span><span class="rt word">superseded</span></div>
+          <div class="ritem"><span class="mk mk-dia-warn"></span><span class="nm">review-add-command-v3.md</span><span class="rt"><span class="status st-warn">at gate</span></span></div>
+        </div>
+        <div class="card-foot">
+          <span class="meta">3 review rounds · 1 gate · 7051 tok · ~$0.04</span>
+          <span class="actions">
+            <button class="btn btn-primary">Approve anyway</button>
+            <button class="btn">Re-scope</button>
+            <button class="btn btn-danger">Reject</button>
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="cap"><b>Fixes:</b> "Review gate" is the header primary; Pointer/Constitution/Releases share one meta card; gate actions identical to Studio home — one gate, one component, two surfaces.</div>
+
+  <div class="h-sub">S5 · Topbar & Orchestrator popover — status is a badge, the popover has anatomy</div>
+  <div class="frame">
+    <div class="topbar">
+      <span class="wm">levare</span><span class="ver">v0.0.1</span>
+      <span class="sp"></span>
+      <span class="pop-anchor">
+        <button class="status st-ok" style="cursor:pointer;background:var(--ok-bg)">orchestrator · live</button>
+        <span class="popover" style="display:block">
+          <span class="pop-head" style="display:flex"><b>Orchestrator</b><span class="status st-ok">live</span><button class="ghost x">×</button></span>
+          <span class="pop-body" style="display:block">
+            <span class="kv"><span class="k">key</span><span class="v"><span class="chip chip-env">ANTHROPIC_API_KEY</span></span></span>
+            <span class="kv"><span class="k">scope</span><span class="v"><span class="chip">studio</span></span></span>
+            <span style="display:block;margin-top:8px;color:var(--muted)">Replies are advisory — nothing changes in your studio without your call.</span>
+          </span>
+          <span class="pop-foot" style="display:block">open rail →</span>
+        </span>
+      </span>
+      <button class="ghost">◐ Light</button>
+    </div>
+    <div style="height:190px"></div>
+  </div>
+  <div class="cap"><b>Fixes:</b> "● orchestrator: on" (bare text) becomes the standard status badge; the popover gets header / body / footer anatomy, the env var as a dashed chip, a caret anchoring it to the trigger, and a close affordance.</div>
+
+  <div class="h-sub">S6 · Edit-source modal — labeled zones, real validation states, dirty marker</div>
+  <div class="frame">
+    <div class="scrim">
+      <div class="modal">
+        <div class="modal-head">
+          <span class="modal-title">kestrel.team.md</span>
+          <span class="kindtag">team</span>
+          <span class="chip">unsaved</span>
+          <span class="actions" style="margin-left:auto"><button class="ghost">×</button></span>
+        </div>
+        <div class="modal-body">
+          <div class="zone">
+            <div class="zone-h">Frontmatter<span class="fm">yaml</span></div>
+            <div class="zone-b">name: kestrel
+flow:
+  - wren
+  - lyra
+  - finch
+pace: auto</div>
+          </div>
+          <div class="zone">
+            <div class="zone-h">Body<span class="fm">markdown</span></div>
+            <div class="zone-b"># kestrel
+
+A small team for feature work. wren drafts the brief,
+lyra designs the flow, finch reviews what ships.</div>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <span class="status st-ok">valid</span>
+          <span class="actions"><button class="btn">Cancel</button><button class="btn btn-primary">Save and commit</button></span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="demo" style="margin-top:10px">
+    <div class="label">Invalid state (footer detail)</div>
+    <div class="modal-foot" style="border:1px solid var(--line);border-radius:10px;padding:12px 14px">
+      <span>
+        <span class="status st-danger">invalid</span>
+        <span class="err-line">line 4 · flow · expected a list of member names</span>
+      </span>
+      <span class="actions"><button class="btn">Cancel</button><button class="btn btn-primary" disabled>Save and commit</button></span>
+    </div>
+    <div class="cap"><b>Fixes:</b> frontmatter and body are labeled zones instead of one undifferentiated textarea; "● valid" becomes a status badge; invalid lists line · key · expectation; the primary enables only when dirty ∧ valid; <span class="chip">unsaved</span> marks a dirty buffer in the header.</div>
+  </div>
+
+  <div class="h-sub">S7 · Chat rail — role rows, not bubble colours</div>
+  <div class="demo" style="max-width:420px">
+    <div class="msg-row">
+      <div class="msg-role">You<span class="t">1d</span></div>
+      <div class="msg me">What is the status of the todo-cli project?</div>
+    </div>
+    <div class="msg-row">
+      <div class="msg-role">Orchestrator<span class="t">1d</span><span class="kindtag">briefing</span></div>
+      <div class="msg them">One active work unit: todo-cli/add-command. The v3 brief is approved; the v3 review is an open gate, 2 days old, awaiting your call.</div>
+    </div>
+    <div class="msg-row">
+      <div class="msg-role">Orchestrator<span class="t">now</span><span class="kindtag">briefing</span></div>
+      <div class="msg them"><span class="skel" style="display:block;height:10px;width:82%;margin:3px 0"></span><span class="skel" style="display:block;height:10px;width:61%;margin:3px 0"></span></div>
+    </div>
+    <div class="cap"><b>Fixes:</b> the one-off blue user bubble is gone — speaker is conveyed by the role row (name + mono timestamp + kind tag), bubbles are neutral fills. A pending reply uses skeleton lines, not "…".</div>
+  </div>
+
+  <div class="h-sub">S8 · Team card — declared flow survives neutral identity</div>
+  <div class="demo" style="max-width:420px">
+    <div class="card">
+      <div class="card-head"><span class="card-title">kestrel</span><span class="kindtag">team</span></div>
+      <div class="card-body">
+        <div class="sec">
+          <div class="label">Declared flow</div>
+          <div class="row-flex" style="gap:6px">
+            <span class="avatar">wr</span><span style="color:var(--faint)">→</span>
+            <span class="avatar">ly</span><span style="color:var(--faint)">→</span>
+            <span class="avatar">fi</span>
+          </div>
+        </div>
+        <div class="sec"><div class="label">Pace</div><span class="chip">auto</span></div>
+      </div>
+      <div class="card-foot"><span class="meta">3 members · 1 project</span><span class="actions"><button class="btn">Edit source</button></span></div>
+    </div>
+    <div class="cap"><b>Fixes:</b> the borrowed member-colour left border is gone; the flow reads on avatar + arrow alone, so it no longer breaks when membership changes.</div>
+  </div>
+
+  <!-- ================= 05 LOADING & LIVE STATES ================= -->
+  <div class="h-sec" id="loading"><span class="n">05</span><b>Loading & live states</b><p>The state indicator must match the duration of the wait. Three tiers cover every work-unit action on studio, project and work-unit pages. The demos below are live — click the buttons.</p></div>
+
+  <div class="h-sub">The three tiers</div>
+  <div class="grid" style="padding:0">
+    <div class="card">
+      <div class="card-head"><span class="card-title">tier 1 · button</span><span class="kindtag">0–1s</span></div>
+      <div class="card-body"><div class="prose">Decision writes (approve / re-scope / reject). Pressed state at 0ms, spinner after 150ms, progressive label (<i>Approving…</i>), minimum 500ms once shown. The whole action group disables; the spinner rides only on the clicked button.</div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><span class="card-title">tier 2 · card</span><span class="kindtag">1–10s</span></div>
+      <div class="card-body"><div class="prose">Resolution and refetch. The card never blanks: badge swaps in 200ms, meta line updates, section counts and stat band tick in the same beat. If the card moves sections (Needs you → Running now), it animates over 240ms.</div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><span class="card-title">tier 3 · loop</span><span class="kindtag">10s+</span></div>
+      <div class="card-body"><div class="prose">Long-running loops. A spinner would be a lie — the card flips to <span class="status st-info st-live" style="margin:0 2px">running</span> with a live strip: pulsing dot, round n/m, elapsed and tokens ticking. Full expression lives on the run view (S9).</div></div>
+    </div>
+  </div>
+
+  <div class="h-sub">Button loading anatomy (static)</div>
+  <div class="demo">
+    <div class="row-flex">
+      <button class="btn btn-primary" disabled><span class="spin"></span>Approving…</button>
+      <button class="btn" disabled>Re-scope</button>
+      <button class="btn btn-danger" disabled>Reject</button>
+    </div>
+    <div class="cap">One in-flight action per card: siblings disable, the clicked button shows spinner + progressive label. Width is preserved by keeping the label — no layout shift in the footer.</div>
+  </div>
+
+  <div class="h-sub">Demo · Studio page — decide the gate <span style="text-transform:none;letter-spacing:0;font-weight:400">(click Approve or Reject)</span></div>
+  <div class="demo">
+    <div class="stats" style="margin-bottom:14px">
+      <div class="stat alert" id="gdStatWrap"><b id="gdStat">1</b><span>Gates on you</span></div>
+      <div class="stat"><b>0</b><span>Members running</span></div>
+      <div class="stat"><b>0</b><span>Units shipped · 30d</span></div>
+      <div class="stat"><b>0d</b><span>Median gate response</span></div>
+      <div class="stat"><b>$0.04</b><span>Spend · 30d</span></div>
+    </div>
+    <div class="seclab" style="margin-bottom:10px">Needs you<span class="n" id="gdCount">1</span></div>
+    <div class="gate" id="gdCard" aria-live="polite">
+      <div class="card-head" style="border-bottom:1px solid var(--line)">
+        <span style="display:flex;flex-direction:column;gap:2px">
+          <span class="gate-title">add-command</span>
+          <span class="gate-sub">review-add-command-v3.md · member/corvid</span>
+        </span>
+        <span class="kindtag" style="margin-left:auto">gate</span>
+        <span class="status st-danger" id="gdStatus">exhausted</span>
+      </div>
+      <div class="card-body">
+        <div class="prose">3 of 3 rounds used — this loop cannot continue without <span class="chip">review.approved</span>.</div>
+      </div>
+      <div class="card-foot">
+        <span class="meta" id="gdMeta">4d · round 3/3 · 7051 tok · ~$0.04</span>
+        <span class="actions" id="gdActions">
+          <button class="btn btn-primary" onclick="gateAct('approve',this)">Approve anyway</button>
+          <button class="btn" onclick="gateAct('rescope',this)">Re-scope</button>
+          <button class="btn btn-danger" onclick="gateAct('reject',this)">Reject</button>
+        </span>
+      </div>
+    </div>
+    <div class="cap"><b>Watch:</b> tier-1 spinner on the clicked button, group disabled → badge swap + meta rewrite in place → stat band and section count tick 1→0 → viewport toast confirms the write. Re-scope hands off to tier 3 (next demo). <button class="ghost" onclick="gateReset()">↺ reset</button></div>
+  </div>
+
+  <div class="h-sub">Demo · Project page — Re-scope starts a loop <span style="text-transform:none;letter-spacing:0;font-weight:400">(click Re-scope, ~12s loop)</span></div>
+  <div class="demo">
+    <div class="card" id="lsCard" aria-live="polite">
+      <div class="card-head">
+        <span style="display:flex;flex-direction:column;gap:2px">
+          <span class="gate-title">add-command</span>
+          <span class="gate-sub">work/todo-cli/add-command/</span>
+        </span>
+        <span class="kindtag" style="margin-left:auto">feature</span>
+        <span class="status st-danger" id="lsStatus">exhausted</span>
+      </div>
+      <div class="card-body">
+        <div class="prose" style="margin-bottom:10px">The brief is not ready to build from because it explicitly leaves core command behaviour undecided.</div>
+        <div id="lsLive" style="display:none">
+          <div class="live-strip">
+            <span class="live-dot"></span>
+            <span>round 1/3 · running</span>
+            <span style="margin-left:auto"><span id="lsElapsed">0:00</span> · <span id="lsTok">0 tok</span></span>
+          </div>
+          <div class="logbox" id="lsLog"></div>
+        </div>
+      </div>
+      <div class="card-foot">
+        <span class="meta" id="lsMeta">3d · round 3/3 · 7051 tok · ~$0.04</span>
+        <span class="actions" id="lsActions">
+          <button class="btn btn-primary">Approve anyway</button>
+          <button class="btn" onclick="lsStart(this)">Re-scope</button>
+          <button class="btn btn-danger">Reject</button>
+        </span>
+      </div>
+    </div>
+    <div class="cap"><b>Watch:</b> tier-1 ack → tier-3 live strip (pulsing dot, elapsed and tokens ticking, log lines streaming) → the round completes and the card lands back <b>at gate</b> with <span class="chip">review-add-command-v4</span> ready — the loop closes visually. <button class="ghost" onclick="lsReset()">↺ reset</button></div>
+  </div>
+
+  <div class="h-sub">S9 · Work unit run view — the whole page is the live surface</div>
+  <div class="frame">
+    <div class="frame-bar"><span class="dot3"><i></i><i></i><i></i></span>localhost:4173/projects/todo-cli/add-command</div>
+    <div class="crumbs">studio / projects / todo-cli / <b>add-command</b></div>
+    <div class="pg-head">
+      <span class="pg-title">add-command</span>
+      <span class="kindtag">feature</span>
+      <span class="status st-info st-live">running</span>
+      <span class="pg-actions"><button class="btn">Pause loop</button><button class="btn btn-primary">Open run log</button></span>
+      <span class="pg-desc">Re-scoped review loop, round 1 of 3. The Orchestrator will stop at the gate when corvid finishes the new review.</span>
+    </div>
+    <div class="content">
+      <div class="stats">
+        <div class="stat"><b>4:12</b><span>Elapsed</span></div>
+        <div class="stat"><b>1/3</b><span>Round</span></div>
+        <div class="stat"><b>6,842</b><span>Tokens · this loop</span></div>
+        <div class="stat"><b>$0.04</b><span>Spend · this loop</span></div>
+        <div class="stat"><b>0</b><span>Gates open</span></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1.25fr .75fr;gap:14px">
+        <div class="card">
+          <div class="card-head"><span class="card-title">rounds</span><span class="kindtag">timeline</span></div>
+          <div class="card-body" style="padding:0">
+            <div class="ritem dead"><span class="mk mk-dot"></span><span class="nm">round 1 · review-add-command-v1.md</span><span class="rt word">changes requested</span></div>
+            <div class="ritem dead"><span class="mk mk-dot"></span><span class="nm">round 2 · review-add-command-v2.md</span><span class="rt word">changes requested</span></div>
+            <div class="ritem" style="align-items:flex-start">
+              <span class="live-dot" style="margin-top:5px"></span>
+              <span style="flex:1">
+                <span class="nm">round 3 · re-scoped · in progress</span>
+                <span class="logbox" style="display:block;margin-top:8px">
+                  › corvid · reading product-brief-add-command-v3.md<br>
+                  › corvid · checking decisions against brief<br>
+                  › corvid · drafting review-add-command-v4.md <span class="cursor"></span>
+                </span>
+              </span>
+              <span class="rt"><span class="status st-info st-live">running</span></span>
+            </div>
+            <div class="ritem"><span class="skel" style="width:9px;height:9px;border-radius:50%"></span><span class="skel" style="height:10px;width:46%"></span><span class="rt"><span class="status st-neutral">queued</span></span></div>
+          </div>
+          <div class="card-foot"><span class="meta">rounds appear optimistically · artifacts stream in as written</span></div>
+        </div>
+        <div style="display:grid;gap:14px;align-content:start">
+          <div class="card">
+            <div class="card-head"><span class="card-title">artifacts</span><span class="kindtag">this unit</span></div>
+            <div class="card-body" style="padding:0">
+              <div class="ritem"><span class="mk mk-fill-ok"></span><span class="nm">product-brief-add-command-v3.md</span><span class="rt"><span class="status st-ok">approved</span></span></div>
+              <div class="ritem"><span class="mk mk-dia-warn"></span><span class="nm">review-add-command-v3.md</span><span class="rt"><span class="status st-danger">exhausted</span></span></div>
+              <div class="ritem"><span class="skel" style="width:9px;height:9px;border-radius:50%"></span><span class="skel" style="height:10px;width:52%"></span><span class="rt"><span class="status st-neutral">pending</span></span></div>
+            </div>
+            <div class="card-foot"><span class="meta">v4 appears here when written</span></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><span class="card-title">gate policy</span><span class="kindtag">meta</span></div>
+            <div class="card-body">
+              <div class="kv"><span class="k">stop at</span><span class="v"><span class="chip">review</span> every round</span></div>
+              <div class="kv"><span class="k">on approve</span><span class="v">builder loop queued</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="cap"><b>Rule:</b> on this page everything live uses the pulsing dot; completed rows go neutral with words ("changes requested"); future rows are skeletons with <span class="status st-neutral">queued</span> / <span class="status st-neutral">pending</span> — never spinners.</div>
+
+  <div class="h-sub">Skeletons — shaped like the real anatomy</div>
+  <div class="demo">
+    <div class="stats" style="margin-bottom:14px">
+      <div class="stat"><span class="skel" style="display:block;height:20px;width:38px;margin-bottom:6px"></span><span class="skel" style="display:block;height:9px;width:70%"></span></div>
+      <div class="stat"><span class="skel" style="display:block;height:20px;width:38px;margin-bottom:6px"></span><span class="skel" style="display:block;height:9px;width:55%"></span></div>
+      <div class="stat"><span class="skel" style="display:block;height:20px;width:38px;margin-bottom:6px"></span><span class="skel" style="display:block;height:9px;width:64%"></span></div>
+      <div class="stat"><span class="skel" style="display:block;height:20px;width:38px;margin-bottom:6px"></span><span class="skel" style="display:block;height:9px;width:58%"></span></div>
+      <div class="stat"><span class="skel" style="display:block;height:20px;width:38px;margin-bottom:6px"></span><span class="skel" style="display:block;height:9px;width:66%"></span></div>
+    </div>
+    <div class="grid" style="padding:0">
+      <div class="card">
+        <div class="card-head"><span class="skel" style="width:26px;height:26px;border-radius:50%"></span><span class="skel" style="height:11px;width:34%"></span><span class="skel" style="height:16px;width:52px;border-radius:999px;margin-left:auto"></span></div>
+        <div class="card-body"><span class="skel" style="display:block;height:9px;width:28%;margin-bottom:8px"></span><span class="skel" style="display:block;height:10px;width:88%;margin-bottom:6px"></span><span class="skel" style="display:block;height:10px;width:64%"></span></div>
+        <div class="card-foot"><span class="skel" style="height:9px;width:30%"></span><span class="skel" style="height:24px;width:86px;border-radius:8px;margin-left:auto"></span></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><span class="skel" style="width:26px;height:26px;border-radius:50%"></span><span class="skel" style="height:11px;width:28%"></span><span class="skel" style="height:16px;width:52px;border-radius:999px;margin-left:auto"></span></div>
+        <div class="card-body"><span class="skel" style="display:block;height:9px;width:24%;margin-bottom:8px"></span><span class="skel" style="display:block;height:10px;width:80%;margin-bottom:6px"></span><span class="skel" style="display:block;height:10px;width:52%"></span></div>
+        <div class="card-foot"><span class="skel" style="height:9px;width:26%"></span><span class="skel" style="height:24px;width:86px;border-radius:8px;margin-left:auto"></span></div>
+      </div>
+    </div>
+    <div class="cap"><b>Rule:</b> skeletons only for initial load and refetch; they mirror header / body / footer so first paint has zero layout shift. Sheen is subtle and warm — no gray boxes, no full-page spinners.</div>
+  </div>
+
+  <div class="h-sub">Toasts — confirmation and failure with retry</div>
+  <div class="demo">
+    <div style="display:grid;gap:8px;max-width:420px">
+      <div class="toast t-ok" style="position:static;box-shadow:none">Gate approved — review-add-command-v3 marked review.approved</div>
+      <div class="toast t-info" style="position:static;box-shadow:none">Re-scoped — review loop restarted (round 1/3)</div>
+      <div class="toast t-danger" style="position:static;box-shadow:none">Couldn't reach the Orchestrator — nothing was written.<span class="retry">Retry</span></div>
+    </div>
+    <div class="cap"><b>Rule:</b> viewport bottom-right, 3.2s, left border carries the kind. Failures never silently reset: the button returns to idle, the card keeps its state, and the toast offers Retry.</div>
+  </div>
+
+  <div class="h-sub">Motion tokens & rules</div>
+  <table>
+    <tr><th>Token</th><th>Value</th><th>Use</th></tr>
+    <tr><td class="tok">--dur-press</td><td class="tok">100ms</td><td>Pressed state on click — acknowledgement is instant</td></tr>
+    <tr><td class="tok">spinner delay</td><td class="tok">150ms</td><td>Spinner only appears if the op is still pending — fast ops never flash one</td></tr>
+    <tr><td class="tok">spinner min</td><td class="tok">500ms</td><td>Once shown, it stays long enough to be read — no flicker</td></tr>
+    <tr><td class="tok">--dur-swap</td><td class="tok">200ms</td><td>Badge / meta swap on resolution</td></tr>
+    <tr><td class="tok">--dur-move</td><td class="tok">240ms</td><td>Card moving between sections, counts ticking</td></tr>
+    <tr><td class="tok">pulse / sheen</td><td class="tok">1.6s / 1.4s</td><td>The only two ambient animations in the product; both die under prefers-reduced-motion</td></tr>
+  </table>
+
+  <!-- ================= 06 FIX LOG ================= -->
+  <div class="h-sec" id="fixlog"><span class="n">06</span><b>Fix log</b><p>Every finding from the review, mapped to its change.</p></div>
+  <table>
+    <tr><th style="width:52px">ID</th><th>Finding</th><th>Change</th></tr>
+    <tr><td class="id">F1</td><td>Connectors duplicated in sidebar (registry row + own section)</td><td>Single registry row with inline per-connector status dots</td></tr>
+    <tr><td class="id">F2</td><td>Breadcrumbs drop the leaf ("studio / registry" on every page)</td><td>Full path including the current collection</td></tr>
+    <tr><td class="id">F3</td><td>"studio" overloaded: app area, project name, orchestrator scope</td><td>Scope label becomes "scope · studio"; consider renaming the studio project</td></tr>
+    <tr><td class="id">F4</td><td>Kind tag missing on skill / agent / team cards</td><td>Kind tag mandatory in card header, all collections</td></tr>
+    <tr><td class="id">F5</td><td>Section labels differ per collection (DEFINITION / CONTEXT RECIPE / RUBRIC / none)</td><td>One label style + a fixed label vocabulary per card type</td></tr>
+    <tr><td class="id">F6</td><td>Detail pages disagree: idea = card per section, project = sections per card</td><td>Rule: grouped metadata shares one meta card; independent documents get their own</td></tr>
+    <tr><td class="id">F7</td><td>Same gate renders as two components (Studio home vs project page)</td><td>One gate-card component consumed by both surfaces</td></tr>
+    <tr><td class="id">F8</td><td>Amber in three treatments (filled chip, outline badge, bare text)</td><td>Single status badge; amber = waiting on you, red = blocked/exhausted</td></tr>
+    <tr><td class="id">F9</td><td>Dark chips (native, mcp) collide with dark primary buttons</td><td>Chips are never dark; near-black reserved for the one primary action</td></tr>
+    <tr><td class="id">F10</td><td>Identity colour arbitrary (agent hues, team border borrowed from members)</td><td>Neutral identity; colour encodes status only</td></tr>
+    <tr><td class="id">F11</td><td>Destructive "Reject" styled like neutral "Re-scope"</td><td>Danger button variant</td></tr>
+    <tr><td class="id">F12</td><td>Fixed-width card rows leave ragged whitespace; blank empty regions</td><td>auto-fill minmax grid + designed empty-state component</td></tr>
+    <tr><td class="id">F13</td><td>Stat labels drift ("Spend" vs "Spend · 30d"); value colourized on one page only</td><td>Fixed "noun · window" grammar; tint only actionable stats</td></tr>
+    <tr><td class="id">F14</td><td>Muted grays (~#a3) below comfortable contrast</td><td>Secondary text floor at #6E6A5F (≥4.5:1 on paper)</td></tr>
+    <tr><td class="id">F15</td><td>Ideas lineage says "no project yet" while project todo-cli exists</td><td>Reconcile lineage data, or surface staleness in the UI</td></tr>
+    <tr><td class="id">F16</td><td>Artifact state shown by marker/strikethrough alone</td><td>Marker + status word/badge together; legend in the component spec</td></tr>
+    <tr><td class="id">F17</td><td>"● orchestrator: on" is bare text; popover is unstructured prose</td><td>Standard status badge trigger; popover gets header/body/footer, env var as dashed chip, caret, close</td></tr>
+    <tr><td class="id">F18</td><td>Modal edits frontmatter and body in one undifferentiated textarea</td><td>Labeled zones (FRONTMATTER · YAML / BODY · MARKDOWN) in one scroll region</td></tr>
+    <tr><td class="id">F19</td><td>"● valid" bespoke dot; no defined invalid state</td><td>Status badge + error list (line · key · expectation); Save disabled until valid</td></tr>
+    <tr><td class="id">F20</td><td>No dirty state in the editor</td><td>"unsaved" chip in the modal header; primary enables only when dirty ∧ valid</td></tr>
+    <tr><td class="id">F21</td><td>Chat bubbles use a one-off blue; timestamps float loose</td><td>Role rows (name + mono timestamp + kind tag); neutral bubble fills</td></tr>
+    <tr><td class="id">F22</td><td>"briefing · now" is bespoke text doing kind-tag work</td><td>Standard kind tag in the role row</td></tr>
+    <tr><td class="id">F23</td><td>Rail under modal scrim is ambiguous (live? inert?)</td><td>Rule: dim with the page, or pin above the scrim deliberately — never leave ambiguous</td></tr>
+    <tr><td class="id">F24</td><td>Team flow depends on member colours; breaks on membership change</td><td>Neutral avatars + arrow connector; left accent border removed</td></tr>
+    <tr><td class="id">F25</td><td>No loading vocabulary anywhere in the system</td><td>Three-tier model: button (0–1s) / card (1–10s) / loop (10s+)</td></tr>
+    <tr><td class="id">F26</td><td>Nothing prevents double-submitting a gate decision</td><td>One in-flight action per card; whole action group disables, spinner on clicked button</td></tr>
+    <tr><td class="id">F27</td><td>Long-running loops have no visual representation</td><td>Live strip (pulse · round n/m · elapsed · tokens) + streaming run view (S9)</td></tr>
+    <tr><td class="id">F28</td><td>No skeleton pattern for initial load / refetch</td><td>Content-shaped skeletons mirroring card anatomy; subtle warm sheen; no full-page spinners</td></tr>
+    <tr><td class="id">F29</td><td>No toast or failure pattern; failures would silently reset</td><td>Toast spec (ok / info / danger + Retry); card keeps state on failure</td></tr>
+    <tr><td class="id">F30</td><td>No motion tokens or reduced-motion story</td><td>Five duration tokens; pulse and sheen are the only ambient animations; both honour prefers-reduced-motion</td></tr>
+  </table>
+
+</div>
+
+<div id="toasts" aria-live="polite"></div>
+
+<script>
+const $=id=>document.getElementById(id);
+const SPIN='<span class="spin"></span>';
+function toastMsg(msg,kind){
+  const t=document.createElement('div');
+  t.className='toast t-'+(kind||'neutral');
+  t.textContent=msg;
+  $('toasts').appendChild(t);
+  setTimeout(()=>{t.classList.add('out');setTimeout(()=>t.remove(),300)},3200);
+}
+
+/* ---- Demo 1: Studio gate decision ---- */
+const GD_IDLE_ACTIONS='<button class="btn btn-primary" onclick="gateAct(\'approve\',this)">Approve anyway</button><button class="btn" onclick="gateAct(\'rescope\',this)">Re-scope</button><button class="btn btn-danger" onclick="gateAct(\'reject\',this)">Reject</button>';
+function gateAct(a,btn){
+  const acts=$('gdActions');
+  acts.querySelectorAll('button').forEach(b=>b.disabled=true);
+  btn.innerHTML=SPIN+(a==='approve'?'Approving…':a==='rescope'?'Re-scoping…':'Rejecting…');
+  $('gdCard').setAttribute('aria-busy','true');
+  setTimeout(()=>{
+    $('gdCard').removeAttribute('aria-busy');
+    if(a==='approve'){
+      $('gdStatus').className='status st-ok';$('gdStatus').textContent='approved';
+      $('gdMeta').textContent='approved just now · builder loop queued';
+      acts.innerHTML='<button class="btn btn-primary">Open work unit</button><button class="btn" onclick="gateReset()">Undo</button>';
+      toastMsg('Gate approved — review-add-command-v3 marked review.approved','ok');
+      gdBump();
+    }else if(a==='reject'){
+      $('gdStatus').className='status st-danger';$('gdStatus').textContent='rejected';
+      $('gdMeta').textContent='rejected just now · work unit closed';
+      $('gdCard').style.opacity='.72';
+      acts.innerHTML='<button class="btn" onclick="gateReset()">Reopen work unit</button>';
+      toastMsg('Work unit add-command closed','neutral');
+      gdBump();
+    }else{
+      $('gdStatus').className='status st-info st-live';$('gdStatus').textContent='running';
+      $('gdMeta').textContent='review loop restarted · round 1/3 · watch it live in the demo below';
+      acts.innerHTML='<button class="btn btn-primary">Open run view</button><button class="btn" onclick="gateReset()">Pause loop</button>';
+      toastMsg('Re-scoped — review loop restarted (round 1/3)','info');
+      gdBump();
+    }
+  },1300);
+}
+function gdBump(){
+  $('gdStat').textContent='0';
+  $('gdStatWrap').classList.remove('alert');
+  $('gdCount').textContent='0';
+}
+function gateReset(){
+  const s=document.createElement('span');
+  s.className='status st-danger';s.id='gdStatus';s.textContent='exhausted';
+  $('gdStatus').replaceWith(s);
+  $('gdMeta').textContent='4d · round 3/3 · 7051 tok · ~$0.04';
+  $('gdActions').innerHTML=GD_IDLE_ACTIONS;
+  $('gdCard').style.opacity='1';
+  $('gdStat').textContent='1';
+  $('gdStatWrap').classList.add('alert');
+  $('gdCount').textContent='1';
+}
+
+/* ---- Demo 2: Project re-scope → live loop → back at gate ---- */
+let LS={iv:null,t0:0,tok:0,step:0};
+const LS_LINES=[
+  'corvid · reading product-brief-add-command-v3.md',
+  'corvid · checking decisions against brief',
+  'corvid · drafting review-add-command-v4.md',
+  'corvid · 2 blocking findings, 1 suggestion',
+  'corvid · writing artifacts/review-add-command-v4.md',
+  'orchestrator · round complete — stopping at gate'
+];
+const LS_IDLE_ACTIONS='<button class="btn btn-primary">Approve anyway</button><button class="btn" onclick="lsStart(this)">Re-scope</button><button class="btn btn-danger">Reject</button>';
+function lsStart(btn){
+  const acts=$('lsActions');
+  acts.querySelectorAll('button').forEach(b=>b.disabled=true);
+  btn.innerHTML=SPIN+'Re-scoping…';
+  $('lsCard').setAttribute('aria-busy','true');
+  setTimeout(()=>{
+    $('lsCard').removeAttribute('aria-busy');
+    $('lsStatus').className='status st-info st-live';$('lsStatus').textContent='running';
+    $('lsMeta').textContent='review loop running · round 1/3';
+    $('lsLive').style.display='block';
+    $('lsLog').innerHTML='';
+    $('lsTok').textContent='0 tok';
+    acts.innerHTML='<button class="btn btn-primary">Open run view</button><button class="btn" onclick="lsStop(true)">Pause loop</button>';
+    toastMsg('Re-scoped — review loop restarted (round 1/3)','info');
+    LS.t0=Date.now();LS.tok=0;LS.step=0;
+    LS.iv=setInterval(lsTick,1000);
+  },1300);
+}
+function lsTick(){
+  const s=Math.floor((Date.now()-LS.t0)/1000);
+  $('lsElapsed').textContent=Math.floor(s/60)+':'+String(s%60).padStart(2,'0');
+  LS.tok+=Math.floor(38+Math.random()*84);
+  $('lsTok').textContent=LS.tok.toLocaleString()+' tok';
+  if(s%2===0&&LS.step<LS_LINES.length){
+    const d=document.createElement('div');
+    d.textContent='› '+LS_LINES[LS.step++];
+    $('lsLog').appendChild(d);
+    $('lsLog').scrollTop=$('lsLog').scrollHeight;
+  }
+  if(s>=12){lsStop(false);}
+}
+function lsStop(paused){
+  clearInterval(LS.iv);
+  if(paused){
+    $('lsStatus').className='status st-neutral';$('lsStatus').textContent='paused';
+    $('lsMeta').textContent='loop paused · round 1/3 incomplete';
+    $('lsActions').innerHTML='<button class="btn btn-primary" onclick="lsStart(this)">Resume loop</button><button class="btn" onclick="lsReset()">Reset demo</button>';
+    toastMsg('Loop paused — corvid will not write until resumed','neutral');
+  }else{
+    $('lsStatus').className='status st-warn';$('lsStatus').textContent='at gate';
+    $('lsMeta').textContent='review-add-command-v4 ready — your call';
+    $('lsLive').style.display='none';
+    $('lsActions').innerHTML=LS_IDLE_ACTIONS;
+    toastMsg('Round complete — review-add-command-v4 is at the gate','ok');
+  }
+}
+function lsReset(){
+  clearInterval(LS.iv);
+  $('lsStatus').className='status st-danger';$('lsStatus').textContent='exhausted';
+  $('lsMeta').textContent='3d · round 3/3 · 7051 tok · ~$0.04';
+  $('lsActions').innerHTML=LS_IDLE_ACTIONS;
+  $('lsLive').style.display='none';
+}
+</script>
+</body>
+</html>
