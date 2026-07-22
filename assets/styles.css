@@ -657,29 +657,50 @@ button{ font-family:inherit; }
 /* ---------- score (rich, run view) ---------- */
 .legend{ font-family:var(--mono); font-size:10.5px; color:var(--fg-mute); line-height:1.5; margin-top:3px; }
 .score2{ display:flex; flex-direction:column; }
-.sstep{ display:flex; gap:13px; position:relative; padding-bottom:20px; }
+/* Phase 2 cluster 3, part 1 (deferred from cluster 1): the status node, the avatar disc, and the
+   step title now share ONE centerline per row. Previously `.sstep` was a single flex row whose three
+   children (rail/avatar/body) each stretched to the row's full (content-driven) height and positioned
+   their own marker inside via a hand-tuned top offset (`margin-top:1px` on the node, `padding-top:1px`
+   on the avatar) — two independently-guessed numbers that didn't actually land on the same y, which is
+   exactly why the avatar read as slightly off the node/title line. The fix: hoist the title out of the
+   body stack into a `.sstep__head` row alongside the rail and avatar, give rail/avatar a matching fixed
+   height, and let flexbox's own `align-items:center` do the centering — self-correcting for any marker
+   size (circle or diamond) instead of a per-shape magic-number hack. `.sstep__meta` (sub + chip) then
+   sits below, indented to start under the title rather than under the rail/avatar columns. */
+.sstep{ display:flex; flex-direction:column; position:relative; padding-bottom:20px; }
 .sstep:last-child{ padding-bottom:0; }
-.sstep__rail{ position:relative; width:16px; flex:none; display:flex; justify-content:center; }
-.sstep__line{ position:absolute; top:14px; bottom:-8px; left:50%; width:1.5px; transform:translateX(-50%); background:var(--border-strong); }
+.sstep__head{ display:flex; align-items:center; gap:13px; }
+.sstep__rail{ position:relative; width:16px; height:22px; flex:none; display:flex; align-items:center; justify-content:center; }
+/* Anchored to the node's own centerline (half the rail's fixed 22px height), not a row-height-derived
+   magic number — the line now passes cleanly through every node's true center regardless of shape,
+   and the same top/bottom offsets are correct for every row since the rail height never varies. */
+.sstep__line{ position:absolute; top:11px; bottom:-11px; left:50%; width:1.5px; transform:translateX(-50%); background:var(--border-strong); }
 .sstep:last-child .sstep__line{ display:none; }
-.snode{ width:15px; height:15px; border-radius:50%; z-index:1; margin-top:1px; box-sizing:border-box; }
+.snode{ width:15px; height:15px; border-radius:50%; z-index:1; box-sizing:border-box; }
 .snode.done{ background:var(--ok); }
-.snode.is-gate{ border-radius:2px; transform:rotate(45deg); background:var(--fg-mute); width:9px; height:9px; margin-top:4px; }
-.snode.is-gate-open{ border-radius:2px; transform:rotate(45deg); background:var(--gate); width:9px; height:9px; margin-top:4px; }
+.snode.is-gate{ border-radius:2px; transform:rotate(45deg); background:var(--fg-mute); width:9px; height:9px; }
+.snode.is-gate-open{ border-radius:2px; transform:rotate(45deg); background:var(--gate); width:9px; height:9px; }
 .snode.active{ background:var(--active); --pulse-c:var(--active); animation:lv-pulse 1.9s infinite; }
 .snode.blocked{ background:transparent; border:2px solid var(--border-strong); }
 .snode.upcoming{ background:transparent; border:2px solid var(--border-strong); }
 .snode.is-danger{ background:var(--danger); }
-.sstep__body{ display:flex; flex-direction:column; gap:3px; min-width:0; padding-bottom:2px; }
+.sstep__av{ flex:none; width:22px; height:22px; display:flex; align-items:center; justify-content:center; }
 .sstep__label{ font-size:14px; font-weight:600; line-height:1.2; }
 .sstep.upcoming .sstep__label, .sstep.blocked .sstep__label{ color:var(--fg-dim); }
+/* 51px = rail (16) + gap (13) + avatar (22) — lines the sub/chip block up under the title, which
+   starts right after the avatar column in `.sstep__head`. */
+.sstep__meta{ display:flex; flex-direction:column; gap:3px; padding-left:51px; padding-top:3px; }
 .sstep__sub{ font-family:var(--mono); font-size:11px; color:var(--fg-mute); line-height:1.4; }
-.sstep__chip{ align-self:flex-start; margin-top:4px; }
+.sstep__chip{ align-self:flex-start; }
 
 /* ---------- timeline (timestamped) ---------- */
 .tl-date{ font-family:var(--mono); font-size:12px; color:var(--fg-dim); padding:2px 0 10px; border-bottom:1px solid var(--border); }
-.tlrow{ display:flex; gap:16px; align-items:flex-start; padding:13px 0; border-bottom:1px solid var(--border); }
-.tlrow__time{ font-family:var(--mono); font-size:11.5px; color:var(--fg-mute); width:46px; flex:none; padding-top:3px; }
+/* Part 1: the date-stamp and the event text now share a true text baseline (`align-items:baseline`)
+   instead of `flex-start` plus a hand-tuned `padding-top` guessing where the larger sans line's
+   baseline would land relative to the smaller mono one — baseline alignment is correct by
+   construction regardless of either side's font-size/line-height. */
+.tlrow{ display:flex; gap:16px; align-items:baseline; padding:13px 0; border-bottom:1px solid var(--border); }
+.tlrow__time{ font-family:var(--mono); font-size:11.5px; color:var(--fg-mute); width:46px; flex:none; }
 .tlrow__text{ font-size:13.5px; line-height:1.7; color:var(--fg-dim); }
 .tlrow__text .who{ font-weight:600; color:var(--fg); }
 .tlrow__text .avatar, .tlrow__text .diamond{ vertical-align:middle; margin-right:8px; position:relative; top:-1px; }

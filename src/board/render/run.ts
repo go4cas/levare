@@ -63,9 +63,12 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
         ? `${esc(n.artifact.produced_by)} &middot; ${artifactTokenLink(n.artifact.project, n.artifact.unit, n.artifact.id, artifactFileName(n.artifact))}`
         : "queued";
       return `<div class="sstep ${nodeCls}">
-        <div class="sstep__rail"><span class="${snodeCls}" aria-hidden="true"></span><span class="sstep__line" aria-hidden="true"></span></div>
-        ${av}
-        <div class="sstep__body"><span class="sstep__label">${esc(n.kind)}</span><span class="sstep__sub">${sub}</span>${chip}</div>
+        <div class="sstep__head">
+          <div class="sstep__rail"><span class="${snodeCls}" aria-hidden="true"></span><span class="sstep__line" aria-hidden="true"></span></div>
+          ${av}
+          <span class="sstep__label">${esc(n.kind)}</span>
+        </div>
+        <div class="sstep__meta"><span class="sstep__sub">${sub}</span>${chip}</div>
       </div>`;
     })
     .join("\n");
