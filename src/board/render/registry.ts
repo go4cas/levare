@@ -11,7 +11,9 @@ import { STUDIO_SCOPE } from "../../conversation.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
 import { detectSandbox, type SandboxDetection } from "../../sandbox.ts";
 import { remoteAgentImplemented } from "../../env.ts";
-import { tag, editorOverlay, orchTurn, callout, card } from "../components.ts";
+import { tag, kindTag, editorOverlay, orchTurn, callout, card } from "../components.ts";
+import { registryKindIconBody } from "./entity-icons.ts";
+import { deriveTeamStyle } from "../team-color.ts";
 import {
   shell,
   pageBody,
@@ -41,16 +43,17 @@ import {
 // ever"), just no longer the editing surface itself. `data-path` (on both the article and the trigger)
 // carries the entity's repo-relative file so app.js can target both `POST /registry/*path` (save) and
 // `POST /registry/check/*path` (live validation of the unsaved buffer) without a second lookup.
-// UI7 (RULE A): a card on its own entity's page doesn't repeat its kind — the kind is already the
-// URL/page it lives on (`/registry/<kind>`). `showKindTag` lets a call site drop the top-right
-// `.entity__kind` tag entirely rather than printing e.g. "team" on every team card; `data-editor-kind`
-// (the overlay's heading) still gets the real kind label regardless, since the overlay is a shared
-// modal that needs to say what it's editing.
+// Amendment 1 §1/§3 (Ruling R3, consistency audit F5/F6/F7): the kind-tag (glyph + word) is now
+// MANDATORY on every registry card header — superseding UI7's old "RULE A" (a card on its own
+// entity's page doesn't repeat its kind, so team/agent/skill cards dropped the tag entirely). The
+// review that ratified the entity-icon family found the tag missing on exactly those three kinds;
+// the tag is back on every card, now carrying the entity glyph the amendment's whole point is to
+// put in front of the Conductor. `data-editor-kind` (the overlay's heading) still gets the real kind
+// label regardless, since the overlay is a shared modal that needs to say what it's editing.
 // `accentColor`, when given, replaces the identity swatch/hex text some entities used to print with a
 // left-edge border in the entity's own declared colour — the colour becomes the card's identity, not a
 // value rendered on it (RULE B: a team's declared hue is the one colour-as-identity exception).
-function entityBlock(kind: RegistryKind, title: string, kindLabel: string, inner: string, relPath: string, raw: string, name: string, active: boolean, opts: { showKindTag?: boolean; accentColor?: string } = {}): string {
-  const showKindTag = opts.showKindTag ?? true;
+function entityBlock(kind: RegistryKind, title: string, kindLabel: string, inner: string, relPath: string, raw: string, name: string, active: boolean, opts: { accentColor?: string } = {}): string {
   const styleParts: string[] = [];
   if (!active) styleParts.push("display:none");
   if (opts.accentColor) styleParts.push(`border-left:2px solid ${opts.accentColor}`);
@@ -69,7 +72,7 @@ function entityBlock(kind: RegistryKind, title: string, kindLabel: string, inner
     topCls: "entity__head",
     title,
     titleCls: "entity__title",
-    status: showKindTag ? tag(kindLabel) : "",
+    status: kindTag(registryKindIconBody(kind, name), kindLabel),
     body: `<div class="rendered">${inner}</div>`,
     meta: `<textarea class="rawmd-source" data-path="${esc(relPath)}" hidden>${esc(raw)}</textarea>
     <div class="editbar">
@@ -121,9 +124,11 @@ export function renderRegistry(
       <div class="card__h">Definition</div>
       <div class="prow"><span class="k">members</span><span class="v chiprow">${memberAvatars}</span></div>
       <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>`;
-      // UI7: no "team" kind tag (RULE A) — the declared colour, now a left-edge card border, is the
-      // card's identity instead of a swatch/hex value printed inside it.
-      return entityBlock("teams", esc(t.name), "team", inner, `teams/${t.name}.md`, rawFor(root, "teams", t.name), t.name, active === "teams", { showKindTag: false, accentColor: t.style.color });
+      // The declared colour, as a left-edge card border, is the card's identity instead of a
+      // swatch/hex value printed inside it (RULE B). Routed through the same contrast-floored
+      // derivation `avatar()` uses (team-color.ts) — the border and a team's member avatars must
+      // read as ONE hue, not a raw declared value beside a corrected one.
+      return entityBlock("teams", esc(t.name), "team", inner, `teams/${t.name}.md`, rawFor(root, "teams", t.name), t.name, active === "teams", { accentColor: deriveTeamStyle(t.style.color).hue });
     })
     .join("\n");
 
@@ -168,17 +173,15 @@ export function renderRegistry(
       <div class="card__h">Definition</div>
       <div class="prow"><span class="k">kind</span><span class="v">${agentKindBadge(a.kind)}${a.model ? ` <span class="mono">&middot; ${esc(a.model)}</span>` : ""}</span></div>
       <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>${remoteWarning}${cliToolsWarning}${sandboxWarning}`;
-      // UI7: no "agent" kind tag (RULE A) — the kind is already the page/URL this card lives on.
-      return entityBlock("agents", `${avatar(a.style.avatar || a.name.slice(0, 2), team?.style.color, { size: "lg" })} ${esc(a.name)}`, "agent", inner, `agents/${a.name}.md`, rawFor(root, "agents", a.name), a.name, active === "agents", { showKindTag: false });
+      return entityBlock("agents", `${avatar(a.style.avatar || a.name.slice(0, 2), team?.style.color, { size: "lg" })} ${esc(a.name)}`, "agent", inner, `agents/${a.name}.md`, rawFor(root, "agents", a.name), a.name, active === "agents");
     })
     .join("\n");
 
   const skillBlocks = extras.skills
     .map((s) => {
-      // UI7: no "SKILL.md" heading (an implementation detail, not information) and no "skill" kind
-      // tag (RULE A) — just the description.
+      // UI7: no "SKILL.md" heading (an implementation detail, not information) — just the description.
       const inner = `<p style="margin:0;font-size:13.5px;line-height:1.6;color:var(--fg-dim)">${esc(String(s.data.description ?? firstParagraph(s.body)))}</p>`;
-      return entityBlock("skills", esc(s.name), "skill", inner, s.file, rawForPath(root, s.file), s.name, active === "skills", { showKindTag: false });
+      return entityBlock("skills", esc(s.name), "skill", inner, s.file, rawForPath(root, s.file), s.name, active === "skills");
     })
     .join("\n");
 

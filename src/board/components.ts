@@ -48,6 +48,18 @@ export function tag(text: string, cls: string = "entity__kind"): string {
 export const chip = tag;
 
 // ---------------------------------------------------------------------------
+// kindTag — amendment 1 §1/§3: glyph + word, MANDATORY in every registry card header (the review
+// found it missing on skills/agents/teams — amendment §3 F5/F6/F7). Evolves the existing
+// `.entity__kind` position/class (still the top-right kind-badge slot every registry card already
+// used) to also carry the entity-icon family's glyph, rather than forking a second `.kindtag` class
+// alongside it — one card system, per the reconciliation this cluster's goal requires. The glyph is
+// monochrome and carries TYPE only (Ruling R1) — never state, never team colour.
+// ---------------------------------------------------------------------------
+export function kindTag(iconBody: string, label: string): string {
+  return `<span class="entity__kind"><svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true">${iconBody}</svg>${esc(label)}</span>`;
+}
+
+// ---------------------------------------------------------------------------
 // iconLink — the project page's destination-recognisable external-link icons (repo/deploy). Vendored
 // Tabler-outline paths, monochrome (`stroke="currentColor"`) per the design brief's "the board stays
 // monochrome" rule.
