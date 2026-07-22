@@ -1014,6 +1014,81 @@ describe("remote adapter — sandboxed real spawn (NOTES MCP-1C, PRD Amendment 3
     REAL_SPAWN_TEST_TIMEOUT_MS,
   );
 
+  // NOTES MCP-1C addendum 6 — the Conductor's ruling closing item #4 (the bunx/npx e2e hang): a
+  // fetch-at-dispatch connector (npx -y, bunx, pnpm dlx, yarn dlx over a bare package spec) is refused
+  // OUTRIGHT, before ever reaching `wrapForSandbox`/`connect`, whenever a working sandbox primitive is
+  // present — turning what used to be a silent 60s hang against a denied npm/npx/bun cache into an
+  // immediate, named AdapterError. `sandboxDetection` forces the SAME "a working primitive is present"
+  // condition the live-macOS hang needed, without depending on this container's own real bwrap/
+  // sandbox-exec — and `opts.connect` is deliberately left at its real default (never overridden) so
+  // this test also proves the refusal happens BEFORE any real spawn is attempted: if the fix regressed
+  // to refusing too late, this test would itself hang trying to actually spawn "npx".
+  test(
+    "a fetch-at-dispatch connector (npx -y a bare package spec) is refused immediately under a working sandbox primitive, never spawned",
+    async () => {
+      const connector = fakeServerConnector("normal", { argv: ["npx", "-y", "@modelcontextprotocol/server-everything", "stdio"] });
+      const agent = { name: "echo", server: "everything", tool: "noop", params: {}, connectors: ["everything"] };
+      const repo = remoteTestRepo(agent, connector);
+      const boundary = createAsyncStdioRemoteBoundary(repo, {
+        sandboxDetection: { platform: "linux", primitive: "bubblewrap", level: "full", bin: fakeWorkingPrimitive() },
+      });
+      await expect(boundary.call(baseReq(repo.agents.get("echo")!))).rejects.toThrow(AdapterError);
+      await expect(boundary.call(baseReq(repo.agents.get("echo")!))).rejects.toThrow(/npx/);
+    },
+    REAL_SPAWN_TEST_TIMEOUT_MS,
+  );
+
+  // Sibling proof: the SAME forced "working sandbox" condition does NOT refuse a path-referenced
+  // connector — the refusal above is specific to fetch-at-dispatch argv, never a blanket rejection of
+  // every remote dispatch once a sandbox primitive is present (the "a dispatch through a REAL (if fake)
+  // working sandbox primitive completes without hanging" test above already proves this positively; this
+  // test names the negative directly, right next to the refusal it's the contrast for).
+  test(
+    "a path-referenced connector (interpreter + local script) is NOT refused under the identical working-sandbox condition",
+    async () => {
+      const connector = fakeServerConnector("normal"); // ["bun", FAKE_MCP_SERVER, "normal"] — resolved, not fetched
+      const agent = { name: "echo", server: "everything", tool: "noop", params: {}, connectors: ["everything"] };
+      const repo = remoteTestRepo(agent, connector);
+      const boundary = createAsyncStdioRemoteBoundary(repo, {
+        sandboxDetection: { platform: "linux", primitive: "bubblewrap", level: "full", bin: fakeWorkingPrimitive() },
+      });
+      const { doc } = await boundary.call(baseReq(repo.agents.get("echo")!));
+      expect(doc).toBe(`called noop with ${JSON.stringify({})}`);
+    },
+    REAL_SPAWN_TEST_TIMEOUT_MS,
+  );
+
+  // NOTES MCP-1C addendum 6: the sibling of the refusal above, for a host with NO working sandbox
+  // primitive — the fetch-at-dispatch server runs exactly as it always has, unconfined, never refused.
+  // Deliberately does NOT override `opts.connect` (the real boundary, real Bun.spawn) and deliberately
+  // does NOT actually invoke a real npx/bunx against the network either — a real fetch is exactly the
+  // live, optional, non-blocking proof NOTES MCP-1C addendum 4 already named and left open, not something
+  // this always-run in-container test should depend on. Instead, a fake "npx" shim (this file's own
+  // `fakeWorkingPrimitive` pattern, applied to the LAUNCHER rather than the sandbox primitive) is placed
+  // first on PATH and unconditionally execs this repo's own deterministic fixture server — argv[0] is
+  // still the bare string "npx" (what `detectFetchAtDispatchLauncher` matches on), so this genuinely
+  // exercises the `detection.level === "none"` skip in real code, with a real spawn underneath it.
+  test(
+    "a fetch-at-dispatch connector is NOT refused when this host has no working sandbox primitive at all — the real spawn boundary proceeds exactly as before",
+    async () => {
+      const npxShimDir = fakeNpxShim();
+      try {
+        const connector = fakeServerConnector("normal", { argv: ["npx", "-y", "@modelcontextprotocol/server-everything", "stdio"] });
+        const agent = { name: "echo", server: "everything", tool: "noop", params: {}, connectors: ["everything"] };
+        const repo = remoteTestRepo(agent, connector);
+        const boundary = createAsyncStdioRemoteBoundary(repo, {
+          sandboxDetection: { platform: "linux", primitive: "none", level: "none" },
+        });
+        const req = baseReq(repo.agents.get("echo")!, { env: { PATH: `${npxShimDir}:${process.env.PATH ?? ""}`, HOME: homedir() } });
+        const { doc } = await boundary.call(req);
+        expect(doc).toBe(`called noop with ${JSON.stringify({})}`);
+      } finally {
+        rmSync(npxShimDir, { recursive: true, force: true });
+      }
+    },
+    REAL_SPAWN_TEST_TIMEOUT_MS,
+  );
+
   // NOTES MCP-1C addendum 3 — the live-macOS finding: `buildRemoteSandboxPolicy` granted the resolved
   // INTERPRETER's own install tree (argv[0], e.g. `~/.bun/bin`) but never the SCRIPT PATH an
   // interpreter+local-script connector (`["bun", "<script>", ...]`) actually loads. A real sandbox
@@ -1606,6 +1681,20 @@ function fakeWorkingPrimitive(): string {
   writeFileSync(path, ["#!/bin/sh", 'while [ "$#" -gt 0 ]; do', '  if [ "$1" = "--" ]; then', "    shift", '    exec "$@"', "  fi", "  shift", "done"].join("\n") + "\n");
   chmodSync(path, 0o755);
   return path;
+}
+
+/** NOTES MCP-1C addendum 6: the launcher-side sibling of `fakeWorkingPrimitive` above — a fake "npx" on
+ * PATH that ignores every arg it's actually called with and unconditionally execs this repo's own
+ * deterministic fixture server instead, so a test proving "a fetch-at-dispatch-SHAPED argv is not refused
+ * at level: none" can exercise a REAL spawn (Bun.spawn resolving "npx" off PATH, a real process, a real
+ * JSON-RPC handshake) without ever depending on a real npx being installed or reaching the network.
+ * Returns the shim's own containing DIRECTORY (to prepend onto PATH), not the file itself. */
+function fakeNpxShim(): string {
+  const dir = mkdtempSync(join(tmpdir(), "levare-fake-npx-"));
+  const path = join(dir, "npx");
+  writeFileSync(path, ["#!/bin/sh", `exec ${JSON.stringify(process.execPath)} ${JSON.stringify(FAKE_MCP_SERVER)} normal`].join("\n") + "\n");
+  chmodSync(path, 0o755);
+  return dir;
 }
 
 describe("NOTES R4-SANDBOX Ruling 1 — per-dispatch worktree isolation", () => {

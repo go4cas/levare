@@ -1008,7 +1008,10 @@ describe("kind: remote — legal, valid, and warned about (NOTES MCP-1B)", () =>
           "---",
           "name: everything",
           "kind: mcp",
-          'argv: ["bunx", "-y", "@modelcontextprotocol/server-everything", "stdio"]',
+          // NOTES MCP-1C addendum 6: a resolved, path-referenced argv — a bunx/npx-style fetch-at-dispatch
+          // launcher would ALSO carry a (separate) MCP_FETCH_AT_DISPATCH warning, which this test isn't
+          // about; see the dedicated describe block below for that check.
+          'argv: ["/opt/mcp-servers/everything-server", "stdio"]',
           "env: [EVERYTHING_TOKEN]",
           "role: tool",
           "---",
@@ -1078,9 +1081,9 @@ describe("kind: remote — legal, valid, and warned about (NOTES MCP-1B)", () =>
       );
       writeFileSync(
         join(dir, "connectors", "everything.md"),
-        ["---", "name: everything", "kind: mcp", 'argv: ["bunx", "-y", "@modelcontextprotocol/server-everything", "stdio"]', "env: [EVERYTHING_TOKEN]", "role: tool", "---", "", "An mcp connector.", ""].join(
-          "\n",
-        ),
+        // NOTES MCP-1C addendum 6: path-referenced, not a fetch-at-dispatch launcher — see this
+        // describe block's own sibling below for the MCP_FETCH_AT_DISPATCH-specific tests.
+        ["---", "name: everything", "kind: mcp", 'argv: ["/opt/mcp-servers/everything-server", "stdio"]', "env: [EVERYTHING_TOKEN]", "role: tool", "---", "", "An mcp connector.", ""].join("\n"),
       );
       return dir;
     }
@@ -1132,5 +1135,90 @@ describe("kind: remote — legal, valid, and warned about (NOTES MCP-1B)", () =>
         rmSync(dir, { recursive: true, force: true });
       }
     });
+  });
+});
+
+// NOTES MCP-1C addendum 6 — the Conductor's ruling closing item #4 (the bunx/npx e2e hang): a `kind:
+// mcp` connector whose argv invokes a known package-runner in fetch-and-run mode (npx, bunx, pnpm dlx,
+// yarn dlx) over a bare package spec is a legal-but-unsupported-under-sandbox declaration — warned here,
+// never rejected (the same REV1 honesty-layer posture as REMOTE_NOT_IMPLEMENTED/SANDBOX_UNAVAILABLE
+// above); adapters.ts#createAsyncStdioRemoteBoundary re-runs the identical detection and turns it into a
+// hard, fail-fast error specifically when dispatched under a host with a working sandbox primitive (see
+// tests/adapters.test.ts's own sibling describe block for that half).
+describe("MCP_FETCH_AT_DISPATCH — fetch-at-dispatch MCP launchers (NOTES MCP-1C addendum 6)", () => {
+  function connectorDoc(argv: string): string {
+    return ["---", "name: everything", "kind: mcp", `argv: ${argv}`, "env: [EVERYTHING_TOKEN]", "role: tool", "---", "", "An mcp connector.", ""].join("\n");
+  }
+
+  function connectorDir(argv: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "levare-mcp-fetch-at-dispatch-"));
+    mkdirSync(join(dir, "connectors"), { recursive: true });
+    writeFileSync(join(dir, "connectors", "everything.md"), connectorDoc(argv));
+    return dir;
+  }
+
+  test.each([
+    ["npx -y a bare package spec", '["npx", "-y", "@modelcontextprotocol/server-everything", "stdio"]'],
+    ["bunx a bare package spec", '["bunx", "@modelcontextprotocol/server-everything", "stdio"]'],
+    ["pnpm dlx a bare package spec", '["pnpm", "dlx", "@modelcontextprotocol/server-everything", "stdio"]'],
+    ["yarn dlx a bare package spec", '["yarn", "dlx", "@modelcontextprotocol/server-everything", "stdio"]'],
+  ])("fires for %s", (_label, argv) => {
+    const dir = connectorDir(argv);
+    try {
+      const r = validatePath(dir);
+      expect(r.ok).toBe(true); // a warning, never an error — the declaration is legal.
+      expect(r.warnings.map((w) => w.code)).toContain("MCP_FETCH_AT_DISPATCH");
+      const w = r.warnings.find((w) => w.code === "MCP_FETCH_AT_DISPATCH")!;
+      expect(w.message).toContain("everything");
+      expect(w.message).toContain("fetch");
+      expect(w.message).toContain("05-foreign-agent.md");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a pnpm connector with no dlx subcommand is an ordinary CLI invocation, never flagged", () => {
+    const dir = connectorDir('["pnpm", "run", "start"]');
+    try {
+      const r = validatePath(dir);
+      expect(r.warnings.map((w) => w.code)).not.toContain("MCP_FETCH_AT_DISPATCH");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a resolved, path-referenced connector (no runner at all) is never flagged", () => {
+    const dir = connectorDir('["/opt/mcp-servers/everything-server", "stdio"]');
+    try {
+      const r = validatePath(dir);
+      expect(r.warnings.map((w) => w.code)).not.toContain("MCP_FETCH_AT_DISPATCH");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a runner invocation naming a resolvable, existing local file is a locally-installed server, not fetch-at-dispatch — never flagged", () => {
+    const dir = connectorDir(JSON.stringify(["npx", import.meta.path, "stdio"])); // any existing absolute file works as the probe
+    try {
+      const r = validatePath(dir);
+      expect(r.warnings.map((w) => w.code)).not.toContain("MCP_FETCH_AT_DISPATCH");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a kind: cli connector is never checked — this ruling is specific to kind: mcp's own sandboxed spawn", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-mcp-fetch-at-dispatch-cli-"));
+    try {
+      mkdirSync(join(dir, "connectors"), { recursive: true });
+      writeFileSync(
+        join(dir, "connectors", "gh.md"),
+        ["---", "name: gh", "kind: cli", "command: npx", "env: [GITHUB_TOKEN]", "role: tool", "---", "", "A cli connector.", ""].join("\n"),
+      );
+      const r = validatePath(dir);
+      expect(r.warnings.map((w) => w.code)).not.toContain("MCP_FETCH_AT_DISPATCH");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
