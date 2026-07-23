@@ -17,7 +17,7 @@ import type { DaemonInvocation } from "../../daemon.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
 import { getVersionInfo } from "../../version.ts";
 import { statusLabel } from "../status.ts";
-import { statusBadge, counter, pendingState, card, confirmModal, orchTurn, renderPersistedTurns, tag, callout } from "../components.ts";
+import { statusBadge, counter, pendingState, card, confirmModal, toastViewport, orchTurn, renderPersistedTurns, tag, callout } from "../components.ts";
 import { loadConversationTail } from "../../conversation.ts";
 import { deriveTeamStyle } from "../team-color.ts";
 import { registryKindIconBody } from "./entity-icons.ts";
@@ -33,7 +33,7 @@ const LEVARE_VERSION: string = getVersionInfo().version;
 const ASSETS = `<link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
-<link rel="stylesheet" href="/styles.css?v=10"/>`;
+<link rel="stylesheet" href="/styles.css?v=11"/>`;
 
 // ---------------------------------------------------------------------------
 // The app header (item 3, gate-review round UI1) — new, top-level, spans the full width above the
@@ -70,7 +70,8 @@ ${ASSETS}
 ${appHeader(status, railToggleLabel)}
 ${body}
 ${confirmModal()}
-<script src="/app.js?v=8"></script>
+${toastViewport()}
+<script src="/app.js?v=9"></script>
 </body>
 </html>
 `;

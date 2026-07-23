@@ -308,6 +308,18 @@ export function confirmModal(): string {
   </div>`;
 }
 
+// UI motion wrap-up, amendment 1 §2 R5 / review F29: the ONE genuine gap the inline gate
+// failure-with-retry treatment (built into the gate card itself, not here) doesn't already cover —
+// the registry editor's save-and-commit success has no feedback surface once the overlay that held
+// the action closes (assets/app.js's own save handler used to set the button's text to "Committed ✓"
+// and hide the overlay in the same synchronous tick, so that text was never actually painted). A
+// single auto-dismissing viewport confirmation is the minimal, named fix — not a general toast
+// system: failure keeps its existing inline treatment (the editor overlay stays open with the error
+// on failure; a gate's own failure stays on the card), so neither needs this surface.
+export function toastViewport(): string {
+  return `<div class="toast-viewport" id="toast-viewport" aria-live="polite"></div>`;
+}
+
 // Phase 2 cluster 4 item 4: the raw-markdown editor gets labeled ZONES (frontmatter/body — the
 // design brief's own frontmatter/body split and mono-means-truth) instead of one undifferentiated
 // textarea, a statusBadge-consistent validity indicator, structured "line · key · expectation" error

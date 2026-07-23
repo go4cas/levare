@@ -559,6 +559,31 @@
       };
     })();
 
+    /* UI motion wrap-up, amendment 1 §2 R5 / review F29: the one named gap the inline treatments
+       elsewhere don't cover (see assets/styles.css's own `.toast-viewport` comment for why this isn't
+       a general toast system) — the editor's save-and-commit success, whose old feedback (setting the
+       Save button's own text to "Committed ✓") was never actually visible: `closeEditor()` hides
+       the overlay in the same synchronous tick, before the browser ever paints the changed text. A
+       single auto-dismissing confirmation in `#toast-viewport` (a page-shell sibling of `.app`, never
+       touched by a `.main` swap) replaces that dead affordance. */
+    var showToast = (function () {
+      var host = document.getElementById('toast-viewport');
+      if (!host) return function () {};
+      var TOAST_MS = 2600;
+      return function (message) {
+        var el = document.createElement('div');
+        el.className = 'toast';
+        el.setAttribute('role', 'status');
+        el.textContent = message;
+        host.appendChild(el);
+        requestAnimationFrame(function () { el.classList.add('is-shown'); });
+        setTimeout(function () {
+          el.classList.remove('is-shown');
+          setTimeout(function () { el.remove(); }, 200);
+        }, TOAST_MS);
+      };
+    })();
+
     /* ---------- client-side navigation (NOTES UI10) ----------
        In-app link clicks swap the CONTENT COLUMN (the server-rendered `<main class="main">`, plus its
        page's own extras — gate-summon templates, the registry editor overlay — swapped into a stable
@@ -1017,8 +1042,9 @@
           return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, body: j }; });
         }).then(function (res) {
           if (res.ok && res.body && res.body.ok) {
-            ovSave.textContent = 'Committed ✓';
+            var savedName = ovTitle.textContent;
             closeEditor();
+            showToast('Saved and committed — ' + savedName);
             setTimeout(function () { refreshCurrent(); }, 400);
           } else {
             ovSave.textContent = 'Save and commit';
