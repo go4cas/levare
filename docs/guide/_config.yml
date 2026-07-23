@@ -6,6 +6,16 @@ title: levare guide
 description: The console for directing AI agent teams — pitch to production, one gate at a time.
 
 search_enabled: true
+enable_copy_code_button: true
 
 color_scheme: levare
 logo: "/assets/images/levare-logo.svg"
+
+back_to_top: true
+back_to_top_text: "Back to top"
+
+aux_links:
+  "levare on GitHub":
+    - "https://github.com/go4cas/levare"
+
+footer_content: "Copyright &copy; 2026 the levare project. Distributed under the <a href=\"https://github.com/go4cas/levare/blob/main/LICENSE\">Apache-2.0 license</a>."
