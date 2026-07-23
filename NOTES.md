@@ -13398,3 +13398,108 @@ above for the Conductor's own live-browser judgment per the goal's ask, not sile
 "obviously fine." The toast is scoped to exactly the one gap found; a future action with the same
 "outcome has no feedback surface once its own UI closes" shape would need its own audit, not an
 assumption that `showToast` already covers it.
+
+# NOTES RELOAD-STORM (2026-07-23) — the idle-page reload storm: mechanism, fix, and the pulse-animation finding
+
+Live symptom: devtools on `/registry/skills` showed 69 identical `GET /registry/skills` requests / 2.7MB
+in ~18s on a page nobody was touching — a same-URL refetch roughly every 250ms, forever, initiated from
+`app.js`'s `refreshCurrent()`. Real navigations queued behind the saturated stream, reading as
+intermittent slow page loads; the board also burned CPU/network continuously while "idle."
+
+## Mechanism, confirmed before touching any code
+
+`src/board/serve.ts` installs ONE `fs.watch(root, { recursive: true })` for the board's whole lifetime;
+every filesystem event scheduled `ctx.broadcast("reload")` behind an 80ms debounce. `assets/app.js`
+holds one `EventSource` and calls `refreshCurrent()` — a full same-URL fragment refetch — on every
+`reload` message. The 80ms debounce coalesces *bursts* but does nothing against a continuous *trickle*:
+each spaced-out event is its own debounce cycle, its own broadcast, its own refetch.
+
+Instrumented the raw watch callback against a seeded scratch git repo (the same `seedScratchRepo()`
+pattern `tests/board-serve.test.ts` already uses) with a background `git status` poll every 250ms
+standing in for ordinary idle git activity (the daemon's own git ops, a human's shell, a poll from
+tooling — anything that touches the index/refs/logs). Result: **38 fs events over 5s, 100% under
+`.git/*`, 0% under any directory a page actually renders from.** That's the whole bug — `.git` churn
+(index.lock, refs, logs) was driving every "content changed" broadcast, and the old code never
+distinguished it from a real edit.
+
+## The fix — two independent layers, per the brief
+
+1. **Scope the watch** (`isRelevantWatchPath`, `src/board/serve.ts`): before a raw fs event schedules
+   the debounce timer at all, its top-level path segment is checked against exactly the directories a
+   rendered page is derived from — `REGISTRY_EDITABLE_DIRS` (already the write-side allowlist:
+   teams/agents/skills/knowledge/types/connectors/projects/evals/ideas — see `isRegistryEditablePath`)
+   plus `work` (loaded by `repo.ts#loadRepo`, not by the registry loader) plus the root `studio.md`
+   singleton. `.git/*`, `.DS_Store`, `node_modules/*`, anything else — discarded before any timer is
+   even set. A `null` filename (a platform that doesn't report one) is NOT scoped out here; it falls
+   through to layer 2 instead of being silently dropped, so a real change on such a platform still
+   reaches a broadcast via the signature check.
+2. **Broadcast on real change, not on any event** (`computeChangeSignature`, same file): when the
+   debounce timer fires, it walks exactly those same directories, hashes `relPath:mtimeMs:size` for
+   every file into one signature, and only calls `ctx.broadcast("reload")` when that signature differs
+   from the last one actually sent. This is the belt-and-braces layer — idempotent regardless of how
+   chatty the filesystem is, so it holds even if a future transient path slips past layer 1.
+
+Both are exported and unit-tested directly (`tests/board-serve-reload-signature.test.ts`): a `.git/*`
+write leaves `computeChangeSignature` unchanged; a real `work/**` edit changes it;
+`isRelevantWatchPath` is asserted true/false for the exact path shapes above. An integration test
+reproduces the original bug directly — hammers `.git/levare-churn-probe` with writes every 20ms for
+1.5s against a live `createBoard`+`/events` SSE connection and asserts **zero** `data: reload` frames,
+then makes one real `work/**` edit and asserts **exactly one**.
+
+## Verified with evidence, not assertion
+
+Wrote a throwaway harness (`createBoard` against a seeded scratch git repo, `/events` SSE connection,
+a background `git status` poll every 250ms standing in for idle git churn) and ran it for the full 60s+
+the goal asked for: **0 reload broadcasts across 60,101ms of continuous git churn**, then one real edit
+to `work/storefront/checkout-flow/unit.md` (+ commit) produced **exactly 1** `data: reload` frame,
+observed ~100ms later (the debounce window) — both directions confirmed, not inferred.
+
+`bun test` → 1292 pass, 9 skip, 0 fail across 93 files (unchanged suite plus the 8 new tests above).
+`bunx tsc --noEmit` → clean. `bun run deps:check` → `deps ok`. `bun run build` → succeeds. `bun run
+src/cli.ts validate fixtures/golden` → `valid` (same 2 pre-existing `SANDBOX_UNAVAILABLE` warnings,
+unrelated). The full `bun test` run's own replay-oracle case ("final artifact statuses match
+fixtures/golden/expected.json byte-for-byte") passed unchanged — this fix never touches
+dagwalk/runner/replay logic, only the board's own fs.watch wiring.
+
+## The pulse-animation finding
+
+The goal's hypothesis: the storm tears down and re-inserts the DOM every ~250ms (`app.js#swapFragment`
+does `oldMain.parentNode.replaceChild(newMain, oldMain)` — a full replace of `.main` on every refetch),
+which restarts any CSS animation inside it from frame zero — including the active-work-item pulse
+(`animation: lv-pulse var(--motion-pulse) infinite`, `--motion-pulse: 1.6s`, ratified). At ~4
+refetches/sec the 1.6s cycle could never complete once, reading as a stutter instead of a heartbeat.
+
+Confirmed the mechanism is fully eliminated, then re-judged live rather than assuming: grepped
+`assets/app.js` for every periodic trigger (`setInterval`, `requestAnimationFrame`) — the only
+`requestAnimationFrame` call is a one-shot fade-in class toggle, unrelated; the only other refetch
+triggers are the SSE `reload` handler (now fixed) and a one-shot 400ms follow-up after a save (not
+periodic). With idle refetches at zero (proven above), nothing left in the client ever re-triggers a
+`.main` replace on an otherwise-idle page.
+
+Verified live, not just by code-reading: built a real in-flight daemon step (loyalty-flow's `design`
+step held open 20s via a delayed `memberRunner`, same pattern as `tests/board-serve-daemon.test.ts`),
+served it over a real port, and drove headless Chromium (Playwright, `chromium-1228` from the existing
+`~/.cache/ms-playwright`) against `/run/storefront/loyalty-flow` while the pulse was genuinely live
+(`kestrel/lyra · producing… · design`). Over a 15.7s window covering both active sampling and idle time,
+exactly 2 requests fired total — the initial page load and the one `/events` SSE connection — 0
+refetches, matching the synthetic result under a real in-flight production step, the exact condition
+that used to storm hardest. Sampled the pulsing element's computed `box-shadow` every 100ms for 4.8s
+(~3 cycles): smooth, continuous, monotonic growth-then-fade-then-reset, repeating — not frozen, not
+erratically restarting. Two screenshots taken 0.8s apart show the ring at two visibly different phases
+(a tight small ring vs. a wider fading halo), confirming normal cyclical progress rather than either a
+stuck frame or a rapid-restart stutter.
+
+**Case A applies: the storm was the cause. It's fixed. The pulse now reads calm at its already-ratified
+1.6s — no motion-scale amendment needed, `--motion-pulse` stays at 1.6s.**
+
+## What this fix does NOT claim
+
+Did not attempt to eliminate the underlying OS-level `fs.watch` subscription on `.git/*` itself (a
+single `recursive: true` watch on `root` still receives those events at the kernel/libuv level) —
+layer 1 discards them in the JS callback before they can schedule any work, which is what actually
+stops the storm; splitting into N per-directory watches to avoid the OS delivering `.git` events at all
+was considered and rejected as unnecessary complexity (directories like `ideas/`/`skills/` don't always
+exist yet at board startup and would need dynamic watch creation on first use — the single recursive
+watch already handles that case for free). Did not touch `daemon.ts`'s own separate `fs.watch` on
+`work/` (its debounce mirrors this one at 80ms) — it watches only `work/`, never `.git`, so it was never
+part of this bug; out of scope here.
