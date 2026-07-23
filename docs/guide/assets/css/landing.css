@@ -1,39 +1,58 @@
 /* levare landing page — vanilla CSS, no framework.
    Shares the app's identity (tokens ported from /assets/styles.css, docs/levare-design-brief.md)
-   but not its density: this page is air and narrative rhythm, not an operator's instrument. */
+   but not its density: this page is air and narrative rhythm, not an operator's instrument.
+
+   Pass 2 (design ambition, docs/landing-brief-amendment-1.md): the score rail is the page's
+   spine — every major section carries a rail node, wired to scroll position by assets/js/landing.js.
+   Node/line states and colour tokens below are ported from the real run view's own `.snode`/
+   `.sstep__line` vocabulary (assets/styles.css, "score (rich, run view)"), not reinvented, so the
+   marketing page performs the identical grammar the product screenshot below it shows. */
 
 :root {
   color-scheme: light;
-  --bg: #F5F6F7;
+  --bg: #F6F4F0;
   --panel: #FFFFFF;
-  --panel-2: #FAFAFB;
+  --panel-2: #FAF9F6;
   --fg: #191B21;
   --fg-dim: #565B65;
   --fg-mute: #8A8F99;
-  --border: #E6E8EB;
-  --border-strong: #D6D9DE;
+  --border: #E6E3DD;
+  --border-strong: #D3CFC5;
   --accent: #C2402A;
   --accent-ink: #FFFFFF;
   --gate: #8A6414;
+  --active: #2B6CB0;
+  --rail-done: color-mix(in oklab, var(--fg) 46%, var(--border-strong));
+  --grid-dot: color-mix(in oklab, var(--fg) 7%, transparent);
   --shadow: 0 1px 2px rgba(25, 27, 33, .05), 0 10px 28px rgba(25, 27, 33, .06);
   --sans: 'Hanken Grotesk', system-ui, -apple-system, sans-serif;
   --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+
+  /* ratified motion scale (amendment §4) — identical values to the shipped app's own tokens */
+  --motion-instant: 80ms;
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --motion-pulse: 1.6s;
+  --ease-standard: cubic-bezier(.2, .7, .3, 1);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
-    --bg: #101216;
+    --bg: #121110;
     --panel: #191B21;
-    --panel-2: #1E212A;
+    --panel-2: #1E1D1B;
     --fg: #F5F6F7;
     --fg-dim: #A4A9B3;
     --fg-mute: #6C727D;
-    --border: #262A33;
-    --border-strong: #343A44;
+    --border: #29271F;
+    --border-strong: #3A3730;
     --accent: #E56A50;
     --accent-ink: #191B21;
     --gate: #C99A3C;
+    --active: #5E9BE6;
+    --rail-done: color-mix(in oklab, var(--fg) 40%, var(--border-strong));
+    --grid-dot: color-mix(in oklab, var(--fg) 9%, transparent);
     --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 12px 32px rgba(0, 0, 0, .35);
   }
 }
@@ -42,9 +61,12 @@
 
 html { -webkit-text-size-adjust: 100%; }
 
+/* the earned background (amendment §2): a faint plot-paper dot grid, never a gradient mesh */
 body {
   margin: 0;
-  background: var(--bg);
+  background-color: var(--bg);
+  background-image: radial-gradient(var(--grid-dot) 1px, transparent 1px);
+  background-size: 26px 26px;
   color: var(--fg);
   font-family: var(--sans);
   font-size: 17px;
@@ -84,6 +106,116 @@ section + section { border-top: 1px solid var(--border); }
 
 h1, h2, h3 { font-weight: 600; letter-spacing: -0.01em; margin: 0; }
 
+/* ---------- the score rail — the page's spine (amendment §1) ----------
+   Each major section is a two-column grid: a fixed rail gutter, stretched to the section's own
+   real height (the rail-line spans it via top:0/bottom:0, no magic-number guessing), and the
+   section's content. Sections stack with zero margin, so each rail-line meets the next section's
+   node with no visible seam — one continuous line down the page's left edge. */
+.wrap--railed {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  column-gap: 32px;
+  align-items: start;
+}
+.rail-col {
+  position: relative;
+  align-self: stretch;
+  min-height: 100%;
+}
+.rail-node {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  box-sizing: border-box;
+  border: 1.6px dashed var(--border-strong);
+  background: transparent;
+  z-index: 1;
+  transition: background var(--motion-base) var(--ease-standard),
+              border-color var(--motion-base) var(--ease-standard),
+              border-style var(--motion-base) var(--ease-standard),
+              box-shadow var(--motion-base) var(--ease-standard);
+}
+.rail-node.is-gate {
+  border-radius: 3px;
+  width: 13px;
+  height: 13px;
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+.rail-line {
+  position: absolute;
+  top: 8px;
+  bottom: -1px;
+  left: 50%;
+  width: 0;
+  margin-left: -0.8px;
+  border-left: 1.6px dashed var(--border-strong);
+  transition: border-color var(--motion-base) var(--ease-standard);
+}
+.rail-col[data-final] .rail-line { display: none; }
+
+/* upcoming (default, above) — hairline-dashed, unfilled */
+.rail-col[data-state="upcoming"] .rail-node { border-style: dashed; border-color: var(--border-strong); background: transparent; }
+
+/* the ictus — the section currently in view. Same blue, same 1.6s pulse the run view itself
+   uses for an active step, reused rather than invented (amendment §1: "reuses a vocabulary
+   already ratified"). A small paper-cut centre dot reads as the beat landing, same as .snode.active. */
+.rail-col[data-state="active"] .rail-node {
+  border-style: solid;
+  border-color: var(--active);
+  background: var(--active);
+  animation: rail-pulse var(--motion-pulse) infinite;
+}
+.rail-col[data-state="active"] .rail-node::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: var(--bg);
+}
+.rail-col[data-state="active"] .rail-node.is-gate::after { inset: 3px; }
+.rail-col[data-state="active"] .rail-line { border-color: color-mix(in oklab, var(--active) 45%, var(--border-strong)); }
+
+/* passed — solid ink, read like a pencil mark once drawn */
+.rail-col[data-state="passed"] .rail-node { border-style: solid; border-color: var(--rail-done); background: var(--rail-done); }
+.rail-col[data-state="passed"] .rail-line { border-left-style: solid; border-color: var(--rail-done); }
+
+/* the gate diamond — foreshadowed neutral-dashed like any other node ahead, then arrives with
+   real brass treatment the instant its section enters view (amendment §4, the page's one
+   theatrical beat). Static halo once arrived — never animated past the entrance, matching the
+   real gate card's own rule that pulse stays reserved for active/live, never a resolved gate. */
+.rail-node.is-gate.is-arrived {
+  border-style: solid;
+  border-color: var(--gate);
+  background: var(--gate);
+  box-shadow: 0 0 0 5px color-mix(in oklab, var(--gate) 16%, transparent);
+}
+.rail-node.is-gate.is-arriving { animation: gate-arrive 640ms var(--ease-standard) both; }
+.rail-col[data-state="active"] .rail-node.is-gate.is-arrived { animation: none; }
+
+@keyframes rail-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--active) 55%, transparent); }
+  70%, 100% { box-shadow: 0 0 0 6px transparent; }
+}
+@keyframes gate-arrive {
+  0% { transform: translate(-50%, -50%) rotate(45deg) scale(.45); opacity: 0; box-shadow: 0 0 0 0 transparent; }
+  55% { transform: translate(-50%, -50%) rotate(45deg) scale(1.18); opacity: 1; box-shadow: 0 0 0 7px color-mix(in oklab, var(--gate) 30%, transparent); }
+  100% { transform: translate(-50%, -50%) rotate(45deg) scale(1); box-shadow: 0 0 0 5px color-mix(in oklab, var(--gate) 16%, transparent); }
+}
+
+/* evidence settling into place once, as it enters view (amendment §4) — progressive enhancement:
+   landing.js only adds .js-reveal (the hidden starting state) when JS + motion are both available,
+   so content is fully visible by default with no script. */
+.js-reveal { opacity: 0; transform: translateY(10px); }
+.js-reveal.in-view {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity var(--motion-base) var(--ease-standard), transform var(--motion-base) var(--ease-standard);
+}
+
 /* ---------- header ---------- */
 
 .site-header {
@@ -96,35 +228,43 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.01em; margin: 0; }
   margin: 0 auto;
 }
 
-.site-header .logo { display: flex; align-items: center; gap: 8px; }
+.site-header .logo { display: flex; align-items: center; gap: 8px; text-decoration: none; }
 .site-header .logo svg { display: block; height: 22px; width: auto; }
 
 .header-nav { display: flex; align-items: center; gap: 28px; font-size: 15px; }
-.header-nav a { text-decoration: none; color: var(--fg-dim); }
+.header-nav a { text-decoration: none; color: var(--fg-dim); transition: color var(--motion-fast); }
 .header-nav a:hover { color: var(--fg); }
 .header-nav a.cta {
   color: var(--fg);
   border: 1px solid var(--border-strong);
   border-radius: 7px;
   padding: 7px 14px;
+  transition: border-color var(--motion-fast), color var(--motion-fast), transform var(--motion-instant);
 }
 .header-nav a.cta:hover { border-color: var(--accent); color: var(--accent); }
+.header-nav a.cta:active { transform: translateY(1px); }
 
 /* ---------- hero ---------- */
 
 .hero { padding-top: 56px; padding-bottom: 88px; border-top: none; }
 
+.hero .wrap--railed {
+  grid-template-columns: 40px minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 40px;
+}
+.hero .rail-col { top: 4px; }
+
 .hero h1 {
-  font-size: clamp(2.3rem, 5.4vw, 3.7rem);
-  line-height: 1.08;
-  max-width: 16ch;
+  font-size: clamp(2.5rem, 4.6vw, 3.9rem);
+  line-height: 1.06;
+  max-width: 15ch;
 }
 
 .hero .sub {
   margin-top: 24px;
-  font-size: clamp(1.05rem, 1.6vw, 1.25rem);
+  font-size: clamp(1.05rem, 1.5vw, 1.22rem);
   color: var(--fg-dim);
-  max-width: 52ch;
+  max-width: 46ch;
   line-height: 1.55;
 }
 
@@ -133,7 +273,7 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.01em; margin: 0; }
   font-style: italic;
   color: var(--fg-mute);
   font-size: 15px;
-  max-width: 56ch;
+  max-width: 50ch;
 }
 
 .hero .actions {
@@ -153,34 +293,119 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.01em; margin: 0; }
   font-size: 15px;
   padding: 12px 22px;
   border-radius: 8px;
+  transition: filter var(--motion-fast), transform var(--motion-instant);
 }
 .btn-primary:hover { filter: brightness(1.06); }
+.btn-primary:active { transform: translateY(1px); }
 
+/* install line — a physical object: press-down on the whole bar, the copy button confirms
+   in place rather than opening a toast (amendment §4). */
 .install-line {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  align-items: stretch;
+  gap: 0;
   font-family: var(--mono);
   font-size: 14.5px;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 11px 16px;
   color: var(--fg);
-}
-.install-line .prompt { color: var(--fg-mute); }
-
-/* demo slot — fixed aspect ratio so dropping the video in later cannot shift layout */
-.demo-slot {
-  margin-top: 56px;
-  border-radius: 12px;
   overflow: hidden;
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow);
-  background: var(--panel-2);
-  aspect-ratio: 1910 / 1066;
+  transition: border-color var(--motion-fast), transform var(--motion-instant), box-shadow var(--motion-fast);
 }
-.demo-slot video, .demo-slot img { width: 100%; height: 100%; object-fit: cover; }
+.install-line:active { transform: translateY(1px); }
+.install-line .prompt { color: var(--fg-mute); padding: 11px 0 11px 16px; }
+.install-line .cmd {
+  padding: 11px 8px 11px 10px;
+  overflow-x: auto;
+  white-space: nowrap;
+  flex: 1;
+}
+.install-line .copy-btn {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--fg-mute);
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: .02em;
+  padding: 0 14px;
+  cursor: pointer;
+  transition: color var(--motion-fast), background var(--motion-fast), transform var(--motion-instant);
+}
+.install-line .copy-btn:hover { color: var(--fg); background: var(--panel); }
+.install-line .copy-btn:active { transform: translateY(1px); }
+.install-line .copy-btn svg { flex: none; display: block; }
+.install-line .copy-btn .lbl::after { content: "copy"; }
+.install-line .copy-btn.is-copied { color: var(--accent); }
+.install-line .copy-btn.is-copied .lbl::after { content: "copied"; }
+.install-line .copy-btn.is-copied .icon-copy { display: none; }
+.install-line .copy-btn .icon-check { display: none; }
+.install-line .copy-btn.is-copied .icon-check { display: block; }
+
+/* the hero visual — the score rail itself, rendered large and unframed (amendment §5): not a
+   screenshot in a box. .video-slot stays video-ready underneath, at the same aspect ratio, so
+   the real gate-loop capture can take this position later without a layout change. */
+.hero-visual { position: relative; padding-top: 8px; }
+
+.hero-score {
+  display: flex;
+  flex-direction: column;
+}
+.hs-node {
+  position: relative;
+  display: flex;
+  gap: 20px;
+  padding: 0 0 34px 0;
+}
+.hs-node:last-child { padding-bottom: 0; }
+.hs-marker { position: relative; flex: none; width: 30px; display: flex; justify-content: center; }
+.hs-dot {
+  position: relative;
+  z-index: 1;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px dashed var(--border-strong);
+  background: var(--bg);
+  box-sizing: border-box;
+}
+.hs-dot.is-gate { border-radius: 5px; width: 20px; height: 20px; transform: rotate(45deg); }
+.hs-line {
+  position: absolute;
+  top: 22px;
+  bottom: -34px;
+  left: 50%;
+  width: 0;
+  margin-left: -1px;
+  border-left: 2px dashed var(--border-strong);
+}
+.hs-node:last-child .hs-line { display: none; }
+.hs-node.is-passed .hs-dot { border-style: solid; border-color: var(--rail-done); background: var(--rail-done); }
+.hs-node.is-passed .hs-line { border-left-style: solid; border-color: var(--rail-done); }
+.hs-node.is-active .hs-dot { border-style: solid; border-color: var(--active); background: var(--active); animation: rail-pulse var(--motion-pulse) infinite; }
+.hs-node.is-active .hs-dot::after { content: ""; position: absolute; inset: 6px; border-radius: 50%; background: var(--bg); }
+.hs-node.is-gate-open .hs-dot { border-style: solid; border-color: var(--gate); background: var(--gate);
+  box-shadow: 0 0 0 6px color-mix(in oklab, var(--gate) 16%, transparent); }
+.hs-body { flex: 1; min-width: 0; padding-top: 1px; }
+.hs-label { font-size: 15px; font-weight: 600; color: var(--fg); }
+.hs-node.is-upcoming .hs-label { color: var(--fg-mute); font-weight: 500; }
+.hs-sub { margin-top: 4px; font-family: var(--mono); font-size: 12px; color: var(--fg-mute); }
+.hs-live { display: inline-flex; align-items: center; gap: 7px; margin-top: 8px; font-family: var(--mono); font-size: 11.5px; color: var(--gate); }
+.hs-live .ld { width: 6px; height: 6px; border-radius: 50%; background: var(--active); flex: none; animation: rail-pulse var(--motion-pulse) infinite; }
+.hs-live .ld { box-shadow: none; background: var(--active); }
+.hs-verbs { margin-top: 10px; display: flex; gap: 7px; flex-wrap: wrap; }
+.hs-verbs span { font-family: var(--mono); font-size: 10.5px; border: 1px solid var(--border-strong); border-radius: 5px; padding: 3px 7px; color: var(--fg-dim); }
+
+/* video slot, kept for the real capture — currently unused (no <source>s) so it renders nothing
+   and takes no space; when sources are uncommented it overlays the hero score at identical bounds. */
+.video-slot { display: none; }
+.video-slot video { width: 100%; height: 100%; object-fit: cover; }
+.video-slot:has(source) { display: block; position: absolute; inset: 0; border-radius: 10px; overflow: hidden; }
 
 /* ---------- differentiators ---------- */
 
@@ -361,7 +586,7 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.01em; margin: 0; }
 .prereqs li strong { color: var(--fg); font-weight: 600; }
 
 .get-it-grid .links { margin-top: 22px; display: flex; gap: 24px; font-size: 15px; }
-.get-it-grid .links a { text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; }
+.get-it-grid .links a { text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; transition: text-decoration-color var(--motion-fast), color var(--motion-fast); }
 .get-it-grid .links a:hover { text-decoration-color: var(--accent); color: var(--accent); }
 
 .term-block {
@@ -430,12 +655,33 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.01em; margin: 0; }
   font-size: 13.5px;
 }
 .site-footer .foot-links { display: flex; gap: 20px; }
-.site-footer a { color: var(--fg-dim); text-decoration: none; font-size: 13.5px; }
+.site-footer a { color: var(--fg-dim); text-decoration: none; font-size: 13.5px; transition: color var(--motion-fast); }
 .site-footer a:hover { color: var(--accent); }
 
 /* ---------- responsive ---------- */
 
+@media (max-width: 980px) {
+  /* rail-col is hidden below (display:none removes it from grid flow entirely), so the hero's
+     grid collapses to one column — hero-text and hero-visual stack instead of sharing a row. */
+  .hero .wrap--railed { grid-template-columns: minmax(0, 1fr); }
+  .hero-visual { margin-top: 56px; padding-left: 0; }
+  .hero .rail-col { display: none; }
+  .hero .hero-visual::before {
+    content: "";
+    display: block;
+    position: absolute;
+    left: -1px;
+    top: -32px;
+    bottom: 0;
+    width: 0;
+    border-left: 1.6px dashed var(--border-strong);
+  }
+}
+
 @media (max-width: 900px) {
+  .wrap--railed { grid-template-columns: 26px minmax(0, 1fr); column-gap: 20px; }
+  .rail-node { width: 12px; height: 12px; }
+  .rail-node.is-gate { width: 11px; height: 11px; }
   .diffs-grid { grid-template-columns: 1fr; gap: 40px; }
   .steps { grid-template-columns: 1fr 1fr; row-gap: 32px; }
   .step { border-right: none; padding-right: 0; }
@@ -452,10 +698,18 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.01em; margin: 0; }
   .site-header { flex-wrap: wrap; }
   .header-nav { gap: 16px; font-size: 14px; }
   .steps { grid-template-columns: 1fr 1fr; }
-  .install-line { font-size: 13px; flex-wrap: wrap; }
+  .install-line { font-size: 12.5px; }
+  .install-line .cmd { white-space: normal; word-break: break-all; }
   .see-it-grid { grid-template-columns: 1fr; }
+  .wrap--railed { grid-template-columns: 20px minmax(0, 1fr); column-gap: 16px; }
 }
 
+/* ---------- motion: prefers-reduced-motion disables all of it (amendment §4) ---------- */
 @media (prefers-reduced-motion: reduce) {
-  * { scroll-behavior: auto !important; }
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
