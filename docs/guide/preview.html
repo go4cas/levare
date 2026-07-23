@@ -19,45 +19,102 @@ search_exclude: true
   </nav>
 </header>
 
-<!-- ============ 1. HERO ============ -->
-<section class="hero">
-  <div class="wrap">
-    <h1>Direct a team of AI agents. Approve every step.</h1>
-    <p class="sub">levare runs structured, multi-step work — a team of agents executes, and nothing
-      advances past a gate until you say so.</p>
-    <p class="etymology">(leh-VAH-reh) — the conductor's lift before the downbeat. Nothing runs
-      until you give the beat.</p>
-
-    <div class="actions">
-      <div class="install-line">
-        <span class="prompt">$</span>
-        <span>curl -fsSL https://raw.githubusercontent.com/go4cas/levare/main/scripts/install.sh | sh</span>
-      </div>
-      <a class="btn-primary" href="{{ '/02-quickstart.html' | relative_url }}">Read the quickstart</a>
+<!-- ============ 1. HERO ============
+     The score rail begins here as the page's spine (amendment §1) and, until the gate-loop
+     capture exists, doubles as the hero's own striking image (amendment §5) — not a screenshot
+     in a box, the rail rendered large and confident, anchoring the right side of an asymmetric
+     layout. .video-slot below is wired for the real capture and takes this position later with
+     no redesign: uncomment its <source> tags and it overlays the score at identical bounds. -->
+<section class="hero" id="sec-hero">
+  <div class="wrap wrap--railed">
+    <div class="rail-col" data-rail data-state="active">
+      <span class="rail-node" aria-hidden="true"></span>
+      <span class="rail-line" aria-hidden="true"></span>
     </div>
 
-    <!--
-      Demo slot — the gate loop, as motion (positioning brief §7): a member produces an artifact,
-      the run halts at a gate, the Conductor approves, the run advances. That capture doesn't exist
-      yet. The aspect-ratio on .demo-slot is fixed so wiring in the real <source> tags below causes
-      no layout shift — just uncomment them and drop the encoded files in docs/guide/img/.
-    -->
-    <div class="demo-slot">
-      <video autoplay muted loop playsinline
-        poster="{{ '/img/run-view.png' | relative_url }}"
-        aria-label="levare's run view: the score rail, the timeline, and a gate awaiting a decision">
-        <!-- TODO: gate-loop capture not recorded yet. Once it exists, uncomment:
-        <source src="{{ '/img/gate-loop.mp4' | relative_url }}" type="video/mp4">
-        <source src="{{ '/img/gate-loop.webm' | relative_url }}" type="video/webm">
-        -->
-      </video>
+    <div class="hero-text">
+      <h1>Direct a team of AI agents. Approve every step.</h1>
+      <p class="sub">levare runs structured, multi-step work — a team of agents executes, and nothing
+        advances past a gate until you say so.</p>
+      <p class="etymology">(leh-VAH-reh) — the conductor's lift before the downbeat. Nothing runs
+        until you give the beat.</p>
+
+      <div class="actions">
+        <div class="install-line">
+          <span class="prompt">$</span>
+          <span class="cmd" id="install-cmd">curl -fsSL https://raw.githubusercontent.com/go4cas/levare/main/scripts/install.sh | sh</span>
+          <button class="copy-btn" type="button" data-copy-target="install-cmd" aria-label="Copy install command">
+            <svg class="icon-copy" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="1.5"/><path d="M5 15V6a1.5 1.5 0 0 1 1.5-1.5H15"/></svg>
+            <svg class="icon-check" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5 L10 17.5 L19 6.5"/></svg>
+            <span class="lbl"></span>
+          </button>
+        </div>
+        <a class="btn-primary" href="{{ '/02-quickstart.html' | relative_url }}">Read the quickstart</a>
+      </div>
+    </div>
+
+    <div class="hero-visual">
+      <div class="hero-score" role="img" aria-label="levare's run view: an idea captured, a spec produced, and the run halted at a gate awaiting a decision, with build and ship still ahead">
+        <div class="hs-node is-passed">
+          <div class="hs-marker"><span class="hs-dot"></span><span class="hs-line"></span></div>
+          <div class="hs-body">
+            <div class="hs-label">Idea captured</div>
+            <div class="hs-sub">ideas/checkout-flow.md</div>
+          </div>
+        </div>
+        <div class="hs-node is-passed">
+          <div class="hs-marker"><span class="hs-dot"></span><span class="hs-line"></span></div>
+          <div class="hs-body">
+            <div class="hs-label">Spec produced</div>
+            <div class="hs-sub">press/lyra · spec-checkout-flow-v1</div>
+          </div>
+        </div>
+        <div class="hs-node is-gate-open">
+          <div class="hs-marker"><span class="hs-dot is-gate"></span><span class="hs-line"></span></div>
+          <div class="hs-body">
+            <div class="hs-label">Gate — halted</div>
+            <div class="hs-sub">approve · request changes · reject</div>
+            <div class="hs-live"><span class="ld" aria-hidden="true"></span>awaiting you</div>
+          </div>
+        </div>
+        <div class="hs-node is-upcoming">
+          <div class="hs-marker"><span class="hs-dot"></span><span class="hs-line"></span></div>
+          <div class="hs-body">
+            <div class="hs-label">Build</div>
+          </div>
+        </div>
+        <div class="hs-node is-upcoming">
+          <div class="hs-marker"><span class="hs-dot"></span></div>
+          <div class="hs-body">
+            <div class="hs-label">Ship</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TODO: gate-loop capture not recorded yet (positioning brief §7). Once it exists, drop
+           the encoded files in docs/guide/img/ and uncomment — it takes the hero-score's position. -->
+      <div class="video-slot">
+        <video autoplay muted loop playsinline
+          poster="{{ '/img/run-view.png' | relative_url }}"
+          aria-label="levare's run view: the score rail, the timeline, and a gate awaiting a decision">
+          <!--
+          <source src="{{ '/img/gate-loop.mp4' | relative_url }}" type="video/mp4">
+          <source src="{{ '/img/gate-loop.webm' | relative_url }}" type="video/webm">
+          -->
+        </video>
+      </div>
     </div>
   </div>
 </section>
 
 <!-- ============ 2. THE THREE DIFFERENTIATORS ============ -->
-<section class="diffs">
-  <div class="wrap">
+<section class="diffs" id="sec-diffs">
+  <div class="wrap wrap--railed">
+    <div class="rail-col" data-rail data-state="upcoming">
+      <span class="rail-node" aria-hidden="true"></span>
+      <span class="rail-line" aria-hidden="true"></span>
+    </div>
+    <div>
     <p class="section-label">Why it's built this way</p>
     <div class="diffs-grid">
 
@@ -65,7 +122,7 @@ search_exclude: true
         <h3>Nothing runs until you give the beat.</h3>
         <p>Every step ends at a gate. You approve, request changes, or reject — the runner
           advances only on your decision. Not a setting. The architecture.</p>
-        <div class="evidence gate-fragment">
+        <div class="evidence gate-fragment" data-reveal>
           <div class="gate-head">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4 L20 12 L12 20 L4 12 Z"/></svg>
             GATE · AWAITING YOU
@@ -80,7 +137,7 @@ search_exclude: true
         <h3>Markdown is the truth.</h3>
         <p>Agents, teams, work units, artifacts — files with YAML frontmatter, in your repo. No
           database, no proprietary format. Read the whole state in an editor. Diff it in git.</p>
-        <div class="evidence yaml-fragment mono">
+        <div class="evidence yaml-fragment mono" data-reveal>
           <pre><span class="c">---</span>
 <span class="k">kind:</span> spec
 <span class="k">id:</span> spec-checkout-flow-v1
@@ -97,7 +154,7 @@ search_exclude: true
         <h3>One binary, local-first.</h3>
         <p>No server to run, no account, no telemetry. It reads your repo and serves a board on
           localhost. The runner is deterministic — same inputs, same result, byte for byte.</p>
-        <div class="evidence term-fragment mono">
+        <div class="evidence term-fragment mono" data-reveal>
           <pre><span class="prompt">$</span> levare init .
 <span class="prompt">$</span> levare serve .
 <span class="out">levare · http://localhost:4173</span></pre>
@@ -105,12 +162,22 @@ search_exclude: true
       </div>
 
     </div>
+    </div>
   </div>
 </section>
 
-<!-- ============ 3. HOW IT WORKS ============ -->
-<section class="how">
-  <div class="wrap">
+<!-- ============ 3. HOW IT WORKS ============
+     The gate diamond falls exactly here (amendment §1): step 03 below is the section that talks
+     about gates halting, so this rail node is the page's own diamond, arriving with brass
+     treatment the instant the section enters view — scrolling the page performs the thing the
+     product does. -->
+<section class="how" id="sec-how">
+  <div class="wrap wrap--railed">
+    <div class="rail-col" data-rail data-state="upcoming" data-gate>
+      <span class="rail-node is-gate" aria-hidden="true"></span>
+      <span class="rail-line" aria-hidden="true"></span>
+    </div>
+    <div>
     <p class="section-label">How it works</p>
     <div class="steps">
 
@@ -153,15 +220,21 @@ search_exclude: true
       </div>
 
     </div>
+    </div>
   </div>
 </section>
 
 <!-- ============ 4. SEE IT ============ -->
-<section class="see-it">
-  <div class="wrap">
+<section class="see-it" id="sec-see-it">
+  <div class="wrap wrap--railed">
+    <div class="rail-col" data-rail data-state="upcoming">
+      <span class="rail-node" aria-hidden="true"></span>
+      <span class="rail-line" aria-hidden="true"></span>
+    </div>
+    <div>
     <p class="section-label">See it</p>
     <div class="see-it-grid">
-      <figure class="shot" style="margin:0;">
+      <figure class="shot" style="margin:0;" data-reveal>
         <img src="{{ '/img/run-view.png' | relative_url }}"
           alt="levare's run view: a vertical score rail of steps and gates, a timeline of runner and member activity, and a gate card awaiting a decision">
       </figure>
@@ -171,12 +244,18 @@ search_exclude: true
         <div><dt>Gate</dt><dd>The one actionable card. Approve, request changes, or reject.</dd></div>
       </dl>
     </div>
+    </div>
   </div>
 </section>
 
 <!-- ============ 5. GET IT ============ -->
-<section class="get-it">
-  <div class="wrap">
+<section class="get-it" id="sec-get-it">
+  <div class="wrap wrap--railed">
+    <div class="rail-col" data-rail data-state="upcoming">
+      <span class="rail-node" aria-hidden="true"></span>
+      <span class="rail-line" aria-hidden="true"></span>
+    </div>
+    <div>
     <p class="section-label">Get it</p>
     <div class="get-it-grid">
       <div>
@@ -202,12 +281,17 @@ search_exclude: true
 <span class="out">levare · http://localhost:4173</span></pre>
       </div>
     </div>
+    </div>
   </div>
 </section>
 
 <!-- ============ 6. WHAT IT IS AND ISN'T ============ -->
-<section class="status-section">
-  <div class="wrap">
+<section class="status-section" id="sec-status">
+  <div class="wrap wrap--railed">
+    <div class="rail-col" data-rail data-state="upcoming" data-final>
+      <span class="rail-node" aria-hidden="true"></span>
+    </div>
+    <div>
     <p class="section-label">What it is, and isn't</p>
     <div class="status-line"><span class="dot"></span> v0.2.0 · pre-1.0 · built by one person</div>
     <p class="measure">levare is used daily by its author. The contract, runner, board, sandbox, and
@@ -222,6 +306,7 @@ search_exclude: true
         friction to advertise around.</li>
       <li>Not a company. One person builds this, in the open, under Apache-2.0.</li>
     </ul>
+    </div>
   </div>
 </section>
 
