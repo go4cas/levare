@@ -165,9 +165,18 @@ describe("(b) one gate-resolution path: chat vs POST /gates", () => {
 
       const chatFile = readFileSync(join(viaChat, "work/storefront/checkout-flow/spec-checkout-flow-v1.md"), "utf8");
       const routeFile = readFileSync(join(viaRoute, "work/storefront/checkout-flow/spec-checkout-flow-v1.md"), "utf8");
-      expect(chatFile).toBe(routeFile);
+      // The chat path stamps `approved_by` from `CAS_TODAY` (pinned once at module load, above); the
+      // board route always computes its own `today` live (gateops.ts's `resolveGate`, no override
+      // plumbed through `createBoard`) — that's real, matching production (serve.ts computes `today`
+      // fresh per chat request too; only this test pins one side). A literal byte-for-byte compare is
+      // only ever wrong if the two live-clock reads straddle a UTC calendar-day boundary between them
+      // — rare, but a real non-determinism, not a hypothetical one (reproduced by forcing the dates
+      // apart). Compare shape with the date normalized out, and verify each date independently.
+      const normalizeApprovedDate = (s: string) => s.replace(/approved_by: "cas \d{4}-\d{2}-\d{2}"/, 'approved_by: "cas <DATE>"');
+      expect(normalizeApprovedDate(chatFile)).toBe(normalizeApprovedDate(routeFile));
       expect(chatFile).toContain("status: approved");
       expect(chatFile).toMatch(/approved_by: "cas \d{4}-\d{2}-\d{2}"/);
+      expect(routeFile).toMatch(/approved_by: "cas \d{4}-\d{2}-\d{2}"/);
 
       const chatLog = spawnSync("git", ["-C", viaChat, "log", "-1", "--format=%an|%ae|%s"], { encoding: "utf8" }).stdout.trim();
       const routeLog = spawnSync("git", ["-C", viaRoute, "log", "-1", "--format=%an|%ae|%s"], { encoding: "utf8" }).stdout.trim();
