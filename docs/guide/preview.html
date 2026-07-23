@@ -1,0 +1,237 @@
+---
+layout: landing
+permalink: /preview/
+title: "levare — direct a team of AI agents"
+description: "A solo operator's console for an AI agent workforce. Nothing runs until you give the beat."
+nav_exclude: true
+search_exclude: true
+---
+
+<header class="site-header">
+  <a class="logo" href="{{ '/preview/' | relative_url }}" aria-label="levare">
+    <img src="{{ '/assets/images/favicon.svg' | relative_url }}" width="22" height="22" alt="">
+    <strong style="font-weight:600; font-size:17px;">levare</strong>
+  </a>
+  <nav class="header-nav">
+    <a href="{{ '/' | relative_url }}">Guide</a>
+    <a href="https://github.com/go4cas/levare">GitHub</a>
+    <a class="cta" href="{{ '/02-quickstart.html' | relative_url }}">Quickstart</a>
+  </nav>
+</header>
+
+<!-- ============ 1. HERO ============ -->
+<section class="hero">
+  <div class="wrap">
+    <h1>Direct a team of AI agents. Approve every step.</h1>
+    <p class="sub">levare runs structured, multi-step work — a team of agents executes, and nothing
+      advances past a gate until you say so.</p>
+    <p class="etymology">(leh-VAH-reh) — the conductor's lift before the downbeat. Nothing runs
+      until you give the beat.</p>
+
+    <div class="actions">
+      <div class="install-line">
+        <span class="prompt">$</span>
+        <span>curl -fsSL https://raw.githubusercontent.com/go4cas/levare/main/scripts/install.sh | sh</span>
+      </div>
+      <a class="btn-primary" href="{{ '/02-quickstart.html' | relative_url }}">Read the quickstart</a>
+    </div>
+
+    <!--
+      Demo slot — the gate loop, as motion (positioning brief §7): a member produces an artifact,
+      the run halts at a gate, the Conductor approves, the run advances. That capture doesn't exist
+      yet. The aspect-ratio on .demo-slot is fixed so wiring in the real <source> tags below causes
+      no layout shift — just uncomment them and drop the encoded files in docs/guide/img/.
+    -->
+    <div class="demo-slot">
+      <video autoplay muted loop playsinline
+        poster="{{ '/img/run-view.png' | relative_url }}"
+        aria-label="levare's run view: the score rail, the timeline, and a gate awaiting a decision">
+        <!-- TODO: gate-loop capture not recorded yet. Once it exists, uncomment:
+        <source src="{{ '/img/gate-loop.mp4' | relative_url }}" type="video/mp4">
+        <source src="{{ '/img/gate-loop.webm' | relative_url }}" type="video/webm">
+        -->
+      </video>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 2. THE THREE DIFFERENTIATORS ============ -->
+<section class="diffs">
+  <div class="wrap">
+    <p class="section-label">Why it's built this way</p>
+    <div class="diffs-grid">
+
+      <div class="diff">
+        <h3>Nothing runs until you give the beat.</h3>
+        <p>Every step ends at a gate. You approve, request changes, or reject — the runner
+          advances only on your decision. Not a setting. The architecture.</p>
+        <div class="evidence gate-fragment">
+          <div class="gate-head">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4 L20 12 L12 20 L4 12 Z"/></svg>
+            GATE · AWAITING YOU
+          </div>
+          <div class="gate-id">spec-checkout-flow-v1</div>
+          <div class="gate-note">produced by press/lyra · consumes product-brief-v1</div>
+          <div class="gate-verbs"><span>approve</span><span>request changes</span><span>reject</span></div>
+        </div>
+      </div>
+
+      <div class="diff">
+        <h3>Markdown is the truth.</h3>
+        <p>Agents, teams, work units, artifacts — files with YAML frontmatter, in your repo. No
+          database, no proprietary format. Read the whole state in an editor. Diff it in git.</p>
+        <div class="evidence yaml-fragment mono">
+          <pre><span class="c">---</span>
+<span class="k">kind:</span> spec
+<span class="k">id:</span> spec-checkout-flow-v1
+<span class="k">unit:</span> checkout-flow
+<span class="k">status:</span> in-review
+<span class="k">produced_by:</span> press/lyra
+<span class="k">consumes:</span> [product-brief-v1]
+<span class="k">approved_by:</span> null
+<span class="c">---</span></pre>
+        </div>
+      </div>
+
+      <div class="diff">
+        <h3>One binary, local-first.</h3>
+        <p>No server to run, no account, no telemetry. It reads your repo and serves a board on
+          localhost. The runner is deterministic — same inputs, same result, byte for byte.</p>
+        <div class="evidence term-fragment mono">
+          <pre><span class="prompt">$</span> levare init .
+<span class="prompt">$</span> levare serve .
+<span class="out">levare · http://localhost:4173</span></pre>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ 3. HOW IT WORKS ============ -->
+<section class="how">
+  <div class="wrap">
+    <p class="section-label">How it works</p>
+    <div class="steps">
+
+      <div class="step">
+        <div class="step-no">01</div>
+        <div class="glyph" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="6.2" stroke-dasharray="2.4 2.8"/></svg>
+        </div>
+        <h3>Capture an idea</h3>
+        <p>A pitch lands in <code class="mono">ideas/</code> — no project yet, just a paragraph
+          and a name.</p>
+      </div>
+
+      <div class="step">
+        <div class="step-no">02</div>
+        <div class="glyph" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6 L7 18 L17 18 Z"/><circle cx="12" cy="6" r="1.6"/><circle cx="7" cy="18" r="1.6"/><circle cx="17" cy="18" r="1.6"/></svg>
+        </div>
+        <h3>A team executes</h3>
+        <p>Members declared in a flow do the work — an agent per step, each producing an
+          artifact.</p>
+      </div>
+
+      <div class="step">
+        <div class="step-no">03</div>
+        <div class="glyph is-gate" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4 L20 12 L12 20 L4 12 Z"/></svg>
+        </div>
+        <h3>Gates halt</h3>
+        <p>Every step ends at a gate. The runner waits. You approve, send back, or reject.</p>
+      </div>
+
+      <div class="step">
+        <div class="step-no">04</div>
+        <div class="glyph" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5 H14 L17 8 V19 H8 Z"/><path d="M14 5 L14 8 L17 8"/><line x1="10" y1="13.5" x2="15" y2="13.5"/></svg>
+        </div>
+        <h3>The unit ships</h3>
+        <p>The approved artifact lands in your repo — a file, in git, same as any other.</p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============ 4. SEE IT ============ -->
+<section class="see-it">
+  <div class="wrap">
+    <p class="section-label">See it</p>
+    <div class="see-it-grid">
+      <figure class="shot" style="margin:0;">
+        <img src="{{ '/img/run-view.png' | relative_url }}"
+          alt="levare's run view: a vertical score rail of steps and gates, a timeline of runner and member activity, and a gate card awaiting a decision">
+      </figure>
+      <dl class="legend">
+        <li><dt>Score</dt><dd>The vertical rail. Circles are steps, diamonds are gates.</dd></li>
+        <li><dt>Timeline</dt><dd>Every runner walk, member spawn, and gate event, in order.</dd></li>
+        <li><dt>Gate</dt><dd>The one actionable card. Approve, request changes, or reject.</dd></li>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 5. GET IT ============ -->
+<section class="get-it">
+  <div class="wrap">
+    <p class="section-label">Get it</p>
+    <div class="get-it-grid">
+      <div>
+        <ul class="prereqs">
+          <li><strong>macOS or Linux</strong>, arm64 or x64 — ships as a single compiled binary.</li>
+          <li><strong>A git repository</strong> — levare reads and writes it directly; there's
+            nowhere else your state lives.</li>
+          <li><strong>A model provider credential</strong>, when you want an agent to actually
+            produce something. No key needed to look around — the board, the registry, and every
+            gate work without one.</li>
+        </ul>
+        <div class="links">
+          <a href="{{ '/02-quickstart.html' | relative_url }}">Quickstart →</a>
+          <a href="{{ '/' | relative_url }}">Full guide →</a>
+        </div>
+      </div>
+      <div class="term-block mono">
+        <pre><span class="prompt">$</span> curl -fsSL https://raw.githubusercontent.com/go4cas/levare/main/scripts/install.sh | sh
+
+<span class="prompt">$</span> levare init my-studio
+<span class="prompt">$</span> cd my-studio
+<span class="prompt">$</span> levare serve
+<span class="out">levare · http://localhost:4173</span></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 6. WHAT IT IS AND ISN'T ============ -->
+<section class="status-section">
+  <div class="wrap">
+    <p class="section-label">What it is, and isn't</p>
+    <div class="status-line"><span class="dot"></span> v0.2.0 · pre-1.0 · built by one person</div>
+    <p class="measure">levare is used daily by its author. The contract, runner, board, sandbox, and
+      MCP remote members are implemented and tested. Expect sharp edges, and expect the schema to
+      move before 1.0. It's Apache-2.0, and the source is the whole story — there's no separate
+      roadmap to read.</p>
+    <ul class="not-list measure">
+      <li>Not autonomous. Every step waits for you — that's the point, not a limitation.</li>
+      <li>Not hosted. No cloud, no account, no multi-tenant anything — it runs on your machine,
+        against your repo.</li>
+      <li>Not measured in speed. No productivity claims — a gate is a deliberate stop, not
+        friction to advertise around.</li>
+      <li>Not a company. One person builds this, in the open, under Apache-2.0.</li>
+    </ul>
+  </div>
+</section>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <p>levare · Apache-2.0 · <a href="https://github.com/go4cas/levare">go4cas/levare</a></p>
+    <div class="foot-links">
+      <a href="{{ '/' | relative_url }}">Guide</a>
+      <a href="{{ '/02-quickstart.html' | relative_url }}">Quickstart</a>
+      <a href="https://github.com/go4cas/levare/blob/main/LICENSE">License</a>
+    </div>
+  </div>
+</footer>
