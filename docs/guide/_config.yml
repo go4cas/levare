@@ -1,4 +1,4 @@
-remote_theme: just-the-docs/just-the-docs
+remote_theme: just-the-docs/just-the-docs@v0.10.1
 plugins:
   - jekyll-remote-theme
 
@@ -9,7 +9,7 @@ search_enabled: true
 enable_copy_code_button: true
 
 color_scheme: levare
-logo: "/assets/images/levare-logo.svg"
+logo: "assets/images/levare-logo.svg"
 
 back_to_top: true
 back_to_top_text: "Back to top"
@@ -19,3 +19,6 @@ aux_links:
     - "https://github.com/go4cas/levare"
 
 footer_content: "Copyright &copy; 2026 the levare project. Distributed under the <a href=\"https://github.com/go4cas/levare/blob/main/LICENSE\">Apache-2.0 license</a>."
+
+url: "https://go4cas.github.io"
+baseurl: "/levare"
