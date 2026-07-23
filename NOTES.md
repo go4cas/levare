@@ -13214,3 +13214,187 @@ real external file change while it was open (standing in for the daemon's own ac
 modal stayed open and the in-progress buffer was untouched, typed an edit, confirmed the dirty marker
 and the dirty+valid Save gate, clicked Save, and confirmed via `git log` in the scratch repo that the
 commit actually landed — the registry's one write action works, start to finish, in both themes.
+
+# NOTES UI-PHASE2-C5 (2026-07-23) — loading/motion wrap-up: token consolidation, reduced-motion
+completeness stated, one named toast built, skeletons audited
+
+Cross-cutting cleanup after the six screen clusters — governed by the design brief's motion section and
+amendment 1 §2 (the three-tier wait vocabulary, R4/R5). Consolidation and audit, not new building: the
+loading tiers themselves shipped inside clusters 2/3 (NOTES UI-PHASE2-C3 Part 4, UI-PHASE2-C4). Four
+questions, in order.
+
+## Part 1 — motion token adoption
+
+`assets/styles.css` defined `--motion-instant`/`--motion-fast`/`--motion-base` (80/120/180ms) but every
+`transition`/`animation` in the file still hand-wrote its own duration literal, bypassing the scale
+entirely — the tokens existed but nothing read them. `dev/foundation/tokens.css` (the workspace) was
+already ahead of the shipped sheet: it additionally declared `--motion-pulse:1.6s` and
+`--motion-blink:1.2s`, tokens the shipped `:root` had never picked up even though `lv-pulse`/`lv-blink`
+(the actual animations) live in the shipped sheet, not the workspace.
+
+**Every duration literal in `assets/styles.css` now reads from a token** — thirteen call sites
+(`.link`, `.verb`, `.pulse`, `.pcard`, `.dot.is-active`, `.summon`, `.turn__dots span`, `.blink`,
+`.editor-overlay__panel`, `.confirm-modal__panel`, `.entity.is-highlighted`, `.sstep`, `.snode.active`,
+`.sstep__live .ld`, `.tok`, `.tick-flash`, `.skeleton-block::after`). Two decisions on how each literal
+mapped to the scale:
+
+- **Exact matches, no visual change.** `.sstep`'s `.18s cubic-bezier(.2,.7,.3,1)` was already exactly
+  `--motion-base` + `--ease-standard`, just spelled out by hand. `lv-pulse`/`lv-blink`'s own 1.6s/1.2s
+  literals everywhere they appeared were already exactly the pulse/blink tokens (now added to the
+  shipped `:root`, matching the workspace). `.entity.is-highlighted` and `.skeleton-block::after`'s own
+  1.6s literals also matched `--motion-pulse` exactly, even though neither is a repeating "live" pulse
+  in the design-brief sense (one's a one-shot deep-link flash, the other a shimmer sweep) — reused the
+  token anyway per the audit's own preference rule ("snap when it matches" beats a same-value duplicate
+  token), documented in-line so a future reader doesn't read "pulse" as implying attention-seeking
+  semantics for either.
+- **One real snap.** `.editor-overlay__panel`/`.confirm-modal__panel`'s entrance animation was `.16s`
+  (160ms) — between `--motion-fast` (120ms, 40ms off) and `--motion-base` (180ms, 20ms off). Snapped to
+  `--motion-base`: a real, if small, +20ms/+12.5% change to both modal entrances, called out here for
+  the Conductor's live-browser check per the goal's own flag ("keep changes conservative and flag
+  anything that visibly shifts").
+- **One new token.** `.tick-flash` (900ms — the tier-2 "this stat/badge just changed" wash) didn't sit
+  near any existing value: 300ms short of `--motion-blink`, 700ms short of `--motion-pulse`. Neither
+  snap would be honest (both are >30% off), so it got a real token, `--motion-flash:900ms` — a distinct
+  tier (a one-shot notification wash, never a repeating state) rather than a value forced onto pulse or
+  blink. Added to `dev/foundation/tokens.css` too, unused there today, purely so the two token sets stay
+  the same set — the goal's own "workspace and shipped stylesheet agree" instruction, read literally.
+
+**Two small drifts closed while cross-referencing the workspace against the shipped sheet**, neither a
+duration-token issue but both caught by the same "do these agree" pass: the shipped `.turn__dots`
+stagger delays (`.25s`/`.5s`) had independently drifted from `dev/foundation/components.css`'s own
+`.btn .dots` (`.2s`/`.4s`) for the identical three-dot thinking indicator — snapped to match (a
+50ms-scale change, imperceptible); and `dev/foundation/tokens.html`'s own pulse-demo tooltip had been
+stale at "1.9s" since some earlier pass, when the token (both then and now) is 1.6s — text fixed, no
+code behavior involved.
+
+## Part 2 — prefers-reduced-motion: was 6 places, verified complete, now 7
+
+Recounted rather than trusted the goal's own "7 places" framing: the shipped sheet actually had 6
+`@media (prefers-reduced-motion)` blocks, not 7, before this cluster touched anything. Enumerated every
+`animation`/non-trivial `transition` in the file against them:
+
+- `lv-pulse` (`.pulse`, `.dot.is-active`, `.snode.active`, `.sstep__live .ld`), `lv-blink`
+  (`.turn__dots span`, `.blink`), `editor-in` (both modal entrances), `entity-highlight`, `tick-flash`,
+  `skeleton-sheen` — all covered, either by their own per-component rule or by the sheet's global
+  `*{animation:none!important}` backstop (which, being `!important` on `animation`, wins regardless of
+  source order or specificity — the four narrower "animation:none" rules for the editor/confirm-modal/
+  tick-flash/skeleton-block are functionally already-covered by the wildcard; kept anyway since they
+  document per-component intent, and `.entity.is-highlighted`'s own rule additionally pins a static
+  fallback `box-shadow` the wildcard alone wouldn't supply).
+- **"Section moves"** (amendment 1 R4 tier 2's "if a card changes section, it animates the move rather
+  than jumping") is not implemented as an animation anywhere — already noted as a known, deliberate
+  limitation in NOTES UI-PHASE2-C3 Part 4 ("has no literal analog on the project page... noted rather
+  than fabricated"). Nothing to disable under reduced motion because nothing animates; not a gap, just
+  confirmed there's no orphaned literal hiding in a code path this audit's grep wouldn't have caught.
+- **The trivial hover/press transitions** (`.link`/`.verb`/`.pcard`/`.summon`/`.tok`'s border-color/
+  color/opacity fades, all now `var(--motion-fast)`) are not "non-trivial" by the brief's own standard
+  (the amendment's list — pulse, sheen, flash-on-change, section moves, skeleton shimmer, popover/modal
+  entrances — is animations, not hover fades) and were never gated individually. They ARE now covered
+  anyway: the global rule's own gap is what this cluster closed —
+
+**One real gap closed:** the shipped global rule only killed `animation`, not `transition`
+(`*{animation:none!important}`); `dev/foundation/tokens.css`'s own equivalent rule already killed both
+(`animation:none!important; transition:none!important`). Brought the shipped sheet in line with the
+workspace — the safer, more complete reading of "reduced-motion must be respected," and the one place
+shipped and workspace disagreed on the reduced-motion backstop itself. This adds a 7th
+`@media (prefers-reduced-motion)` block (the new `.toast{transition:none}` rule, Part 3) — coincidentally
+landing back on the goal's originally-stated count, this time for real.
+
+**Ruling: reduced-motion coverage is COMPLETE** — every animation in the sheet is disabled either by its
+own rule or the global backstop; every non-trivial transition (now token-driven) is covered by the
+backstop too; nothing animates that isn't accounted for.
+
+## Part 3 — toasts: ruled, not built speculatively — except one named gap, which got the minimal fix
+
+Assessed the amendment 1 §2 R5 / review F29 toast requirement against what cluster 2 actually shipped:
+gate failure keeps state and offers retry **inline on the card itself**
+(`assets/app.js#settleFailure` — the verb returns to idle, the card keeps its state, a message plus a
+retry/re-check button render right where the action was taken). The gate card never scrolls away or
+unmounts on its own action, so there is no moment where a toast would be reachable but the inline
+surface wouldn't be. **Ruling: the inline gate treatment satisfies F29 for gates — no toast needed
+there.** Likewise the registry editor's own save FAILURE already has an inline surface: `setInvalid`
+renders the error inside the still-open overlay (the overlay only closes on success), so a failed save
+is never orphaned either.
+
+The one surface with a genuine, verified gap: **the editor's save-and-commit SUCCESS.** The old
+"feedback" was `ovSave.textContent = 'Committed ✓'` immediately followed, in the same synchronous
+handler, by `closeEditor()` — which sets `overlay.hidden = true` on the very same tick. The browser
+never paints the intermediate "Committed ✓" state before the element hiding it disappears; the text
+change is dead code, confirmed by removing it (no test or behavior depended on it — `bun test` still
+1284/1284 after). The only other signal available afterward is the 400ms-delayed `refreshCurrent()`'s
+own `tick-flash` pass, which only flashes fields that are both currently rendered on the page AND
+visibly changed (`assets/app.js#flashLiveChanges`) — for many edits (a skill's body text, an agent's
+context recipe, anything not surfaced as a stat or status badge) that's nothing at all. Editing an
+entity and having zero confirmation it worked is exactly the "action taken from a card that then
+closes/scrolls away" scenario the goal named as the interesting case.
+
+**Built the minimal fix, not a system:** `src/board/components.ts#toastViewport` (a single empty
+`#toast-viewport` div, `aria-live="polite"`) rendered once per page in `shell.ts`, a sibling of
+`.app`/`.confirm-modal`, untouched by a `.main`/extras swap — same "one instance per page" pattern
+`confirmModal()` already established. `assets/app.js#showToast` appends one `.toast` element, adds
+`.is-shown` on the next frame (a `var(--motion-base)`-eased fade+rise), auto-removes it after 2.6s. The
+save handler now calls `showToast('Saved and committed — ' + name)` right where the dead button-text
+line used to be, before `closeEditor()`. Nothing else calls it — this is not a general toast component
+library, it's the one fix for the one confirmed gap, and the CSS/JS both say so in their own comments so
+a future author doesn't reach for it as a general-purpose primitive without re-reading why it exists.
+
+## Part 4 — skeleton consistency
+
+Two skeleton implementations exist, both already shaped like their real anatomy rather than gray boxes,
+both already using the warm-sheen `.skeleton-block` treatment:
+
+- **Chat "thinking" skeleton** (`assets/app.js` inside the Orchestrator composer's pending-turn path):
+  two `.skeleton-block.turn__skel-line` spans at 78%/48% width inside the same neutral `.turn__body`
+  bubble a real reply renders in — genuinely mirrors "a couple of lines of prose," not a generic box.
+- **Client-navigation skeleton** (`.skeleton-overlay`, `assets/app.js#maybeShowSkeleton`): a title bar
+  (38% width) plus three full-width 64px blocks, shown after a 400ms delay covering `.main` in place.
+  This is a single generic shape reused for every destination (studio/project/run/registry all have
+  different real anatomies) rather than a per-page-type skeleton — but that's a real constraint, not a
+  shortcut: the destination's actual structure isn't known until the fragment fetch resolves, so a
+  page-specific skeleton isn't buildable without either guessing wrong or fetching twice. The generic
+  "title + a few content blocks" shape is the honest common denominator across screens; already
+  documented in NOTES UI-PHASE2-C3 Part 4 as essentially untriggerable in normal use (this app's
+  navigation is a local file read, not a slow fetch) — reviewed again here and left as-is; no gap to
+  close, no skeleton added where there's no real wait.
+- **No full-page spinners anywhere** — grepped for one. The only "spinner"-named code is tier-1's
+  button-scoped delayed indicator (`assets/app.js#beginPending`/`showSpinner`), which renders the same
+  quiet dots primitive (`pendingState`/`.turn__dots`) scoped to the single clicked verb group, never a
+  literal spinner icon and never full-page.
+
+## Verified
+
+`bun test` → 1284 pass, 9 skip, 0 fail, across 92 files (unchanged pass count — this cluster is a CSS/
+JS/markup consolidation, no new test surface area beyond what the existing suite already covers; the
+dead "Committed ✓" removal and the toast wiring were verified live, not by a new unit test — this app's
+client JS has no jsdom/happy-dom harness, per every prior cluster's own note on the same gap). `bunx tsc
+--noEmit` → clean. `bun run deps:check` → `deps ok`. `bun run build` → succeeds. `bun run src/cli.ts
+validate fixtures/golden` → `valid`, same two pre-existing `SANDBOX_UNAVAILABLE` warnings, unchanged.
+`bun run src/cli.ts replay fixtures/golden --stubs` → oracle match, byte-for-byte (this cluster never
+touches replay/dagwalk/runner logic). Bumped `/styles.css?v=11` and `/app.js?v=9` in `shell.ts` (both
+assets changed).
+
+Live-rendered in a real headless-Chromium session against a writable scratch copy of `fixtures/golden`
+(git-initialized separately, since `levare serve` refuses writes under `fixtures/`), both themes:
+opened the registry editor, edited an agent's body, saved, confirmed the new toast appears bottom-center
+reading "Saved and committed — finch," fades in over `--motion-base`, and auto-dismisses cleanly after
+~2.6s with no ghost element left in the DOM — repeated in dark mode, same result. Confirmed via `git log`
+in the scratch repo that both saves actually committed (`git show --stat HEAD` showed the real diff).
+Confirmed the read-only guard's own inline failure treatment renders correctly as a side effect (ran the
+same flow first against the real `fixtures/golden` before switching to the writable copy — got
+`SAVE_FAILED`/"this board is running read-only," inline, overlay staying open, exactly as designed).
+Screenshotted the run view's score rail (gate-open diamond, done/active nodes, the live strip) in dark
+mode, then again with `prefers-reduced-motion: reduce` emulated via Playwright — byte-identical layout
+and colour, only the animations stopped; hovered a link under reduced motion with no glitch. Zero
+console errors across the whole session.
+
+## What this cluster does NOT claim
+
+Did not re-verify the tiers themselves (tier-1 spinner delay, tier-2 tick-flash, tier-3 live strip) end
+to end — those were verified live when they shipped (UI-PHASE2-C3/C4) and this cluster only touched
+their duration literals, never their trigger logic; re-ran the full test suite and a live browser pass
+as the check that nothing broke, not a re-derivation of their own original proofs. The `.tick-flash`/
+`.editor-overlay__panel` snaps (900ms token promotion, 160ms→180ms) are real if small changes — flagged
+above for the Conductor's own live-browser judgment per the goal's ask, not silently absorbed as
+"obviously fine." The toast is scoped to exactly the one gap found; a future action with the same
+"outcome has no feedback surface once its own UI closes" shape would need its own audit, not an
+assumption that `showToast` already covers it.
