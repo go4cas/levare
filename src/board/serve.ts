@@ -5,7 +5,8 @@
 // the page", never to patch DOM from a payload, keeping the projection stateless end to end.
 
 import { watch, type FSWatcher } from "node:fs";
-import { readFileSync, existsSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join, extname, dirname, resolve, relative, sep } from "node:path";
 import { loadRepo } from "../repo.ts";
 import { renderStudio, renderProject, renderRun, renderRegistry, renderArtifact, renderIdea } from "./render.ts";
@@ -124,6 +125,74 @@ export function isRegistryEditablePath(root: string, relPath: string): boolean {
   if (segs.some((s) => s === "" || s === "." || s === ".." || s.startsWith(".git"))) return false;
   if (!REGISTRY_EDITABLE_DIRS.has(segs[0])) return false;
   return segs[segs.length - 1].endsWith(".md");
+}
+
+// ---------------------------------------------------------------------------
+// fs.watch scoping + change signature (reload storm fix, NOTES UI-PHASE2 addendum)
+//
+// A repo root under active `git` use (index.lock, refs, logs) generates a steady trickle of fs
+// events that has nothing to do with what a page renders — a recursive fs.watch on the whole root
+// picks all of it up, and the old 80ms debounce only coalesces *bursts*, doing nothing against a
+// continuous trickle: every event became its own reload → refetch. Two independent layers fix this:
+// (1) below, `isRelevantWatchPath` discards any event outside the directories a page can actually be
+// derived from before a debounce timer is even scheduled; (2) `computeChangeSignature` is the
+// belt-and-braces layer — even if a future transient path slips past (1), a broadcast only fires when
+// the signature actually differs from the last one sent, so a same-content event is a no-op.
+//
+// The relevant set is exactly what render.ts's screens read: `loadRepo` (repo.ts) covers
+// teams/agents/types/projects/connectors/work + the root `studio.md` singleton; `loadExtras`
+// (extra.ts) additionally covers skills/knowledge/evals/ideas for the registry screens — together
+// that's REGISTRY_EDITABLE_DIRS (already the write-side allowlist above) plus `work`.
+const WATCHED_TOP_LEVEL_DIRS = new Set([...REGISTRY_EDITABLE_DIRS, "work"]);
+const WATCHED_ROOT_FILE = "studio.md";
+
+/** True when a raw fs.watch event's path is under a directory (or is the root file) a rendered page
+ * actually reads — false for `.git/*` churn and anything else outside that set. `filename` is `null`
+ * on platforms that don't report it (rare); such an event can't be scoped here, so it falls through
+ * to the signature check in `computeChangeSignature` instead of being silently dropped. */
+export function isRelevantWatchPath(filename: string | null): boolean {
+  if (filename == null) return true;
+  const top = filename.split(sep)[0];
+  return top === WATCHED_ROOT_FILE || WATCHED_TOP_LEVEL_DIRS.has(top);
+}
+
+function collectSignatureEntries(dir: string, relPrefix: string, out: string[]): void {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return; // dir doesn't exist (yet) — nothing to sign under it
+  }
+  for (const name of names) {
+    if (name.startsWith(".")) continue; // e.g. a stray .DS_Store — not part of any rendered page
+    const full = join(dir, name);
+    const rel = relPrefix ? `${relPrefix}/${name}` : name;
+    let st: ReturnType<typeof statSync>;
+    try {
+      st = statSync(full);
+    } catch {
+      continue; // raced a delete between readdir and stat; the next real event settles it
+    }
+    if (st.isDirectory()) collectSignatureEntries(full, rel, out);
+    else out.push(`${rel}:${st.mtimeMs}:${st.size}`);
+  }
+}
+
+/** A cheap signature over exactly the content the board's screens are derived from (see the
+ * directory set above) — mtime+size per file, hashed. Two calls return the same string iff nothing
+ * a page reads has changed, regardless of how many raw fs events fired in between. */
+export function computeChangeSignature(root: string): string {
+  const entries: string[] = [];
+  for (const dir of WATCHED_TOP_LEVEL_DIRS) collectSignatureEntries(join(root, dir), dir, entries);
+  const studioMd = join(root, WATCHED_ROOT_FILE);
+  try {
+    const st = statSync(studioMd);
+    entries.push(`${WATCHED_ROOT_FILE}:${st.mtimeMs}:${st.size}`);
+  } catch {
+    // no studio.md — fine, loadStudioSettings treats that as {} too
+  }
+  entries.sort();
+  return createHash("sha1").update(entries.join("\n")).digest("hex");
 }
 
 const ASSET_PATHS: Record<string, string> = { "styles.css": stylesCssPath, "app.js": appJsPath };
@@ -648,17 +717,31 @@ export function createBoard(
   // ONE fs.watch for this board's entire lifetime, shared by every SSE subscriber — a property of the
   // repo being served, never of a client. Nothing below creates a watcher per connection; this is the
   // only `watch()` call in the board's lifecycle, made once here at startup.
+  //
+  // Two layers keep this from becoming a reload storm (see the block above `isRelevantWatchPath`):
+  // events outside the rendered-content dirs (`.git/*` churn, chiefly) never even schedule the
+  // debounce timer, and — belt-and-braces — the debounce only broadcasts when the post-debounce
+  // change signature actually differs from the last one sent.
   let watcher: FSWatcher | null = null;
   let debounce: ReturnType<typeof setTimeout> | null = null;
+  let lastSignature = computeChangeSignature(root);
   const notify = () => {
     if (debounce) clearTimeout(debounce);
-    debounce = setTimeout(() => ctx.broadcast("reload"), 80);
+    debounce = setTimeout(() => {
+      const sig = computeChangeSignature(root);
+      if (sig === lastSignature) return;
+      lastSignature = sig;
+      ctx.broadcast("reload");
+    }, 80);
+  };
+  const onFsEvent = (_event: string, filename: string | null) => {
+    if (isRelevantWatchPath(filename)) notify();
   };
   try {
-    watcher = watch(root, { recursive: true }, () => notify());
+    watcher = watch(root, { recursive: true }, onFsEvent);
   } catch {
     try {
-      watcher = watch(root, {}, () => notify());
+      watcher = watch(root, {}, onFsEvent);
     } catch {
       watcher = null; // no fs.watch support on this platform; SSE channel still works for direct pushes.
     }
