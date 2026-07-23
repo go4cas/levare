@@ -38,3 +38,17 @@ export function formatVersion(info: VersionInfo): string {
 export function isCompiledBuild(info: VersionInfo = getVersionInfo()): boolean {
   return info.build !== null;
 }
+
+// The release workflow (.github/workflows/release.yml, NOTES DIST2) derives the published package
+// version from the pushed git tag (`v0.1.0` -> `0.1.0`) before stamping it into package.json. A
+// leading "v" is only a semver prefix when the whole tag is semver-shaped (`v` + dotted
+// major.minor.patch, optionally with a `-prerelease` and/or `+build` suffix) — stripping it
+// whenever the tag merely starts with the letter "v" mangles ordinary tag names (`vendor-cli-gh` ->
+// `endor-cli-gh`, a real incident: that tag matched the release trigger and shipped a binary whose
+// `--version` read "levare endor-cli-gh"). Note `v11-conv` isn't dotted major.minor.patch either, so
+// it's a word too, not a truncated semver tag. Kept here, not inlined in YAML, so it's unit-testable.
+const SEMVER_TAG = /^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
+
+export function versionFromTag(tag: string): string {
+  return SEMVER_TAG.test(tag) ? tag.slice(1) : tag;
+}

@@ -2,10 +2,19 @@ import { test, expect, describe } from "bun:test";
 import { readFileSync, existsSync } from "node:fs";
 
 // NOTES DIST2: the release workflow can only truly be exercised by GitHub Actions itself (pushing a
-// `v*` tag and watching the run — see NOTES). This suite is the part that CAN be checked locally and
-// in `bun test`: the YAML parses, the tag trigger is exactly the descriptive-tags-excluding `v*`
-// glob, the four-platform matrix matches NOTES DIST2's list verbatim, the job dependency chain gates
-// the release on a passing build, and the release job's token scope is the minimum needed.
+// tag and watching the run — see NOTES). This suite is the part that CAN be checked locally and in
+// `bun test`: the YAML parses, the tag trigger is exactly the descriptive-tags-excluding
+// semver-shaped glob, the four-platform matrix matches NOTES DIST2's list verbatim, the job
+// dependency chain gates the release on a passing build, and the release job's token scope is the
+// minimum needed.
+//
+// The trigger used to be the bare `v*` glob, which matches ANY tag starting with the letter "v" —
+// not just semver ones. Combined with release.yml's old unconditional `${GITHUB_REF_NAME#v}` strip,
+// pushing a word-shaped tag like `vendor-cli-gh` (itself starting with "v", so it matched `v*`)
+// triggered a real release and stamped a mangled version (`endor-cli-gh`) into the published binary.
+// The trigger is now the stricter `v[0-9]+.[0-9]+.[0-9]+*`, so a tag has to actually look like
+// `vMAJOR.MINOR.PATCH[...]` to ever reach the release job — see src/version.ts#versionFromTag for
+// the matching fix to the strip itself.
 
 const WORKFLOW_PATH = ".github/workflows/release.yml";
 
@@ -13,11 +22,28 @@ function loadWorkflow(): any {
   return Bun.YAML.parse(readFileSync(WORKFLOW_PATH, "utf8"));
 }
 
-// A minimal, single-`*`-glob-to-regex conversion — sufficient for the one pattern this workflow
-// declares (`v*`); not a general GitHub Actions filter-pattern implementation.
+// A glob-to-regex conversion covering what this workflow's tag filter actually uses: `*` (any run of
+// characters), and bracket character classes with a `+` quantifier (`[0-9]+`) — not a general GitHub
+// Actions filter-pattern implementation.
 function matchesTagGlob(pattern: string, tag: string): boolean {
-  const re = new RegExp(`^${pattern.split("*").map((s) => s.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`);
-  return re.test(tag);
+  let re = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === "*") {
+      re += ".*";
+    } else if (c === "[") {
+      const end = pattern.indexOf("]", i);
+      re += pattern.slice(i, end + 1);
+      i = end;
+    } else if (c === "+") {
+      re += "+";
+    } else if (".^$()|\\{}?".includes(c)) {
+      re += "\\" + c;
+    } else {
+      re += c;
+    }
+  }
+  return new RegExp(`^${re}$`).test(tag);
 }
 
 describe("release workflow (NOTES DIST2)", () => {
@@ -25,21 +51,40 @@ describe("release workflow (NOTES DIST2)", () => {
     expect(() => loadWorkflow()).not.toThrow();
   });
 
-  test("triggers on push of tags, with exactly the `v*` pattern", () => {
+  test("triggers on push of tags, with exactly the semver-shaped `v[0-9]+.[0-9]+.[0-9]+*` pattern", () => {
     const wf = loadWorkflow();
-    expect(wf.on.push.tags).toEqual(["v*"]);
+    expect(wf.on.push.tags).toEqual(["v[0-9]+.[0-9]+.[0-9]+*"]);
   });
 
-  test("`v*` matches semver-shaped release tags", () => {
-    for (const tag of ["v0.1.0", "v1.2.3", "v0.1.0-rc1"]) {
-      expect(matchesTagGlob("v*", tag)).toBe(true);
+  test("the trigger pattern matches semver-shaped release tags", () => {
+    const pattern = loadWorkflow().on.push.tags[0];
+    for (const tag of ["v0.1.0", "v1.2.3", "v0.1.0-rc1", "v10.20.30"]) {
+      expect(matchesTagGlob(pattern, tag)).toBe(true);
     }
   });
 
-  test("`v*` does NOT match the descriptive waypoint tags used during development", () => {
+  test("the trigger pattern does NOT match the descriptive waypoint tags used during development", () => {
+    const pattern = loadWorkflow().on.push.tags[0];
     for (const tag of ["dist1", "f11", "ui6"]) {
-      expect(matchesTagGlob("v*", tag)).toBe(false);
+      expect(matchesTagGlob(pattern, tag)).toBe(false);
     }
+  });
+
+  test("the trigger pattern does NOT match word-shaped tags that merely start with the letter 'v' (the actual incident)", () => {
+    const pattern = loadWorkflow().on.push.tags[0];
+    for (const tag of ["vendor-cli-gh", "v11-conv"]) {
+      expect(matchesTagGlob(pattern, tag)).toBe(false);
+    }
+  });
+
+  test("release.yml derives the stamped version via versionFromTag, not an inline shell strip", () => {
+    const wf = loadWorkflow();
+    const stampStep = wf.jobs.build.steps.find((s: { name?: string }) => s.name === "Stamp package.json version from the release tag");
+    const smokeStep = wf.jobs.build.steps.find((s: { name?: string }) => s.name === "Smoke-test the version stamp");
+    expect(stampStep.run).toContain("versionFromTag");
+    expect(smokeStep.run).toContain("versionFromTag");
+    expect(stampStep.run).not.toContain("GITHUB_REF_NAME#v");
+    expect(smokeStep.run).not.toContain("GITHUB_REF_NAME#v");
   });
 
   test("builds exactly the four in-scope platform targets, none of them Windows", () => {

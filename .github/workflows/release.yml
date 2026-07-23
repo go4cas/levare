@@ -10,7 +10,7 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - "v[0-9]+.[0-9]+.[0-9]+*"
 
 permissions:
   contents: read
@@ -58,7 +58,7 @@ jobs:
       # package.json, so stamp it here (in this ephemeral checkout only; nothing is committed back).
       - name: Stamp package.json version from the release tag
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="$(bun -e 'import { versionFromTag } from "./src/version.ts"; console.log(versionFromTag(process.argv[1]))' "$GITHUB_REF_NAME")"
           bun -e "
             const fs = require('fs');
             const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
@@ -73,7 +73,7 @@ jobs:
 
       - name: Smoke-test the version stamp
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="$(bun -e 'import { versionFromTag } from "./src/version.ts"; console.log(versionFromTag(process.argv[1]))' "$GITHUB_REF_NAME")"
           echo "expected version: $version"
           # Cross-compiled binaries for a foreign OS/arch can't be executed on this runner; only
           # verify the stamp directly (strings) rather than by running it, except for the one target

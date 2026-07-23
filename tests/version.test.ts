@@ -1,7 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import { readFileSync } from "node:fs";
 import { main } from "../src/cli.ts";
-import { getVersionInfo, formatVersion, isCompiledBuild } from "../src/version.ts";
+import { getVersionInfo, formatVersion, isCompiledBuild, versionFromTag } from "../src/version.ts";
 
 // levare --version / -v (NOTES DIST1). A binary that can't say what it is can't be trusted in the
 // field — running under `bun test` is itself a source run (no `--define`-stamped build commit), so
@@ -44,6 +44,24 @@ describe("version info", () => {
     const info = { version: "1.2.3", build: { commit: "2b0610f" } };
     expect(formatVersion(info)).toBe("levare 1.2.3 (build 2b0610f)");
     expect(isCompiledBuild(info)).toBe(true);
+  });
+});
+
+describe("versionFromTag (release.yml's tag -> package.json version derivation)", () => {
+  test("strips the semver 'v' prefix (v followed by a digit)", () => {
+    expect(versionFromTag("v0.1.0")).toBe("0.1.0");
+    expect(versionFromTag("v1.2.3-rc1")).toBe("1.2.3-rc1");
+    expect(versionFromTag("v10.0.0")).toBe("10.0.0");
+  });
+
+  test("leaves a word-shaped tag intact — 'v' is a letter here, not a semver prefix", () => {
+    expect(versionFromTag("vendor-cli-gh")).toBe("vendor-cli-gh");
+    expect(versionFromTag("v11-conv")).toBe("v11-conv");
+  });
+
+  test("leaves a tag with no leading 'v' at all untouched", () => {
+    expect(versionFromTag("0.1.0")).toBe("0.1.0");
+    expect(versionFromTag("dist1")).toBe("dist1");
   });
 });
 
