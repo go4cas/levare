@@ -1,0 +1,21 @@
+// levare DARK colour scheme — ratified dark-mode values (assets/styles.css [data-theme="dark"]),
+// ready to use. NOT currently wired to a runtime toggle — see docs/levare-design-brief.md and the
+// branding-pass report for why (just-the-docs' multi-scheme toggle compiles a separate CSS bundle per
+// scheme via assets/css/just-the-docs-<scheme>.scss + custom JS, which needs a real Jekyll build to
+// verify and this environment has no local Ruby/Jekyll to test against). Recorded as a follow-up.
+$color-scheme: dark;
+
+$body-background-color: #101216;
+$body-heading-color: #F5F6F7;
+$body-text-color: #F5F6F7;
+$link-color: #E56A50; // dark-mode accent
+$nav-child-link-color: #A4A9B3;
+$sidebar-color: #191B21;
+$base-button-color: #191B21;
+$btn-primary-color: #E56A50;
+$code-background-color: #191B21;
+$feedback-color: lighten($sidebar-color, 3%);
+$table-background-color: #191B21;
+$search-background-color: #191B21;
+$search-result-preview-color: #A4A9B3;
+$border-color: #262A33;

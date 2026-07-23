@@ -1,0 +1,23 @@
+// levare colour scheme — ports the ratified palette (assets/styles.css, docs/levare-design-brief.md)
+// onto just-the-docs' own scheme variables. Imported after color_schemes/light (see
+// _includes/css/just-the-docs.scss.liquid in the theme), so plain assignment overrides it.
+//
+// Ink #191B21 / Paper #F5F6F7 are the fixed neutrals; Podium vermilion #C2402A is the accent, used
+// sparingly per the brief — only where the theme itself already reserves color for links/active nav/
+// primary buttons, never decoration.
+$color-scheme: light;
+
+$body-background-color: #F5F6F7; // paper
+$body-heading-color: #191B21; // ink
+$body-text-color: #191B21; // ink
+$link-color: #C2402A; // accent — links + active nav (nav.scss darkens this for .active)
+$nav-child-link-color: #565B65; // fg-dim
+$sidebar-color: #FFFFFF; // panel — chrome surface, mirrors the app's rail/header treatment
+$base-button-color: #FFFFFF;
+$btn-primary-color: #C2402A; // accent
+$code-background-color: #FFFFFF; // panel
+$feedback-color: darken($sidebar-color, 3%);
+$table-background-color: #FFFFFF;
+$search-background-color: #FFFFFF;
+$search-result-preview-color: #565B65; // fg-dim
+$border-color: #E6E8EB; // border
