@@ -26,6 +26,15 @@
   --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px; --space-5:20px; --space-6:24px; --space-8:32px;
   --radius-sm:5px; --radius-md:8px; --radius-lg:12px; --radius-xl:14px; --radius-pill:999px;
   --motion-instant:80ms; --motion-fast:120ms; --motion-base:180ms;
+  /* UI motion wrap-up: pulse/blink/flash brought over from dev/foundation/tokens.css (which already
+     defined them) — the shipped sheet only had the first three before, leaving every `lv-pulse`/
+     `lv-blink`/one-shot-flash animation below hand-writing its own duration literal instead of reading
+     the scale. `--motion-flash` is new: 900ms (`.tick-flash`'s existing value) doesn't sit near any
+     of the above, and it names a real, distinct tier — a quiet one-shot "this just changed" wash,
+     never a repeating state like pulse/blink — so it's promoted to a token rather than left a literal
+     or force-fit onto a value that would visibly change its speed. Added to dev/foundation/tokens.css
+     too, so the workspace and shipped scale stay the same set. */
+  --motion-pulse:1.6s; --motion-blink:1.2s; --motion-flash:900ms;
   --ease-standard:cubic-bezier(.2,.7,.3,1);
   /* gate-panel — the whole-cell wash the foundation's stat-band/gate-card treatments derive from
      --gate via color-mix, never a hand-picked literal (both themes stay correct by construction). */
@@ -67,7 +76,7 @@ button{ font-family:inherit; }
 /* ---------- mono = filesystem truth (every token a link) ---------- */
 .mono{ font-family:var(--mono); font-size:.92em; }
 .link{ color:var(--fg); font-family:var(--mono); font-size:.92em; text-decoration:none;
-  border-bottom:1px solid color-mix(in oklab, var(--fg) 22%, transparent); transition:border-color .12s; }
+  border-bottom:1px solid color-mix(in oklab, var(--fg) 22%, transparent); transition:border-color var(--motion-fast); }
 .link:hover{ color:var(--fg); border-bottom-color:var(--accent); }
 .muted{ color:var(--fg-mute); }
 .dim{ color:var(--fg-dim); }
@@ -257,7 +266,7 @@ button{ font-family:inherit; }
 .gate__badge.is-exhausted{ color:var(--gate); background:transparent; border:1px solid var(--gate); }
 .gate__verbs{ display:flex; gap:8px; flex-wrap:wrap; }
 .verb{ background:transparent; color:var(--fg-mute); border:1px solid var(--border-strong); padding:7px 14px;
-  border-radius:7px; font-size:12.5px; font-weight:500; cursor:pointer; transition:.12s; }
+  border-radius:7px; font-size:12.5px; font-weight:500; cursor:pointer; transition:var(--motion-fast); }
 .verb:hover{ color:var(--fg-dim); border-color:var(--fg-dim); }
 /* amendment 1 §2 R4/R5: tier-1 button state — the instant press feedback (before the spinner, which
    only shows after a short delay so a fast op never flashes one) and the whole-group disabled state
@@ -304,7 +313,7 @@ button{ font-family:inherit; }
 .mrow .doing{ font-size:12.5px; color:var(--fg-dim); flex:1; }
 .mrow .step{ font-family:var(--mono); font-size:11px; color:var(--fg-mute); }
 .mrow .elapsed{ font-family:var(--mono); font-size:12px; color:var(--fg-dim); width:42px; text-align:right; }
-.pulse{ width:8px; height:8px; border-radius:50%; flex:none; animation:lv-pulse 1.6s infinite; }
+.pulse{ width:8px; height:8px; border-radius:50%; flex:none; animation:lv-pulse var(--motion-pulse) infinite; }
 
 /* ---------- avatars ---------- */
 .avatar{ border-radius:50%; color:#fff; display:inline-flex; align-items:center; justify-content:center;
@@ -317,7 +326,7 @@ button{ font-family:inherit; }
 /* ---------- project cards + mini-score ---------- */
 .pcards{ display:grid; grid-template-columns:repeat(auto-fill, minmax(220px,1fr)); gap:12px; }
 .pcard{ background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:15px 16px;
-  display:flex; flex-direction:column; gap:13px; text-decoration:none; transition:border-color .12s; }
+  display:flex; flex-direction:column; gap:13px; text-decoration:none; transition:border-color var(--motion-fast); }
 .pcard:hover{ border-color:var(--border-strong); }
 .pcard__top{ display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
 .pcard__name{ font-size:14px; font-weight:600; color:var(--fg); }
@@ -342,7 +351,7 @@ button{ font-family:inherit; }
 .miniscore{ display:flex; align-items:center; gap:5px; }
 .dot{ width:7px; height:7px; border-radius:50%; flex:none; }
 .dot.is-done{ background:var(--ok); }
-.dot.is-active{ background:var(--active); --pulse-c:var(--active); animation:lv-pulse 1.6s infinite; }
+.dot.is-active{ background:var(--active); --pulse-c:var(--active); animation:lv-pulse var(--motion-pulse) infinite; }
 /* Conductor amendment (Phase 2 cluster 3 seal): "waiting" moved from hollow-neutral to SOLID neutral
    gray, palette-wide — once the score rail's connecting line runs continuously through every node, a
    hollow ring reads as the thread piercing an empty center, not as "nothing happening yet". Filled
@@ -400,7 +409,7 @@ button{ font-family:inherit; }
 .turn--user .turn__body{ background:var(--bg-user); color:var(--text-user); border:1px solid var(--border); padding:9px 12px; border-radius:10px; }
 .summon{ display:inline-flex; align-items:center; gap:8px; align-self:flex-start; cursor:pointer;
   background:color-mix(in oklab, var(--accent) 9%, transparent); border:1px solid color-mix(in oklab, var(--accent) 24%, transparent);
-  padding:7px 11px; border-radius:8px; transition:.12s; }
+  padding:7px 11px; border-radius:8px; transition:var(--motion-fast); }
 .summon:hover{ background:color-mix(in oklab, var(--accent) 15%, transparent); }
 .summon .dia{ width:8px; height:8px; background:var(--gate); transform:rotate(45deg); flex:none; }
 .summon span{ font-size:12.5px; color:var(--fg); font-weight:500; }
@@ -419,9 +428,12 @@ button{ font-family:inherit; }
    existing global rule below. */
 .turn__dots{ display:inline-flex; gap:4px; }
 .turn__dots span{ width:4px; height:4px; border-radius:50%; background:var(--fg-mute);
-  animation:lv-blink 1.2s infinite; }
-.turn__dots span:nth-child(2){ animation-delay:.25s; }
-.turn__dots span:nth-child(3){ animation-delay:.5s; }
+  animation:lv-blink var(--motion-blink) infinite; }
+/* Stagger offsets, not scale durations — snapped to match dev/foundation/components.css's own
+   `.btn .dots` (.2s/.4s) rather than left at this shipped copy's independently-drifted .25s/.5s, so
+   the two thinking-dots implementations read identically instead of merely similarly. */
+.turn__dots span:nth-child(2){ animation-delay:.2s; }
+.turn__dots span:nth-child(3){ animation-delay:.4s; }
 /* Phase 2 cluster 4 item 3 (amendment 1 R5, review F28): a pending Orchestrator reply shows
    content-shaped skeleton lines inside its own neutral bubble instead of a "thinking…" dots+text
    paragraph — the same warm-sheen skeleton-block treatment the tier-2/3 loading states use
@@ -445,7 +457,7 @@ button{ font-family:inherit; }
 .tl__who{ font-size:13px; font-weight:600; color:var(--fg); }
 .tl__t{ font-family:var(--mono); font-size:10.5px; color:var(--fg-mute); }
 .tl__desc{ font-size:12.5px; color:var(--fg-dim); line-height:1.45; }
-.blink{ animation:lv-blink 1.2s infinite; }
+.blink{ animation:lv-blink var(--motion-blink) infinite; }
 
 /* ---------- artifact rows / chips ---------- */
 .arows{ background:var(--panel); border:1px solid var(--border); border-radius:12px; overflow:hidden; }
@@ -614,7 +626,7 @@ button{ font-family:inherit; }
 .editor-overlay__backdrop{ position:absolute; inset:0; background:color-mix(in oklab, var(--fg) 45%, transparent); }
 .editor-overlay__panel{ position:relative; width:min(760px, 100%); max-height:88vh; display:flex; flex-direction:column;
   background:var(--panel); border:1px solid var(--border-strong); border-radius:14px; box-shadow:var(--shadow);
-  padding:20px 22px; gap:14px; animation:editor-in .16s ease-out; }
+  padding:20px 22px; gap:14px; animation:editor-in var(--motion-base) ease-out; }
 @keyframes editor-in{ from{ opacity:0; transform:translateY(4px) scale(.99); } to{ opacity:1; transform:none; } }
 @media (prefers-reduced-motion: reduce){ .editor-overlay__panel{ animation:none; } }
 .editor-overlay__head{ display:flex; align-items:baseline; gap:10px; }
@@ -663,18 +675,37 @@ button{ font-family:inherit; }
 .confirm-modal__backdrop{ position:absolute; inset:0; background:color-mix(in oklab, var(--fg) 45%, transparent); }
 .confirm-modal__panel{ position:relative; width:min(360px, 100%); display:flex; flex-direction:column; gap:16px;
   background:var(--panel); border:1px solid var(--border-strong); border-radius:14px; box-shadow:var(--shadow);
-  padding:18px 20px; animation:editor-in .16s ease-out; }
+  padding:18px 20px; animation:editor-in var(--motion-base) ease-out; }
 @media (prefers-reduced-motion: reduce){ .confirm-modal__panel{ animation:none; } }
 .confirm-modal__question{ margin:0; font-size:14px; line-height:1.5; color:var(--fg); }
 .confirm-modal__actions{ display:flex; justify-content:flex-end; gap:10px; }
 .togglebtn.is-danger{ color:var(--danger); border-color:var(--border-strong); }
 .togglebtn.is-danger:hover{ color:var(--danger); border-color:var(--danger); }
 
+/* ---------- toast (UI motion wrap-up, amendment 1 §2 R5 / review F29) ----------
+   NOT a general toast system — the one named, verified gap the inline treatments elsewhere don't
+   cover: a gate's own failure keeps state and offers retry ON THE CARD (assets/app.js#settleFailure),
+   and the editor's own save failure surfaces inline inside the still-open overlay (setInvalid) — both
+   already satisfy "failure keeps state and offers retry" without this. What had NO feedback surface at
+   all was the editor's save SUCCESS: the overlay that held the action closes immediately, and a
+   same-URL refresh only flashes fields that visibly changed (assets/app.js#flashLiveChanges) — nothing,
+   if the edited fields aren't rendered as a stat/badge on the current page. `#toast-viewport` (rendered
+   once per page in the shell, a sibling of `.app` untouched by a `.main` swap) hosts this ONE
+   confirmation; see assets/app.js's own `showToast`. */
+.toast-viewport{ position:fixed; left:50%; bottom:28px; transform:translateX(-50%); z-index:300;
+  display:flex; flex-direction:column; align-items:center; gap:8px; pointer-events:none; }
+.toast{ display:flex; align-items:center; gap:8px; background:var(--fg); color:var(--bg);
+  font-size:12.5px; font-weight:500; padding:9px 16px; border-radius:9px; box-shadow:var(--shadow);
+  opacity:0; transform:translateY(6px);
+  transition:opacity var(--motion-base) var(--ease-standard), transform var(--motion-base) var(--ease-standard); }
+.toast.is-shown{ opacity:1; transform:none; }
+@media (prefers-reduced-motion: reduce){ .toast{ transition:none; } }
+
 /* UI4 item 4: a deep link into one registry entity (`/registry/<kind>/<name>`) scrolls to and briefly
    flashes that card — the path-based replacement for the old `#<kind>-<name>` fragment anchor's scroll
    behavior. A quiet, ink-neutral ring (never the accent, which the identity reserves for the
    Orchestrator's voice; never a team hue or gate brass, both of which mean something else entirely). */
-.entity.is-highlighted{ animation:entity-highlight 1.6s ease-out; }
+.entity.is-highlighted{ animation:entity-highlight var(--motion-pulse) ease-out; }
 @keyframes entity-highlight{
   0%{ box-shadow:0 0 0 2px var(--border-strong); background:color-mix(in oklab, var(--fg) 5%, var(--panel)); }
   100%{ box-shadow:0 0 0 0 transparent; background:var(--panel); }
@@ -723,7 +754,16 @@ button{ font-family:inherit; }
   70%,100%{ box-shadow:0 0 0 5px transparent; }
 }
 @keyframes lv-blink{ 0%,100%{ opacity:1; } 50%{ opacity:.4; } }
-@media (prefers-reduced-motion:reduce){ *{ animation:none !important; } }
+/* UI motion wrap-up: brought in line with dev/foundation/tokens.css's own global rule, which already
+   killed `transition` here too — the shipped sheet only stopped `animation`, leaving every hover/press
+   micro-transition (border-color/opacity fades, all ~var(--motion-fast)) still easing under reduced
+   motion. Those are trivial by the brief's own standard (not the pulse/sheen/flash/entrance animations
+   the audit above is really aimed at), but there's no reason for shipped and workspace to disagree on
+   the blanket backstop, and snapping them instant under reduced motion is the safer, more complete
+   reading of "reduced-motion must be respected." The per-component rules below stay in place (some,
+   like `.entity.is-highlighted`, also set a static fallback state this wildcard alone wouldn't) — this
+   wildcard is the backstop that guarantees nothing is ever missed, not a replacement for them. */
+@media (prefers-reduced-motion:reduce){ *{ animation:none !important; transition:none !important; } }
 
 /* ---------- score (rich, run view) — Phase 2 cluster 3 part 2, the approved rail swing ----------
    Proposed and reviewed as dev/foundation/score.html; this is that proposal ported into the shipped
@@ -753,7 +793,7 @@ button{ font-family:inherit; }
    down through the rail's real (stretched) height plus one more fixed, content-independent constant:
    the row's own padding-bottom (22px) plus the next row's node offset (12px) = 34px. */
 .sstep{ display:flex; gap:14px; position:relative; margin:0 -10px; padding:2px 10px 22px;
-  border-radius:var(--radius-lg,12px); transition:background .18s cubic-bezier(.2,.7,.3,1); }
+  border-radius:var(--radius-lg,12px); transition:background var(--motion-base) var(--ease-standard); }
 .sstep:last-child{ padding-bottom:2px; }
 /* The row wash — the SAME "tint only when actionable" vocabulary already shipped for gate cards
    (`--gate-panel`) and the stat band, generalised to the run view's own "this step is live right now"
@@ -786,7 +826,7 @@ button{ font-family:inherit; }
    the baton"), reused here rather than inventing a new motif: the pulse ring is the anticipation, the
    small paper-cut centre dot is the beat landing. Same canonical blue, same canonical pulse motion —
    1.6s: a calm, unhurried heartbeat, not the anxious quicker blink an earlier pass shipped at. */
-.snode.active{ background:var(--active); --pulse-c:var(--active); animation:lv-pulse 1.6s infinite; }
+.snode.active{ background:var(--active); --pulse-c:var(--active); animation:lv-pulse var(--motion-pulse) infinite; }
 .snode.active::after{ content:""; position:absolute; inset:5px; border-radius:50%; background:var(--panel); }
 /* Conductor amendment (Phase 2 cluster 3 seal): "waiting"/"blocked" moved from a hollow ring to a
    SOLID `--fg-mute` fill, palette-wide — a hollow node reads as the connecting line piercing an empty
@@ -811,7 +851,7 @@ button{ font-family:inherit; }
    node's own sub-line. Round n/m + real elapsed time only; no fabricated token count (run.ts's own
    `ScoreNode.live` doc comment explains why — no live token stream exists anywhere in the system). */
 .sstep__live{ display:flex; align-items:center; gap:8px; font-family:var(--mono); font-size:11px; color:var(--active); }
-.sstep__live .ld{ width:6px; height:6px; border-radius:50%; background:var(--active); flex:none; animation:lv-pulse 1.6s infinite; --pulse-c:var(--active); }
+.sstep__live .ld{ width:6px; height:6px; border-radius:50%; background:var(--active); flex:none; animation:lv-pulse var(--motion-pulse) infinite; --pulse-c:var(--active); }
 .sstep__live b{ font-weight:600; color:var(--fg); }
 
 /* ---------- timeline (timestamped) ---------- */
@@ -831,7 +871,7 @@ button{ font-family:inherit; }
 .tlrow__text{ font-size:13.5px; line-height:1.7; color:var(--fg-dim); }
 .tlrow__text .who{ font-weight:600; color:var(--fg); }
 .tlrow__text .avatar, .tlrow__text .diamond{ vertical-align:middle; margin-right:8px; position:relative; top:-1px; }
-.tok{ font-family:var(--mono); font-size:.84em; background:var(--panel-2); border:1px solid var(--border); padding:1px 6px; border-radius:5px; color:var(--fg-dim); white-space:nowrap; text-decoration:none; cursor:pointer; transition:border-color .12s, color .12s; }
+.tok{ font-family:var(--mono); font-size:.84em; background:var(--panel-2); border:1px solid var(--border); padding:1px 6px; border-radius:5px; color:var(--fg-dim); white-space:nowrap; text-decoration:none; cursor:pointer; transition:border-color var(--motion-fast), color var(--motion-fast); }
 .tok:hover{ border-color:var(--border-strong); color:var(--fg); }
 .cost{ font-family:var(--mono); font-size:.92em; color:var(--fg-mute); }
 
@@ -839,7 +879,7 @@ button{ font-family:inherit; }
    A same-URL client-side refresh (assets/app.js#flashLiveChanges) flashes whichever stat or work-unit
    status badge actually changed — a quiet, single wash, the same neutral-ring vocabulary
    `.entity.is-highlighted` already uses for a deep-link flash, not a new attention-grabbing colour. */
-.tick-flash{ animation:tick-flash 900ms ease-out; border-radius:6px; }
+.tick-flash{ animation:tick-flash var(--motion-flash) ease-out; border-radius:6px; }
 @keyframes tick-flash{
   0%{ background:color-mix(in oklab, var(--active) 14%, transparent); }
   100%{ background:transparent; }
@@ -856,7 +896,7 @@ button{ font-family:inherit; }
 .skeleton-block{ border-radius:var(--radius-lg,12px); background:var(--panel-2); position:relative; overflow:hidden; }
 .skeleton-block::after{ content:""; position:absolute; inset:0;
   background:linear-gradient(100deg, transparent 30%, color-mix(in oklab, var(--gate) 10%, var(--panel-2)) 50%, transparent 70%);
-  animation:skeleton-sheen 1.6s ease-in-out infinite; }
+  animation:skeleton-sheen var(--motion-pulse) ease-in-out infinite; }
 @keyframes skeleton-sheen{ 0%{ transform:translateX(-100%); } 100%{ transform:translateX(100%); } }
 @media (prefers-reduced-motion: reduce){ .skeleton-block::after{ animation:none; } }
 

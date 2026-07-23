@@ -91,6 +91,11 @@
   --motion-base:180ms;
   --motion-pulse:1.6s;
   --motion-blink:1.2s;
+  /* UI motion wrap-up: the shipped sheet's `.tick-flash` (a quiet one-shot "this just changed" wash,
+     assets/styles.css) needed a real token — 900ms, distinct from pulse/blink's repeating cadences —
+     rather than a bare literal. Added here too, unused by any foundation demo yet, purely so the two
+     token sets stay the same set. */
+  --motion-flash:900ms;
   --ease-standard:cubic-bezier(.2,.7,.3,1);
 
   color-scheme:light;
