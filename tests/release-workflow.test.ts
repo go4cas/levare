@@ -156,34 +156,13 @@ describe("release workflow (NOTES DIST2)", () => {
 // Achieved-when: "the README/docs install section matches what the workflow actually produces
 // (asset names, checksum file, verify steps)" — asserted directly, so the two can never silently
 // drift apart (e.g. a matrix asset renamed in the workflow without the README following).
-describe("README install section matches the release workflow (NOTES DIST2)", () => {
+//
+// README.md is a front door: it carries only the one-line curl installer. The full manual
+// download/verify/checksum path and the runtime-prerequisites text live in
+// docs/guide/02-quickstart.md, the canonical install documentation — so that's what these
+// assertions are aimed at, split by which file actually carries the content.
+describe("README install one-liner matches the release workflow (NOTES DIST2)", () => {
   const readme = readFileSync("README.md", "utf8");
-
-  test("every matrix asset name is named in the README", () => {
-    const wf = loadWorkflow();
-    const matrix = wf.jobs.build.strategy.matrix.include as { asset: string }[];
-    for (const { asset } of matrix) expect(readme).toContain(asset);
-  });
-
-  test("the README names the same checksum file the workflow generates", () => {
-    const wf = loadWorkflow();
-    const releaseStep = wf.jobs.release.steps.find((s: { uses?: string }) => s.uses?.startsWith("softprops/action-gh-release"));
-    expect(releaseStep.with.files).toContain("SHA256SUMS");
-    expect(readme).toContain("SHA256SUMS");
-  });
-
-  test("the README's verify command matches the checksum tool the workflow uses", () => {
-    const wf = loadWorkflow();
-    const shaStep = wf.jobs.release.steps.find((s: { run?: string }) => s.run?.includes("sha256sum"));
-    expect(shaStep.run).toContain("sha256sum");
-    expect(readme).toContain("sha256sum -c SHA256SUMS");
-  });
-
-  test("the README states the same runtime prerequisites as the release notes: git and a model provider", () => {
-    expect(readme.toLowerCase()).toContain("zero-setup");
-    expect(readme).toContain("`git`");
-    expect(readme).toContain("ANTHROPIC_API_KEY");
-  });
 
   test("the README's curl|sh install claim points at a real file in this repo (NOTES DIST6)", () => {
     const match = readme.match(/curl[^\n`]*\|\s*sh/);
@@ -197,5 +176,36 @@ describe("README install section matches the release workflow (NOTES DIST2)", ()
 
   test("the README does not claim a Homebrew formula (declined, not deferred — NOTES DIST6)", () => {
     expect(readme.toLowerCase()).not.toContain("brew install");
+  });
+});
+
+describe("quickstart install section matches the release workflow (NOTES DIST2)", () => {
+  const quickstart = readFileSync("docs/guide/02-quickstart.md", "utf8");
+
+  test("every matrix asset name is named in the quickstart doc", () => {
+    const wf = loadWorkflow();
+    const matrix = wf.jobs.build.strategy.matrix.include as { asset: string }[];
+    for (const { asset } of matrix) expect(quickstart).toContain(asset);
+  });
+
+  test("the quickstart doc names the same checksum file the workflow generates", () => {
+    const wf = loadWorkflow();
+    const releaseStep = wf.jobs.release.steps.find((s: { uses?: string }) => s.uses?.startsWith("softprops/action-gh-release"));
+    expect(releaseStep.with.files).toContain("SHA256SUMS");
+    expect(quickstart).toContain("SHA256SUMS");
+  });
+
+  test("the quickstart doc's verify command matches the checksum tool the workflow uses", () => {
+    const wf = loadWorkflow();
+    const shaStep = wf.jobs.release.steps.find((s: { run?: string }) => s.run?.includes("sha256sum"));
+    expect(shaStep.run).toContain("sha256sum");
+    expect(quickstart).toContain("sha256sum -c SHA256SUMS");
+  });
+
+  test("the quickstart doc states the same runtime prerequisites as the release notes: git and a model provider", () => {
+    expect(quickstart.toLowerCase()).toContain("zero-setup");
+    expect(quickstart).toContain("`git`");
+    expect(quickstart).toContain("ANTHROPIC_API_KEY");
+    expect(quickstart.toLowerCase()).toContain("model provider");
   });
 });

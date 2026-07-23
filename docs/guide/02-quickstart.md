@@ -12,12 +12,15 @@ in your browser.
 
 ## Prerequisites
 
-- **git** — not optional. Without it, levare cannot verify that an approved artifact hasn't been
-  tampered with, and it has no audit log. It will tell you so.
+- **`git`** on `PATH` — not optional. Without it, levare cannot verify that an approved artifact
+  hasn't been tampered with, and it has no audit log. It will tell you so.
 - **[Bun](https://bun.sh)** — only if you're building from source or contributing. The released
   binary is self-contained and doesn't need it.
 
-That's all, for now. Running actual agents needs more, and [Operations](06-operations.md) covers it.
+That's all for *this* walkthrough — it runs no agents and spends nothing. But running the binary for
+real is NOT zero-setup: it also needs **a model provider** — `ANTHROPIC_API_KEY` (the Claude Agent
+SDK, for native members) and/or a wrapped vendor CLI such as `claude` or `codex` on `PATH` (for cli
+members). [Operations](06-operations.md) covers that when you're ready.
 
 ## Install
 
