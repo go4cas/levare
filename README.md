@@ -9,8 +9,7 @@ Every artifact an agent produces lands as a markdown file with YAML frontmatter 
 Every step halts at a gate you approve, reject, or send back. The binary holds no state that
 can't be reconstructed from the repo.
 
-<!-- SCREENSHOT: the run view — score rail (left), timeline (centre), Orchestrator gate card (right).
-     Replace this comment with:  ![levare's run view](docs/guide/img/run-view.png)  -->
+![levare's run view — the score rail, the timeline, and a gate awaiting your decision](docs/guide/img/run-view.png)
 
 ---
 
