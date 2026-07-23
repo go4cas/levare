@@ -1,0 +1,9 @@
+// levare type stack — Hanken Grotesk (UI/body) + IBM Plex Mono (code, filesystem truth), the same
+// stack the app ships (assets/styles.css --sans/--mono). Berkeley Mono is the brief's preferred mono
+// but is commercially licensed and must not be web-served; IBM Plex Mono is the documented public
+// fallback. Loaded via _includes/head_custom.html.
+//
+// This file is imported by the theme (via css/just-the-docs.scss.liquid) BEFORE color_schemes and
+// modules, so the override lands ahead of anything that reads these variables.
+$body-font-family: "Hanken Grotesk", system-ui, -apple-system, sans-serif;
+$mono-font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;

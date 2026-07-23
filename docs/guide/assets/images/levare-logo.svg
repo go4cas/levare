@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 28" role="img" aria-label="levare">
+  <g transform="translate(2,4) scale(1.2)">
+    <rect fill="#191B21" x="7" y="0" width="2.5" height="16" rx="1.25" transform="rotate(-11 8.25 16)"/>
+    <circle fill="#C2402A" cx="6" cy="17" r="3"/>
+  </g>
+  <text x="30" y="21" font-family="Hanken Grotesk, system-ui, -apple-system, sans-serif"
+    font-weight="600" font-size="20" letter-spacing="-0.4" fill="#191B21">levare</text>
+</svg>

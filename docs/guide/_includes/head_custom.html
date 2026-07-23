@@ -1,0 +1,11 @@
+<!-- levare type stack — same fonts, same loading pattern the app itself uses (assets/run.html etc.):
+     Hanken Grotesk for UI/body, IBM Plex Mono for code. Both open-licensed; see _sass/custom/setup.scss
+     for where they're wired into the theme's font variables. -->
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+
+<!-- levare mark — the app's baton/ictus mark (src/board/render/shell.ts, assets/styles.css .logo__mark),
+     redrawn as a standalone SVG. Scalable favicon; readable at 16px in both light and dark via the
+     embedded prefers-color-scheme rule. -->
+<link rel="icon" type="image/svg+xml" href="{{ '/assets/images/favicon.svg' | relative_url }}">

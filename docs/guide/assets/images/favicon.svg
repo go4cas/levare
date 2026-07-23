@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" role="img" aria-label="levare">
+  <style>
+    .mark-stroke{ fill:#191B21; }
+    .mark-dot{ fill:#C2402A; }
+    @media (prefers-color-scheme: dark){
+      .mark-stroke{ fill:#F5F6F7; }
+      .mark-dot{ fill:#E56A50; }
+    }
+  </style>
+  <rect class="mark-stroke" x="9.5" y="0" width="2.5" height="16" rx="1.25" transform="rotate(-11 10.75 16)"/>
+  <circle class="mark-dot" cx="8.5" cy="17" r="3"/>
+</svg>
