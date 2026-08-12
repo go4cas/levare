@@ -29,13 +29,44 @@
 // operator's real Claude Code profile — the same hermetic-subprocess discipline already applied to
 // every git invocation in this codebase (NOTES A4/E12), now applied to the CLI subprocess too.
 
+import { existsSync } from "node:fs";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import { extractFromBunfs } from "@anthropic-ai/claude-agent-sdk/extract";
 import type { SdkWorkerRequest, SdkWorkerResponse } from "./sdk-transport.ts";
 import type { Receipt } from "./types.ts";
+import { isCompiledBuild } from "./version.ts";
+// The SAME embedded asset sdk-transport.ts imports — this file runs as a fresh self-invocation of
+// the identical compiled binary (NOTES DIST5's `workerSpawnArgv`), so it sees the identical `$bunfs`
+// and the identical embedded value.
+import embeddedNativeBinaryAsset from "./native-binary.generated.ts";
 
 function respond(res: SdkWorkerResponse): void {
   console.log(JSON.stringify(res));
+}
+
+/**
+ * Resolve the real, spawnable `pathToClaudeCodeExecutable` for this request. If the parent already
+ * resolved one (the source-tree case — `sdk-transport.ts#resolveNativeBinary`), use it unchanged.
+ * Otherwise, for a compiled build with an embedded asset, extract it HERE — this is the one safe
+ * place to do so; see `sdk-transport.ts`'s module comment on why the parent process never attempts
+ * this itself (NOTES DIST7 addendum: neither `require()` nor a runtime dynamic `import()` of any
+ * `@anthropic-ai/claude-agent-sdk` subpath works inside a compiled binary, confirmed empirically —
+ * only this file's own top-level static imports, reachable because `cli.ts` loads this module via a
+ * dynamic `import("./sdk-worker.ts")` gated on the hidden `__worker` command, ever resolve here).
+ * Falls through to `undefined` (never throws) when nothing was embedded either — `query()` then
+ * attempts its own last-resort lookup, exactly as it always has when explicit resolution comes up
+ * empty (NOTES phase-7 K14).
+ */
+function resolvePathToClaudeCodeExecutable(requested: string | undefined): string | undefined {
+  if (requested) return requested;
+  if (!isCompiledBuild() || embeddedNativeBinaryAsset === null) return undefined;
+  try {
+    const extracted = extractFromBunfs(embeddedNativeBinaryAsset);
+    return existsSync(extracted) ? extracted : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -53,11 +84,14 @@ export function buildQueryOptions(req: SdkWorkerRequest) {
     cwd: req.cwd,
     // Explicit, never left to the SDK's own implicit resolution (NOTES phase-7 K14): a live host
     // showed the SDK's internal require.resolve-based lookup fail to find a platform binary that
-    // genuinely existed as a sibling node_modules package. sdk-transport.ts resolves the exact
-    // same binary itself (once, at boundary-construction time) and hands the resolved path here;
-    // when resolution failed there too, this stays undefined and the SDK attempts its own lookup
-    // as a last resort (which will report the same failure either way, never a silent mismatch).
-    pathToClaudeCodeExecutable: req.pathToClaudeCodeExecutable,
+    // genuinely existed as a sibling node_modules package. For a source run, sdk-transport.ts
+    // resolves the exact same binary itself (once, at boundary-construction time) and hands the
+    // resolved path here unchanged; for a compiled run, the parent leaves this unset and
+    // `resolvePathToClaudeCodeExecutable` (above) resolves+extracts the embedded asset right here
+    // instead (NOTES DIST7 — the parent process can never safely do that extraction itself). Only
+    // when NEITHER produced a path does this stay undefined and the SDK attempt its own lookup as a
+    // last resort (which will report the same failure either way, never a silent mismatch).
+    pathToClaudeCodeExecutable: resolvePathToClaudeCodeExecutable(req.pathToClaudeCodeExecutable),
     permissionMode: "bypassPermissions" as const,
     allowDangerouslySkipPermissions: true,
     // SDK isolation mode (NOTES K15) — no user/project/local settings, so a user-installed hook (the
