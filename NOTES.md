@@ -13582,3 +13582,238 @@ capture the COMPLETE output (never `tail`-truncate a failing run) before rerunni
 `bun run typecheck` → exit 0. `bun run deps:check` → `deps ok`. `bun run build` → succeeds. `bun run
 src/cli.ts validate fixtures/golden` → `valid` (same 2 pre-existing `SANDBOX_UNAVAILABLE` warnings,
 unrelated). `bun run src/cli.ts replay fixtures/golden --stubs` → oracle match, byte-for-byte.
+
+# NOTES DIST7 (2026-08-12) — a released binary couldn't run its own native members; the mechanism, the fix, and why the existing compiled-smoke test never caught it
+
+Goal: close the packaging fault reported from a real v0.2.0 release install (macOS arm64, cold-start,
+`levare init` scaffold, valid `ANTHROPIC_API_KEY` in `.env`): `orchestrator: off · native CLI binary
+for darwin-arm64 not found — reinstall @anthropic-ai/claude-agent-sdk on this platform (README.md's
+Phase 7 section)`. `wren`/`lyra`, the scaffold's own example native members, were unrunnable from the
+one binary levare ships.
+
+## The mechanism — established before touching any code, with a live repro, not inferred
+
+`sdk-transport.ts#resolveNativeBinary` resolved the SDK's platform binary via
+`createRequire(import.meta.url).resolve(candidate)` — this is a straight port of the SDK's own
+internal resolution (`sdk.mjs`'s `IA` function, read directly, not guessed: same candidate-name
+generation, same `require.resolve` shape). It works from source because `import.meta.url` there is a
+real on-disk path, and Node/Bun's `createRequire` walks up from that path's real directory looking for
+`node_modules`.
+
+Under `bun build --compile`, `import.meta.url` for every bundled module resolves into Bun's virtual
+single-file `$bunfs` (confirmed: `orchestrator prompt: readable ... at /$bunfs/root/orchestrator-
+prompt-*.md` in every compiled `doctor` run). The SDK's own README says plainly: "the SDK cannot
+resolve the native CLI binary at runtime — `require.resolve` doesn't work from inside the compiled
+`$bunfs` ... virtual filesystem." A compiled binary's embedded filesystem is not a node_modules tree,
+and no amount of on-disk staging fixes that — `require.resolve` needs a *real* directory to walk up
+from, and `$bunfs` isn't one.
+
+**The one-level-deeper finding, confirmed by direct repro, that the goal's evidence alone didn't
+predict:** the failure is not a blanket "always fails inside `--compile`" — it is **CWD-dependent**.
+`createRequire($bunfs-path).resolve(...)`'s failure to walk from the (unwalkable) module URL falls
+back to a walk from `process.cwd()` instead. Run the exact same compiled binary from inside the levare
+repo's own working tree (where `node_modules/@anthropic-ai/claude-agent-sdk-*` really is on disk —
+e.g. `bun test`'s cwd, or a developer's `dist/levare doctor fixtures/golden` invoked from the repo
+root) and that fallback walk *happens to succeed*:
+
+```
+$ ANTHROPIC_API_KEY=sk-ant-test123 /tmp/levare-build-test/levare doctor fixtures/golden   # cwd = repo root
+orchestrator: on · The Orchestrator is live.
+
+$ cd /tmp/levare-scaffold-test && ANTHROPIC_API_KEY=sk-ant-test123 /tmp/levare-build-test/levare doctor .   # cwd = a real scaffolded studio
+orchestrator: off · native CLI binary for linux-arm64 not found — reinstall @anthropic-ai/claude-agent-sdk on this platform (README.md's Phase 7 section)
+```
+
+Same binary, same build, same credential, same platform — the only variable is `cwd`. A real release
+binary is *always* invoked from a scaffolded studio, never from levare's own source tree, so this
+fallback is not a fix, only a coincidence — and a dangerous one: `tests/orchestrator-compiled-smoke.
+test.ts` (NOTES DIST4/DIST5) already builds a real scratch binary via `scripts/build.sh` and asserts
+`orchestrator: on` with a credential present — and it already passed, before this goal touched
+anything, because `bun test`'s cwd is the repo root. That test was never wrong about what it asserted;
+it simply never exercised the one variable (cwd) that makes the bug real. This is why the goal's own
+instruction — "a test that passes from source proves nothing here" — needed one more clause for this
+bug specifically: a test that passes *from the repo's own cwd* proves nothing here either. See
+"Divergence prevention" below for the test this added to close that hole specifically.
+
+## The fix — embed the platform binary as a Bun file asset (the SDK's own documented mechanism), selected once per build
+
+The SDK's README ships the actual supported pattern for exactly this ("Compiled binaries (`bun build
+--compile`)"): import the platform-specific native binary as a Bun file asset via a source-level
+`with { type: "file" }` import (Bun's bundler resolves and embeds the real file into `$bunfs` at BUILD
+time, not looked up at run time), then extract it to a real temp path with the SDK's own shipped
+`@anthropic-ai/claude-agent-sdk/extract#extractFromBunfs` before spawning (child processes cannot
+access `$bunfs` paths directly — confirmed reading `extractFromBunfs.js`'s own header comment). This
+sidesteps `require.resolve` and the CWD fallback entirely: the resolved path no longer depends on
+where the binary is invoked from.
+
+The one hard constraint this imposes: a `with { type: "file" }` import specifier must be a **source-
+level string literal** for Bun's bundler to embed it — it cannot be computed at runtime, so which
+platform's binary a given compiled artifact embeds is a **build-time**, not run-time, choice. Four
+release targets → the choice has to be made four times, once per `scripts/build.sh` invocation.
+
+**Implementation:**
+- `src/native-binary.generated.ts` is the one static import site, checked into git as a stub
+  (`export default null as string | null`) so `bun test`/`bunx tsc --noEmit`/an unmodified `bun build
+  --compile` all see a harmless "nothing embedded" default.
+- `scripts/build.sh` now, before compiling: resolves this invocation's target platform-arch (from
+  `--target=bun-<platform>-<arch>`, or the host's own `process.platform`/`process.arch` for a no-arg
+  dev build); for one of the four supported combos, runs `bun install --os=<os> --cpu=<arch>
+  --frozen-lockfile` (fetches that platform's `@anthropic-ai/claude-agent-sdk-<platform>-<arch>`
+  optional dependency — already declared in `bun.lock` as one of the SDK's own `optionalDependencies`,
+  so this never touches `package.json`/the lockfile, confirmed via `git status` before/after); then
+  overwrites `native-binary.generated.ts` with a literal `import bin from
+  "@anthropic-ai/claude-agent-sdk-<platform>-<arch>/claude" with { type: "file" }; export default bin;`.
+  An `EXIT` trap runs `git checkout -- src/native-binary.generated.ts` unconditionally (success or
+  failure) so the working tree is never left dirty — verified: `git status --short` is clean
+  immediately after a real build, with the stub's `null` content restored on disk.
+- `sdk-transport.ts#resolveNativeBinary` now branches on `isCompiledBuild()`: a source run is
+  byte-for-byte the original `createRequire` logic, completely untouched; a compiled build returns
+  `null` unconditionally — **not** an extracted path. That asymmetry is deliberate, not a shortcut —
+  see the addendum immediately below for why the extraction step could not live in this module at
+  all, and where it actually ended up. `checkSdkPreconditions`'s viability check for a compiled build
+  asks a new, separate `hasEmbeddedNativeBinary()` (presence only, zero extraction, zero SDK-package
+  imports) rather than trusting `resolveNativeBinary`'s now-always-`null` compiled return; its
+  `binaryPath` field stays unset for a compiled build's returned check, by design (see addendum).
+
+## Addendum — a second, deeper compiled-binary constraint, found by the test suite itself: neither `require()` nor dynamic `import()` works at runtime inside a compiled binary; only a static top-level `import` does
+
+The first working version of this fix (above) put a **top-level static** `import { extractFromBunfs }
+from "@anthropic-ai/claude-agent-sdk/extract"` directly in `sdk-transport.ts`. It worked — the live
+runtime proof passed — but `bun test`'s full suite caught a real regression it introduced:
+`tests/cli-no-sdk.test.ts` (NOTES REV1 finding 1 — the standing invariant that offline commands
+`validate`/`doctor`/`context` must never require the SDK package to be installed at all) started
+failing with `Cannot find module '@anthropic-ai/claude-agent-sdk/extract'`. Static ES imports resolve
+at module-LOAD time regardless of which runtime branch ever executes — `sdk-transport.ts` is loaded
+by every offline command via `orchestrator-status.ts`, so the eager import broke all three, exactly
+reproducing the shape of bug REV1 had already fixed once for `sdk-worker.ts`'s own `query` import.
+
+The obvious fix — make the import lazy, `require()`'d only inside the function that needs it — turned
+out not to work, and this was confirmed by **direct experiment**, not assumed: a minimal `bun build
+--compile` reproduction showed that neither a runtime `require()` (via `createRequire`) NOR a runtime
+dynamic `import()` can resolve `@anthropic-ai/claude-agent-sdk/extract` inside a real compiled binary
+— both fail with `Cannot find module`, identically, even though the SAME specifier resolves fine as a
+static top-level import. **Only a static top-level import, unconditionally reachable from the compiled
+binary's own entry point, gets linked into Bun's single-file bundle and works at runtime; nothing
+resolved dynamically at runtime does, regardless of sync/async.** This is a stronger, previously
+unstated constraint than "require.resolve doesn't work inside $bunfs" (the original mechanism this
+NOTES entry opened with) — it applies to `require()`/dynamic `import()` of ANY module, not just the
+`require.resolve` shape the SDK's own README warns about.
+
+Reconciling both constraints — offline commands must never eagerly load any SDK import, AND a
+compiled binary can only use eagerly-loaded (static) SDK imports — meant the extraction code could not
+live in `sdk-transport.ts` (loaded by every offline command) at all. It moved to `sdk-worker.ts`
+instead, the one module already structurally exempt from the offline constraint: `cli.ts` only ever
+reaches it via `import("./sdk-worker.ts")` **inside the hidden `__worker` branch**, so its own
+top-level SDK imports (already there for `query()` itself) never resolve for `validate`/`doctor`/
+`context`. `sdk-worker.ts` runs as a fresh self-invocation of the SAME compiled binary (NOTES DIST5's
+`workerSpawnArgv`) — identical embedded `$bunfs`, identical linked bundle — so its own new top-level
+`import { extractFromBunfs } from "@anthropic-ai/claude-agent-sdk/extract"` (alongside the `query` one
+already there) resolves exactly the same way `query`'s always has. A new
+`resolvePathToClaudeCodeExecutable(requested)` there: returns `requested` unchanged when the parent
+already resolved one (the source-tree case, untouched); otherwise, for a compiled build with an
+embedded asset, extracts and returns that; otherwise `undefined` (the SDK's own last-resort attempt,
+unchanged prior behavior). `checkSdkPreconditions`'s `binaryPath` therefore stays unset for a viable
+compiled build — the PARENT process never holds a real extracted path at all, only "yes, something is
+embedded" (`hasEmbeddedNativeBinary`); the worker resolves the real one itself, once, right before the
+real call.
+
+Re-verified end to end after this restructuring: `tests/cli-no-sdk.test.ts` → 5 pass (the eager-load
+regression gone); `tests/native-binary-embed.test.ts` + `tests/orchestrator-compiled-smoke.test.ts`
+(the DIST5 `serve`-based tests, which dispatch through the REAL self-invoked worker end-to-end, not
+just `doctor`'s static check) → 8 pass, 0 fail — proving the extraction genuinely still happens, from
+the new location, under a real compiled binary. Full suite: 1299 pass, 9 skip, 0 fail (one pre-existing
+unit test's exact-wording assertion updated for the new error message, see "Error message" below — not
+a behavior change).
+
+## Verified against real `bun run build` output, not source-mode `bun test`, per the goal's own instruction
+
+- **Live runtime proof, the host's own target (linux-arm64):** built a real scratch binary via
+  `scripts/build.sh`, ran it from a foreign cwd (a scaffolded studio in `/tmp`, nowhere near the repo)
+  with a fake `ANTHROPIC_API_KEY` — `orchestrator: on · The Orchestrator is live.` No more "native CLI
+  binary ... not found". This is the exact repro shape from "The mechanism" above, now passing.
+- **Byte-level embed proof, all four release targets:** `scripts/build.sh` cross-compiled real scratch
+  binaries for `bun-darwin-arm64`, `bun-darwin-x64`, `bun-linux-x64`, and `bun-linux-arm64` (all four
+  succeed from this arm64 Linux host — Bun's cross-compile toolchain download, not an execution
+  attempt). `scripts/verify-embedded-binary.ts` (new) reads the compiled artifact's raw bytes and
+  the platform npm package's `claude` binary's raw bytes, and asserts the artifact **contains the
+  native binary's exact bytes** (`Buffer.includes`, not a filename/string-marker heuristic) — proof
+  that survives even a bundler misresolution that got the import specifier right but embedded the
+  wrong content. All four passed:
+  ```
+  OK — levare-darwin-arm64 embeds the exact darwin-arm64 native binary (241237136 bytes, at offset 64228570)
+  OK — levare-darwin-x64   embeds the exact darwin-x64   native binary (249273680 bytes, at offset 69893326)
+  OK — levare-linux-x64    embeds the exact linux-x64    native binary (259402552 bytes, at offset 96030095)
+  OK — levare-linux-arm64  embeds the exact linux-arm64  native binary (256228080 bytes, at offset 95079823)
+  ```
+  Run against a PRE-fix binary (the old build.sh, no embed), the same script correctly FAILS ("is
+  smaller than the linux-arm64 native binary alone; it cannot contain it") — proving the guard is
+  live, not vacuous.
+- **What this does NOT claim, stated precisely rather than assumed (per the goal's own instruction):**
+  darwin-arm64/darwin-x64/linux-x64 were never *executed* here — this arm64 Linux container cannot run
+  a macOS or x64-Linux binary. Only the byte-embed proof above covers those three; only linux-arm64 (the
+  host) has a live runtime proof that the extracted, spawned binary actually resolves and reports
+  `orchestrator: on`. This mirrors `release.yml`'s own pre-existing, honestly-labeled limitation
+  ("Cross-compiled binaries for a foreign OS/arch can't be executed on this runner").
+
+## Divergence prevention — how compiled-vs-source (and the cwd trap specifically) is kept from recurring
+
+1. `tests/native-binary-embed.test.ts` (new): builds a real scratch binary via `scripts/build.sh` and
+   runs it **from a temp directory that is not the repo root** (the exact variable "The mechanism"
+   above identified as the one the existing DIST4/DIST5 compiled-smoke test never varies) — asserting
+   `orchestrator: on` and the absence of the old "native CLI binary ... not found" text. This is the
+   test that fails against today's (pre-fix) compiled artifact and passes after, run from a real `bun
+   build --compile` output per the goal's requirement — not a source-mode assertion, and not one that
+   coincidentally passes from the repo's own cwd. It also calls `scripts/verify-embedded-binary.ts`
+   against that same scratch binary as an in-suite (not just CI-only) regression guard.
+2. `scripts/verify-embedded-binary.ts` is wired into `.github/workflows/release.yml`'s per-matrix-leg
+   build job, immediately after each leg's own `Build` step — so a future change that breaks the embed
+   for any one of the four targets fails that leg's own CI run before a release is ever published, not
+   discovered later from a user's cold-start install (this goal's own trigger).
+3. The error message itself no longer conflates the two failure modes/audiences the original report
+   named (see "Error message" below) — a future *source-tree* failure and a future *compiled-binary*
+   failure now read as distinguishable causes with distinguishable remedies, so a future investigator
+   doesn't have to re-derive "which of these two shapes is this" from scratch the way this goal did.
+
+## Error message — the two audiences, split; the false leads (a package the user never installed, a heading that doesn't exist) are gone
+
+The original message — `native CLI binary for ${platform}-${arch} not found — reinstall
+@anthropic-ai/claude-agent-sdk on this platform (README.md's Phase 7 section)` — served both a source-
+tree developer AND a compiled-binary end user identically, and was wrong for the latter on both counts:
+a binary user never ran `npm install`, so "reinstall" names an action they can't take; and grepping
+`README.md` for "Phase 7" today returns **zero matches** — the heading doesn't exist (confirmed:
+`grep -n "Phase 7" README.md` → no output). `checkSdkPreconditions` now branches on
+`isCompiledBuild()`:
+
+- **Compiled** (can still legitimately happen — an unofficial/self-built binary for an unsupported
+  platform, or a levare packaging regression on a nominally-supported one): "this levare build has no
+  Claude Agent SDK binary embedded for `${platform}-${arch}` — either it's an unofficial build (only
+  darwin-arm64/darwin-x64/linux-x64/linux-arm64 release assets embed one) or this platform isn't a
+  supported release target; download the `levare-${platform}-${arch}` asset from the GitHub Releases
+  page, or run `bun run build` from a levare checkout on this machine." Both remedies are things an
+  actual binary user (or a developer building their own binary) can act on directly.
+- **Source tree** (unchanged failure mode, still real — e.g. `bun install --omit=optional`, or a
+  platform npm hasn't published a package for): "native CLI binary for `${platform}-${arch}` not found
+  in node_modules — run `bun install` to fetch `@anthropic-ai/claude-agent-sdk-${platform}-${arch}` (an
+  optional dependency of `@anthropic-ai/claude-agent-sdk`)." Points at the actual installed-or-not
+  artifact and the actual fixing command, no dangling reference to this repo's own dev docs.
+
+## Verification
+
+`bun test` → 1299 pass, 9 skip, 0 fail (including the two new compiled-artifact tests, run against a
+real `scripts/build.sh` output, invoked from a foreign cwd). `bun run typecheck` → exit 0. `bun run
+deps:check` → `deps ok` (the new `native-binary.generated.ts` stub and `scripts/verify-embedded-
+binary.ts` add no new `dependencies`; the four platform packages `scripts/build.sh` fetches at build
+time are the SDK's own pre-declared `optionalDependencies`, never written to `package.json` —
+`git status` before/after confirms). `bun run build` → succeeds, embeds the host's own platform binary,
+restores `native-binary.generated.ts` to its checked-in stub (`git status --short` clean immediately
+after). A freshly built `dist/levare` run against a real `levare init` scaffold in `/tmp` (nowhere near
+this repo), with a valid key loaded from that scaffold's own `.env`, invoked from that scaffold's own
+directory → `orchestrator: on · The Orchestrator is live.` (this is the goal's own cold-start repro,
+now passing). `./dist/levare validate fixtures/golden` → `valid` (same 2 pre-existing
+`SANDBOX_UNAVAILABLE` warnings, unrelated). `bun run src/cli.ts replay fixtures/golden --stubs` →
+oracle match, byte-for-byte — run via source, matching this repo's own established convention for this
+specific check (every prior NOTES entry that records it does the same); a compiled binary's `replay
+--stubs` has a separate, pre-existing, unrelated limitation — stub members are spawned as
+`<execPath> <stub-script-path>`, which only works when `execPath` is a real generic interpreter (a
+source run) and not itself the single compiled entrypoint (same root shape as NOTES DIST4/DIST5's
+worker-spawn problem, but for `--stubs` fixture members specifically, out of this goal's scope).
