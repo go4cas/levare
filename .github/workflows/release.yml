@@ -40,12 +40,16 @@ jobs:
         include:
           - target: bun-darwin-arm64
             asset: levare-darwin-arm64
+            platform_arch: darwin-arm64
           - target: bun-darwin-x64
             asset: levare-darwin-x64
+            platform_arch: darwin-x64
           - target: bun-linux-x64
             asset: levare-linux-x64
+            platform_arch: linux-x64
           - target: bun-linux-arm64
             asset: levare-linux-arm64
+            platform_arch: linux-arm64
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
@@ -70,6 +74,15 @@ jobs:
       # stamp, just parameterized with this matrix leg's outfile and cross-compile target.
       - name: Build ${{ matrix.asset }}
         run: ./scripts/build.sh "dist/${{ matrix.asset }}" "${{ matrix.target }}"
+
+      # NOTES DIST7: build.sh embeds this leg's own platform's Claude Agent SDK native binary as a
+      # Bun file asset (a `bun build --compile` binary has no node_modules to resolve it from at
+      # runtime — see sdk-transport.ts's own note). This proves the embed actually happened, for THIS
+      # leg's own asset, byte-for-byte — not merely that build.sh ran without error. Works without
+      # executing the binary (a raw byte-inclusion check), so it verifies a foreign-platform
+      # cross-compiled asset exactly as rigorously as the one leg below that can also be run.
+      - name: Verify ${{ matrix.asset }} embeds its own platform's native binary
+        run: bun scripts/verify-embedded-binary.ts "dist/${{ matrix.asset }}" "${{ matrix.platform_arch }}"
 
       - name: Smoke-test the version stamp
         run: |
