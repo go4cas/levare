@@ -351,6 +351,44 @@ a single static binary with no library dependencies to resolve, so a formula wou
 per-release PR to keep it current, and an ongoing packaging dependency, for zero gain over the install
 script above. This is a closed decision, not a placeholder for "someday."
 
+## Native members unrunnable from a released binary — closed (NOTES DIST7)
+
+A cold-start install of the v0.2.0 release on macOS arm64 — `levare init` scaffold, valid
+`ANTHROPIC_API_KEY` in `.env` — reported `orchestrator: off · native CLI binary for darwin-arm64 not
+found — reinstall @anthropic-ai/claude-agent-sdk on this platform`, making `wren`/`lyra`, the scaffold's
+own example native members, unrunnable on the primary platform, for every user. The mechanism (read
+directly from the SDK's shipped `sdk.mjs` and its own README, not guessed, and confirmed with a live
+side-by-side repro — full detail in NOTES DIST7): `sdk-transport.ts#resolveNativeBinary` resolved the
+SDK's platform binary via `require.resolve`, which needs a real `node_modules` tree to walk up from — a
+`bun build --compile` binary has none (its `import.meta.url` resolves into Bun's virtual `$bunfs`).
+The failure was CWD-dependent, not blanket: the resolver's fallback walk from `process.cwd()` happened
+to succeed when invoked from inside levare's own repo (exactly where `bun test`'s existing
+compiled-smoke test runs from), masking the bug in every prior test — a real release binary is always
+invoked from a scaffolded studio, never levare's own source tree, where the fallback has nothing to
+find.
+
+Fixed per the SDK's own documented mechanism for this exact situation: the platform's native binary is
+now embedded as a Bun file asset (a source-level `with { type: "file" }` import, which `bun build
+--compile` packs into the binary at build time) and extracted to a real temp path with the SDK's own
+`@anthropic-ai/claude-agent-sdk/extract#extractFromBunfs` before spawning — no `node_modules` lookup at
+run time at all. That extraction runs inside `sdk-worker.ts` specifically, not the module that resolves
+viability — neither `require()` nor a runtime dynamic `import()` of an SDK subpath works inside a
+compiled binary (confirmed empirically), only a static top-level import unconditionally reachable from
+the binary's own entry point does, and `sdk-worker.ts` is the one module already loaded that way (via
+`cli.ts`'s hidden `__worker` dispatch), which also keeps the SDK package out of every offline command's
+load path. `scripts/build.sh` now selects and embeds the correct platform's binary per build
+target (dev build: host platform; release build: whichever `--target` it was given), verified
+byte-for-byte (not just by import-specifier name) for all four release platforms
+(`scripts/verify-embedded-binary.ts`, wired into `.github/workflows/release.yml`'s build matrix) and
+proven live end-to-end for the host-executable target by running a real compiled binary from a cwd
+genuinely outside the repo (`tests/native-binary-embed.test.ts` — fails against the pre-fix code,
+passes after; darwin-arm64/darwin-x64/linux-x64 have the byte-embed proof but, honestly, no live-run
+proof from this container, which cannot execute a foreign-OS/arch binary). The error message itself no
+longer conflates a source-tree developer with a compiled-binary end user: a compiled binary that still
+can't find its embedded binary (an unofficial build, or an unsupported platform) now gets a remedy it
+can actually act on, instead of being told to `npm install` a package it never installed and read a
+README heading (`README.md`'s "Phase 7 section") that, it turns out, doesn't exist.
+
 ## The loadRepo-per-request position
 
 Every board route re-derives its `Repo` from disk on every request — no caching layer sits in front

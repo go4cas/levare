@@ -48,6 +48,10 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import type { Receipt } from "./types.ts";
 import { isCompiledBuild } from "./version.ts";
+// The literal (test-stub `null`, or build-time-rewritten file asset — NOTES DIST7) that a compiled
+// binary embeds via Bun's `with { type: "file" }` import. See native-binary.generated.ts's own
+// header for why this must be a static import here, not something resolved dynamically.
+import embeddedNativeBinaryAsset from "./native-binary.generated.ts";
 
 // NOTES CAP-B (v1.1 capability layer, part B, item 1): the fixed vocabulary an agent's `tools:` may
 // name — validated (validate.ts#validateAgentTools), never a free-form registry. Derived HONESTLY from
@@ -253,16 +257,84 @@ function nativeBinaryCandidates(platform: string, arch: string): string[] {
   return names.map((n) => `${n}/claude${ext}`);
 }
 
+// ---------------------------------------------------------------------------
+// The compiled-binary resolution path (NOTES DIST7)
+// ---------------------------------------------------------------------------
+//
+// `createRequire(...).resolve(...)` below (the source-tree path) walks the real filesystem looking
+// for a `node_modules` directory — that is exactly what makes it work from source, and exactly what
+// makes it CWD-dependent, not fixed, inside a `bun build --compile` binary: `requireFrom` there is a
+// `$bunfs` virtual path with no real directory to walk up from, so Bun's resolver falls back to a
+// walk from `process.cwd()` instead. Invoked from inside this repo's own working tree (where
+// `node_modules/@anthropic-ai/claude-agent-sdk-*` really is on disk — e.g. `bun test`'s cwd, or a
+// developer running `dist/levare` from the repo root) that fallback walk happens to succeed, which is
+// why a same-repo smoke test can pass while the identical binary, run from any real user's studio
+// directory (nowhere near this repo's node_modules), fails — confirmed empirically, not inferred: see
+// NOTES DIST7 for the side-by-side repro. A real release binary is invoked from a scaffolded studio,
+// never from levare's own source tree, so this fallback is not a fix, only a coincidence.
+//
+// The SDK's own README ("Compiled binaries (`bun build --compile`)") documents the actual supported
+// mechanism: embed the platform's native binary as a Bun file asset via a static `with { type: "file"
+// }` import (resolved and packed into the binary's own `$bunfs` at BUILD time, not looked up on a real
+// filesystem at run time), then extract it to a real temp path with the SDK's own
+// `@anthropic-ai/claude-agent-sdk/extract#extractFromBunfs` (child processes cannot spawn a `$bunfs`
+// path directly) before spawning it. `native-binary.generated.ts` is the one static import site
+// `scripts/build.sh` rewrites per build target.
+//
+// The EXTRACTION step (calling `extractFromBunfs`, which lives in `@anthropic-ai/claude-agent-sdk`'s
+// own `/extract` export) deliberately does NOT happen in this module, or anywhere this PARENT process
+// reaches — it happens in `sdk-worker.ts`, and only there. Two things forced that split, both
+// confirmed empirically, not assumed (NOTES DIST7 addendum, a live-gate fix-up):
+//
+//   1. A top-level static `import` of any `@anthropic-ai/claude-agent-sdk` subpath in THIS module is
+//      resolved at module-LOAD time regardless of which branch ever runs — this module is loaded by
+//      every offline command (`validate`/`doctor`/`context`), and on a fresh checkout with no `bun
+//      install` yet, that eager resolution broke all three of them with "Cannot find module", exactly
+//      the bug `tests/cli-no-sdk.test.ts` (NOTES REV1 finding 1) exists to catch. `sdk-worker.ts` is
+//      the one module already exempt from that constraint — `cli.ts` only ever reaches it via a
+//      dynamic `import("./sdk-worker.ts")` inside the hidden `__worker` branch, so its own top-level
+//      SDK import (already there, for `query()` itself) never resolves for an offline command.
+//   2. A compiled binary has no live module-resolution machinery at runtime for anything NOT already
+//      linked into its single bundle at build time — confirmed by direct experiment: both a runtime
+//      `require()` AND a runtime dynamic `import()` of `@anthropic-ai/claude-agent-sdk/extract` fail
+//      inside a real compiled binary with `Cannot find module`, even though the identical specifier
+//      resolves fine as a top-level static import. Only a STATIC top-level import — one that's
+//      unconditionally reachable from the compiled binary's own entry point, exactly like
+//      `sdk-worker.ts`'s existing `import { query } from "@anthropic-ai/claude-agent-sdk"` — gets
+//      linked into the bundle and works at runtime. `sdk-worker.ts` runs as a FRESH SELF-INVOCATION of
+//      this same compiled binary (`workerSpawnArgv`, NOTES DIST5) — same embedded `$bunfs`, same
+//      linked bundle — so it can safely add its own static `extractFromBunfs` import alongside its
+//      existing `query` one and do the extraction itself, right before making the real call.
+//
+// This module's own job for the compiled case is therefore narrower than "resolve a spawnable path":
+// just report whether an asset is embedded at all (`hasEmbeddedNativeBinary`, no extraction, safe
+// everywhere) for viability checks (`doctor`'s `orchestrator: on/off`); `resolveNativeBinary` itself
+// returns `null` for a compiled build (never a raw, unextracted `$bunfs` path — spawning that directly
+// would fail exactly like the original bug), leaving `pathToClaudeCodeExecutable` unset in the
+// outgoing request so `sdk-worker.ts` resolves and extracts it itself when it actually runs.
+function hasEmbeddedNativeBinary(): boolean {
+  return embeddedNativeBinaryAsset !== null;
+}
+
 /**
- * Can the SDK's own optional platform binary be resolved from this project's node_modules? Mirrors
- * `query()`'s own internal resolution exactly: `require.resolve` scoped via `createRequire`. The SDK
- * itself scopes from `sdk.mjs`'s own file location; scoping from any file inside this SAME project
- * tree resolves identically, because node_modules resolution of a sibling scoped package is
- * tree-position-based, not caller-position-based — confirmed by reading the SDK's own resolver, not
- * assumed. `requireFrom` is injectable (test-only) to point the scoped require at an empty scratch
- * directory, simulating a genuinely unresolvable binary without touching the real installed packages.
+ * Can the SDK's own optional platform binary be resolved, AS A VALUE THIS PROCESS CAN HAND TO THE SDK
+ * (`pathToClaudeCodeExecutable`)? Two entirely different mechanisms, dispatched on `isCompiledBuild()`:
+ *
+ *   - Source tree: mirrors `query()`'s own internal resolution exactly — `require.resolve` scoped via
+ *     `createRequire`. The SDK itself scopes from `sdk.mjs`'s own file location; scoping from any file
+ *     inside this SAME project tree resolves identically, because node_modules resolution of a sibling
+ *     scoped package is tree-position-based, not caller-position-based — confirmed by reading the
+ *     SDK's own resolver, not assumed. `requireFrom` is injectable (test-only) to point the scoped
+ *     require at an empty scratch directory, simulating a genuinely unresolvable binary without
+ *     touching the real installed packages.
+ *   - Compiled binary: always `null` here, deliberately — see the module comment above for why this
+ *     process can never safely extract the embedded asset itself. Callers that need the real path for
+ *     an actual dispatch get it from `sdk-worker.ts` instead (it self-resolves when the incoming
+ *     request's `pathToClaudeCodeExecutable` is unset); callers that only need to know whether the SDK
+ *     is viable at all should call `hasEmbeddedNativeBinary`/`checkSdkPreconditions`, not this.
  */
 export function resolveNativeBinary(platform: string = process.platform, arch: string = process.arch, requireFrom: string = import.meta.url): string | null {
+  if (isCompiledBuild()) return null;
   const scopedRequire = createRequire(requireFrom);
   for (const candidate of nativeBinaryCandidates(platform, arch)) {
     try {
@@ -291,17 +363,31 @@ export interface SdkPreconditionOptions {
 }
 
 /** The two LOCAL, zero-cost preconditions a real SDK call needs: a credential, and a resolvable
- * native binary. Both are knowable in milliseconds — no network, no subprocess. */
+ * native binary. Both are knowable in milliseconds — no network, no subprocess.
+ *
+ * The binary check itself is two different mechanisms (NOTES DIST7): a compiled build asks
+ * `hasEmbeddedNativeBinary` (is one embedded at all — never attempts extraction here, see this
+ * file's own module comment on `resolveNativeBinary` above for why); a source build asks
+ * `resolveNativeBinary` for a real, immediately-usable path. Either way, `binaryPath` on the
+ * returned check is only ever set for the SOURCE case — a compiled build's real dispatch path
+ * resolves its own `pathToClaudeCodeExecutable` in `sdk-worker.ts` instead, which is the only place
+ * that can safely do the extraction (see there). */
 export function checkSdkPreconditions(env: Record<string, string | undefined> = process.env, opts: SdkPreconditionOptions = {}): SdkPreconditionCheck {
   if (!hasAnthropicCredentials(env)) return { viable: false, reason: "ANTHROPIC_API_KEY is not set" };
   const platform = opts.platform ?? process.platform;
   const arch = opts.arch ?? process.arch;
-  const binaryPath = resolveNativeBinary(platform, arch, opts.requireFrom);
-  if (!binaryPath) {
-    return {
-      viable: false,
-      reason: `native CLI binary for ${platform}-${arch} not found — reinstall @anthropic-ai/claude-agent-sdk on this platform (README.md's Phase 7 section)`,
-    };
+  const compiled = isCompiledBuild();
+  const binaryPath = compiled ? undefined : (resolveNativeBinary(platform, arch, opts.requireFrom) ?? undefined);
+  const viableBinary = compiled ? hasEmbeddedNativeBinary() : binaryPath !== undefined;
+  if (!viableBinary) {
+    // NOTES DIST7: two different audiences hit this, with two different remedies — a source/dev run
+    // really can fix this with a package install; a compiled binary user has no node_modules to
+    // install into, and the actual cause there is a levare packaging defect or an unsupported
+    // platform, never a missing npm install.
+    const reason = compiled
+      ? `this levare build has no Claude Agent SDK binary embedded for ${platform}-${arch} — either it's an unofficial build (only darwin-arm64/darwin-x64/linux-x64/linux-arm64 release assets embed one) or this platform isn't a supported release target; download the levare-${platform}-${arch} asset from the GitHub Releases page, or run 'bun run build' from a levare checkout on this machine`
+      : `native CLI binary for ${platform}-${arch} not found in node_modules — run 'bun install' to fetch @anthropic-ai/claude-agent-sdk-${platform}-${arch} (an optional dependency of @anthropic-ai/claude-agent-sdk)`;
+    return { viable: false, reason };
   }
   return { viable: true, binaryPath };
 }

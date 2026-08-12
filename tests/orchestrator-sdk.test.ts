@@ -608,7 +608,10 @@ describe("checkSdkPreconditions — credential presence + binary resolvability, 
       const check = checkSdkPreconditions({ ANTHROPIC_API_KEY: "sk-ant-test" }, { requireFrom: join(dir, "scratch.ts") });
       expect(check.viable).toBe(false);
       expect(check.reason).toContain(`${process.platform}-${process.arch}`);
-      expect(check.reason).toContain("reinstall");
+      // NOTES DIST7: the source-tree remedy is now a real, actionable command — "bun install" — not
+      // the bare word "reinstall" (which read as "reinstall a package you never had", the exact
+      // complaint the goal that fixed this named).
+      expect(check.reason).toContain("bun install");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
