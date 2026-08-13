@@ -18,10 +18,15 @@
 
 export class YamlError extends Error {
   line: number;
+  /** The message text before the ` (line N)` suffix was appended — lets a caller that needs to
+   * re-report this same error against a different line number (parseFrontmatter, below) rebuild it
+   * without re-parsing the suffix back out of `message`. */
+  rawMessage: string;
   constructor(message: string, line: number) {
     super(`${message} (line ${line})`);
     this.name = "YamlError";
     this.line = line;
+    this.rawMessage = message;
   }
 }
 
@@ -262,7 +267,16 @@ function isFloatToken(t: string): boolean {
 
 function parseDoubleQuoted(t: string, line: number): string {
   if (!t.endsWith('"') || t.length < 2) {
-    throw new YamlError("unterminated double-quoted string", line);
+    // Named as the constraint, not the symptom: subset-YAML tokenizes one raw line at a time (see
+    // this file's header), so it has no notion of a double-quoted scalar continuing onto the next
+    // line — the single most common way to reach this branch is a value someone assumed could wrap,
+    // the way real YAML's double-quoted scalars can. Saying so directly (rather than just "unterminated")
+    // is what lets a reader fix it in one pass instead of two.
+    throw new YamlError(
+      "double-quoted string is not closed on this line — subset-YAML scalars must be a single line " +
+        "(no line continuation, even inside quotes); put the whole value on one line",
+      line,
+    );
   }
   const inner = t.slice(1, -1);
   let out = "";
@@ -354,7 +368,17 @@ export function parseFrontmatter(src: string): { data: { [k: string]: YamlValue 
   }
   const fmText = lines.slice(1, end).join("\n");
   const body = lines.slice(end + 1).join("\n");
-  const data = fmText.trim() === "" ? {} : parse(fmText);
+  let data: YamlValue;
+  try {
+    data = fmText.trim() === "" ? {} : parse(fmText);
+  } catch (e) {
+    // `parse` counts lines within `fmText` alone, which starts AFTER the opening `---` fence this
+    // function already consumed (line 1 of the real document) — so a bare rethrow would name the
+    // line *before* the one that's actually wrong (whatever sits at that offset in the real file,
+    // often a perfectly valid neighbouring line). +1 maps back to the real document's own line count.
+    if (e instanceof YamlError) throw new YamlError(e.rawMessage, e.line + 1);
+    throw e;
+  }
   if (data === null || typeof data !== "object" || Array.isArray(data)) {
     throw new YamlError("frontmatter must be a mapping", 2);
   }
