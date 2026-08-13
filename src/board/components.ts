@@ -76,6 +76,17 @@ export function iconLink(opts: { icon: IconLinkIcon; href: string; label: string
 }
 
 // ---------------------------------------------------------------------------
+// leadText — the muted-prose paragraph treatment a registry card uses to show a body-derived summary
+// (a skill's description, a team's charter lead, an agent's opening line, a project's house rules).
+// Built once here (NOTES REGISTRY-BODY) rather than re-inlined per call site — before this existed,
+// only the skill card actually rendered its body; every other entity kind either dropped it or would
+// have hand-rolled its own copy of this exact style string.
+// ---------------------------------------------------------------------------
+export function leadText(text: string): string {
+  return text ? `<p style="margin:0;font-size:13.5px;line-height:1.6;color:var(--fg-dim)">${esc(text)}</p>` : "";
+}
+
+// ---------------------------------------------------------------------------
 // callout — NOTES UI12: the ONE way a note/warning/danger message block is produced anywhere on the
 // board (see tests/board-ui12.test.ts's "no board renderer emits a callout-shaped block except
 // through the primitive"). Closes the gap NOTES UI11/C13 found: the design brief previously banned

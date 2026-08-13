@@ -11,7 +11,7 @@ import { STUDIO_SCOPE } from "../../conversation.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
 import { detectSandbox, type SandboxDetection } from "../../sandbox.ts";
 import { remoteAgentImplemented } from "../../env.ts";
-import { tag, kindTag, editorOverlay, orchTurn, callout, card } from "../components.ts";
+import { tag, kindTag, editorOverlay, orchTurn, callout, card, leadText } from "../components.ts";
 import { registryKindIconBody } from "./entity-icons.ts";
 import { deriveTeamStyle } from "../team-color.ts";
 import {
@@ -180,7 +180,7 @@ export function renderRegistry(
   const skillBlocks = extras.skills
     .map((s) => {
       // UI7: no "SKILL.md" heading (an implementation detail, not information) — just the description.
-      const inner = `<p style="margin:0;font-size:13.5px;line-height:1.6;color:var(--fg-dim)">${esc(String(s.data.description ?? firstParagraph(s.body)))}</p>`;
+      const inner = leadText(String(s.data.description ?? firstParagraph(s.body)));
       return entityBlock("skills", esc(s.name), "skill", inner, s.file, rawForPath(root, s.file), s.name, active === "skills");
     })
     .join("\n");
@@ -188,8 +188,13 @@ export function renderRegistry(
   const knowledgeBlocks = extras.knowledge
     .map((k) => {
       // UI7: no "Injected into" backlink section — the item's own declared tags render as chips instead.
+      // NOTES REGISTRY-BODY: a knowledge card used to show a name and two tags and nothing else — for a
+      // document whose entire value IS its content, injected into member context by name (§6). The
+      // skill card already proves the pattern for a reference document's card (a lead paragraph, no
+      // separate heading); this now does the same over the doc's own body rather than dropping it.
       const tags = Array.isArray(k.data.tags) ? (k.data.tags as unknown[]).map(String) : [];
-      const inner = tags.length ? `<div class="chiprow">${tags.map((t) => tag(t, "tag")).join("")}</div>` : '<span style="color:var(--fg-mute)">no tags declared</span>';
+      const tagsHtml = tags.length ? `<div class="chiprow">${tags.map((t) => tag(t, "tag")).join("")}</div>` : '<span style="color:var(--fg-mute)">no tags declared</span>';
+      const inner = `${leadText(firstParagraph(k.body))}${tagsHtml}`;
       return entityBlock("knowledge", esc(k.name), "knowledge", inner, k.file, rawForPath(root, k.file), k.name, active === "knowledge");
     })
     .join("\n");
@@ -199,9 +204,13 @@ export function renderRegistry(
       // NOTES UI11 (RULE A, same ruling as UI7): the title already shows the glyph — no separate
       // glyph row repeating it. `expects`/`gates` render as chip rows through the same tag/chip
       // primitive agents' `produces` already uses, not a plain arrow-joined or comma-joined string.
+      // NOTES REGISTRY-BODY: this heading used to read "Expected kinds" over BOTH rows — wrong once
+      // `gates` (where the flow halts for a human) is right underneath it: a gate is not a kind. Renamed
+      // to "Definition", the same heading the agent/connector cards already use for their own k/v rows —
+      // one word, correct for both rows, no invented per-card vocabulary.
       const expectsChips = t.expects.map((e) => tag(e, "tag")).join("");
       const gatesChips = t.gates.map((g) => tag(g, "tag")).join("");
-      const inner = `<div class="card__h">Expected kinds</div>
+      const inner = `<div class="card__h">Definition</div>
       <div class="prow"><span class="k">expects</span><span class="v chiprow">${expectsChips}</span></div>
       <div class="prow"><span class="k">gates</span><span class="v chiprow">${gatesChips || '<span style="color:var(--fg-mute)">none declared</span>'}</span></div>`;
       return entityBlock("types", `<span style="font-family:var(--mono)">${t.glyph} ${esc(t.name)}</span>`, "type", inner, `types/${t.name}.md`, rawFor(root, "types", t.name), t.name, active === "types");

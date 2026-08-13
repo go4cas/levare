@@ -284,7 +284,7 @@ describe("project screen", () => {
   // releases → work units.
   test("the stat strip renders before the pointer/constitution card", () => {
     expect(html.indexOf('class="statstrip"')).toBeLessThan(html.indexOf('class="card"'));
-    expect(html.indexOf('class="statstrip"')).toBeLessThan(html.indexOf("Constitution"));
+    expect(html.indexOf('class="statstrip"')).toBeLessThan(html.indexOf("Founding artifacts"));
   });
 
   // Item 6c: `pace` renders as a colour-coded badge — storefront's pace is `auto`.
@@ -1117,7 +1117,7 @@ describe("the rail is identical navigation on every screen", () => {
       expect(headings).toEqual(["Projects", "Registry", "Connectors", "Ideas"]);
       // Page-specific material must never leak back into the rail.
       expect(rail).not.toContain("Pointer");
-      expect(rail).not.toContain("Constitution");
+      expect(rail).not.toContain("Founding artifacts");
       expect(rail).not.toContain('>Score<');
       expect(rail).not.toContain("Recent releases");
       expect(rail).not.toContain('class="score2"');
@@ -1510,20 +1510,26 @@ describe("UI7: skill cards drop the SKILL.md label", () => {
 });
 
 describe("UI7: knowledge cards show frontmatter tags as chips, not an Injected-into backlink section", () => {
-  test("tags render as chips and no 'Injected into' section survives", () => {
+  test("tags render as chips and no 'Injected into' BACKLINK SECTION survives", () => {
     const html = renderRegistry(repo, root, "knowledge");
     const cards = [...html.matchAll(/<article class="entity card" id="knowledge-[^"]*"[\s\S]*?<\/article>/g)];
     expect(cards.length).toBeGreaterThan(0);
-    // The rendered body must not carry the old backlink section; the raw markdown source (verbatim
-    // in the hidden edit-source textarea) legitimately still mentions "Injected into" in its own prose.
+    // The rendered body must not carry the old backlink section's own heading — never a blind substring
+    // ban on "Injected into" itself: NOTES REGISTRY-BODY now renders the document's own markdown body,
+    // and house-style.md's actual prose legitimately uses that exact phrase ("Injected into member
+    // context when referenced") to describe itself. The regression this test guards against is the OLD
+    // structural section (a heading naming which agents/teams reference this doc), not that string.
     for (const c of cards) {
       const rendered = c[0].replace(/<textarea class="rawmd-source"[\s\S]*?<\/textarea>/, "");
-      expect(rendered).not.toContain("Injected into");
+      expect(rendered).not.toContain('<div class="card__h">Injected into</div>');
     }
     const houseStyle = /<article class="entity card" id="knowledge-house-style"[\s\S]*?<\/article>/.exec(html)![0];
     expect(houseStyle).toMatch(/<div class="chiprow">(<span class="tag">[a-z]+<\/span>)+<\/div>/);
     expect(houseStyle).toContain('<span class="tag">voice</span>');
     expect(houseStyle).toContain('<span class="tag">reference</span>');
+    // NOTES REGISTRY-BODY: the card now also shows the document's own content — a knowledge card used
+    // to render a name and two tags and nothing else, for a document whose entire value is its content.
+    expect(houseStyle).toContain("Calm, factual, slightly dry");
   });
 });
 
