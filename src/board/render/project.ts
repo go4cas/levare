@@ -6,6 +6,7 @@ import type { Repo } from "../../repo.ts";
 import { firstParagraph } from "../../repo.ts";
 import {
   esc,
+  renderInline,
   ageLabel,
   openGates,
   scoreNodes,
@@ -175,7 +176,10 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
         pre: `<span class="unit__glyph">${typeGlyphSvg(type?.name)}</span>`,
         title: `<div class="unit__titlewrap"><span class="unit__name">${esc(u.unit)}</span><a class="unit__path link mono" href="/run/${esc(u.project)}/${esc(u.unit)}">work/${esc(u.project)}/${esc(u.unit)}/</a></div>`,
         status: chip,
-        body: `<div class="unit__desc">${esc(unitSummary(repo, u))}</div>\n        ${miniScoreHtml(nodes)}`,
+        // Fault 4: routed through renderInline, not plain esc() — a member-authored summary's own
+        // `**bold**` (e.g. adapters.ts's own stub brief: "**Problem.** ...") must render as emphasis
+        // here, the same as it would if the reader opened the artifact itself.
+        body: `<div class="unit__desc">${renderInline(unitSummary(repo, u))}</div>\n        ${miniScoreHtml(nodes)}`,
         meta: `<div class="unit__detail">
           ${artifactRows}
           <div class="unit__foot">${reviewRounds} review round${reviewRounds === 1 ? "" : "s"} &middot; ${gates.filter((g) => g.unit === u.unit).length} gate${gates.filter((g) => g.unit === u.unit).length === 1 ? "" : "s"} <span class="cost">&middot; ${spend.tokens} tok &middot; ~$${spend.usd.toFixed(2)}</span></div>

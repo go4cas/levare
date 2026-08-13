@@ -1,11 +1,11 @@
 import { test, expect, describe, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, cpSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, cpSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRepo } from "../src/repo.ts";
 import { renderStudio, renderProject, renderRun, renderRegistry, renderArtifact, renderIdea, scoreNodeClass, scoreLineClass, elapsedLabel, projectStatusChip } from "../src/board/render.ts";
-import { scoreNodes, type NodeState } from "../src/derive.ts";
+import { scoreNodes, renderInline, type NodeState } from "../src/derive.ts";
 import { resolveGate } from "../src/board/gateops.ts";
 import type { OrchestratorStatus } from "../src/orchestrator-status.ts";
 import { chipClass, dotClass, fromWorkUnitStatus, type CanonicalStatus } from "../src/board/status.ts";
@@ -306,6 +306,61 @@ describe("project screen", () => {
     expect(html).toContain('<span class="chip is-done">shipped</span>');
     expect(html).not.toContain("is-approved");
     expect(html).not.toContain("is-progress");
+  });
+});
+
+// Fault 4: a unit summary is a member-authored artifact body's own first paragraph (NOTES A8) — and
+// member prose uses `**bold**` (adapters.ts's own stub brief opens "**Problem.** The current
+// three-page checkout loses buyers..."). The work-unit card (project screen) and the in-flight card
+// (studio screen) both ran that text through plain `esc()`, so a reader saw literal asterisks — on
+// the very same board that already renders markdown correctly elsewhere (artifact.ts/idea.ts's own
+// bodies, and this branch's own registry-card fix). Scratch-copies the golden fixture and edits the
+// checkout-flow spec's own leading paragraph (the exact text both cards summarize) to carry real
+// emphasis, proving both surfaces render it, not just the artifact page these cards link to.
+function scratchRootWithMarkdownSummary(): string {
+  const dir = mkdtempSync(join(tmpdir(), "levare-fault4-markdown-"));
+  cpSync("fixtures/golden", dir, { recursive: true });
+  const specFile = join(dir, "work/storefront/checkout-flow/spec-checkout-flow-v1.md");
+  const src = readFileSync(specFile, "utf8");
+  const withBold = src.replace(
+    "The guest-checkout spec is ready for review",
+    "**Problem:** the guest-checkout spec is ready for review",
+  );
+  expect(withBold).not.toBe(src); // sanity: the replace actually matched something in the fixture
+  writeFileSync(specFile, withBold);
+  return dir;
+}
+
+describe("fault 4: unit summaries render markdown, not literal asterisks", () => {
+  let scratchRoot: string | undefined;
+  afterEach(() => {
+    if (scratchRoot) rmSync(scratchRoot, { recursive: true, force: true });
+    scratchRoot = undefined;
+  });
+
+  test("the project screen's work-unit card renders **bold** as emphasis", () => {
+    scratchRoot = scratchRootWithMarkdownSummary();
+    const html = renderProject(loadRepo(scratchRoot), "storefront", scratchRoot, now);
+    // Scoped to checkout-flow's OWN unit__desc element — cart-icon-fix's card (rendered first, empty
+    // desc) would otherwise false-match, and the same leading artifact's text also appears verbatim
+    // (still unrendered markdown, out of this fix's scope) inside the gate card's own `gate__ctx`
+    // paragraph elsewhere on this page, so an unscoped `not.toContain` would false-fail too.
+    const afterUnit = html.slice(html.indexOf('data-unit="checkout-flow"'));
+    const desc = /<div class="unit__desc">([\s\S]*?)<\/div>/.exec(afterUnit)![1];
+    expect(desc).toContain("<strong>Problem:</strong>");
+    expect(desc).not.toContain("**Problem:**");
+  });
+
+  test("the studio screen's in-flight project card renders **bold** as emphasis", () => {
+    scratchRoot = scratchRootWithMarkdownSummary();
+    const html = renderStudio(loadRepo(scratchRoot), scratchRoot, now);
+    const desc = /<span class="pcard__desc">([\s\S]*?)<\/span>/.exec(html)![1];
+    expect(desc).toContain("<strong>Problem:</strong>");
+    expect(desc).not.toContain("**Problem:**");
+  });
+
+  test("renderInline still escapes real HTML-special characters — never trusts member text as markup", () => {
+    expect(renderInline("<script>alert(1)</script> **bold**")).toBe("&lt;script&gt;alert(1)&lt;/script&gt; <strong>bold</strong>");
   });
 });
 

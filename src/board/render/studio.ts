@@ -5,6 +5,7 @@
 import type { Repo } from "../../repo.ts";
 import {
   esc,
+  renderInline,
   ageLabel,
   openGates,
   repoSpend,
@@ -71,9 +72,10 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date(), r
       // A8: the summary is the first paragraph of the most relevant unit's leading artifact — newest
       // gated, else newest active, else honestly empty (no fabricated summary — see NOTES.md).
       const summaryUnit = mostRelevantUnit(repo, p.name);
+      // Fault 4: renderInline, not plain esc() — see project.ts's own comment on the identical fix.
       const desc = !summaryUnit
         ? units.length ? "No unit currently gated or active." : "No work units yet."
-        : esc(unitSummary(repo, summaryUnit) || "Awaiting its first artifact.");
+        : renderInline(unitSummary(repo, summaryUnit) || "Awaiting its first artifact.");
       const anyUnitActive = units.some((u) => u.status === "active");
       // Phase 8, deliverable c: a real projection of the daemon's in-flight invocations, retiring
       // NOTES E2 — `running` is [] whenever no daemon is attached (createBoard's default; see

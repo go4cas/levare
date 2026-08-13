@@ -23,6 +23,19 @@ export function esc(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
+// Fault 4: `**bold**` — the one inline-emphasis convention member-authored bodies actually use
+// (adapters.ts's own stub brief opens "**Problem.** The current three-page checkout loses buyers...")
+// — was rendering as literal asterisks anywhere a unit summary is shown outside its own artifact page,
+// because those call sites (project.ts's work-unit cards, studio.ts's in-flight project card) ran
+// `unitSummary`'s output through plain `esc()` alone. Escapes FIRST, then converts already-escaped
+// `**…**` pairs to `<strong>` — never trusts raw member text as HTML input. Block-level markdown
+// (headings, paragraph breaks) is a separate concern `shell.ts#renderBody` already owns; a unit
+// summary is always a single already-extracted paragraph (`firstParagraph`), so only the inline case
+// applies here.
+export function renderInline(s: string): string {
+  return esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+}
+
 /** "31k tok · ~$0.58", "unreported", or "" when there is no usage at all. */
 export function costLabel(usage: Usage | null | undefined): string {
   if (!usage) return "";
