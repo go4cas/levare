@@ -278,7 +278,16 @@ hatch, shipped regardless of the outcome above:** `sandbox: unsandboxed` on an a
 recorded on every artifact that member produces (`sandbox_reason:`, alongside `sandbox: none`). A live
 diagnostic harness (`scripts/repro-r4-appserver-codex.ts`) is built and ready but not yet run — no live
 macOS host was reachable this round; see NOTES R4-SANDBOX-APPSERVER for the ranked hypotheses (a
-write-reallow gap vs. nested Seatbelt self-sandboxing) the next live run needs to distinguish.
+write-reallow gap vs. nested Seatbelt self-sandboxing) the next live run needs to distinguish. **The
+harness itself had a plumbing bug, found and fixed before any live run used it (NOTES
+DOCS-WALKTHROUGH-1):** every dispatch it drove targeted a work unit that doesn't exist
+(`unit: "repro"`), which made context assembly throw and get silently swallowed into an empty prompt —
+codex's own honest `No prompt provided via stdin.` was being misread as an app-server sandbox finding it
+never was. Fixed to dispatch against a real fixture unit; the script now also cross-checks the sandboxed
+run against its own unsandboxed control automatically and refuses to call a failure sandbox-related when
+both fail identically. The ranked hypotheses above are unaffected — this was a harness defect, not a
+finding about H1 or H2 — but the next live run needed this fix first, or it would have reproduced the
+same false negative again.
 
 ## Connector trust-tier taxonomy — three recorded decisions, not open gaps (NOTES TAXONOMY-DECISIONS, 2026-07-21)
 
@@ -423,3 +432,47 @@ and was removed rather than kept as an implied promise of caching to come (NOTES
 derivation cache would sit in real tension with invariant 2's own wording, so it isn't treated as a
 "someday" item here so much as a standing tradeoff: simplicity and correctness (every render reflects
 the actual current file state) over the read latency of large repos.
+
+## The daemon only watches `work/` — a named, undecided gap, not a bug (NOTES DOCS-WALKTHROUGH-1)
+
+`src/daemon.ts#start` watches `work/` (recursively, where the host supports it) and re-derives the
+whole repo — registry included — the instant it starts. It does **not** watch `teams/`, `agents/`,
+`connectors/`, `projects/`, or `.env`: editing any of those while `levare serve` is already running is
+real on disk immediately but invisible to that running daemon until it's restarted, because nothing
+under `work/` changed to schedule a walk. A live cold-start walkthrough of `docs/guide/04-workflow/`
+hit this three times in one session, independently: a corrected `ANTHROPIC_API_KEY` in `.env`, a
+freshly-created `unit.md`, and a connector `home:` edit each produced nothing until the process was
+restarted. None of the three is a daemon bug on its own terms — `.env` is documented (`dotenv.ts`'s own
+"on startup" contract) to load once; the registry has always been re-read fresh from disk on every walk,
+just never on a schedule triggered by editing it directly. **Whether the daemon should widen what it
+watches (registry, not just `work/`) is a real product question, deliberately not decided here** — this
+entry, and the docs fix that prompted it, only make the CURRENT behaviour honest wherever a reader is
+told to edit a registry file or a credential: `docs/guide/04-workflow/06-first-loop.md` (where a reader
+first needs a restart to make progress), `07-the-daemon.md` (a new "What it doesn't watch" section),
+`README.md`'s `.env` section, and `05-foreign-agent.md`'s connector/agent section all now say so
+explicitly, with a restart as the stated fix, rather than leaving "make the correct edit, retry, fail
+identically" as something a reader has to discover by hand.
+
+## Guide code blocks are now executable content, verified — not just proofread (NOTES DOCS-WALKTHROUGH-1)
+
+A live cold-start walkthrough of `docs/guide/04-workflow/` on a released binary found a `cat > … <<'EOF'`
+block (the codex connector, in 4.5) that the studio's own parser rejected outright — a multi-line
+double-quoted `scope:` value, a construct subset-YAML has never supported (`src/yaml.ts`'s own header
+names it explicitly) — and a second, related defect in the same block: a missing `role:` field that made
+the chapter's own sample `levare doctor` output describe a different connector than the one the block
+actually declares. Both survived a PRIOR unit that rewrote that exact block's prose without re-running it
+through the real parser — proofreading prose does not catch a broken heredoc. Fixed (the connector now
+matches `src/init.ts#CONNECTOR_CODEX`'s own shape: single-line `scope:`, `role: model` present); the
+parser's own error reporting fixed alongside it (`src/yaml.ts` — a frontmatter parse error now names the
+correct line, and a would-be multi-line double-quoted scalar names the real constraint — single line only
+— rather than "unterminated," a syntax symptom that reads as a typo to fix rather than a shape that isn't
+supported at all).
+
+**The standing guard:** `tests/guide-workflow-blocks.test.ts` extracts every `cat > <path> <<'EOF'` block
+from `docs/guide/04-workflow/*.md`, in reading order, and replays them into a studio scaffolded the way
+`levare init .` actually leaves one — running the real frontmatter parser and `validatePath` after each
+paste, the same check a reader following along would get from re-running `levare validate .`. It fails
+loudly (naming the code, file, line, and message) on any error, and specifically asserts neither
+`SUBSCRIPTION_NO_ROLE` nor `SUBSCRIPTION_NO_HOME` ever appears undocumented — the exact class of drift
+this entry closes. Without it, a broken or drifted block in this directory reads as clean until a reader
+pastes it by hand; this is the check that makes that not true again.
