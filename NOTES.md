@@ -14958,3 +14958,121 @@ entire fix is in `render/registry.ts`, `render/project.ts`, one small `component
 as icon links rather than pointer-card label rows is untouched by design, not by oversight — a different,
 already-settled ruling (UI2 items 2/3) this unit had no reason to reopen. `docs/current-gaps.md` gains and
 closes a matching entry.
+
+# NOTES RAIL-UNREACHABLE (2026-08-13) — the score rail called an uncoverable stage "queued"; three
+# rendering defects found alongside it
+
+A board walkthrough found `checkout-flow` (type `feature`, `expects: [product-brief, design, spec,
+code, review]`) run by `kestrel` — a team whose members (wren, lyra, finch) between them produce
+product-brief/design/spec/review, but nothing anywhere in the studio produces `code`. The score rail
+rendered that row exactly like `review` (an ordinary hollow "queued" step, sub-label "queued"): no
+amount of waiting was ever going to move it, and nothing on the rail said so. The real-world instance
+is the docs/guide walkthrough's own `add-command` unit — `team: press` (members scribe, corvid,
+`produces: [product-brief, review]`) against `feature`'s five expected kinds — which is what
+`tests/guide-workflow-blocks.test.ts` now pins.
+
+**Root cause.** `derive.ts#scoreNodes` reads a unit's type `expects:` list and, for each kind with no
+artifact, renders "wait" — full stop. It never asks whether the unit's actual responsible team could
+ever produce that kind at all. `expects:` describes the TYPE's shape; it says nothing about what a
+particular team assigned to a particular unit can deliver.
+
+**Decision 1 — what the rail renders.** Two options were on the table: (a) mark the unreachable rows
+honestly (`unreachable · no member produces this`), keeping every one of the type's five rows visible;
+or (b) render only the stages the team covers, dropping the rest into a separate "out of scope" list.
+Chose (a). Reasoning: the type's full shape has real value on its own — a Conductor comparing a
+`feature` unit against the `feature` template benefits from seeing where the gap is, not just that
+there is one; showing the row and naming it unreachable is a stronger, more specific signal than
+omitting it (an omitted row could as easily read as "not applicable" or "a rendering bug" as "the
+team can't do this"). Implementation-wise it's also the far less invasive change: `scoreNodes` already
+returns exactly one `ScoreNode` per expected kind, and every downstream consumer (the run-view rail,
+the project-screen mini-score) already iterates that array 1:1 — filtering it would mean redesigning
+what "5 expected kinds, 3 rendered" looks like on two screens, for no reader benefit strong enough to
+justify it.
+
+**Decision 2 — whether `validate` should say anything.** A `feature` unit assigned to a team covering
+two of five expected kinds passes validation clean today, and there's a real, legitimate shape here: a
+unit that only ever needs a product-brief and a review (never a full build) is a fine configuration —
+`UNCOVERABLE_EXPECTED_KIND` must never be a hard error, or it would reject studios that are working
+exactly as intended. But staying silent means the ONLY way a Conductor discovers the gap is watching a
+rail row sit at "queued" forever, which is the exact discoverability failure this unit exists to close.
+Decision: a WARNING, naming the unit, its responsible team, and the specific uncoverable kinds — loud
+enough to read at `levare validate` time, never loud enough to block a legitimate studio.
+
+**The shared computation.** `flow.ts#unreachableExpectedKinds(repo, unit, capabilities)` — checked
+against real per-member capabilities (`repoCapabilities`/the validator's own local agent-produces map),
+never against a team's own declared `produces:` aggregate, which can promise more than its members back
+(`UNPRODUCIBLE_KIND`, pre-existing) or, just as easily, simply omit a kind a member genuinely produces
+(`kestrel` declares `produces: [product-brief, design, spec]` while its member `finch` produces
+`review` — team-level `produces:` was never the authority on what the team can actually do). One
+function, re-exported through `gates.ts` for `derive.ts#scoreNodes`, imported directly by `validate.ts`
+(matching its own existing `kindMatches` import from `flow.ts`) for the new
+`validateUncoverableExpectedKinds` warning pass — the rail and `validate` can never disagree on which
+stages are honestly reachable, because there is exactly one place that decides it.
+
+**Faults 2–4, found alongside it on the same board walkthrough:**
+
+- **Fault 2 — a long `.prow` label collided with its value.** `protected_branches`/`protected_paths`
+  (team card) and `context_artifacts` (agent card) rendered as `protected_branchmain`/
+  `context_artifactinline`. Traced to ONE shared cause, not markup: `.prow .k{ width:78px; flex:none }`
+  gave every label a fixed box regardless of content; these three keys (18 characters, underscored — no
+  space to wrap on) simply overflowed the box with no clipping and no separating gap, running straight
+  into the value beside them. The `never` row directly below rendered fine because it's chip-valued,
+  never because its own label happened to be short — confirmed by checking: every currently-working
+  plain-text key (`pace`, `kind`, `produces`, `cwd`, `timeout`, …) is simply short enough to fit inside
+  78px, an accident of which fields existed before this fix, not a property CSS enforced. Fixed with
+  `min-width` in place of `width` — short labels keep their existing column alignment (still floors at
+  78px), a long one grows to fit its own text, and the row's `gap` becomes real separation again. One
+  rule, closes both the team-card and agent-card manifestations.
+- **Fault 3 — an orphaned arrow in a wrapped team flow row.** `.flowstrip` wraps (`flex-wrap:wrap`) on
+  a narrow card, and the join arrow between two flow nodes was rendered as its own independent flex
+  sibling (`registry.ts`'s old `.map(...).join('<span class="arr">→</span>')`). The wrap algorithm could
+  break the line right after an arrow, landing it alone at the end of one line ("wr → ◆ → ly → ◆ →")
+  with the step it points at starting fresh on the next line, directly above the loop row. Fixed by
+  rendering each arrow INSIDE the same flex item (`.fpair`) as the node it precedes — wrapping can now
+  only ever happen between complete pairs, never split one apart. The loop's own internal glyph (⇆,
+  between its two `between` avatars) also carries `class="arr"` but is untouched — a different glyph
+  entirely, not the join arrow this fault is about.
+- **Fault 4 — unit summaries showed literal markdown.** A unit summary is a member-authored artifact
+  body's own first paragraph (NOTES A8), and member prose uses `**bold**` (`adapters.ts`'s own stub
+  brief opens "**Problem.** The current three-page checkout loses buyers..."). The work-unit card
+  (project screen) and the in-flight project card (studio screen) both ran that text through plain
+  `esc()`, showing literal asterisks, on a board that already renders markdown correctly elsewhere
+  (`artifact.ts`/`idea.ts` bodies via `shell.ts#renderBody`, and this branch's own registry-card fix).
+  `renderBody` itself only handles BLOCK-level markdown (headings, paragraph splits) — it has no inline
+  emphasis interpreter, and a unit summary is always a single already-extracted paragraph, so reusing it
+  alone would not have fixed this. New `derive.ts#renderInline`: escapes first, then converts
+  already-escaped `**…**` pairs to `<strong>` — never trusts member text as markup. Deliberately narrow
+  (bold only, the one convention member prose in this codebase actually uses); extending `renderBody`
+  itself to also do inline emphasis was considered and left alone — out of this fix's scope, no evidence
+  any currently-broken surface needs it.
+
+**Checked whether faults 2 and 4 share a cause, per instruction, before fixing them separately — they
+don't.** Fault 2 is a CSS box-sizing defect (a fixed-width label overflowing); fault 4 is a missing
+markdown-inline interpreter at two specific call sites. Different subsystems, different fixes, no
+shared root cause to consolidate. What faults 2's OWN two manifestations (team-card guardrails,
+agent-card context_artifacts) share is real: the identical `.prow .k` CSS rule, closed by the one CSS
+change above.
+
+**Tests.** Fault 1: `tests/board-render.test.ts` asserts `scoreNodes` marks `checkout-flow`'s `code`
+node `"unreachable"` (never `"wait"`) while `review` (genuinely reachable, just not yet produced) stays
+`"wait"`, and asserts the rendered rail's `code` row reads "unreachable · no member produces this",
+never "queued" — driven from the golden fixture, the exact "team covers only some of its type's
+expected kinds" shape a real walkthrough produces (not a hand-built fixture). `tests/guide-workflow-
+blocks.test.ts`'s existing "zero warnings" assertion is updated to the real, correct end state: exactly
+one `UNCOVERABLE_EXPECTED_KIND` warning, naming `add-command`/`press`/`[design, spec, code]` — the guide's
+own walkthrough studio, unmodified, IS the scenario. Faults 2–4: assertions against rendered output
+(`registry-cards-render-definitions.test.ts`'s `cardFor()`-scoped `.rendered` slices, `board-render.
+test.ts`'s scoped HTML substrings, and the served `assets/styles.css` content itself — verbatim-served
+per `board-serve.test.ts`, so asserting its rule text IS asserting what ships), never against frontmatter
+or raw source, following the extraction discipline `NOTES REGISTRY-BODY`'s own `cardFor()` established.
+
+**Commits, one fault at a time:** (1) fault 1 — the shared `unreachableExpectedKinds` computation, the
+rail's new "unreachable" state, and the `validate` warning, together (the rail and the warning are two
+projections of the same fact and were never going to be reviewed usefully apart). (2) fault 2 — the CSS
+fix. (3) fault 3 — the `.fpair` grouping fix. (4) fault 4 — `renderInline` and its two call sites.
+
+**What this doesn't touch.** `TEAM_CANNOT_PRODUCE`/`AMBIGUOUS_PRODUCER` (pre-existing, `validate.ts`)
+still refuse the genuinely broken shapes — no responsible team at all, or more than one candidate
+ambiguously matching. `UNCOVERABLE_EXPECTED_KIND` only ever fires once a responsible team is already
+unambiguously resolved; it is strictly narrower, and never fires in either of those pre-existing error
+cases. No frontmatter schema changed.

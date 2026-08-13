@@ -691,3 +691,35 @@ No frontmatter schema changed. Every field rendered here already existed and alr
 repo.ts parsed all of it before this unit started; the fix is entirely in `render/registry.ts`,
 `render/project.ts`, and one small `components.ts` primitive (`leadText`), plus one CSS rule
 (`.flowstrip .looppair`) for the loop's own avatar pair.
+
+## The score rail called an uncoverable stage "queued" — closed (NOTES RAIL-UNREACHABLE)
+
+A unit's type `expects:` a fixed shape of stages (e.g. `feature`: product-brief, design, spec, code,
+review), but the team actually assigned to a unit may cover only part of that shape — `kestrel`
+produces product-brief/design/spec/review between its members but nothing anywhere in the studio
+produces `code`; the docs/guide walkthrough's `press` team covers only product-brief/review against the
+same five-kind type. `derive.ts#scoreNodes` rendered every kind with no artifact as plain "wait"
+("queued" on the rail) regardless of whether the responsible team could ever produce it — a Conductor
+watching that row had no way to tell "real work not started yet" from "nothing will ever arrive here".
+
+**Fixed with one shared computation**, `flow.ts#unreachableExpectedKinds`, checked against real
+per-member capabilities rather than a team's own declared `produces:` aggregate (which can under- or
+over-promise relative to its members). Two consumers, never two copies of the logic: the score rail
+renders a new `"unreachable"` node state ("unreachable · no member produces this", the neutral-gray
+`blocked` treatment, never "queued"); `levare validate` gains a new WARNING, `UNCOVERABLE_EXPECTED_KIND`
+— never an error, since a team covering only part of a type's shape (a brief-and-review-only unit) is a
+legitimate configuration, but the Conductor should be told rather than discovering it only as a rail row
+stuck at "queued" forever.
+
+Found alongside it on the same board walkthrough and closed together: a `.prow` row's label colliding
+with its value when the label was long (`protected_branches`/`protected_paths` on the team card,
+`context_artifacts` on the agent card — one shared CSS cause, `min-width` in place of a fixed `width`);
+an orphaned join arrow when a team's flow row wraps onto a second line (each arrow now renders inside
+the same flex item as the node it precedes, so a wrap can only ever split complete pairs); and unit
+summaries on the project and studio screens showing literal `**bold**` markdown instead of rendering it
+(a member-authored artifact body's first paragraph went through plain `esc()` at those two call sites —
+a new `derive.ts#renderInline` escapes first, then converts already-escaped `**…**` to `<strong>`).
+
+See NOTES RAIL-UNREACHABLE for the full reasoning behind both fault-1 decisions (what the rail renders;
+why `validate` warns instead of staying silent or hard-erroring) and why the CSS and markdown defects
+were checked for, and found NOT to share, a single root cause. No frontmatter schema changed.
