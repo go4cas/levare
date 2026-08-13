@@ -19,14 +19,28 @@ levare serve . → http://localhost:4173 · daemon: on
 
 ## What it does
 
-The daemon watches `work/`. When something changes — a file you edited, a gate you resolved, an
-artifact a member produced — it walks the graph and asks one question: *is there anything I'm allowed
-to do?*
+The daemon watches `work/` — work units and the artifacts they produce. When something changes there
+— a unit file you edited, a gate you resolved, an artifact a member produced — it walks the graph and
+asks one question: *is there anything I'm allowed to do?*
 
 If yes, it does it. If it reaches a gate, it stops.
 
 That's the whole thing. It has no model, no judgment, and no opinions. It is the part of levare that
 could spend your money, and it is deliberately the part with no capacity to decide anything.
+
+## What it doesn't watch
+
+Only `work/`. A `teams/`, `agents/`, `connectors/`, or `projects/` edit — or a `.env` credential fix
+— never nudges it, no matter how long `levare serve` has been running: nothing under `work/` changed,
+so nothing scheduled a walk. The next walk *would* pick the edit up — every walk re-derives the whole
+repo from disk, registry included — there just isn't one coming until something does.
+
+You met this directly in [4.6](06-first-loop.md): editing `teams/press.md` to add the loop was real
+the instant you saved it, and utterly invisible to a `levare serve` that had been running since 4.4,
+until you restarted it. A daemon that just started always walks once immediately, before waiting for
+anything to change — which is the one dependable way to force this; there's no lighter-weight
+"recheck the registry" action in this version of levare. If you've just changed a definition and the
+studio isn't reacting, that's why.
 
 ## What it will never do
 

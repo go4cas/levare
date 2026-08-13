@@ -58,7 +58,31 @@ the loop is what you consented to. A critic you have to summon by hand is a crit
 
 ## Run it
 
-Start the unit. Then watch the score, and read `git log` afterwards — because the log *is* the story:
+This is the same `add-command` unit from [4.4](04-first-gate.md) — you don't create a new one.
+Press already owns `product-brief`, and it already has one: the v2 you approved. Editing
+`teams/press.md` doesn't erase that history; the loop treats your approved brief as round 1's
+author artifact and immediately goes looking for round 1's *review*.
+
+There's no button waiting for you, though. `add-command`'s start gate was resolved back in 4.4 —
+it isn't sitting idle at a gate, it's sitting idle because nothing this studio can do was left
+undone, and that was true right up until you gave Press a new way to keep going. So the thing you
+actually need is for the daemon to *notice*, and here's the part worth knowing before it surprises
+you: **it won't, on its own.** The daemon watches `work/` — it never watches `teams/`, `agents/`,
+`connectors/`, or `projects/`. Editing `press.md` changes what's true on disk, but nothing under
+`work/` changed, so nothing woke the daemon up to re-derive it.
+
+Restart it:
+
+```sh
+levare serve .
+```
+
+A fresh start always re-derives every unit from disk before it does anything else — this edit
+included. (You'll hit this same shape again outside a loop: any edit to a registry file, or to
+`.env`, needs a restart to take effect on a `levare serve` that's already running. [4.7](07-the-daemon.md)
+says why.)
+
+Once it's back up, watch the score, and read `git log` afterwards — because the log *is* the story:
 
 ```
 advance add-command → press/corvid produced review review-add-command-v2 (loop round 2)
