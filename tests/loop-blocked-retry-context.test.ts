@@ -102,13 +102,26 @@ Drafts the product brief.
 // invocations, then echoes stdin (the assembled §6 context) exactly like `cat` — the same technique
 // `tests/loop-critic-context.test.ts` (F15) uses to assert on what a member actually received, here
 // extended across a blocked → retry → retry → … → success chain rather than a single dispatch.
-function agentCorvid(mode: "paths" | "inline", counterFile: string, failCount: number): string {
+//
+// `cwd: <root>` is declared explicitly (host-only regression, see NOTES): corvid's own dispatch has no
+// real project checkout (`PROJECT_ACME`'s `repo: .` is self-referential, so `resolveProjectRepoPath`
+// deliberately returns undefined — merge.ts's own exclusion) and no `home:`-requesting connector, so
+// with no declared `cwd` the spawn's cwd falls back to `process.cwd()` — wherever `bun test` itself
+// runs from, NOT this test's own scratch `root`. Under a REAL macOS `sandbox-exec` profile, ONLY the
+// resolved cwd (and the spawn's own HOME) ever gets a write grant — writing the attempt counter
+// anywhere else, including this test's own `root`, is correctly DENIED, the script exits 1 on its very
+// first attempt for a reason that has nothing to do with the fix under test, and the counter never
+// advances. Declaring `cwd: root` here makes the counter file land inside the one path the generated
+// profile actually grants, on every platform — the studio's own `work/` tree is nested under it too, so
+// nothing else about the fixture needs to move.
+function agentCorvid(mode: "paths" | "inline", root: string, counterFile: string, failCount: number): string {
   const script = `n=$(cat '${counterFile}' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '${counterFile}'; if [ "$n" -le ${failCount} ]; then echo "simulated TLS failure attempt $n" >&2; exit 1; fi; cat`;
   return `---
 name: corvid
 kind: cli
 produces: [review]
 command: ["bash", "-c", ${JSON.stringify(script)}]
+cwd: ${JSON.stringify(root)}
 context_via: stdin
 context_artifacts: ${mode}
 timeout: 30
@@ -146,7 +159,7 @@ function seedPressStudio(mode: "paths" | "inline", failCount: number): { root: s
   writeFileSync(join(root, "projects/acme.md"), PROJECT_ACME);
   writeFileSync(join(root, "teams/press.md"), TEAM_PRESS);
   writeFileSync(join(root, "agents/scribe.md"), AGENT_SCRIBE);
-  writeFileSync(join(root, "agents/corvid.md"), agentCorvid(mode, counterFile, failCount));
+  writeFileSync(join(root, "agents/corvid.md"), agentCorvid(mode, root, counterFile, failCount));
   writeFileSync(join(root, "work/acme/announcement/unit.md"), UNIT_ANNOUNCEMENT);
   git(root, ["init", "-q"]);
   git(root, ["add", "-A"]);
@@ -193,6 +206,13 @@ describe("F21: a blocked loop critic's retry keeps the round's consumed set and 
         expect(reviewFiles).toEqual(["review-announcement-v1.md"]);
 
         const review = readFileSync(reviewFile, "utf8");
+        // NOTES: this round's own recurring pattern (a test passing because its environment never
+        // exercised the constraint under test — see NOTES's "environment-blind tests" entry) is
+        // surfaced here rather than left silent: `sandbox:` names the level THIS run actually engaged
+        // (`none` in a container with no working primitive; `full` on a host with a real one). A "3
+        // pass" line alone cannot distinguish those two cases — this makes the difference visible in
+        // every run's own output, not just discoverable by re-deriving it from the host after the fact.
+        console.log(`        [F21 ${mode}] sandbox level this run engaged: ${/^sandbox: .+$/m.exec(review)?.[0] ?? "(not reported)"}`);
         expect(review).toContain("status: in-review");
         expect(review).toContain("id: review-announcement-v1"); // round never bumped by a blocked retry.
         expect(review).toMatch(/consumes:\s*\[[^\]]*product-brief-announcement-v1[^\]]*\]/); // F15's own assertion, now proven across a retry too.

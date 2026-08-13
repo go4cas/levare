@@ -14516,3 +14516,110 @@ run outside its required platform.
   CLI whose own library performs an OCSP/CRL fetch, or something else Security.framework does that a
   bare `security list-keychains` query doesn't exercise) remains open by construction — this round
   answers the ONE incident it was handed, not every conceivable TLS code path through this sandbox.
+
+# NOTES R4-SANDBOX-TLS (round 3, 2026-08-13) — three host-only test failures, none a product fault; and
+# a pattern named across three separate incidents in this project's own history
+
+A Conductor ran this branch's new/changed tests on a real macOS host and reported three failures. All
+three are container-vs-host divergences in the TEST HARNESS, not in `src/`; per instruction, `src/` is
+unchanged this round.
+
+## 1 — `tests/loop-blocked-retry-context.test.ts`: the fake corvid's own attempt counter lived somewhere
+## the generated sandbox profile never grants
+
+The fixture wrote `.corvid-attempts` into the test's bare scratch `root` (`mkdtempSync(tmpdir())`), but
+corvid's own dispatch declared no `cwd:` and had no real project checkout to inherit one from
+(`PROJECT_ACME`'s `repo: .` is self-referential — `merge.ts#resolveProjectRepoPath`'s own deliberate
+exclusion — so `dispatchRepo` is always `undefined` here) and no `home:`-requesting connector. With no
+declared `cwd`, `adapters.ts#cliInvocation` falls through to `process.cwd()` — wherever the TEST PROCESS
+itself runs from, not this fixture's own `root` — and `buildSandboxExecProfile` only ever grants write
+access to the resolved `cwd` and the spawn's own `HOME`, nothing else. On a real macOS host running a
+real `sandbox-exec` profile, writing to `root` was correctly DENIED; the script's own `echo $n >
+'${counterFile}'` failed with `Operation not permitted` on its very first line, corvid exited 1 before
+ever reaching its own simulated-failure branch, and the harness's own attempt counter never advanced —
+`extraConsumes` and the round counter were never exercised at all. On Linux, this container has never
+once had a working `sandbox-exec`/`bubblewrap` primitive (unchanged throughout this saga), so the member
+ran unconfined, the write silently succeeded, and all three tests passed — for a reason that has nothing
+to do with the fix under test. The sandbox was RIGHT to deny it; the harness asked for something outside
+its own declared grant.
+
+**Fix:** corvid's agent frontmatter now declares `cwd: <root>` explicitly, so the resolved dispatch cwd
+IS this fixture's own scratch root — the one path `buildSandboxExecProfile` always grants write access
+to, on every platform, regardless of connectors or a real project checkout. The counter file's own
+location is unchanged (still directly under `root`); only the sandbox's own knowledge of that path
+changed. Re-verified the same way the original tests were built: reverted `src/board/gateops.ts` to its
+pre-fix content in-place, confirmed all three F21 tests fail (`result.ok` false / `gate` undefined —
+predictable now, since the underlying mechanism is unchanged, only the write path moved), restored the
+fix, confirmed all three pass again. Also added a `console.log` of the produced review's own `sandbox:`
+line to each test — see the pattern section below for why.
+
+## 2 — `tests/repro-r4-sandbox-securityserver.test.ts`: a Linux-only assertion, unconditional
+
+The exec-based test asserted the non-darwin "degrades honestly, prints darwin-only" behaviour with no
+platform guard at all — correct in this container, wrong on the one platform
+`scripts/repro-r4-sandbox-securityserver.ts` actually exists to run on. A live macOS host running this
+suite hit the script's REAL path (past the darwin guard, into the actual `sandbox-exec`/`security`
+A/B) and failed the hardcoded assertion, which was never true there. **Fix:** guarded by
+`process.platform === "darwin"`; the darwin branch asserts only what's safe to pin without a live host
+independently re-confirming the grant's own real-world necessity on that exact macOS version — that the
+script actually REACHES its real probe (`sandbox-exec:`/`security:` printed, no `darwin-only` line, a
+`=== Summary ===` block) rather than degrading, and exits 0 either way. The PASS/INCONCLUSIVE/UNEXPECTED
+verdict itself is deliberately left unasserted — that is this grant's own live finding, read by a
+Conductor from the run's own output, not a fixed expectation a test can pin. Timeouts raised
+correspondingly (60s spawn timeout, 65s test timeout on darwin) — the script's own two `security`
+probes and kernel-log capture can legitimately take that long on a real host; the prior 15s ceiling
+(sized for the instant Linux skip-path) would have raced a REAL darwin run into a false timeout failure
+even with the assertion fixed.
+
+## 3 — the DIST5 compiled-serve smoke test's 20001ms timeout: established, not a regression
+
+Ran `tests/orchestrator-compiled-smoke.test.ts` alone, repeatedly, in this container per instruction,
+before touching anything: **first run after a fresh `bun install`/cold cache failed** at a 10000ms
+`readBoundPort` timeout (this container's own number differs from the Conductor's reported 20001ms —
+different host, different cold-start cost — same shape of failure); **three immediate re-runs passed
+cleanly in 2.1–3.9s each.** Nothing on this branch touches `src/cli.ts`, `src/orchestrator*.ts`,
+`src/sdk-*.ts`, `tests/serve-subprocess.ts`, or `orchestrator-compiled-smoke.test.ts` itself (`git log
+main..HEAD` against all five is empty) — there is no code-path connecting anything this branch changed
+to a compiled binary's own `serve` startup latency. This reproduces the exact shape DIST7's own
+`bun build --compile` cost already names elsewhere in this file: the FIRST invocation of a freshly built
+binary pays real one-time cost (disk write, OS file-cache cold, whatever `bun build --compile`'s own
+runtime does on first exec) that later invocations don't. Read as an unrelated, pre-existing slow-spawn
+flake, not a regression — left untouched, per instruction, pending the Conductor's own read of whether
+this test's fixed timeout should widen for a cold-start case specifically (a call this entry does not
+make on its own).
+
+## The pattern: a test passing because its own environment never exercised the constraint under test
+
+This is the THIRD time in this project's own history that a test's own environment — not its logic —
+determined whether it exercised anything real:
+
+1. **NOTES DIST7** — `tests/orchestrator-compiled-smoke.test.ts` asserted a compiled binary's Orchestrator
+   comes up `on`, and passed, before the CWD-dependent `require.resolve` fallback bug was ever fixed —
+   because `bun test`'s own cwd IS the repo root, the one directory where the buggy fallback happens to
+   still work. A real release binary is never invoked from there.
+2. **NOTES ORCH-B-DATE-FLAKE** — a test comparing two independently-seeded scratch repos' commit content
+   byte-for-byte (`tests/orchestrator.test.ts`'s chat-vs-route test, two separate `seedScratchRepo()`
+   calls) passed reliably in this project's own dev/CI history because the one variable that could make
+   the two diverge — a UTC midnight falling between the two `today` reads — essentially never happened to
+   land inside a test run's own few-hundred-millisecond window.
+3. **This round** — a sandbox-denied write, absent in this container because no primitive here has ever
+   worked, present and correctly enforced on a real macOS host.
+
+All three share the same shape: the test's OWN assertion was never wrong about what it claimed to check;
+the environment it happened to run in just never put the one load-bearing variable (cwd, wall-clock
+timing, sandbox enforcement) into the state that would make the check mean anything. "Green in this
+container" and "the constraint was exercised" are two different claims, and nothing in a bare pass/fail
+count distinguishes them.
+
+**What would catch the next one, named as a concrete practice rather than left as an observation:** for
+any test whose whole POINT is proving something holds under a constraint the CURRENT environment might
+not actually enforce (a real OS sandbox, a real day boundary, a real compiled-binary CWD, a real network
+condition), have the test surface — in its own output, every run, not only when it fails — which side of
+that constraint it actually ran on. This round's own instance: the `console.log` added to
+`loop-blocked-retry-context.test.ts` printing the produced artifact's `sandbox:` line (`none` here,
+`full` on a working host) turns "3 pass" into "3 pass, sandbox: none" — visibly, unmissably, in every
+CI/container run's own log, not just discoverable by an engineer who happens to think to ask. The
+`SANDBOX_UNAVAILABLE` validator warning and `levare doctor`'s own primitive-name report already apply
+this exact discipline to PRODUCTION behaviour (never claim a guarantee the current host can't back);
+extending it to test OUTPUT — not just test logic — is what turns a silent environment-blind pass into
+one a reader can catch on sight, in the same run, without needing a second host to compare against.
