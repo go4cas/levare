@@ -4,13 +4,15 @@
 
 import { readFileSync } from "node:fs";
 import type { Repo } from "../../repo.ts";
-import { firstParagraph } from "../../repo.ts";
+import { firstParagraph, repoCapabilities } from "../../repo.ts";
 import { esc, captionTime } from "../../derive.ts";
 import { loadExtras } from "../../extra.ts";
 import { STUDIO_SCOPE } from "../../conversation.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
 import { detectSandbox, type SandboxDetection } from "../../sandbox.ts";
 import { remoteAgentImplemented } from "../../env.ts";
+import { resolveStep } from "../../flow.ts";
+import type { Team, FlowNode } from "../../types.ts";
 import { tag, kindTag, editorOverlay, orchTurn, callout, card, leadText } from "../components.ts";
 import { registryKindIconBody } from "./entity-icons.ts";
 import { deriveTeamStyle } from "../team-color.ts";
@@ -38,6 +40,54 @@ function firstSentence(body: string): string {
   const para = firstParagraph(body);
   const m = /^.*?[.!?](?=\s|$)/.exec(para);
   return m ? m[0] : para;
+}
+
+// NOTES REGISTRY-BODY: the team flow row used to render `t.members` — a flat, avatar-only chain
+// (wr → ly → fi) that carries no flow information at all, on a board whose entire premise is Conductor
+// approval AT A GATE. `teams/kestrel.md` declares five stages (two `gate: human` halts and a bounded
+// `loop`) and the card rendered three member avatars, indistinguishable from a plain linear handoff —
+// the type card's own `gates` row is the reference this fixes toward: a declared control-flow fact
+// renders as itself, not folded into a member list. Each `FlowNode` renders as one flowstrip item:
+//
+//  - step  → the resolved member's avatar (same avatar/title treatment the old members-only strip used)
+//  - gate  → the SAME diamond marker the run view's own mini-score already uses for a gate node
+//            (`.diamond.is-gate`, derive.ts#miniScoreHtml) — one visual vocabulary for "a gate", not a
+//            second one invented here.
+//  - loop  → both member avatars for its `between` pair, joined by a loop glyph, with the loop's own
+//            bound and escalation (`until` / `max_rounds` / `on_exhaust`) captioned underneath in the
+//            `.mn` treatment `.flowstrip` already had defined in CSS but no caller had ever used.
+//
+// `resolveStep` is the Runner's OWN step→member resolution (flow.ts, ruling B2) — reused rather than
+// re-derived, so the card can never show a binding that disagrees with what actually dispatches. It
+// throws on an unbound/ambiguous step; a validated repo never hits that (validate.ts#validateStudioBindings
+// enforces every step resolves before a studio is accepted), but the card is a pure display and must
+// never 500 the whole registry page over one malformed team mid-edit — caught per node, falling back to
+// the bare step label so the rest of the page still renders.
+function resolveStepMember(team: Team, label: string, capabilities: Array<{ member: string; kind: string }>): string | undefined {
+  try {
+    return resolveStep(team, label, capabilities).member;
+  } catch {
+    return undefined;
+  }
+}
+
+function flowStepAvatar(repo: Repo, team: Team, label: string, member: string | undefined): string {
+  if (!member) return `<span class="mono" title="unresolved flow step">${esc(label)}</span>`;
+  return avatar(repo.agents.get(member)?.style.avatar ?? member.slice(0, 2), team.style.color, { title: `${member} · ${label}` });
+}
+
+function flowNodeHtml(repo: Repo, team: Team, node: FlowNode, capabilities: Array<{ member: string; kind: string }>): string {
+  if (node.kind === "step") {
+    const member = resolveStepMember(team, node.step, capabilities);
+    return `<div class="m">${flowStepAvatar(repo, team, node.step, member)}</div>`;
+  }
+  if (node.kind === "gate") {
+    return `<div class="m" title="gate: ${esc(node.who)}"><span class="diamond is-gate"></span></div>`;
+  }
+  const [a, b] = node.between;
+  const avA = flowStepAvatar(repo, team, a, resolveStepMember(team, a, capabilities));
+  const avB = flowStepAvatar(repo, team, b, resolveStepMember(team, b, capabilities));
+  return `<div class="m"><div class="looppair">${avA}<span class="arr">&#8646;</span>${avB}</div><span class="mn">until ${esc(node.until)} &middot; max ${node.maxRounds} &middot; on_exhaust: ${esc(node.onExhaust)}</span></div>`;
 }
 
 // One bordered container per entity, built through the shared `card()` primitive (components.ts) —
@@ -120,13 +170,17 @@ export function renderRegistry(
   const rail = railNav(repo, extras, { activeRegistryEntity: active });
   const title = active.charAt(0).toUpperCase() + active.slice(1);
 
+  const teamCapabilities = repoCapabilities(repo);
   const teamBlocks = [...repo.teams.values()]
     .map((t) => {
       // UI7: the flow strip shows who runs each step by avatar alone — the name moves to the
       // avatar's hover title (RULE A/B: shape+colour carry identity, no name text printed per step).
-      const flow = t.members
-        .map((m) => `<div class="m">${avatar(repo.agents.get(m)?.style.avatar ?? m.slice(0, 2), t.style.color, { title: m })}</div>`)
-        .join('<span class="arr">&rarr;</span>');
+      // NOTES REGISTRY-BODY: this used to render `t.members` — a flat avatar chain that carries no flow
+      // information (see this file's own `flowNodeHtml` comment for the full reasoning). It now renders
+      // `t.flow` itself — every declared step, gate, and loop, in order — so DECLARED FLOW and the
+      // Definition block's `members` row (still every member, unordered) stop looking like the same
+      // fact said twice; one is the flow, the other is the roster.
+      const flow = t.flow.map((n) => flowNodeHtml(repo, t, n, teamCapabilities)).join('<span class="arr">&rarr;</span>');
       const memberAvatars = t.members.map((m) => avatar(repo.agents.get(m)?.style.avatar ?? m.slice(0, 2), t.style.color, { title: m })).join("");
       const producesChips = t.produces.map((p) => tag(p, "tag")).join("");
       // NOTES MERGE-1: the REV1 "declared but not yet enforced" notice is retired — `checkGuardrails`

@@ -583,6 +583,10 @@ button{ font-family:inherit; }
 .flowstrip .m{ display:flex; flex-direction:column; align-items:center; gap:6px; }
 .flowstrip .arr{ color:var(--fg-mute); font-family:var(--mono); margin:0 10px; align-self:flex-start; margin-top:11px; }
 .flowstrip .mn{ font-family:var(--mono); font-size:11px; color:var(--fg-dim); }
+/* NOTES REGISTRY-BODY: a team flow's loop node — its two `between` member avatars side by side, joined
+   by a loop glyph — nested inside a `.flowstrip .m` column alongside its own `.mn` caption (until/max/
+   on_exhaust) below. `.m` itself stays column-flex for that stack; this is the one new row inside it. */
+.flowstrip .looppair{ display:flex; align-items:center; gap:4px; }
 .recipe{ display:flex; gap:8px; flex-wrap:wrap; }
 .pill{ font-family:var(--mono); font-size:11.5px; color:var(--fg-dim); background:var(--panel-2);
   border:1px solid var(--border); padding:4px 9px; border-radius:20px; text-decoration:none; }
