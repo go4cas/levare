@@ -133,10 +133,23 @@ export function renderRegistry(
       // acquired its production call site (board/gateops.ts's merge-gate execution, PRD Amendment 2
       // M3) — so a team's declared `guardrails:` are enforced at every merge, and the card no longer
       // needs to warn the Conductor about a gap that no longer exists.
-      const inner = `<div class="card__h">Declared flow</div><div class="flowstrip">${flow}</div>
+      //
+      // NOTES REGISTRY-BODY: the charter (this team's body — "what does this team do") used to render
+      // nowhere on the card at all; shown here as its first paragraph, the skill card's own lead
+      // treatment. `guardrails` — arguably second in importance only to what the team does, since it's
+      // the safety constraint a merge is actually checked against — and `knowledge` were both parsed by
+      // repo.ts and never rendered; both now appear as further Definition rows, field-name labels
+      // matching the agent card's own `context_via`/`context_artifacts` precedent for a label wider
+      // than the row's usual one-word key.
+      const g = t.guardrails;
+      const guardrailRows = g
+        ? `${g.protected_branches?.length ? `<div class="prow"><span class="k">protected_branches</span><span class="v mono">${g.protected_branches.map(esc).join(", ")}</span></div>` : ""}${g.protected_paths?.length ? `<div class="prow"><span class="k">protected_paths</span><span class="v mono">${g.protected_paths.map(esc).join(", ")}</span></div>` : ""}${g.never?.length ? `<div class="prow"><span class="k">never</span><span class="v chiprow">${g.never.map((n) => tag(n, "tag")).join("")}</span></div>` : ""}`
+        : "";
+      const knowledgeRow = t.knowledge?.length ? `<div class="prow"><span class="k">knowledge</span><span class="v chiprow">${t.knowledge.map((k) => tag(k, "tag")).join("")}</span></div>` : "";
+      const inner = `${leadText(firstParagraph(t.charter))}<div class="card__h">Declared flow</div><div class="flowstrip">${flow}</div>
       <div class="card__h">Definition</div>
       <div class="prow"><span class="k">members</span><span class="v chiprow">${memberAvatars}</span></div>
-      <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>`;
+      <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>${guardrailRows}${knowledgeRow}`;
       // The declared colour, as a left-edge card border, is the card's identity instead of a
       // swatch/hex value printed inside it (RULE B). Routed through the same contrast-floored
       // derivation `avatar()` uses (team-color.ts) — the border and a team's member avatars must
