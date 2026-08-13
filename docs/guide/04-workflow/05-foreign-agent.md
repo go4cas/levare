@@ -211,25 +211,37 @@ how the vendor CLI itself behaves, live-validated against a real one (`gh`, not 
   yours. Working auth for a sandboxed member has to come through its **connector's** credential in the
   environment instead — `GITHUB_TOKEN`, in `gh`'s case, which the CLI itself checks ahead of a stored
   session by design. This is what the connector above is for; a sandboxed member has no other way in.
-- **A network-granted member can make real requests, TLS included; one without a network-granting
-  connector cannot reach the network at all.** Holding at least one connector flips network on for the
-  member's whole process — a real HTTPS client, certificate verification and all, works end to end. A
-  member holding no connector that grants network is denied at the raw socket, before any
+- **A network-granted member can make real requests; one without a network-granting connector cannot
+  reach the network at all.** Holding at least one connector flips network on for the member's whole
+  process. A member holding no connector that grants network is denied at the raw socket, before any
   application-level auth logic even runs.
+- **"Certificate verification works end to end" is validated for one TLS stack, not certified for
+  every one.** The live proof behind that claim used `gh` — written in Go, which does its own
+  certificate handling and only needed the sandbox to open one narrow path to the platform's trust
+  store. A `cli` member whose vendor CLI instead *defers* TLS verification to the platform trust store
+  directly (NOTES R4-SANDBOX-TLS: a Rust CLI using `rustls-platform-verifier` or equivalent is the
+  case in hand) is a different code path through the same sandbox, and is not covered by the `gh`
+  result — see [Current gaps](../../current-gaps.md) for what's confirmed and what's still open for
+  that case specifically.
 - **Credential and network reach are the same grant, not two.** Both come from the identical condition
   — does this member hold a connector — so a `cli` member can't hold a credential while staying offline
   today; there's no connector shape that names a purely local capability. This is a deliberate stance,
   not an oversight — see [Current gaps](../../current-gaps.md)'s connector trust-tier taxonomy entry for
   why, and what would change it.
 
-**A note on Corvid specifically, as of this writing (NOTES R4-SANDBOX-APPSERVER):** an "app-server
-architecture" vendor CLI — one where the CLI itself runs an in-process client/server split for its own
-IPC — surfaced a real sandbox gap distinct from the config-directory redirect above: `home:`-granted
-credentials were re-allowed for READ only, never WRITE, which would deny a vendor CLI refreshing its own
-stored token. That's fixed. Whether it was the full story for a real `codex` dispatch under a working
-sandbox is still being confirmed on a live host — track [Current gaps](../../current-gaps.md) for the
-outcome. If your own `cli` member's vendor CLI can't run confined at all — its own architecture needs OS
-access the sandbox won't safely grant — declare that plainly rather than fighting it silently:
+**A note on Corvid specifically, as of this writing (NOTES R4-SANDBOX-APPSERVER, NOTES
+R4-SANDBOX-TLS):** an "app-server architecture" vendor CLI — one where the CLI itself runs an in-process
+client/server split for its own IPC — surfaced a real sandbox gap distinct from the config-directory
+redirect above: `home:`-granted credentials were re-allowed for READ only, never WRITE, which would deny
+a vendor CLI refreshing its own stored token. That's fixed, and a live macOS run confirmed it: Corvid's
+own app-server now initializes and reaches the network under the sandbox. It then fails at certificate
+validation (`invalid peer certificate: UnknownIssuer`) on both its WebSocket and HTTPS transports — a
+second, distinct fault from the one just described, still open. Whether that needs a further, narrowly
+scoped sandbox grant, or is something about Corvid's own TLS stack the sandbox can't fix at all, is being
+isolated with a codex-independent probe (`scripts/repro-r4-sandbox-tls-handshake.ts`) rather than guessed
+at — track [Current gaps](../../current-gaps.md) for the outcome. If your own `cli` member's vendor CLI
+can't run confined at all — its own architecture needs OS access the sandbox won't safely grant —
+declare that plainly rather than fighting it silently:
 
 ```yaml
 sandbox: unsandboxed

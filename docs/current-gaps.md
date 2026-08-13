@@ -289,6 +289,40 @@ both fail identically. The ranked hypotheses above are unaffected — this was a
 finding about H1 or H2 — but the next live run needed this fix first, or it would have reproduced the
 same false negative again.
 
+**A live macOS run confirmed the write-reallow fix above — and surfaced a THIRD, distinct fault: TLS
+certificate validation itself, not app-server initialization (NOTES R4-SANDBOX-TLS).** With the fix
+installed (build `9c00154`, macOS 26.5.2 arm64, `sandbox: full`), a `cli` member wrapping `codex` now
+initializes its app-server and reaches the network — the fault the paragraph above investigated is
+closed — but certificate validation fails identically on both its WebSocket and HTTPS transports
+(`invalid peer certificate: UnknownIssuer`). The same run's kernel log showed five denied mach-lookups/
+ioctls in the same window (`com.apple.SystemConfiguration.configd`,
+`com.apple.system.opendirectoryd.libinfo`, `com.apple.system.notification_center`, `com.apple.logd`,
+`com.apple.diagnosticd`, and a `file-ioctl` on `/dev/dtracehelper`) — previously catalogued as benign
+ambient noise every sandboxed macOS process tolerates (two of the five, opendirectoryd's own services,
+were explicitly hand-acquitted for a DIFFERENT consumer, a `git`/`bun` chain, in NOTES
+R4-SANDBOX-FIX-10), and none of the five is granted on the strength of merely co-occurring with this
+failure — per this saga's own standing discipline, none is guessed at without a codex-independent live
+trace naming it as the actual cause for THIS failure specifically. `com.apple.trustd.agent` (NOTES
+R4-VENDOR-CLI's own shipped, network-gated fix, already in place) is NOT among the five — it is what let
+`gh` (Go, its own certificate handling) complete a real HTTPS request; codex's Rust TLS stack defers to
+the platform trust store directly, a different code path through the same sandbox, and `gh`'s own
+success never certified it. **Built this round: `scripts/repro-r4-sandbox-tls-handshake.ts`, a
+codex-independent probe** — a bare `curl` TLS handshake against a public host (`example.com`, chosen
+because `UnknownIssuer` is a chain-building failure, not specific to any one domain's own certificate)
+under the real generated profile, decisive without `codex` installed, mirroring the H1/H2 probe shape
+NOTES R4-SANDBOX-APPSERVER already established. It has not yet been run live — no macOS host was
+reachable this round — and is handed back for exactly that, the same method every prior live-host round
+in this saga has used. **The Linux side, checked in the same round rather than assumed to hold by
+extension:** a network-granted member under `bubblewrap` needs no further grant to complete a TLS
+handshake, by construction — Linux has no daemon-mediated trust evaluation the way macOS routes through
+`trustd`; a TLS client resolves its own trusted-root store by reading files (`/etc/ssl/certs/...`,
+symlinked into `/usr/share/ca-certificates/...`) and verifies the chain in-process, and both `/etc` and
+`/usr` are already in the unconditional baseline allow-list, while `allowNetwork: true` omits
+`--unshare-net` entirely (the sandboxed process shares the host's real network namespace, not an
+isolated one needing its own DNS/routing setup) — proven by construction
+(`tests/sandbox.test.ts`), not live-confirmed on a working `bubblewrap` (this dev container's own outer
+seccomp policy has never once let one run for real, the same limitation named throughout this file).
+
 ## Connector trust-tier taxonomy — three recorded decisions, not open gaps (NOTES TAXONOMY-DECISIONS, 2026-07-21)
 
 A connector now declares `role: model | tool` (NOTES C15) — what FUNCTION it serves — and, since NOTES

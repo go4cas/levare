@@ -219,6 +219,24 @@ merely lacks a primitive, and the reason is stamped on every artifact this membe
 artifact sees plainly that this member never runs confined, and why, rather than mistaking it for an
 ordinary host capability gap.
 
+**"Network is granted" and "TLS works" are not the same claim, and the gap between them is per TLS stack
+(NOTES R4-VENDOR-CLI, NOTES R4-SANDBOX-TLS).** Holding a granting connector opens the raw socket AND a
+network-gated mach-lookup grant (`com.apple.trustd.agent` on macOS) a real HTTPS client needs beyond raw
+connectivity — live-proven against `gh`, which does its own certificate handling in Go and only needed
+that one path opened. A `cli` member wrapping a CLI that instead defers TLS verification to the platform
+trust store directly is a different code path through the same sandbox: live evidence (a real macOS run,
+`codex`) shows that class failing at certificate validation (`invalid peer certificate: UnknownIssuer`)
+even with the identical network grant in place, and `gh`'s own success does not, and never did, certify
+it for that case. **On Linux, this gap doesn't exist by construction** — `bubblewrap` grants a
+network-allowed member the host's real network namespace outright (no isolated namespace needing its own
+DNS/routing setup) and the CA trust store (`/etc/ssl/certs`, `/usr/share/ca-certificates`) is already in
+the unconditional baseline read-only allowlist, so nothing further is needed there regardless of which
+TLS stack a given `cli` member's vendor CLI uses — proven by construction, not yet live-confirmed on a
+working `bubblewrap` host. If your own `cli` member's vendor CLI defers to the platform trust store on
+macOS, treat a real end-to-end TLS request as unverified until you've tested it directly on that host;
+`scripts/repro-r4-sandbox-tls-handshake.ts` is the codex-independent harness this project built to isolate
+exactly this question, and [Current gaps](../../current-gaps.md) tracks the outcome.
+
 ---
 
 ## Running the daemon
