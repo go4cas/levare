@@ -14,7 +14,7 @@
 // shape without updating the renderer (or vice versa) fails here, rather than silently drifting apart.
 
 import { test, expect, describe, afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scaffoldStudio } from "../src/init.ts";
@@ -155,4 +155,37 @@ describe("registry cards render each entity's declared body and fields (scaffold
     expect(repo.connectors.size).toBeGreaterThan(0);
     expect(html).not.toContain("<script>");
   });
+});
+
+// Fault 2: a plain-text `.prow` row's label and value rendered with no visible separation —
+// `protected_branchmain`, `context_artifactinline` — while the `never` row directly below (chip-
+// valued) was fine. Root cause traced to ONE shared rule: `.prow .k{ width:78px; flex:none }` gave
+// every label a fixed box regardless of content; `protected_branches`/`protected_paths`/
+// `context_artifacts` (18 chars, no space to wrap on) simply overflowed it with no clipping and no
+// gap, running straight into the value beside it. The markup was never the problem (every `.prow` row,
+// working or broken, has always rendered as two adjacent spans relying on the row's own flex `gap` for
+// separation) — both the team-card guardrails rows and the agent-card context_artifacts row share this
+// identical CSS rule, so one fix (min-width, not a fixed width) closes both.
+describe("fault 2: a long plain-text .prow label no longer collides with its value", () => {
+  const CSS = readFileSync("assets/styles.css", "utf8");
+
+  test(".prow .k no longer forces a fixed width a long label can silently overflow", () => {
+    const rule = /\.prow \.k\{([^}]*)\}/.exec(CSS)![1];
+    // A plain `.not.toContain("width:78px")` would false-fail here too — "min-width:78px" contains
+    // that exact substring. Assert there is no bare `width:` declaration (only `min-width:`).
+    expect(/(?<!min-)width:/.test(rule)).toBe(false);
+    expect(rule).toContain("min-width:78px"); // short labels keep their existing column alignment
+  });
+
+  test("team card: protected_branches/protected_paths render as their own label+value pair, same shape as the working 'never' chip row", () => {
+    const root = scaffoldRoot();
+    const repo = loadRepo(root);
+    const html = renderRegistry(repo, root, "teams");
+    const kestrel = cardFor(html, "teams", "kestrel");
+    expect(kestrel).toContain('<span class="k">protected_branches</span><span class="v mono">main</span>');
+    expect(kestrel).toContain('<span class="k">protected_paths</span><span class="v mono">deploy/</span>');
+  });
+
+  // The scaffold's own agents never declare context_artifacts — see board-render.test.ts's own "agent
+  // card: context_artifacts" test (golden fixture's rook) for the paired assertion on that row.
 });

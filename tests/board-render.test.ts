@@ -354,6 +354,15 @@ describe("registry screen", () => {
     expect(html).not.toContain("&amp;mdash;");
   });
 
+  // Fault 2: rook (ruling C9's isolated-scratch-dir fixture) declares context_artifacts: inline — the
+  // scaffold's own agents never declare this field at all, so the golden fixture is what actually
+  // exercises the row. See registry-cards-render-definitions.test.ts's "fault 2" describe block for
+  // the paired assertion against the CSS rule itself and the team-card guardrails rows.
+  test("agent card: context_artifacts renders as its own label+value pair, not concatenated with it", () => {
+    const rookCard = /<article class="entity card"[^>]*id="agents-rook"[^>]*>[\s\S]*?<\/article>/.exec(html)![0];
+    expect(rookCard).toContain('<span class="k">context_artifacts</span><span class="v mono">inline</span>');
+  });
+
   test("each entity is one bordered card — header, body, and edit actions inside it, no nested cards", () => {
     // One outer <article class="entity card"> per entity (matches the gate/unit/project card
     // vocabulary — a single bordered container, not a bare heading beside a separately-bordered panel).
