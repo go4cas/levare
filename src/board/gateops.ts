@@ -95,7 +95,7 @@ export async function resolveGate(root: string, project: string, target: string,
   // NOTES F19: a blocked artifact (a member ran and failed) raises its own gate with three verbs —
   // retry/skip/abandon — resolved against `art.status === "blocked"`, never `in-review`.
   if (verb === "retry" || verb === "skip" || verb === "abandon") {
-    return await resolveBlockedArtifactGate(root, unit, art, verb, memberRunner, opts, today);
+    return await resolveBlockedArtifactGate(root, repo, unit, art, verb, memberRunner, opts, today);
   }
   if (verb === "rescope") return doRescopeArtifact(root, unit, art, opts.note);
 
@@ -510,9 +510,12 @@ async function doRequest(
 
 // The same doc shape dagwalk.ts#writeBlocked writes for the live walk's own member failures — kept as
 // an independent copy (mirroring gates.ts's precedent for responsibleTeamFor/resolveStep) rather than
-// exporting a dagwalk.ts internal into the board's write path. `supersedes` names the PRIOR attempt
-// this retry replaces, so a repeated failure stays a proper chain, not a series of orphaned blocks.
-function blockedRetryDoc(art: Artifact, newId: string, msg: string, today: string): string {
+// exporting a dagwalk.ts internal into the board's write path. `supersedes` is caller-supplied rather
+// than always `art.id`: a plain step's retry chains to the prior attempt it replaces (a fresh id each
+// time), but a loop member's retry (see the round-accounting note below, at this function's one call
+// site) rewrites its OWN slot in place — `newId === art.id` there, so `supersedes` must carry whatever
+// the artifact being retried already superseded, not self-reference.
+function blockedRetryDoc(art: Artifact, newId: string, msg: string, today: string, supersedes: string | null): string {
   return [
     "---",
     `kind: ${art.kind}`,
@@ -522,7 +525,7 @@ function blockedRetryDoc(art: Artifact, newId: string, msg: string, today: strin
     "status: blocked",
     `produced_by: ${art.produced_by}`,
     "consumes: []",
-    `supersedes: ${art.id}`,
+    `supersedes: ${supersedes ?? "null"}`,
     "approved_by: null",
     `created: ${today}`,
     "files: []",
@@ -546,6 +549,7 @@ function blockedRetryDoc(art: Artifact, newId: string, msg: string, today: strin
 // automatic retry against a persistently-failing member would be a money fire, not a fix.
 async function resolveBlockedArtifactGate(
   root: string,
+  repo: Repo,
   unit: WorkUnit,
   art: Artifact,
   verb: "retry" | "skip" | "abandon",
@@ -582,26 +586,56 @@ async function resolveBlockedArtifactGate(
   }
 
   // retry
-  const [, member] = art.produced_by.split("/");
+  const [teamName, member] = art.produced_by.split("/");
   const hasCap = memberRunner.capabilities().some((c) => c.member === member && c.kind === art.kind);
   if (!hasCap) return { ok: false, status: 501, error: `no producer available to retry '${art.produced_by}' for kind '${art.kind}'` };
 
-  const nextRound = roundOf(art.id) + 1;
-  const newId = bumpVersion(`${art.kind}-${unit.unit}`, nextRound);
+  const team = repo.teams.get(teamName);
+  const membership = team ? loopMembershipFor(team, art.kind, memberRunner.capabilities()) : undefined;
+
+  // A blocked artifact never produced anything gate-worthy — the member threw before it could. Two
+  // consequences follow when `art` is a loop member, neither of which the pre-existing plain-step
+  // retry (below) needed to care about:
+  //
+  //  1. Ruling C14's `extraConsumes` seam (context.ts) is what puts the round's author artifact in a
+  //     critic's own consumed set. dagwalk.ts's original dispatch threads this correctly (NOTES F15);
+  //     a retry through THIS path must thread the same thing, or a retried critic reviews an empty
+  //     consumed section — the exact live defect this closes.
+  //  2. `roundOf`/`bumpVersion` (runner.ts) are the SAME mechanism dagwalk.ts uses to pair a loop's two
+  //     members to one round AND the one board/gateops.ts#doRequest uses to detect max_rounds
+  //     exhaustion (ruling C14). Bumping it for a failed attempt — as the plain-step path below still
+  //     does, correctly, for a step with no round concept — would silently spend a round of the loop's
+  //     own budget on an attempt that never reached the Conductor at all, and would leave the retried
+  //     artifact's id out of lockstep with its counterpart's (dagwalk.ts's own `expectedCompanionId`
+  //     lookup is an exact id match). A loop member's retry therefore rewrites its own SAME slot in
+  //     place instead: same id, `supersedes` unchanged, no second file — a round is only ever spent by
+  //     a genuine author/critic exchange reaching the Conductor (doRequest's own, pre-existing gate),
+  //     never by infrastructure retrying to get there.
+  const extraConsumes: string[] = [];
+  if (membership?.role === "second" && membership.companionKind) {
+    const authorArt = latestLiveArtifact(repo, unit, membership.companionKind);
+    if (authorArt) extraConsumes.push(authorArt.id);
+  }
+  const newId = membership ? art.id : bumpVersion(`${art.kind}-${unit.unit}`, roundOf(art.id) + 1);
+  const arrow = membership ? "" : ` → ${newId}`;
+
   const invocation = opts.daemon?.beginInvocation({ project: art.project, unit: art.unit, member, kind: art.kind });
   let baseDoc: string;
   try {
-    ({ doc: baseDoc } = await memberRunner.produce(member, art.kind, art.unit, art.project));
+    ({ doc: baseDoc } = await memberRunner.produce(member, art.kind, art.unit, art.project, extraConsumes));
   } catch (e) {
-    // Retried and failed again — a new blocked artifact records THIS attempt, superseding the last
-    // one, so the gate stays actionable (retry/skip/abandon again) rather than wedging on a stale
-    // failure the Conductor already saw.
+    // Retried and failed again — a new blocked artifact records THIS attempt. A plain step's failure
+    // supersedes the last one under a fresh id, so the gate stays actionable without losing the chain;
+    // a loop member's failure rewrites its own same slot (see above) — never a second file.
     const msg = e instanceof Error ? e.message : String(e);
-    const doc = blockedRetryDoc(art, newId, msg, today);
-    const oldPatched = patchFrontmatter(readFileSync(located.file, "utf8"), { status: "superseded" });
-    const newFile = join(unit.dir, `${newId}.md`);
-    const files: TxFile[] = [{ path: located.file, content: oldPatched }, { path: newFile, content: doc }];
-    const result = transactionalWrite(root, files, `retry ${art.id} → ${newId} FAILED again: ${msg.slice(0, 120)}`, conductorCommit);
+    const doc = blockedRetryDoc(art, newId, msg, today, membership ? art.supersedes : art.id);
+    const files: TxFile[] = membership
+      ? [{ path: located.file, content: doc }]
+      : [
+          { path: located.file, content: patchFrontmatter(readFileSync(located.file, "utf8"), { status: "superseded" }) },
+          { path: join(unit.dir, `${newId}.md`), content: doc },
+        ];
+    const result = transactionalWrite(root, files, `retry ${art.id}${arrow} FAILED again: ${msg.slice(0, 120)}`, conductorCommit);
     // The retry itself failed either way (502) — a commit failure on TOP of that additionally means
     // this attempt's own failure was never recorded, which the caller should be told too.
     const error = result.ok ? `retry failed: ${msg}` : `retry failed: ${msg}; additionally failed to record the failure: ${result.error}`;
@@ -610,13 +644,16 @@ async function resolveBlockedArtifactGate(
     if (invocation) opts.daemon!.endInvocation(invocation);
   }
 
-  const newDoc = patchFrontmatter(baseDoc, { id: newId, supersedes: art.id });
+  const newDoc = patchFrontmatter(baseDoc, { id: newId, supersedes: membership ? art.supersedes : art.id });
   const errs = validateArtifactSource(newDoc, `${newId}.md`, unit.dir, root);
   if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
-  const oldPatched = patchFrontmatter(readFileSync(located.file, "utf8"), { status: "superseded" });
-  const newFile = join(unit.dir, `${newId}.md`);
-  const files: TxFile[] = [{ path: located.file, content: oldPatched }, { path: newFile, content: newDoc }];
-  const result = transactionalWrite(root, files, `retry ${art.id} → ${newId} produced ${art.kind}`, conductorCommit);
+  const files: TxFile[] = membership
+    ? [{ path: located.file, content: newDoc }]
+    : [
+        { path: located.file, content: patchFrontmatter(readFileSync(located.file, "utf8"), { status: "superseded" }) },
+        { path: join(unit.dir, `${newId}.md`), content: newDoc },
+      ];
+  const result = transactionalWrite(root, files, `retry ${art.id}${arrow} produced ${art.kind}`, conductorCommit);
   if (!result.ok) return { ok: false, status: 500, error: result.error };
   return { ok: true, commit: result.commit, changedFiles: files.map((f) => f.path) };
 }

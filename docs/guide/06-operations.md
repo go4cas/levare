@@ -219,6 +219,38 @@ merely lacks a primitive, and the reason is stamped on every artifact this membe
 artifact sees plainly that this member never runs confined, and why, rather than mistaking it for an
 ordinary host capability gap.
 
+**"Network is granted" and "TLS works" are not the same claim, and the gap between them is per TLS stack
+(NOTES R4-VENDOR-CLI, NOTES R4-SANDBOX-TLS).** Holding a granting connector opens the raw socket AND a
+network-gated mach-lookup grant (`com.apple.trustd.agent` on macOS) a real HTTPS client needs beyond raw
+connectivity — live-proven against `gh`, which does its own certificate handling in Go and only needed
+that one path opened. A `cli` member wrapping a CLI that instead defers TLS verification to the platform
+trust store directly is a different code path through the same sandbox: live evidence (a real macOS run,
+`codex`) shows that class failing at certificate validation (`invalid peer certificate: UnknownIssuer`)
+even with the identical network grant in place, and `gh`'s own success does not, and never did, certify
+it for that case. **On Linux, this gap doesn't exist by construction** — `bubblewrap` grants a
+network-allowed member the host's real network namespace outright (no isolated namespace needing its own
+DNS/routing setup) and the CA trust store (`/etc/ssl/certs`, `/usr/share/ca-certificates`) is already in
+the unconditional baseline read-only allowlist, so nothing further is needed there regardless of which
+TLS stack a given `cli` member's vendor CLI uses — proven by construction, not yet live-confirmed on a
+working `bubblewrap` host. If your own `cli` member's vendor CLI defers to the platform trust store on
+macOS, treat a real end-to-end TLS request as unverified until you've tested it directly on that host;
+`scripts/repro-r4-sandbox-tls-handshake.ts` is the codex-independent harness this project built to isolate
+exactly this question, and [Current gaps](../../current-gaps.md) tracks the outcome.
+
+**On macOS, a network-granted member can also reach `securityd` — keychain and cryptographic services,
+not just trust evaluation (NOTES R4-SANDBOX-TLS).** `trustd.agent` alone was not sufficient for a real,
+live TLS handshake through a platform-trust-store-deferring stack: a `log stream` capture of the failing
+dispatch, diffed against a passing one, named a second mach service the handshake itself needed —
+`com.apple.SecurityServer`, granted identically (network-gated) alongside `trustd.agent`. Read the two
+grants as distinct in scope, not a pair: `com.apple.SecurityServer` **is** `securityd`, the daemon behind
+the keychain and macOS's cryptographic services generally — a broader surface than `trustd.agent`'s own
+trust-evaluation-only reach. What this grant opens: a member's process may send mach messages to
+`securityd` at all — the reach a TLS stack that defers to Security.framework needs to complete a
+handshake. What it does **not** open: access to any particular keychain item. `securityd` enforces
+keychain ACLs per item, on every request, entirely independent of whether the caller can reach it over
+mach-lookup at all — this grant is a precondition for talking to the daemon, not a bypass of what the
+daemon itself still gates.
+
 ---
 
 ## Running the daemon

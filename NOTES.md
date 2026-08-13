@@ -14188,3 +14188,438 @@ not a behaviour change. `scripts/repro-r4-appserver-codex.ts`'s own app-server r
 NOTES R4-SANDBOX-APPSERVER) is still unconfirmed pending a live macOS host — Finding 4 fixes the harness
 so that host's next run produces a real verdict instead of a false negative; it does not itself produce
 that verdict.
+
+# NOTES R4-SANDBOX-TLS (2026-08-13) — a live macOS run past the app-server fault finds a THIRD, distinct
+# one: TLS certificate validation itself, isolated with a codex-independent probe, not guessed at
+
+Goal: let a sandboxed `cli` member complete a TLS handshake against the public internet. Evidence
+supplied up front — a live macOS run (build `9c00154`, macOS 26.5.2 arm64, `sandbox: full`) with the
+write-reallow fix from NOTES R4-SANDBOX-APPSERVER installed:
+
+    codex_api::endpoint::responses_websocket: failed to connect to websocket:
+    IO error: invalid peer certificate: UnknownIssuer,
+    url: wss://chatgpt.com/backend-api/codex/responses
+    ERROR: Reconnecting... 1/5 … 5/5
+    warning: Falling back from WebSockets to HTTPS transport.
+    stream disconnected before completion: invalid peer certificate: UnknownIssuer
+
+Both transports fail identically — this is not websocket-specific, and the write-reallow fix WORKED:
+Corvid's app-server now initializes and reaches the network (NOTES R4-SANDBOX-APPSERVER's own fault is
+closed), a real advance over that round's own last honest residual. Certificate validation is a new,
+distinct fault. The same run's kernel log showed five denied mach-lookups/ioctls in the same window:
+
+    Sandbox: codex(92712) deny(1) mach-lookup com.apple.SystemConfiguration.configd
+    Sandbox: codex(92712) deny(1) mach-lookup com.apple.system.opendirectoryd.libinfo
+    Sandbox: codex(92712) deny(1) mach-lookup com.apple.system.notification_center
+    Sandbox: codex(92712) deny(1) mach-lookup com.apple.logd
+    Sandbox: codex(92712) deny(1) mach-lookup com.apple.diagnosticd
+    Sandbox: codex(92712) deny(1) file-ioctl path:/dev/dtracehelper
+
+## What this round deliberately did NOT do: grant any of the five on the strength of co-occurrence
+
+Every one of these five was previously catalogued as benign ambient noise (NOTES R4-SANDBOX-FIX-9's own
+`sysctl-read`/`dtracehelper` findings; NOTES R4-SANDBOX-FIX-10 explicitly hand-ACQUITTED
+`opendirectoryd.membership`/`.libinfo` — a live profile denying both still ran a `git add`/`git commit`
+chain in 88ms, exit 0) — but that acquittal was for a DIFFERENT consumer (a `git`/`bun` chain), never for
+Security.framework's own certificate-trust-evaluation path, which this saga has never before exercised
+under a working sandbox. Co-occurring with a failure in the same kernel-log window is not the same as
+being shown to CAUSE it — the goal's own instruction, and this saga's own standing discipline since the
+14-profile bisection (NOTES R4-SANDBOX-FIX-3) proved exactly how expensive a guess is, is to name the
+denied operation from a live, decisive trace before granting anything. `com.apple.trustd.agent` (NOTES
+R4-VENDOR-CLI's own shipped, network-gated grant) is NOT among the five — it already lets `gh` (Go, its
+own certificate handling) complete a real HTTPS request; codex still fails with a DIFFERENT symptom
+(`UnknownIssuer`, a chain-BUILDING failure) with that same grant already in place. The goal's own framing
+names why `gh`'s own success was never sufficient evidence for codex's case: `gh` does its own cert
+handling in Go; a Rust CLI using `rustls-platform-verifier` or equivalent defers to the platform trust
+store directly — the SAME sandbox, a DIFFERENT code path through it, and `gh`'s validation (NOTES
+R4-VENDOR-CLI) never claimed to cover the second shape, even though `docs/guide/04-workflow/
+05-foreign-agent.md`'s prose read as if it had (fixed below).
+
+## What this round built instead: a codex-independent TLS-handshake probe
+
+`scripts/repro-r4-sandbox-tls-handshake.ts` — a new, sibling script (never folded into
+`scripts/repro-r4-appserver-codex.ts`'s own numbered 1–5 narrative, which investigates a DIFFERENT fault
+with its own cross-check machinery; renumbering that file's steps to interleave a new, orthogonal
+hypothesis risked breaking its own H1/H2 cross-check without adding clarity). Drives the real,
+unmodified production entry point (`AdapterRunner.produceAsync`, the same "never a hand-rolled spawn"
+discipline every prior live-host round in this saga has used) with a bare `curl` TLS handshake against
+`example.com` (IANA-reserved, stable, no auth needed — `UnknownIssuer` is a chain-BUILDING failure, not
+specific to any one domain's own certificate, so this deliberately does not target `chatgpt.com` itself,
+mirroring NOTES R4-VENDOR-CLI's own precedent of picking a boring, always-available endpoint over the
+domain actually named in a bug report). Two steps:
+
+1. **Deny-direction sanity check** (no connector) — a harness self-test, not this round's own question:
+   if the raw TCP probe doesn't read `DENIED` here, the harness itself is broken and step 2 can't be
+   trusted either.
+2. **The decisive probe** (network-granted via a connector declaring no real credential and no `home:` —
+   deliberately orthogonal to NOTES R4-SANDBOX-APPSERVER's own `grantedHomeTargets` investigation, never
+   conflating the two). `com.apple.trustd.agent` + `(allow network*)` are already in the generated
+   profile here (NOTES R4-VENDOR-CLI). curl's own outcome is the PRIMARY verdict (mirrors
+   `scripts/repro-r4-vendor-cli-gh.ts`'s own `"grant-via-gh"` step); a raw, curl-independent
+   `RAW_TCP_CONNECT` marker (the identical mechanism `ghApiWithRawTcpProbe` already established) is
+   corroboration, needed because curl's own exit code for a certificate failure is BACKEND-dependent —
+   LibreSSL reports a specific exit 60 (`unable to get local issuer certificate`); SecureTransport has
+   historically reported the coarser exit 35 (`SSL connect error`) for the identical failure class — and
+   is never read alone for the primary verdict.
+
+**Honest caveat, named rather than assumed:** whether `curl` on a given live host actually exercises the
+SAME platform-trust-store code path codex's own Rust stack does is not assumed — Apple's system `curl`
+has changed SSL backends across macOS releases (SecureTransport historically, LibreSSL more recently),
+and the script prints `curl -V`'s own backend line (to stderr, so it survives a failed dispatch) before
+every attempt, so a live run answers this directly rather than the script assuming it. A PASS with that
+line naming a non-Security-framework backend says nothing about codex's own hypothesis; a PASS with a
+Security.framework-backed backend, alongside codex still failing identically on the same host, points at
+something about codex's own TLS stack specifically, not a general sandbox gap. A FAIL with
+`RAW_TCP_CONNECT=OK` (TCP fine, TLS/cert layer denied) is what would confirm a general sandbox gap with
+NO codex involved at all — the kernel-log capture (step 3, reusing the established
+`captureKernelDenials` shape from both sibling scripts, widened for this round's own five named
+candidates plus a general mach-lookup/trustd/curl filter so an UNNAMED sixth service surfaces too) is
+what NAMES the exact service in that case, never a guess from this file's own candidate list.
+
+`classifyTlsHandshakeFailure` (pure, exported, mirrors `classifyGhFailure`/`classifyCodexAppServerFailure`'s
+own shape) is diagnostic color for a human reader, not the primary verdict (the same demoted role
+`classifyGhFailure`'s own `gh-tls-trust` bucket plays alongside `gh`'s real outcome) — pinned by 8 tests
+in `tests/repro-r4-sandbox-tls-handshake.test.ts`, no live host required.
+
+**What this round could NOT do, honestly: run the script.** No live macOS host was reachable this round
+— handed back per this project's own standing method (every live-host verdict in this saga has come from
+a Conductor running a script by hand and pasting output back). `bun run
+scripts/repro-r4-sandbox-tls-handshake.ts` on the real host that produced the original failure is the
+exact next step.
+
+## The Linux side — checked this round, not assumed to hold by extension
+
+The goal's own instruction: determine whether a network-granted member can complete a TLS handshake
+under bubblewrap, and do not assume parity with macOS in either direction. Read from the generator's own
+existing text (no live bubblewrap needed to answer this specific question, unlike macOS's own daemon-
+mediated answer): Linux has no equivalent of `trustd` — a TLS client resolves its own trusted-root store
+by reading files (`/etc/ssl/certs/ca-certificates.crt` on Debian/Ubuntu, itself symlinked into
+`/usr/share/ca-certificates/...`) and verifies the chain in-process, no IPC round-trip a sandbox's own
+`(deny default)`-equivalent (an empty `--tmpfs /` root) could silently intercept beyond filesystem/
+network reach it already governs. Two facts already true of this generator's own text jointly answer the
+question: (1) `/etc` and `/usr` are in `READONLY_SYSTEM_PATHS`, the UNCONDITIONAL baseline — readable
+regardless of `allowNetwork` — covering the CA bundle and DNS config (`/etc/resolv.conf`,
+`/etc/nsswitch.conf`, `/etc/hosts`) alike; (2) `allowNetwork: true` omits `--unshare-net` entirely
+(pre-existing, `bubblewrapArgv`) — the sandboxed process shares the HOST's real network namespace, not a
+fresh, isolated one bubblewrap would then need its own veth/DNS-proxy machinery to make useful, so name
+resolution and connectivity behave identically to an unsandboxed process. No code change follows from
+this — nothing is missing by construction — but the claim was previously untested as a single, named
+fact: a new regression test in `tests/sandbox.test.ts` (`wrapForSandbox` describe block) asserts both
+facts TOGETHER against a `curl`-shaped network-granted dispatch, naming exactly why they jointly answer
+this round's own question, rather than leaving a reader to connect two previously-separate assertions by
+hand. Construction-only, like every other bubblewrap claim in this file: this dev container's own outer
+seccomp policy has never once let a real bubblewrap invocation run (sanity-checked directly this round —
+`bwrap --ro-bind / / --dev /dev --unshare-net --die-with-parent -- true` fails here with "No permissions
+to create a new namespace", identical to every prior round) — a live Linux host with a genuinely working
+`bubblewrap` is what would turn this from a construction-only claim into a confirmed one, named as an
+honest residual rather than assumed closed.
+
+## Docs
+
+`docs/guide/04-workflow/05-foreign-agent.md`'s "What sandboxing means for a vendor CLI's own auth"
+section: the bullet claiming "a real HTTPS client, certificate verification and all, works end to end"
+is narrowed to what NOTES R4-VENDOR-CLI actually validated (`gh`, Go, its own cert handling) and a new
+bullet names the TLS-stack distinction this round's own evidence surfaced — a platform-trust-store-
+deferring stack is a different code path through the same sandbox, unconfirmed by the `gh` result. The
+"note on Corvid specifically" paragraph is updated with this round's own live evidence (app-server fault
+closed, confirmed; TLS fault open) and points at the new probe. `docs/guide/06-operations.md`'s "What
+levare does not constrain" section gains a paragraph, in Operations' own voice, stating the same
+distinction plainly: network-granted and TLS-working are not the same claim, the gap is per TLS stack on
+macOS, and does not exist on Linux by construction (with the same caveat: construction-only, not yet
+live-confirmed there either). `docs/current-gaps.md`'s "OS-level sandboxing" entry gains a new paragraph
+recording this round's own live confirmation (app-server fault closed), the new fault (TLS validation),
+the five denied-but-unconfirmed mach services named without granting any, the new probe, and the Linux
+construction-proof — closing this round's own honest accounting without asserting a fix that hasn't been
+live-confirmed.
+
+## Verification
+
+`bun test` — full suite green (1359 pass, 9 skip, 0 fail, up from 1350/9/0 — one new file,
+`tests/repro-r4-sandbox-tls-handshake.test.ts`, 8 tests pinning `classifyTlsHandshakeFailure`, plus one
+new regression test in `tests/sandbox.test.ts`'s own `wrapForSandbox` describe block). `bun run
+typecheck` → exit 0 (the new sibling script is pulled into the program transitively via its own test
+file's import, the same mechanism that already covers every other `scripts/*.ts` file in this repo — none
+are listed in `tsconfig.json`'s own `include` directly). `bun run deps:check` → `deps ok`. `bun run
+docs:generate` → no diff against the committed cheatsheets (this round changed no `FieldSpec`-governed
+schema). `bun run src/cli.ts validate fixtures/golden` → `valid`, unchanged (two `SANDBOX_UNAVAILABLE`
+warnings, this container's own honest reality, unaffected by this round). `bun run src/cli.ts replay
+fixtures/golden --stubs` → oracle match, byte-for-byte. `bun run build` → succeeds. `bun run
+scripts/repro-r4-sandbox-tls-handshake.ts` in this container → exits cleanly on the darwin platform
+guard, printing exactly why — the same honest degradation every prior live-host harness script in this
+saga takes when run outside its own required platform.
+
+## Honest residuals — what a live macOS (and a live, genuinely-working-bubblewrap Linux) run still needs
+## to confirm
+
+- **The certificate-validation fault's own root cause remains unconfirmed.** This round names five
+  candidates from a live kernel log without granting any of them, and builds the codex-independent probe
+  that isolates which (if any) is load-bearing — `scripts/repro-r4-sandbox-tls-handshake.ts` on the real
+  host that produced the original failure is the exact next step; its own kernel-log capture is what
+  should name the exact service, not this list.
+- **Whether the live host's own `curl` exercises the platform trust store at all is unconfirmed** — the
+  script surfaces `curl -V`'s own backend line specifically so this stops being assumed; a PASS is only
+  informative about codex's own hypothesis if that line names a Security.framework-backed backend.
+- **The Linux-side construction proof is not yet live-confirmed** — this dev container cannot run a real
+  `bubblewrap`, on any round, in this project's history; the claim (no further grant needed) follows
+  directly from the generator's own existing, already-tested text, but "the generator says so" and "a
+  live bubblewrap on a real Linux host actually behaves this way" remain two different claims until the
+  latter is run.
+- If the live run confirms a further mach-lookup is genuinely load-bearing, the fix is to name and add
+  THAT exact service to `src/sandbox.ts`, gated on `allowNetwork` (the same pattern `trustd.agent`
+  already established) — never a preemptive widening now, and never the whole five-service list bundled
+  together on the strength of one co-occurring kernel-log window.
+
+# NOTES R4-SANDBOX-TLS (round 2, 2026-08-13) — the live run happened: SecurityServer confirmed and
+# granted, and it exposed a second fault the goal folded into the same round — a loop critic dispatched
+# through a retry never saw what it was meant to review
+
+## The live run this file's own prior round handed back
+
+A Conductor ran `scripts/repro-r4-sandbox-tls-handshake.ts` on the real macOS host. Step 2 (the
+network-granted, codex-independent `curl` handshake) PASSED — the raw TCP probe read `OK`, the HTTPS
+request completed — but this alone was decisive in the NEGATIVE, exactly as the probe's own header
+caveat warned it might be: this host's system `curl` reports `libcurl/8.7.1 (SecureTransport)
+LibreSSL/3.3.6` — LibreSSL, which carries its own CA bundle and never consults `securityd`/the platform
+trust store at all. The PASS proved `network*` + `trustd.agent` sufficient for a TLS client that resolves
+trust itself; it said nothing about a client that defers to Security.framework, which was always the
+actual, open question (codex's own reported `UnknownIssuer`). It DID acquit the five candidates this
+round's own kernel-log capture had named without granting: with `trustd.agent` and `network*` both
+already in the profile, `configd`, `diagnosticd`, `opendirectoryd.libinfo`, `notification_center`,
+`logd`, `dtracehelper`'s file-ioctl, and a `network-outbound` denial on `mDNSResponder` were ALL still
+denied in this passing run — none of them is load-bearing for a completed handshake, on either code
+path, and none is granted by this round either.
+
+The Conductor then captured a live `codex` dispatch directly with `log stream` (the SAME differential
+technique this saga has used for every prior live finding — never guessed, never inferred from a static
+reading of Apple's own sparse public documentation on Seatbelt's mach-lookup surface) and diffed it
+against the passing `curl` capture from the step above, under the identical generated profile. Exactly
+one mach-lookup denial was present in the failing run and absent from the passing one:
+`com.apple.SecurityServer`. Granting only that one line — `(allow mach-lookup (global-name
+"com.apple.SecurityServer"))`, gated on `policy.allowNetwork`, alongside the pre-existing
+`com.apple.trustd.agent` grant (`src/sandbox.ts`) — installing it, and re-dispatching corvid live:
+**the handshake completed, the member called its API, and produced a real `review` artifact**
+(`work/todo-cli/list-command/review-list-command-v6.md`, `status: in-review`, `sandbox: full`,
+`usd: null`, `plan: ChatGPT subscription`). This is now landed, with the same comment discipline
+`trustd.agent` carries (naming the live differential capture and the live dispatch that confirmed it,
+never a guess), stating precisely what `com.apple.SecurityServer` opens (`securityd` — keychain and
+cryptographic services, a broader surface than `trustd.agent`'s own trust-evaluation-only scope; mach-
+lookup reach to talk to the daemon, never access to any particular keychain item, which `securityd`
+itself still gates per-item) — see `src/sandbox.ts`'s own comment on the grant and Operations' new
+paragraph. No separate Conductor ruling was raised for the widening: read as a continuation of NOTES
+R4-VENDOR-CLI's own investigation and gating discipline (evidence-named, network-gated, nothing
+broader), not a new policy question — but that reading is stated plainly here, not assumed silently, so
+a Conductor who disagrees has something concrete to overrule.
+
+**What this round could not do, again honestly:** confirm this grant with a probe that doesn't route
+through `curl`. `curl` on this host is LibreSSL-backed and would PASS identically whether or not
+`SecurityServer` is granted — it never exercises that path either way — so the existing TLS-handshake
+probe cannot serve as this grant's own regression test. `scripts/repro-r4-sandbox-securityserver.ts`
+(new) drives `/usr/bin/security list-keychains` instead — a system binary that genuinely round-trips
+through `securityd` for even a read-only query — under the real generated profile and a synthetic
+variant with only the `SecurityServer` line stripped, as a targeted A/B on this exact grant. Built this
+round, NOT yet run live: no macOS host was reachable for it specifically (the `log stream`/dispatch
+evidence above came from the Conductor's own hand-run session, not from this script). The honest
+residual is unchanged in shape from every prior round in this saga: a live run on a real host is the
+next step, handed back the same way.
+
+## The second fault the same live dispatch surfaced: a critic reviewing nothing
+
+The `review` artifact the live dispatch above produced opened with:
+
+> No product brief was provided to review.
+> The consumed artifacts section says: `(none)`
+
+The brief existed (`work/todo-cli/list-command/product-brief-list-command-v1.md`, produced by scribe in
+round 1, committed) and `agents/corvid.md` correctly declared `context_artifacts: inline` — ruling C9's
+own guarantee should have inlined it. `levare context` (dry-run assembly, no dispatch spent) is what
+isolates the assembled-context evidence from the dispatch itself, per this saga's own standing method of
+reading what a member actually receives rather than guessing from its complaint — and reading
+`context.ts#assembleContext` + `dagwalk.ts#produceOne` alongside it confirmed the ORIGINAL live-path
+dispatch already threads ruling C14's `extraConsumes` correctly (NOTES F15, already fixed, already
+regression-tested — `tests/loop-critic-context.test.ts`). The empty section was NOT a recurrence of F15.
+
+Grepping every OTHER call site of `memberRunner.produce()` found a second one: `board/gateops.ts
+#resolveBlockedArtifactGate`'s `retry` verb (NOTES F19) — the Conductor's own explicit re-invocation of a
+blocked artifact — called `memberRunner.produce(member, art.kind, art.unit, art.project)`, four
+arguments, dropping `extraConsumes` entirely. This unit's own review had been blocked repeatedly by the
+(then-ungranted) TLS fault above and was retried through exactly this path before the grant finally let
+it succeed — the empty consumed section is F15's own defect shape, recurring at a SECOND call site F15's
+own regression test never covered, because F15's test (correctly) only ever drives the live walk's first
+dispatch, never a retry. **Why the existing loop tests never caught this:** every one of them
+(`tests/loop-critic-context.test.ts`, `tests/loop-c14.test.ts`, `tests/f20-loop-exhaustion.test.ts`)
+drives a round to completion in one clean pass — dispatch, resolve, dispatch, resolve — because that is
+what those rounds' own regression scope was built to prove (a round completes correctly; an exhausted
+loop gates correctly). None of them ever puts the critic into a `blocked` state and retries it — that
+combination (a loop member's OWN retry path) had no test at all until this round, for either half of
+what it does wrong.
+
+The SAME retry call site had a second, independent defect once read alongside `roundOf`/`bumpVersion`:
+every retry, failed or successful, bumped the round via the identical id-suffix mechanism `dagwalk.ts`
+uses to pair a loop's two members to one round and `doRequest` uses to detect `max_rounds` exhaustion.
+The escalation gate on this SAME unit reported `6 of 3 rounds used · round 6/3` with `max_rounds: 3` —
+five infrastructure-driven retries (the TLS fault, blocking corvid over and over before the grant landed)
+inflated a loop that ran exactly ONE genuine author/critic exchange into reporting double its declared
+cap. **The reading adopted, stated plainly per the goal's own instruction to name it rather than decide
+it silently:** a blocked attempt never reaches the Conductor, so it must never spend a round of the
+loop's own budget — `max_rounds` is a budget on genuine author/critic exchanges the Conductor actually
+resolves (approve/reject/request), not on however many times infrastructure needed retrying to produce
+one. A different reading (every attempt, successful or not, spends a round) is defensible but was
+rejected here: it would mean a member's own transient infrastructure failure — not a design flaw in the
+author's work — silently consumes the same budget `on_exhaust: gate` exists to protect, and would have
+made THIS incident's own eventual success (round 1, one real exchange, five retries to get the network
+grant right) read as an already-exhausted loop the moment the fix landed.
+
+Both close with one fix, scoped to `resolveBlockedArtifactGate`'s `retry` verb only: a loop member's
+retry (detected via `gates.ts#loopMembershipFor`, the same helper `doRequest`'s own max_rounds check and
+F16's companion-gating already share) now threads `extraConsumes` — the round's author artifact id, read
+via `latestLiveArtifact`, when retrying the critic — and rewrites its own SAME slot in place (same id,
+same `supersedes`, one file, never a second) rather than minting a new round, mirroring
+`doRecheckMerge`'s own pre-existing "same slot, re-run, never supersede" precedent (`board/gateops.ts`,
+the merge-gate `recheck` verb) rather than inventing a new shape. A plain, non-loop step's retry is
+UNCHANGED — it has no round concept, and its own pre-existing fresh-id-per-attempt audit trail (tested by
+`tests/f19-blocked-artifact-verbs.test.ts`, still green) is exactly what a Conductor reviewing a chain of
+failed attempts on an ordinary step wants to see.
+
+## Docs
+
+`docs/current-gaps.md`'s OS-level sandboxing entry gains a paragraph closing the certificate-validation
+fault (the live confirmation, the grant, the five-service acquittal restated with this round's own live
+evidence behind it, and the new host-only sibling probe's own residual) and a new, separate entry closing
+the loop-retry defect (both halves, the shared fix, and why the existing suite never caught either).
+`docs/guide/06-operations.md`'s "What levare does not constrain" section gains a paragraph, in
+Operations' own voice, stating the `SecurityServer`/`trustd.agent` scope distinction plainly — what
+mach-lookup reach to `securityd` opens and what it does not.
+
+## Verification
+
+`bun test` — full suite green (1367 pass, 9 skip, 0 fail, up from 1359/9/0: three new files —
+`tests/loop-blocked-retry-context.test.ts` (3 tests, confirmed to fail without the gateops.ts fix, by
+reverting it and re-running), `tests/repro-r4-sandbox-securityserver.test.ts` (2 tests), and 5 new cases
+in `tests/sandbox.test.ts`'s own `buildSandboxExecProfile` describe block — plus `tests/f19-blocked-
+artifact-verbs.test.ts`, `tests/f20-loop-exhaustion.test.ts`, and `tests/loop-critic-context.test.ts` all
+re-verified green, unaffected, since the plain-step retry path and the ORIGINAL live-path dispatch are
+both unchanged by this round's fix). `bun run typecheck` → exit 0. `bun run deps:check` → `deps ok`.
+`bun run src/cli.ts validate fixtures/golden` and `bun run src/cli.ts replay fixtures/golden --stubs` →
+unchanged from the prior round (this round touched no golden-fixture-governed behavior). `bun run build`
+→ succeeds. `scripts/repro-r4-sandbox-securityserver.ts` in this container → exits cleanly on the
+darwin-platform guard, the same honest degradation every prior live-host harness in this saga takes when
+run outside its required platform.
+
+## Honest residuals — what a live macOS run still needs to confirm, again
+
+- **`scripts/repro-r4-sandbox-securityserver.ts` has not been run live.** The `SecurityServer` grant
+  itself IS live-confirmed (the differential `log stream` capture and the successful re-dispatch above
+  are real evidence, not construction-only) — what remains unconfirmed is this round's OWN new,
+  standalone A/B harness for it, built as the grant's lasting regression check now that the live incident
+  that found it is over.
+- **Whether a further, still-unnamed mach-lookup is load-bearing for OTHER TLS-stack shapes** (a vendor
+  CLI whose own library performs an OCSP/CRL fetch, or something else Security.framework does that a
+  bare `security list-keychains` query doesn't exercise) remains open by construction — this round
+  answers the ONE incident it was handed, not every conceivable TLS code path through this sandbox.
+
+# NOTES R4-SANDBOX-TLS (round 3, 2026-08-13) — three host-only test failures, none a product fault; and
+# a pattern named across three separate incidents in this project's own history
+
+A Conductor ran this branch's new/changed tests on a real macOS host and reported three failures. All
+three are container-vs-host divergences in the TEST HARNESS, not in `src/`; per instruction, `src/` is
+unchanged this round.
+
+## 1 — `tests/loop-blocked-retry-context.test.ts`: the fake corvid's own attempt counter lived somewhere
+## the generated sandbox profile never grants
+
+The fixture wrote `.corvid-attempts` into the test's bare scratch `root` (`mkdtempSync(tmpdir())`), but
+corvid's own dispatch declared no `cwd:` and had no real project checkout to inherit one from
+(`PROJECT_ACME`'s `repo: .` is self-referential — `merge.ts#resolveProjectRepoPath`'s own deliberate
+exclusion — so `dispatchRepo` is always `undefined` here) and no `home:`-requesting connector. With no
+declared `cwd`, `adapters.ts#cliInvocation` falls through to `process.cwd()` — wherever the TEST PROCESS
+itself runs from, not this fixture's own `root` — and `buildSandboxExecProfile` only ever grants write
+access to the resolved `cwd` and the spawn's own `HOME`, nothing else. On a real macOS host running a
+real `sandbox-exec` profile, writing to `root` was correctly DENIED; the script's own `echo $n >
+'${counterFile}'` failed with `Operation not permitted` on its very first line, corvid exited 1 before
+ever reaching its own simulated-failure branch, and the harness's own attempt counter never advanced —
+`extraConsumes` and the round counter were never exercised at all. On Linux, this container has never
+once had a working `sandbox-exec`/`bubblewrap` primitive (unchanged throughout this saga), so the member
+ran unconfined, the write silently succeeded, and all three tests passed — for a reason that has nothing
+to do with the fix under test. The sandbox was RIGHT to deny it; the harness asked for something outside
+its own declared grant.
+
+**Fix:** corvid's agent frontmatter now declares `cwd: <root>` explicitly, so the resolved dispatch cwd
+IS this fixture's own scratch root — the one path `buildSandboxExecProfile` always grants write access
+to, on every platform, regardless of connectors or a real project checkout. The counter file's own
+location is unchanged (still directly under `root`); only the sandbox's own knowledge of that path
+changed. Re-verified the same way the original tests were built: reverted `src/board/gateops.ts` to its
+pre-fix content in-place, confirmed all three F21 tests fail (`result.ok` false / `gate` undefined —
+predictable now, since the underlying mechanism is unchanged, only the write path moved), restored the
+fix, confirmed all three pass again. Also added a `console.log` of the produced review's own `sandbox:`
+line to each test — see the pattern section below for why.
+
+## 2 — `tests/repro-r4-sandbox-securityserver.test.ts`: a Linux-only assertion, unconditional
+
+The exec-based test asserted the non-darwin "degrades honestly, prints darwin-only" behaviour with no
+platform guard at all — correct in this container, wrong on the one platform
+`scripts/repro-r4-sandbox-securityserver.ts` actually exists to run on. A live macOS host running this
+suite hit the script's REAL path (past the darwin guard, into the actual `sandbox-exec`/`security`
+A/B) and failed the hardcoded assertion, which was never true there. **Fix:** guarded by
+`process.platform === "darwin"`; the darwin branch asserts only what's safe to pin without a live host
+independently re-confirming the grant's own real-world necessity on that exact macOS version — that the
+script actually REACHES its real probe (`sandbox-exec:`/`security:` printed, no `darwin-only` line, a
+`=== Summary ===` block) rather than degrading, and exits 0 either way. The PASS/INCONCLUSIVE/UNEXPECTED
+verdict itself is deliberately left unasserted — that is this grant's own live finding, read by a
+Conductor from the run's own output, not a fixed expectation a test can pin. Timeouts raised
+correspondingly (60s spawn timeout, 65s test timeout on darwin) — the script's own two `security`
+probes and kernel-log capture can legitimately take that long on a real host; the prior 15s ceiling
+(sized for the instant Linux skip-path) would have raced a REAL darwin run into a false timeout failure
+even with the assertion fixed.
+
+## 3 — the DIST5 compiled-serve smoke test's 20001ms timeout: established, not a regression
+
+Ran `tests/orchestrator-compiled-smoke.test.ts` alone, repeatedly, in this container per instruction,
+before touching anything: **first run after a fresh `bun install`/cold cache failed** at a 10000ms
+`readBoundPort` timeout (this container's own number differs from the Conductor's reported 20001ms —
+different host, different cold-start cost — same shape of failure); **three immediate re-runs passed
+cleanly in 2.1–3.9s each.** Nothing on this branch touches `src/cli.ts`, `src/orchestrator*.ts`,
+`src/sdk-*.ts`, `tests/serve-subprocess.ts`, or `orchestrator-compiled-smoke.test.ts` itself (`git log
+main..HEAD` against all five is empty) — there is no code-path connecting anything this branch changed
+to a compiled binary's own `serve` startup latency. This reproduces the exact shape DIST7's own
+`bun build --compile` cost already names elsewhere in this file: the FIRST invocation of a freshly built
+binary pays real one-time cost (disk write, OS file-cache cold, whatever `bun build --compile`'s own
+runtime does on first exec) that later invocations don't. Read as an unrelated, pre-existing slow-spawn
+flake, not a regression — left untouched, per instruction, pending the Conductor's own read of whether
+this test's fixed timeout should widen for a cold-start case specifically (a call this entry does not
+make on its own).
+
+## The pattern: a test passing because its own environment never exercised the constraint under test
+
+This is the THIRD time in this project's own history that a test's own environment — not its logic —
+determined whether it exercised anything real:
+
+1. **NOTES DIST7** — `tests/orchestrator-compiled-smoke.test.ts` asserted a compiled binary's Orchestrator
+   comes up `on`, and passed, before the CWD-dependent `require.resolve` fallback bug was ever fixed —
+   because `bun test`'s own cwd IS the repo root, the one directory where the buggy fallback happens to
+   still work. A real release binary is never invoked from there.
+2. **NOTES ORCH-B-DATE-FLAKE** — a test comparing two independently-seeded scratch repos' commit content
+   byte-for-byte (`tests/orchestrator.test.ts`'s chat-vs-route test, two separate `seedScratchRepo()`
+   calls) passed reliably in this project's own dev/CI history because the one variable that could make
+   the two diverge — a UTC midnight falling between the two `today` reads — essentially never happened to
+   land inside a test run's own few-hundred-millisecond window.
+3. **This round** — a sandbox-denied write, absent in this container because no primitive here has ever
+   worked, present and correctly enforced on a real macOS host.
+
+All three share the same shape: the test's OWN assertion was never wrong about what it claimed to check;
+the environment it happened to run in just never put the one load-bearing variable (cwd, wall-clock
+timing, sandbox enforcement) into the state that would make the check mean anything. "Green in this
+container" and "the constraint was exercised" are two different claims, and nothing in a bare pass/fail
+count distinguishes them.
+
+**What would catch the next one, named as a concrete practice rather than left as an observation:** for
+any test whose whole POINT is proving something holds under a constraint the CURRENT environment might
+not actually enforce (a real OS sandbox, a real day boundary, a real compiled-binary CWD, a real network
+condition), have the test surface — in its own output, every run, not only when it fails — which side of
+that constraint it actually ran on. This round's own instance: the `console.log` added to
+`loop-blocked-retry-context.test.ts` printing the produced artifact's `sandbox:` line (`none` here,
+`full` on a working host) turns "3 pass" into "3 pass, sandbox: none" — visibly, unmissably, in every
+CI/container run's own log, not just discoverable by an engineer who happens to think to ask. The
+`SANDBOX_UNAVAILABLE` validator warning and `levare doctor`'s own primitive-name report already apply
+this exact discipline to PRODUCTION behaviour (never claim a guarantee the current host can't back);
+extending it to test OUTPUT — not just test logic — is what turns a silent environment-blind pass into
+one a reader can catch on sight, in the same run, without needing a second host to compare against.

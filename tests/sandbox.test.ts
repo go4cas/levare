@@ -334,6 +334,34 @@ describe("wrapForSandbox — pure argv construction, no OS sandbox required to v
     expect(wrapped.argv).not.toContain("--unshare-net");
   });
 
+  // NOTES R4-SANDBOX-TLS: the Linux side of the question NOTES R4-SANDBOX-TLS asks live on macOS —
+  // "can a network-granted member complete a TLS handshake under this platform's sandbox?" — answered
+  // here from construction alone, unlike macOS's own answer (which needs a live kernel trace, because
+  // certificate trust evaluation there round-trips through a system DAEMON over a mach service this
+  // profile must explicitly allow). Linux has no such daemon dependency: a TLS client resolves its own
+  // trusted-root store by reading files (`/etc/ssl/certs/...` on Debian/Ubuntu, symlinked into
+  // `/usr/share/ca-certificates/...`) and does the chain verification in-process — no IPC, nothing this
+  // sandbox's own `(deny default)`-equivalent (an empty `--tmpfs /` root) could silently block beyond
+  // filesystem/network reach it already governs. Both facts this depends on are asserted TOGETHER here,
+  // combined into the single claim they jointly prove, rather than left as two separate tests a reader
+  // has to connect by hand: (1) `/etc` (and `/usr`, its own symlink targets) are in the UNCONDITIONAL
+  // baseline allow-list — see `READONLY_SYSTEM_PATHS` — so DNS config (`/etc/resolv.conf`,
+  // `/etc/nsswitch.conf`, `/etc/hosts`) and the CA bundle are both readable regardless of `allowNetwork`;
+  // (2) `allowNetwork: true` omits `--unshare-net` entirely (the test above), which means the sandboxed
+  // process shares the HOST's real network namespace — not a fresh, isolated one bubblewrap would then
+  // need its own veth/DNS-proxy machinery to make useful — so name resolution and connectivity behave
+  // identically to an unsandboxed process. Construction-only, like every other bubblewrap claim in this
+  // file: this dev container's own outer seccomp policy has never once let a real bubblewrap invocation
+  // run (sanity-checked directly — `bwrap --ro-bind / / --dev /dev --unshare-net --die-with-parent --
+  // true` fails here with "No permissions to create a new namespace"), so this is the CLAIM a live Linux
+  // host with a working bubblewrap still needs to confirm — named as an honest residual, not assumed.
+  test("bubblewrap: a network-granted dispatch keeps /etc (CA certs, DNS config) readable AND shares the host's real network namespace — the two facts a real TLS handshake needs", () => {
+    const detection: SandboxDetection = { platform: "linux", primitive: "bubblewrap", level: "full", bin: "/usr/bin/bwrap" };
+    const wrapped = wrapForSandbox(["curl", "https://example.com/"], { ...policy, allowNetwork: true }, detection);
+    expect(wrapped.argv).toEqual(expect.arrayContaining(["--ro-bind-try", "/etc", "/etc", "--ro-bind-try", "/usr", "/usr"]));
+    expect(wrapped.argv).not.toContain("--unshare-net");
+  });
+
   test("bubblewrap: no home to bind → no --bind for it, cwd still bound", () => {
     const detection: SandboxDetection = { platform: "linux", primitive: "bubblewrap", level: "full", bin: "/usr/bin/bwrap" };
     const wrapped = wrapForSandbox(["codex"], { cwd: "/work/scratch-wt", allowNetwork: false }, detection);
@@ -602,6 +630,48 @@ describe("buildSandboxExecProfile — deny-list model (NOTES R4-SANDBOX-FIX-3)",
     expect(profile).toContain('(allow mach-lookup (global-name "com.apple.trustd.agent"))');
     expect(profile).toContain("(allow network*)");
     expect(profile).toContain('(deny file-read* (subpath "/Users/cas"))');
+  });
+
+  // NOTES R4-SANDBOX-TLS: `trustd.agent` alone was not sufficient for a live `cli` member's own TLS
+  // handshake — a `log stream` capture of the failing dispatch, diffed against the TLS-handshake
+  // probe's own passing `curl` capture, named `com.apple.SecurityServer` as the one mach-lookup denial
+  // present in the failing run and absent from the passing one. Granting exactly this one line,
+  // installed and re-dispatched live, confirmed it. Mirrors the trustd test immediately above:
+  // network-gated, never unconditional.
+  test("the SecurityServer mach-lookup is allowed ONLY when the network is granted, alongside trustd.agent", () => {
+    const granted = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: true });
+    expect(granted).toContain('(allow mach-lookup (global-name "com.apple.SecurityServer"))');
+    expect(granted).toContain('(allow mach-lookup (global-name "com.apple.trustd.agent"))');
+    expect(granted).toContain("(allow network*)");
+
+    const denied = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false });
+    expect(denied).not.toContain("com.apple.SecurityServer");
+    expect(denied).toContain("(deny network*)");
+  });
+
+  // NOTES R4-SANDBOX-TLS: the SecurityServer grant must not weaken the operator-home seal either —
+  // the identical orthogonality property the trustd grant was already re-checked against above.
+  test("the SecurityServer grant coexists with the operator-home deny — network and filesystem remain orthogonal", () => {
+    const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: true, operatorHome: "/Users/cas" });
+    expect(profile).toContain('(allow mach-lookup (global-name "com.apple.SecurityServer"))');
+    expect(profile).toContain('(deny file-read* (subpath "/Users/cas"))');
+  });
+
+  // NOTES R4-SANDBOX-TLS: the five mach services (plus mDNSResponder's own network-outbound denial)
+  // the TLS-handshake probe's PASSING curl run already acquitted by evidence stay ungranted here too —
+  // none of them was load-bearing for a completed handshake, so none is added on the strength of
+  // merely co-occurring with SecurityServer in the same failing-run kernel log.
+  test("none of the five previously-acquitted mach services is granted alongside SecurityServer", () => {
+    const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: true });
+    for (const acquitted of [
+      "com.apple.SystemConfiguration.configd",
+      "com.apple.diagnosticd",
+      "com.apple.system.opendirectoryd.libinfo",
+      "com.apple.system.notification_center",
+      "com.apple.logd",
+    ]) {
+      expect(profile).not.toContain(acquitted);
+    }
   });
 
   test("denies default, allows broad OS read, denies default and only re-opens what this dispatch needs", () => {
