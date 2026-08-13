@@ -611,3 +611,83 @@ explanation remains open — `sdk-worker.ts` now logs every SDK-reported retry (
 attempt count, classified error status, backoff delay) and total elapsed wall-clock time
 unconditionally on every exit path, specifically so the next real occurrence is diagnosable from
 stderr instead of requiring this same investigation to be redone from a bare timeout.
+
+## The registry rendered frontmatter selectively and dropped markdown bodies entirely — closed
+## (NOTES REGISTRY-BODY)
+
+A cold-start walkthrough on a released binary found that the registry's own cards render inconsistently
+across entity kinds: the skill card shows a document's actual content (its `description`, falling back
+to the body's first paragraph); every other card either showed a partial slice of the frontmatter or
+dropped the body outright. Established before any code changed, because it decides whether the fix is
+one shared helper or four independent ones: `renderRegistry` (registry.ts) builds each entity kind's
+`inner` HTML inline, in its own `.map()` block — there is no common function a team/agent/knowledge/
+project card all funnel through. **This was four separate omissions of the same mistake class, not one
+root cause** — each kind's block independently chose not to render its own entity's body (and, for
+team/agent, several already-parsed frontmatter fields alongside it). The type card's `gates` row was
+already correct and became the reference for the team flow fix below; the skill card's own lead-paragraph
+treatment became `components.ts#leadText`, reused by every other fix rather than re-inlined a third time.
+
+**What was dropped, and what now renders, per kind:**
+
+- **Type** — the `expects`/`gates` rows were already right; only the heading over them was wrong
+  ("Expected kinds" implied `gates` was a kind). Renamed "Definition", matching the agent/connector
+  cards' own heading for the identical k/v-row shape.
+- **Knowledge** — a name and two tag chips, for a document whose entire value is its content, injected
+  into member context by name. Now renders the document's own first paragraph.
+- **Project pointer panel** (project.ts, not the registry proper, but the same class of card) — `pace`
+  alone; `default_branch` (declared, shown nowhere) and the body (house rules, injected into every
+  member's context for that project) are now rendered. "Constitution" renamed "Founding artifacts" —
+  the same jargon-heading fix applied to the type/agent cards, made here too since it named its own
+  content (founding artifacts + citation counts) metaphorically rather than plainly.
+- **Agent** — kind/model/produces and a skills+knowledge "recipe" list. Dropped: the body (a member's
+  system prompt, second person — "You are Wren, a product framer." answers exactly what a reader wants
+  to know, and is already written), `tools`/`connectors` as VALUES (read only to decide whether to show
+  a warning about them, never shown themselves), and every cli/remote field beyond kind/model
+  (`command` — the literal argv that executes, `context_via`, `context_artifacts`, `cwd`, `timeout`,
+  `server`, `tool`, `result`). `connectors` is the single most security-relevant field an agent
+  declares and had no rendering at all. The body renders as its own first SENTENCE
+  (`registry.ts#firstSentence`, new) — a deliberate density call, not a default: full second-person
+  system-prompt prose reads oddly as card copy, and dropping it entirely was the defect this closes.
+  "Context recipe" renamed "Skills & knowledge".
+- **Team** — members/produces and a flow strip. Dropped: the charter (the team's own body — exactly
+  "what does this team do", answered in one sentence by every scaffold team), `guardrails` (arguably
+  second in importance only to what the team does, since it's the actual constraint a merge gate checks
+  the diff against), and `knowledge`. All three now render.
+- **Team flow row — the one most wrong.** The flow strip rendered `t.members`, a flat avatar chain
+  carrying no flow information, on a board whose entire premise is Conductor approval AT A GATE.
+  `teams/kestrel.md` declares five stages — two `gate: human` halts and a bounded loop with an
+  escalation path — collapsed into three avatars indistinguishable from a linear handoff; both gates
+  were invisible, and DECLARED FLOW read as a redundant repeat of the Definition block's own `members`
+  row because the flow row carried no flow information to begin with. Each declared `FlowNode` now
+  renders as itself: a `step` as the resolved member's avatar (`flow.ts#resolveStep`, the Runner's own
+  step→member binding, reused rather than re-derived so the card can never disagree with what actually
+  dispatches); a `gate` as the same `.diamond.is-gate` marker the run view's own mini-score already
+  draws for a gate node, not a new glyph; a `loop` as both `between` member avatars joined by a loop
+  glyph, captioned with `until`/`max_rounds`/`on_exhaust` underneath in `.mn` — a CSS class `.flowstrip`
+  had defined since UI7 with no caller ever using it.
+
+**Tests, driven from the scaffold, not a hand-built fixture:**
+`tests/registry-cards-render-definitions.test.ts` scaffolds a real studio via `scaffoldStudio` +
+`loadRepo` (the same tree `levare init` leaves) and asserts each fix against it, so a future edit that
+changes the scaffold's shape without updating the renderer (or vice versa) fails here rather than
+drifting apart silently. Its `cardFor()` helper scopes every assertion to a card's `<div
+class="rendered">`, never the whole `<article>` — every card also carries a hidden `<textarea
+class="rawmd-source">` holding the entity's full raw markdown (`esc()`-escaped, for the edit overlay),
+and plain body text with no HTML-special characters reads identically whether it came from the real
+render or that raw fallback; an assertion against the whole article would have passed even before any
+of these fixes existed, purely because the raw source happens to repeat the same words. A dedicated
+assertion isolates the flow row specifically and counts two `diamond is-gate` markers plus the loop's
+own `spec.approved`/`3`/`gate` — the fix the goal named as most load-bearing.
+
+One pre-existing test (`tests/board-render.test.ts`, the knowledge-card UI7 test) had banned the literal
+substring "Injected into" appearing anywhere in a rendered knowledge card — a guard against the OLD
+backlink section UI7 removed. It broke the moment the card legitimately rendered `house-style.md`'s own
+body, which happens to use that exact phrase to describe itself ("Injected into member context when
+referenced"). Narrowed to the actual regression it exists to catch: the old section's own heading
+(`<div class="card__h">Injected into</div>`), never a blind substring ban on prose the fix is now
+supposed to show.
+
+No frontmatter schema changed. Every field rendered here already existed and already validated —
+repo.ts parsed all of it before this unit started; the fix is entirely in `render/registry.ts`,
+`render/project.ts`, and one small `components.ts` primitive (`leadText`), plus one CSS rule
+(`.flowstrip .looppair`) for the loop's own avatar pair.

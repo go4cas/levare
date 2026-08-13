@@ -14785,3 +14785,176 @@ picked without checking against the thing I was calling"). Fixing the number, de
 constant instead of a second guess, and locking that constant with its own test is what turns "hangs at
 20000ms, never varying, no diagnosis" into a test that either passes fast (the common case) or fails with
 `sdk worker timed out after 45000ms` (the slow-real-call case) — never a bare timeout with no name.
+
+# NOTES REGISTRY-BODY (2026-08-13) — the registry rendered frontmatter selectively and dropped markdown
+# bodies entirely; skill cards were already the working reference the other five kinds were measured
+# against
+
+**Goal.** Make the registry cards show what the files actually say. A cold-start walkthrough on a
+released binary found the registry rendering frontmatter selectively and dropping markdown bodies
+entirely — except on skill cards, which do it right. The renderer is demonstrably capable of showing a
+body (`registry.ts`'s skill block always has); this is an inconsistency with a working reference
+implementation already in the codebase, not a missing capability, and the goal was explicit that no
+schema change should be needed to close it.
+
+**Established before any edit, per the goal's own instruction to say which it was: one shared omission,
+or four separate ones.** `renderRegistry` builds every entity kind's `inner` HTML inline, in its own
+`.map()` block over that kind's collection — there is no common helper a team/agent/knowledge/project
+card all funnel through, and no single function that, if fixed once, would have fixed all four. Each
+kind's block independently chose not to render its own entity's body (and, for team/agent, several
+already-parsed frontmatter fields alongside it) — the SAME mistake class, made four separate times, not
+one root cause with four symptoms. The type card's `expects`/`gates` rows were already correct and
+became the reference for the team flow fix; the skill card's lead-paragraph treatment (`s.data.description
+?? firstParagraph(s.body)`, a plain `<p>` styled as muted prose) became `components.ts#leadText` — one
+function, used by every other fix below instead of re-inlined a third or fourth time.
+
+## Fix 1 — type card: "Expected kinds" renamed "Definition"
+
+The heading covered both `expects` and `gates`, and a gate is not a kind. `expects`/`gates` themselves
+were already rendered correctly (chip rows via the same `tag()` primitive agents' `produces` uses) — only
+the heading over them was wrong. Renamed "Definition", the same heading the agent/connector cards already
+use for an identical k/v-row shape — one word, correct for both rows, no new per-card vocabulary invented.
+
+## Fix 2 — knowledge card: renders its own body
+
+Before: a name and two tag chips, for a document whose entire value IS its content, injected into member
+context by name (§6). After: `leadText(firstParagraph(k.body))` ahead of the tag chips — the exact
+treatment the skill card already gave its own description.
+
+## Fix 3 — project pointer panel (project.ts, not the registry proper, but the same card family)
+
+`pace` alone rendered; `default_branch` (declared on every project, shown nowhere on the board at all)
+and the body — the project's house rules, injected into every member's context for that project (§6
+recipe item 5) — are both new. `default_branch` is a plain mono `.prow` row; the house rules render as
+`leadText(firstParagraph(project.houseRules))` under a new "House rules" heading. "Constitution" (the
+founding-artifacts section) is renamed "Founding artifacts" — not itself a body-rendering fix, but the
+same jargon-heading correction made on the type/agent cards, applied here because it named its own
+content (founding artifacts + citation counts) metaphorically rather than plainly, and the goal grouped
+all three headings under one "decide it" instruction. The pre-existing, deliberately tested decision that
+`repo`/`deploy` render as icon links rather than pointer-card rows (UI2 items 2/3, its own test in
+`board-render.test.ts`) is untouched — that's a different, already-settled ruling, not something this
+unit reopens.
+
+## Fix 4 — agent card: role, tools/connectors as values, and every cli/remote field
+
+Before: kind/model/produces and a skills+knowledge "recipe" pill list. Dropped: the body; `tools`/
+`connectors`, which were read only to decide whether to show a WARNING about them and never rendered as
+values themselves; and every cli/remote field beyond kind/model — `command` (the literal argv that
+executes, including whatever vendor guardrails ride in on it), `context_via`, `context_artifacts`, `cwd`,
+`timeout`, `server`, `tool`, `result`. `connectors` is the single most security-relevant field an agent
+declares and had no rendering path at all.
+
+**The body decision.** An agent's body is a system prompt written in second person ("You are Wren, a
+product framer. Turn a captured pitch into a crisp product brief: ..."). Rendering it verbatim reads
+oddly as card copy; dropping it entirely was the defect. Decided: render the body's own first SENTENCE
+(`firstSentence()`, new — `firstParagraph()` plus a lazy `/^.*?[.!?](?=\s|$)/` match, falling back to the
+whole paragraph when no sentence boundary exists). Against the scaffold's own `agents/wren.md`, this
+produces exactly "You are Wren, a product framer." — the role a reader is looking for, nothing past it.
+"Context recipe" is renamed "Skills & knowledge", the same jargon-heading pass as types/projects.
+
+**Field gating.** The new kind-specific rows are gated on FIELD PRESENCE, not `a.kind` — `context_artifacts`
+is legal on any kind per `validate.ts`'s own `AGENT_SCHEMA`, and a strict `a.kind === "cli"` gate would
+have silently hidden it on a kind the schema itself allows it for. `result` (prose, required on every cli
+member) gets `leadText()`, the muted-paragraph treatment, rather than a cramped one-line `.prow` value —
+it's a sentence describing the binary's output, not a short scalar.
+
+## Fix 5 — team card: charter, guardrails, knowledge (flow row deliberately deferred to fix 6)
+
+Before: members/produces and a flow strip. Dropped: the charter (this team's own body — "what does this
+team do", answered in one sentence by every scaffold team's own file) and `guardrails` — arguably second
+in importance only to what the team does, since `checkGuardrails` (NOTES MERGE-1) is the actual
+constraint a merge gate checks the diff against — and `knowledge`. All three now render: the charter as a
+`leadText(firstParagraph(...))` lead, `guardrails`/`knowledge` as further Definition rows using the
+frontmatter's own field names as labels (`protected_branches`, `protected_paths`, `never`, `knowledge`) —
+wider than the row's usual one-word key, the same tradeoff already accepted for the agent card's
+`context_via`/`context_artifacts`.
+
+Committed separately from the flow row per the goal's own instruction ("take the team flow row last — the
+largest visual change, the one most likely to need a judgment call about density"), so each increment
+could be looked at on the board on its own before the biggest one landed.
+
+## Fix 6 — team flow row: declared stages, gates, and the loop, not a flat member chain
+
+**The one the goal named as most wrong.** The flow strip rendered `t.members` — every card in this unit
+was missing a field; this one was actively MISLEADING. `teams/kestrel.md` declares five stages: `step:
+brief`, `gate: human`, `step: design`, `gate: human`, then a bounded loop (`spec` ⇄ `review`, until
+`spec.approved`, `max_rounds: 3`, escalating to a gate on exhaustion). The card rendered three avatars —
+`wr → ly → fi` — visually identical to a plain linear handoff. **Both human gates were invisible, on a
+board whose entire premise is Conductor approval at a gate**; a reader would reasonably conclude levare
+runs unattended linear pipelines. It also explained why the card read as padded: DECLARED FLOW and the
+Definition block's own `members` row showed the same three chips twice, because the flow row carried no
+flow information the members row didn't already carry.
+
+**The fix walks `t.flow` (the real `FlowNode[]`) instead of `t.members`.** Three node shapes, three
+renderings, each reusing an existing visual vocabulary rather than inventing a new one:
+
+- `step` → the resolved member's avatar, same avatar/title treatment the old members-only strip used.
+  Resolution goes through `flow.ts#resolveStep` — the Runner's OWN step→member binding (ruling B2) —
+  rather than re-deriving it, so the card can never show a binding that disagrees with what actually
+  dispatches. `resolveStep` throws on an unbound/ambiguous step; a validated repo never hits that
+  (`validate.ts#validateStudioBindings` rejects an unbindable flow before a studio is even accepted), but
+  the registry card is a pure display function and must not 500 the whole page over one malformed team
+  mid-edit — caught per node (`resolveStepMember`), falling back to the bare step label as plain mono
+  text so the rest of the page still renders.
+- `gate` → the SAME `.diamond.is-gate` marker the run view's own mini-score already draws for a gate node
+  (`derive.ts#miniScoreHtml`) — one visual vocabulary for "this is a gate" across the whole board, not a
+  second glyph invented here. This is also literally the fix the goal pointed at: "type cards already
+  render a `gates` row correctly — whatever does that is the reference for this" (the type card's own
+  chip treatment named the CONCEPT; the run view's diamond is what supplied the actual MARKER reused).
+- `loop` → both `between` member avatars side by side, joined by a loop glyph (`⇆`, U+21C6), captioned
+  underneath with `until` / `max N` / `on_exhaust: X` in the `.mn` class — which `.flowstrip` had defined
+  in `assets/styles.css` since UI7 with literally no caller ever using it, a dormant already-designed rule
+  of exactly the kind this codebase keeps finding and wiring up rather than leaving unnoticed.
+
+One new CSS rule, `.flowstrip .looppair{display:flex;align-items:center;gap:4px;}`, lays the loop's own
+avatar pair out as a row inside the pre-existing column-flex `.m` wrapper (which already stacks a step's
+single avatar); everything else reuses classes that already existed.
+
+## Tests
+
+`tests/registry-cards-render-definitions.test.ts` (new) scaffolds a real studio via `scaffoldStudio` +
+`loadRepo` — the exact tree `levare init` leaves, not a hand-built synthetic `Repo` — and asserts each fix
+against it, kind by kind, plus one dedicated assertion counting two `diamond is-gate` markers and the
+loop's own `spec.approved`/`3`/`gate` in the flow row specifically (the fix the goal itself named as the
+one a reader most needs). This means a future edit that changes the scaffold's shape without updating the
+renderer, or the renderer without updating the scaffold, fails here rather than drifting apart silently —
+the same "driven from the scaffold" property `tests/guide-workflow-blocks.test.ts` (NOTES
+DOCS-WALKTHROUGH-1) already established for the guide's own code blocks, applied to card rendering.
+
+**A real correctness bug in the test itself, caught before it shipped:** the first draft of `cardFor()`
+matched the whole `<article class="entity card">...</article>` block. Every card also carries a hidden
+`<textarea class="rawmd-source">` holding the entity's full raw markdown (`esc()`-escaped, for the edit
+overlay) — and plain body prose with no HTML-special characters reads byte-identical whether it came from
+the real render or that raw fallback. Three of the "team" assertions (charter body, guardrails, knowledge)
+initially PASSED against the pre-fix renderer, purely because the raw source textarea already contained
+the same words — a test that can't fail is worse than no test. Fixed by scoping `cardFor()` to the
+`<div class="rendered">` slice specifically (everything between that div's own open tag and the raw
+textarea's), which made all three genuinely fail until the corresponding renderer fix landed, in the
+expected order (verified live, not assumed: reran the suite after each of the six commits below and
+confirmed exactly the not-yet-implemented assertions failed, never more, never fewer).
+
+One PRE-EXISTING test broke as a legitimate consequence of fix 2, not a regression:
+`tests/board-render.test.ts`'s UI7 knowledge-card test banned the literal substring "Injected into"
+anywhere in a rendered card — a guard against an OLD backlink section UI7 had removed. `knowledge/
+house-style.md`'s own body happens to use that exact phrase to describe itself ("Injected into member
+context when referenced"), so the moment the card legitimately rendered that body, the blind substring
+ban tripped on real, correct output. Narrowed to the actual regression it exists to catch — the old
+section's own heading (`<div class="card__h">Injected into</div>`) — never the prose the fix now shows.
+
+## Commits, one entity kind at a time (per the goal's own instruction)
+
+1. Types (heading) + knowledge (body) + projects (fields + body + heading) — the three smallest,
+   independently reviewable on the board.
+2. Agent card — role lead, tools/connectors as values, every cli/remote field.
+3. Team card, non-flow — charter, guardrails, knowledge.
+4. Team flow row — stages, gates, the loop. Last, as instructed: the largest visual change, the one most
+   likely to need a density judgment call, and the one the goal named as most wrong.
+
+## What this closes, and what it deliberately doesn't touch
+
+No frontmatter schema changed — every field rendered here already existed and already validated; the
+entire fix is in `render/registry.ts`, `render/project.ts`, one small `components.ts` primitive
+(`leadText`), and one CSS rule. The pre-existing, tested decision that a project's `repo`/`deploy` render
+as icon links rather than pointer-card label rows is untouched by design, not by oversight — a different,
+already-settled ruling (UI2 items 2/3) this unit had no reason to reopen. `docs/current-gaps.md` gains and
+closes a matching entry.
