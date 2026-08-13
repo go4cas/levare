@@ -601,3 +601,13 @@ hang in an unrelated compiled-binary test. See NOTES DIST5-HANG for the full ins
 `serve` — none hung on this container, all completing in ~1–1.4s, consistent with "the internal bound
 works, the outer one was just shorter than it") and for the separate, pre-existing, explicitly
 untouched `readBoundPort` cold-start flake this investigation surfaced but did not cause or fix.
+
+**What is NOT closed by this entry:** why a real host took 20-45s in the first place. Direct
+measurement on this container refutes the initial "SDK retrying the fake credential with backoff"
+guess (zero retries logged, `duration_api_ms: 0`, consistently under 1.1s — this literal key is
+rejected locally before any request is built) and rules out silent dependency version drift
+(`bun.lock` pins the SDK and every platform binary exactly, `--frozen-lockfile` in CI). The real
+explanation remains open — `sdk-worker.ts` now logs every SDK-reported retry (`SDKAPIRetryMessage`:
+attempt count, classified error status, backoff delay) and total elapsed wall-clock time
+unconditionally on every exit path, specifically so the next real occurrence is diagnosable from
+stderr instead of requiring this same investigation to be redone from a bare timeout.

@@ -158,12 +158,30 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
     return;
   }
 
+  // NOTES DIST5-HANG: the ONLY visibility this worker previously had into a slow real call was its
+  // caller's own external timeout-and-kill (sdk-transport.ts) firing 45s later with no explanation of
+  // what the process spent that time on. Two gaps that left open specifically: (1) a call that's merely
+  // SLOW rather than genuinely stuck (finishes on its own, just late) left no trace at all — only a
+  // timed-out call was ever diagnosable; (2) the SDK's own `query()` streams a distinct message,
+  // `SDKAPIRetryMessage` (`type: "system", subtype: "api_retry"`), for every retried request — including
+  // "connection errors (e.g. timeouts) that had no HTTP response" per its own doc comment, exactly the
+  // shape a real network-level hang on a restricted-egress host would take — and this worker silently
+  // dropped every one of them (the `for await` loop below only ever branched on `assistant`/`result`).
+  // Both are closed unconditionally (not debug-gated, mirroring `orchestrator-boundary.ts#logReceipt`'s
+  // own always-on precedent — real SDK calls are infrequent enough that this costs nothing): the elapsed
+  // wall-clock time is logged on EVERY exit path (success, a non-success result, and a thrown error
+  // alike), and every `api_retry` message is logged as it streams, naming the attempt count, the
+  // classified error status (`null` for a connection-level failure), and the backoff delay the SDK
+  // itself chose — so the NEXT time a real call is slow, "the SDK retried N times, last delay Xms,
+  // classified as <status>" is sitting in stderr instead of a bare, unexplained 45s wait.
+  const startedAt = Date.now();
   try {
     let resultText = "";
     let structuredOutput: unknown;
     let receipt: Receipt | undefined;
     let sawSuccess = false;
     let failure: string | undefined;
+    let retryCount = 0;
     // NOTES F11: see `deriveReceipt`'s own doc for why this is tracked from `assistant` messages
     // rather than trusted to `modelUsage`'s key order.
     let respondingModel: string | null = null;
@@ -171,6 +189,14 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
       prompt: req.prompt,
       options: buildQueryOptions(req),
     })) {
+      if (message.type === "system" && message.subtype === "api_retry") {
+        retryCount++;
+        console.error(
+          `levare: sdk worker query() retrying (attempt ${message.attempt}/${message.max_retries}, ` +
+            `error_status=${message.error_status ?? "null (connection error, no HTTP response)"}, ` +
+            `retry_delay_ms=${message.retry_delay_ms}) — ${Date.now() - startedAt}ms elapsed so far`,
+        );
+      }
       if (message.type === "assistant" && typeof message.message?.model === "string") {
         respondingModel = message.message.model;
       }
@@ -188,12 +214,14 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
         }
       }
     }
+    console.error(`levare: sdk worker query() finished in ${Date.now() - startedAt}ms (${retryCount} retr${retryCount === 1 ? "y" : "ies"}, ${sawSuccess ? "success" : "no success result"})`);
     if (!sawSuccess) {
       respond({ ok: false, error: failure ?? "sdk query produced no result message" });
       return;
     }
     respond({ ok: true, result: resultText, structuredOutput, receipt });
   } catch (e) {
+    console.error(`levare: sdk worker query() threw after ${Date.now() - startedAt}ms`);
     respond({ ok: false, error: e instanceof Error ? e.message : String(e) });
   }
 }

@@ -162,18 +162,24 @@ describe("a compiled `serve` dispatches a real Orchestrator turn through the rea
   // below) MUST stay comfortably longer than that bound, never shorter — the exact rule
   // `orchestrator-boundary.ts`'s own comment on `timeoutMs` already states for every OTHER caller of
   // this boundary, just not previously audited for THIS one. Before this fix it was a flat `20_000` —
-  // shorter than the 45s bound the real call path it drives is entitled to use — so on any host slow
-  // enough for the real call to genuinely need somewhere between 20s and 45s (a cold compiled-binary
-  // self-invocation plus a real network round trip: entirely plausible under CI load, and this test
-  // builds and self-invokes a FRESH scratch binary, paying that cold-start cost fresh every run), Bun's
-  // own test-runner killed the test first, at exactly its own declared bound — never letting
-  // `interpret()`'s already-working internal timeout-and-report actually fire. That is the "hangs at
-  // exactly 20000ms, never varying" signature this investigation was opened to explain: not an
-  // unbounded wait anywhere in the real call path, but this test's own outer bound being shorter than a
-  // bound the code it drives is explicitly allowed to take — the harness's `proc.kill()` in `finally`
-  // then only reaches the direct `levare serve` child, never the detached, still-running worker+CLI
-  // process group `interpret()`'s own timer would have reaped had it been given the chance to fire,
-  // which is exactly the "killed 1 dangling process" teardown report every run of this test left behind.
+  // shorter than the 45s bound the real call path it drives is entitled to use — so IF the real call ever
+  // needs somewhere between 20s and 45s, Bun's own test-runner would kill the test first, at exactly its
+  // own declared bound, never letting `interpret()`'s already-working internal timeout-and-report actually
+  // fire. That is the "hangs at exactly 20000ms, never varying" signature this investigation was opened to
+  // explain — the harness's `proc.kill()` in `finally` then only reaches the direct `levare serve` child,
+  // never the detached, still-running worker+CLI process group `interpret()`'s own timer would have
+  // reaped had it been given the chance to fire, which matches the "killed 1 dangling process" teardown
+  // report every failing run left behind. NOTES DIST5-HANG is explicit that WHY a real call took 20-45s
+  // on the affected hosts is still open, not established here: direct, instrumented measurement on this
+  // container (a real worker call against this same fake credential, both the source and compiled-binary
+  // self-invocation paths, and the native CLI's own `--debug` log) consistently completed in under 1.1s
+  // with zero SDK retries and zero real network round trip (`duration_api_ms: 0` — this literal key is
+  // rejected locally, before any request is built) — so the specific "SDK retry-storm on this fake key"
+  // explanation is refuted for the currently-pinned SDK version, not confirmed. This fix is justified
+  // independent of that open question: a test's own outer bound must never be shorter than a bound the
+  // code it drives is contractually allowed to use, regardless of whether this literal run ever exercises
+  // the slow path — and `sdk-worker.ts` now logs every SDK-reported retry plus real elapsed time
+  // unconditionally, so if/when a real host DOES take 20-45s, the reason is in stderr, not re-derived.
   test("with a credential present, the real spawn is attempted end-to-end — never disabled, never ENOENT/$bunfs/unknown-command", async () => {
     const root = seedScratchStudio();
     const { proc, base } = await spawnLevareServe([root, "--no-daemon"], {
