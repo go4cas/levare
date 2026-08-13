@@ -93,7 +93,7 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
       // actually reachable before this: the prior computation only ever emitted "done" or ""). "is-live"/
       // "is-open" carry the approved rail's actionable-tint row wash (--active-panel/--gate-panel) —
       // the same "tint only when actionable" vocabulary the stat band and gate cards already use.
-      const rowStateCls = n.state === "done" ? "done" : n.state === "wait" ? "upcoming" : n.state === "blocked" ? "blocked" : "";
+      const rowStateCls = n.state === "done" ? "done" : n.state === "wait" ? "upcoming" : n.state === "blocked" || n.state === "unreachable" ? "blocked" : "";
       const rowLiveCls = n.state === "active" ? "is-live" : n.state === "gate" ? "is-open" : "";
       const rowCls = ["sstep", rowStateCls, rowLiveCls].filter(Boolean).join(" ");
       const snodeCls = scoreNodeClass(n, isGate);
@@ -110,12 +110,18 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
         // colored dot with no label — the reason itself (now including the member's stderr) is a click
         // away via the artifact link already rendered in `sub`, but nothing told the Conductor to click.
         : n.state === "blocked" ? statusBadge("blocked", "blocked", "sstep__chip")
+        // Fault 1: its own chip, distinct from "blocked" — a blocked artifact is a Conductor decision
+        // away from moving; an unreachable stage never is, and the label must say so plainly.
+        : n.state === "unreachable" ? statusBadge("blocked", "unreachable", "sstep__chip")
         : "";
       const sub = n.artifact
         ? `${esc(n.artifact.produced_by)} &middot; ${artifactTokenLink(n.artifact.project, n.artifact.unit, n.artifact.id, artifactFileName(n.artifact))}`
         : n.state === "active" && n.producedBy
           ? `${esc(n.producedBy)} &middot; producing&hellip;`
-          : "queued";
+          // Fault 1: the whole point — never call this "queued". Nothing arriving ever changes it.
+          : n.state === "unreachable"
+            ? "unreachable &middot; no member produces this"
+            : "queued";
       // Tier 3 (amendment 1 §2 R4, 10s+): the live strip — round n/m (only when this kind belongs to
       // a review loop; a plain one-shot step has no round to state), plus real elapsed time. No token
       // count (see ScoreNode.live's doc comment) — the strip states only what's actually known.

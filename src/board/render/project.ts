@@ -3,8 +3,10 @@
 // ---------------------------------------------------------------------------
 
 import type { Repo } from "../../repo.ts";
+import { firstParagraph } from "../../repo.ts";
 import {
   esc,
+  renderInline,
   ageLabel,
   openGates,
   scoreNodes,
@@ -22,7 +24,7 @@ import { loadExtras } from "../../extra.ts";
 import type { DaemonInvocation } from "../../daemon.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
 import { dotClass, fromNodeState, fromWorkUnitStatus } from "../status.ts";
-import { statusBadge, paceBadge, iconLink, statStrip, card, orchTurn } from "../components.ts";
+import { statusBadge, paceBadge, iconLink, statStrip, card, orchTurn, leadText } from "../components.ts";
 import {
   shell,
   pageBody,
@@ -88,11 +90,23 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
   // (which is nav-only now) into a compact content-column panel at the top of the page — the same
   // `.card`/`.prow`/`.founding` vocabulary the registry already stacks multiple labeled sections
   // inside one card with. Item 6a: repo/deploy moved to icon links beside the title, so the pointer
-  // card carries only `pace` now (item 6c: a colour-coded badge, not a plain-text row).
+  // card never repeats them as label rows (item 6c: pace is a colour-coded badge, not plain text) —
+  // that ruling (and its own test, board-render.test.ts) is unchanged here.
+  //
+  // NOTES REGISTRY-BODY: `default_branch` was declared on every project and shown nowhere on the
+  // board at all — added as a plain row, the same treatment `pace` already gets. The body — the
+  // project's own house rules, injected into every member's context for this project (§6 recipe item
+  // 5) — used to be dropped entirely; the goal's own example (a payments-code merge-gate rule) is
+  // exactly the kind of fact a Conductor reading this page needs and previously could not see here.
+  // "Constitution" is renamed "Founding artifacts": it was jargon that happened to sit beside two
+  // OTHER genuinely jargon headings elsewhere in the registry (agent/type cards) — this project page's
+  // own heading names exactly what `foundingHtml` renders, nothing metaphorical.
   const pointerPanel = `<div class="card">
     <div class="card__h">Pointer</div>
     <div class="prow"><span class="k">pace</span><span class="v">${paceBadge(project.pace)}</span></div>
-    <div class="card__h" style="margin-top:6px">Constitution</div>
+    <div class="prow"><span class="k">default_branch</span><span class="v mono">${esc(project.default_branch)}</span></div>
+    ${project.houseRules ? `<div class="card__h" style="margin-top:6px">House rules</div>${leadText(firstParagraph(project.houseRules))}` : ""}
+    <div class="card__h" style="margin-top:6px">Founding artifacts</div>
     ${foundingHtml}
     <div class="card__h" style="margin-top:6px">Releases</div>
     ${releasesHtml}
@@ -162,7 +176,10 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
         pre: `<span class="unit__glyph">${typeGlyphSvg(type?.name)}</span>`,
         title: `<div class="unit__titlewrap"><span class="unit__name">${esc(u.unit)}</span><a class="unit__path link mono" href="/run/${esc(u.project)}/${esc(u.unit)}">work/${esc(u.project)}/${esc(u.unit)}/</a></div>`,
         status: chip,
-        body: `<div class="unit__desc">${esc(unitSummary(repo, u))}</div>\n        ${miniScoreHtml(nodes)}`,
+        // Fault 4: routed through renderInline, not plain esc() — a member-authored summary's own
+        // `**bold**` (e.g. adapters.ts's own stub brief: "**Problem.** ...") must render as emphasis
+        // here, the same as it would if the reader opened the artifact itself.
+        body: `<div class="unit__desc">${renderInline(unitSummary(repo, u))}</div>\n        ${miniScoreHtml(nodes)}`,
         meta: `<div class="unit__detail">
           ${artifactRows}
           <div class="unit__foot">${reviewRounds} review round${reviewRounds === 1 ? "" : "s"} &middot; ${gates.filter((g) => g.unit === u.unit).length} gate${gates.filter((g) => g.unit === u.unit).length === 1 ? "" : "s"} <span class="cost">&middot; ${spend.tokens} tok &middot; ~$${spend.usd.toFixed(2)}</span></div>

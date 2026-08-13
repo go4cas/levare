@@ -11,7 +11,7 @@
 import type { Artifact, ArtifactStatus, Team, TypeTemplate, Usage, WorkUnit } from "./types.ts";
 import type { Repo } from "./repo.ts";
 import { firstParagraph, repoCapabilities } from "./repo.ts";
-import { isLoopCompanionKind, loopMembershipFor, responsibleTeamsFor } from "./gates.ts";
+import { isLoopCompanionKind, loopMembershipFor, responsibleTeamsFor, unreachableExpectedKinds } from "./gates.ts";
 import { roundOf } from "./runner.ts";
 import type { DaemonInvocation } from "./daemon.ts";
 
@@ -21,6 +21,19 @@ export function esc(s: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+// Fault 4: `**bold**` — the one inline-emphasis convention member-authored bodies actually use
+// (adapters.ts's own stub brief opens "**Problem.** The current three-page checkout loses buyers...")
+// — was rendering as literal asterisks anywhere a unit summary is shown outside its own artifact page,
+// because those call sites (project.ts's work-unit cards, studio.ts's in-flight project card) ran
+// `unitSummary`'s output through plain `esc()` alone. Escapes FIRST, then converts already-escaped
+// `**…**` pairs to `<strong>` — never trusts raw member text as HTML input. Block-level markdown
+// (headings, paragraph breaks) is a separate concern `shell.ts#renderBody` already owns; a unit
+// summary is always a single already-extracted paragraph (`firstParagraph`), so only the inline case
+// applies here.
+export function renderInline(s: string): string {
+  return esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
 }
 
 /** "31k tok · ~$0.58", "unreported", or "" when there is no usage at all. */
@@ -193,7 +206,12 @@ function unitShipped(repo: Repo, project: string, unitId: string): boolean {
 // Mini-score / score dots (PRD §9: "state nodes in the canonical palette")
 // ---------------------------------------------------------------------------
 
-export type NodeState = "done" | "active" | "gate" | "wait" | "rejected" | "blocked";
+// "unreachable" (fault 1 fix): a kind the unit's type `expects:` but no member of its responsible
+// team can ever produce (flow.ts#unreachableExpectedKinds) — distinct from "wait" (a kind that IS
+// reachable and just hasn't been produced yet, which real progress or a Conductor action resolves).
+// An unreachable stage never resolves on its own; conflating it with "wait" is what let the rail claim
+// a Conductor was waiting on progress that could never come.
+export type NodeState = "done" | "active" | "gate" | "wait" | "rejected" | "blocked" | "unreachable";
 export interface ScoreNode {
   kind: string;
   shape: "dot" | "diamond";
@@ -225,6 +243,7 @@ export function scoreNodes(repo: Repo, unit: WorkUnit, running: DaemonInvocation
   const artifacts = [...(repo.artifacts.get(`${unit.project}/${unit.unit}`)?.values() ?? [])];
   const inv = running.find((r) => r.project === unit.project && r.unit === unit.unit);
   const capabilities = repoCapabilities(repo);
+  const unreachable = new Set(unreachableExpectedKinds(repo, unit, capabilities));
   return expects.map((kind) => {
     // Prefer the live (non-superseded) artifact of this kind; fall back to the most recent one so a
     // rejected/blocked kind still renders its true state rather than reading as untouched.
@@ -246,6 +265,10 @@ export function scoreNodes(repo: Repo, unit: WorkUnit, running: DaemonInvocation
           live: { startedAt: inv.startedAt, loop },
         };
       }
+      // Fault 1: a kind no member of the responsible team can ever produce is not "wait" — nothing
+      // arriving changes it, and rendering it as an ordinary queued step tells a Conductor to keep
+      // watching for progress that cannot come.
+      if (unreachable.has(kind)) return { kind, shape: "dot", state: "unreachable" };
       return { kind, shape: "dot", state: "wait" };
     }
     const state = nodeStateFor(current.status);

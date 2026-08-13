@@ -684,6 +684,7 @@ export function validatePath(target: string, overlay?: OverlayFile, sandbox?: Sa
     validateStudioBindings(target, errors, overlay);
     validateAgentTeamMembership(target, errors, overlay);
     validateResponsibleTeam(target, errors, overlay);
+    validateUncoverableExpectedKinds(target, warnings, overlay);
     validateAgentContextScope(target, errors, overlay);
     validateEnvNotTracked(target, errors);
     validateKnownModels(target, errors, overlay);
@@ -2240,6 +2241,108 @@ function validateResponsibleTeam(root: string, errors: ValidationError[], overla
       ` (if you renamed an entity, every reference to the old name must be updated — ${refs.length} reference(s) ` +
       `still point at '${oldName}'; teams/${oldName}.md now declares name: '${newName}')`;
     for (const err of refs) err.message += hint;
+  }
+}
+
+/**
+ * Fault 1 (NOTES RAIL-UNREACHABLE): a unit's type `expects:` a fixed shape of kinds, but its actual
+ * responsible team may cover only part of it — `teams/kestrel.md` declares `produces: [product-brief,
+ * design, spec]` against `feature`'s `expects: [product-brief, design, spec, code, review]`, and no
+ * member anywhere in the golden studio produces `code` at all. That gap is not itself an error: a team
+ * assigned to a unit that only ever needs a subset of its type's stages (a brief-and-review-only unit,
+ * say) is a legitimate configuration, and TEAM_CANNOT_PRODUCE/AMBIGUOUS_PRODUCER above already refuse
+ * the genuinely broken shapes (no responsible team at all, or more than one candidate). This is the
+ * narrower, honest middle ground: a WARNING naming exactly which of the type's expected kinds no member
+ * of the unit's responsible team(s) can ever produce, so a Conductor reads it at `levare validate` time
+ * rather than discovering it only as a score-rail row that sits at "queued" forever
+ * (derive.ts#scoreNodes / flow.ts#unreachableExpectedKinds — the identical reachability computation,
+ * never a second copy of it, so validate and the board can never disagree on which stages are honestly
+ * reachable).
+ */
+function validateUncoverableExpectedKinds(root: string, warnings: ValidationWarning[], overlay?: OverlayFile): void {
+  const workRoot = join(root, "work");
+  const teamsDir = join(root, "teams");
+  const agentsDir = join(root, "agents");
+  const typesDir = join(root, "types");
+  if (!existsSync(workRoot) || !existsSync(teamsDir) || !existsSync(agentsDir) || !existsSync(typesDir)) return;
+
+  const agentProduces = new Map<string, string[]>();
+  for (const name of readdirSync(agentsDir).sort()) {
+    if (!name.endsWith(".md") || name.endsWith(".learnings.md")) continue;
+    let data: Record<string, YamlValue>;
+    try {
+      ({ data } = parseFrontmatter(readOverlaid(join(agentsDir, name), overlay)));
+    } catch {
+      continue; // its own PARSE_ERROR was already recorded by the per-file pass.
+    }
+    if (typeof data.name === "string") agentProduces.set(data.name, strList(data.produces));
+  }
+
+  const teamMembers = new Map<string, string[]>();
+  const teamProduces = new Map<string, string[]>();
+  for (const file of readdirSync(teamsDir).sort()) {
+    if (!file.endsWith(".md") || file.endsWith(".learnings.md")) continue;
+    let data: Record<string, YamlValue>;
+    try {
+      ({ data } = parseFrontmatter(readOverlaid(join(teamsDir, file), overlay)));
+    } catch {
+      continue;
+    }
+    const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+    teamMembers.set(name, strList(data.members));
+    teamProduces.set(name, strList(data.produces));
+  }
+
+  const typeExpects = new Map<string, string[]>();
+  for (const file of readdirSync(typesDir).sort()) {
+    if (!file.endsWith(".md")) continue;
+    let data: Record<string, YamlValue>;
+    try {
+      ({ data } = parseFrontmatter(readOverlaid(join(typesDir, file), overlay)));
+    } catch {
+      continue;
+    }
+    const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+    typeExpects.set(name, strList(data.expects));
+  }
+
+  for (const project of listDirs(workRoot)) {
+    for (const unitName of listDirs(join(workRoot, project))) {
+      const unitFile = join(workRoot, project, unitName, "unit.md");
+      if (!existsSync(unitFile)) continue;
+      let data: Record<string, YamlValue>;
+      try {
+        ({ data } = parseFrontmatter(readFileSync(unitFile, "utf8")));
+      } catch {
+        continue;
+      }
+      const type = typeof data.type === "string" ? data.type : undefined;
+      const expects = type ? (typeExpects.get(type) ?? []) : [];
+      if (expects.length === 0) continue;
+      const teamOverride = typeof data.team === "string" ? data.team : undefined;
+      // Candidate responsible team(s) — the same produces∩expects scoring flow.ts#responsibleTeamsFor
+      // uses. An explicit `team:` override names the sole candidate; otherwise every team producing at
+      // least one expected kind is one (AMBIGUOUS_PRODUCER, above, already refuses a genuine conflict
+      // between candidates — this only ever asks "can NONE of them cover this kind").
+      const candidates = teamOverride
+        ? teamProduces.has(teamOverride) ? [teamOverride] : []
+        : [...teamProduces.entries()].filter(([, produces]) => produces.some((k) => expects.includes(k))).map(([name]) => name);
+      if (candidates.length === 0) continue; // no responsible team at all — a different failure, caught elsewhere.
+
+      const uncoverable = expects.filter(
+        (kind) => !candidates.some((teamName) => (teamMembers.get(teamName) ?? []).some((m) => (agentProduces.get(m) ?? []).includes(kind))),
+      );
+      if (uncoverable.length === 0) continue;
+      warnings.push({
+        code: "UNCOVERABLE_EXPECTED_KIND",
+        message:
+          `unit '${unitName}' (type '${type}') expects kind(s) [${uncoverable.join(", ")}], but no member of its responsible team ` +
+          `(${candidates.join(", ")}) declares producing ${uncoverable.length === 1 ? "it" : "any of them"} — this may be a legitimate ` +
+          "configuration (a unit that only ever needs part of its type's shape), but the board's score rail will show these stage(s) " +
+          "as unreachable, never as merely queued",
+        file: unitFile,
+      });
+    }
   }
 }
 

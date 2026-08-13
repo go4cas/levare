@@ -4,14 +4,16 @@
 
 import { readFileSync } from "node:fs";
 import type { Repo } from "../../repo.ts";
-import { firstParagraph } from "../../repo.ts";
+import { firstParagraph, repoCapabilities } from "../../repo.ts";
 import { esc, captionTime } from "../../derive.ts";
 import { loadExtras } from "../../extra.ts";
 import { STUDIO_SCOPE } from "../../conversation.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
 import { detectSandbox, type SandboxDetection } from "../../sandbox.ts";
 import { remoteAgentImplemented } from "../../env.ts";
-import { tag, kindTag, editorOverlay, orchTurn, callout, card } from "../components.ts";
+import { resolveStep } from "../../flow.ts";
+import type { Team, FlowNode } from "../../types.ts";
+import { tag, kindTag, editorOverlay, orchTurn, callout, card, leadText } from "../components.ts";
 import { registryKindIconBody } from "./entity-icons.ts";
 import { deriveTeamStyle } from "../team-color.ts";
 import {
@@ -26,6 +28,70 @@ import {
   type RegistryKind,
   registryKindCount,
 } from "./shell.ts";
+
+// NOTES REGISTRY-BODY: an agent's body is a system prompt written in second person ("You are Wren, a
+// product framer. ...") — rendering it verbatim reads oddly as card copy, but the pre-existing behaviour
+// (dropping it entirely) hid the one thing a reader looking at a member card actually wants: its role.
+// Decided here: the body's own first SENTENCE, as a lead-in — long enough to answer "who is this" (the
+// scaffold's own agents/wren.md: "You are Wren, a product framer." is exactly this), short enough that a
+// multi-paragraph system prompt never floods the card. Falls back to the whole first paragraph when no
+// sentence boundary is found within it (a body that's just one short clause with no terminal period).
+function firstSentence(body: string): string {
+  const para = firstParagraph(body);
+  const m = /^.*?[.!?](?=\s|$)/.exec(para);
+  return m ? m[0] : para;
+}
+
+// NOTES REGISTRY-BODY: the team flow row used to render `t.members` — a flat, avatar-only chain
+// (wr → ly → fi) that carries no flow information at all, on a board whose entire premise is Conductor
+// approval AT A GATE. `teams/kestrel.md` declares five stages (two `gate: human` halts and a bounded
+// `loop`) and the card rendered three member avatars, indistinguishable from a plain linear handoff —
+// the type card's own `gates` row is the reference this fixes toward: a declared control-flow fact
+// renders as itself, not folded into a member list. Each `FlowNode` renders as one flowstrip item:
+//
+//  - step  → the resolved member's avatar (same avatar/title treatment the old members-only strip used)
+//  - gate  → the SAME diamond marker the run view's own mini-score already uses for a gate node
+//            (`.diamond.is-gate`, derive.ts#miniScoreHtml) — one visual vocabulary for "a gate", not a
+//            second one invented here.
+//  - loop  → both member avatars for its `between` pair, joined by a loop glyph, with the loop's own
+//            bound and escalation (`until` / `max_rounds` / `on_exhaust`) captioned underneath in the
+//            `.mn` treatment `.flowstrip` already had defined in CSS but no caller had ever used.
+//
+// `resolveStep` is the Runner's OWN step→member resolution (flow.ts, ruling B2) — reused rather than
+// re-derived, so the card can never show a binding that disagrees with what actually dispatches. It
+// throws on an unbound/ambiguous step; a validated repo never hits that (validate.ts#validateStudioBindings
+// enforces every step resolves before a studio is accepted), but the card is a pure display and must
+// never 500 the whole registry page over one malformed team mid-edit — caught per node, falling back to
+// the bare step label so the rest of the page still renders.
+function resolveStepMember(team: Team, label: string, capabilities: Array<{ member: string; kind: string }>): string | undefined {
+  try {
+    return resolveStep(team, label, capabilities).member;
+  } catch {
+    return undefined;
+  }
+}
+
+function flowStepAvatar(repo: Repo, team: Team, label: string, member: string | undefined): string {
+  if (!member) return `<span class="mono" title="unresolved flow step">${esc(label)}</span>`;
+  return avatar(repo.agents.get(member)?.style.avatar ?? member.slice(0, 2), team.style.color, { title: `${member} · ${label}` });
+}
+
+function flowNodeHtml(repo: Repo, team: Team, node: FlowNode, capabilities: Array<{ member: string; kind: string }>): string {
+  if (node.kind === "step") {
+    const member = resolveStepMember(team, node.step, capabilities);
+    return `<div class="m">${flowStepAvatar(repo, team, node.step, member)}</div>`;
+  }
+  if (node.kind === "gate") {
+    return `<div class="m" title="gate: ${esc(node.who)}"><span class="diamond is-gate"></span></div>`;
+  }
+  const [a, b] = node.between;
+  const avA = flowStepAvatar(repo, team, a, resolveStepMember(team, a, capabilities));
+  const avB = flowStepAvatar(repo, team, b, resolveStepMember(team, b, capabilities));
+  // Fault 3: `&nbsp;` inside each key/value pair (until X, max N, on_exhaust: Y) so a narrow card wraps
+  // only at the " · " separators between pairs, never mid-phrase (a bare space let the browser break
+  // "on_exhaust:" from "gate").
+  return `<div class="m"><div class="looppair">${avA}<span class="arr">&#8646;</span>${avB}</div><span class="mn">until&nbsp;${esc(node.until)} &middot; max&nbsp;${node.maxRounds} &middot; on_exhaust:&nbsp;${esc(node.onExhaust)}</span></div>`;
+}
 
 // One bordered container per entity, built through the shared `card()` primitive (components.ts) —
 // the same title-top-left/status-top-right/supporting-content-bottom contract the studio project card
@@ -107,23 +173,60 @@ export function renderRegistry(
   const rail = railNav(repo, extras, { activeRegistryEntity: active });
   const title = active.charAt(0).toUpperCase() + active.slice(1);
 
+  const teamCapabilities = repoCapabilities(repo);
   const teamBlocks = [...repo.teams.values()]
     .map((t) => {
       // UI7: the flow strip shows who runs each step by avatar alone — the name moves to the
       // avatar's hover title (RULE A/B: shape+colour carry identity, no name text printed per step).
-      const flow = t.members
-        .map((m) => `<div class="m">${avatar(repo.agents.get(m)?.style.avatar ?? m.slice(0, 2), t.style.color, { title: m })}</div>`)
-        .join('<span class="arr">&rarr;</span>');
+      // NOTES REGISTRY-BODY: this used to render `t.members` — a flat avatar chain that carries no flow
+      // information (see this file's own `flowNodeHtml` comment for the full reasoning). It now renders
+      // `t.flow` itself — every declared step, gate, and loop, in order — so DECLARED FLOW and the
+      // Definition block's `members` row (still every member, unordered) stop looking like the same
+      // fact said twice; one is the flow, the other is the roster.
+      // Fault 3: `.flowstrip` wraps (flex-wrap:wrap) on a narrow card, and an arrow joined between
+      // nodes by plain `.join()` was its own independent flex item — a sibling the wrap algorithm
+      // could break the line after, landing it alone at the end of one line with the step it points
+      // at starting fresh on the next ("wr → ◆ → ly → ◆ →", then a wrap, then the loop row). Each
+      // node past the first is now wrapped in `.fpair` with its own preceding arrow taken clean OUT OF
+      // FLOW (assets/styles.css: `position:absolute`, anchored to the pair's own left edge) — `.fpair`
+      // itself carries only the NODE's own size for wrapping purposes, and the arrow purely decorates
+      // the gap `.flowstrip`'s own `column-gap` reserves before it. That gap doesn't exist before a
+      // wrapped LINE's own first item (flex-wrap never inserts one there), so the same arrow lands off
+      // the strip's own left edge and is clipped by `overflow:hidden` — no leading connector, no split
+      // pair, on one baseline. The loop pair gets its own modifier (`fpair--loop`): its node stacks an
+      // avatar row above a caption, and the arrow anchors near the avatar row specifically, not the
+      // vertical center of that whole taller stack.
+      const flow = t.flow
+        .map((n, i) => {
+          const node = flowNodeHtml(repo, t, n, teamCapabilities);
+          if (i === 0) return node;
+          const pairCls = n.kind === "loop" ? "fpair fpair--loop" : "fpair";
+          return `<div class="${pairCls}"><span class="arr">&rarr;</span>${node}</div>`;
+        })
+        .join("");
       const memberAvatars = t.members.map((m) => avatar(repo.agents.get(m)?.style.avatar ?? m.slice(0, 2), t.style.color, { title: m })).join("");
       const producesChips = t.produces.map((p) => tag(p, "tag")).join("");
       // NOTES MERGE-1: the REV1 "declared but not yet enforced" notice is retired — `checkGuardrails`
       // acquired its production call site (board/gateops.ts's merge-gate execution, PRD Amendment 2
       // M3) — so a team's declared `guardrails:` are enforced at every merge, and the card no longer
       // needs to warn the Conductor about a gap that no longer exists.
-      const inner = `<div class="card__h">Declared flow</div><div class="flowstrip">${flow}</div>
+      //
+      // NOTES REGISTRY-BODY: the charter (this team's body — "what does this team do") used to render
+      // nowhere on the card at all; shown here as its first paragraph, the skill card's own lead
+      // treatment. `guardrails` — arguably second in importance only to what the team does, since it's
+      // the safety constraint a merge is actually checked against — and `knowledge` were both parsed by
+      // repo.ts and never rendered; both now appear as further Definition rows, field-name labels
+      // matching the agent card's own `context_via`/`context_artifacts` precedent for a label wider
+      // than the row's usual one-word key.
+      const g = t.guardrails;
+      const guardrailRows = g
+        ? `${g.protected_branches?.length ? `<div class="prow"><span class="k">protected_branches</span><span class="v mono">${g.protected_branches.map(esc).join(", ")}</span></div>` : ""}${g.protected_paths?.length ? `<div class="prow"><span class="k">protected_paths</span><span class="v mono">${g.protected_paths.map(esc).join(", ")}</span></div>` : ""}${g.never?.length ? `<div class="prow"><span class="k">never</span><span class="v chiprow">${g.never.map((n) => tag(n, "tag")).join("")}</span></div>` : ""}`
+        : "";
+      const knowledgeRow = t.knowledge?.length ? `<div class="prow"><span class="k">knowledge</span><span class="v chiprow">${t.knowledge.map((k) => tag(k, "tag")).join("")}</span></div>` : "";
+      const inner = `${leadText(firstParagraph(t.charter))}<div class="card__h">Declared flow</div><div class="flowstrip">${flow}</div>
       <div class="card__h">Definition</div>
       <div class="prow"><span class="k">members</span><span class="v chiprow">${memberAvatars}</span></div>
-      <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>`;
+      <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>${guardrailRows}${knowledgeRow}`;
       // The declared colour, as a left-edge card border, is the card's identity instead of a
       // swatch/hex value printed inside it (RULE B). Routed through the same contrast-floored
       // derivation `avatar()` uses (team-color.ts) — the border and a team's member avatars must
@@ -137,6 +240,8 @@ export function renderRegistry(
       const team = [...repo.teams.values()].find((t) => t.members.includes(a.name));
       const recipe = [...(a.skills ?? []), ...(a.knowledge ?? [])].map((p) => `<a class="pill" href="#">${esc(p)}</a>`).join("\n");
       const producesChips = a.produces.map((p) => tag(p, "tag")).join("");
+      const toolsChips = a.tools?.length ? a.tools.map((tl) => tag(tl, "tag")).join("") : "";
+      const connectorsChips = a.connectors?.length ? a.connectors.map((c) => tag(c, "tag")).join("") : "";
       // UI7: kind+model render adjacent ("native · claude-sonnet-5") in one row, the kind itself a
       // shape/treatment badge (RULE B — never colour); no "wears <team>" row (RULE A — the avatar
       // above is already tinted with the team's colour, so the team is shown, not told).
@@ -169,10 +274,36 @@ export function renderRegistry(
         (a.kind === "cli" || (a.kind === "remote" && remoteAgentImplemented(repo, a))) && sandbox.level === "none"
           ? callout("warning", "no working OS-level sandbox primitive was found on this host — this member's process runs unconfined beyond env/HOME scoping; see 'levare doctor' for what was tried.")
           : "";
-      const inner = `<div class="card__h">Context recipe</div><div class="recipe">${recipe || '<span style="color:var(--fg-mute)">none declared</span>'}</div>
+      // NOTES REGISTRY-BODY: "Context recipe" renamed "Skills & knowledge" — plain, and names exactly
+      // what this section lists (jargon flagged the same round as the type card's "Expected kinds").
+      //
+      // Everything from `toolsRow` down is newly rendered: `tools`/`connectors` used to be read only to
+      // decide whether to show a WARNING about them, never shown as values themselves — a reader could
+      // see "this cli member's tools: isn't enforceable" without ever seeing what tools: actually named.
+      // `connectors` (the member's own grant, unioned with its team's) is the single most
+      // security-relevant field an agent declares and had no rendering at all. The kind-specific rows
+      // below (`command`/`context_via`/`context_artifacts`/`cwd`/`timeout`/`server`/`tool`) are
+      // presence-gated, not kind-gated — `context_artifacts` is legal on any kind, and gating strictly
+      // by `a.kind` would silently miss a field validate.ts itself accepts. `command` is the literal
+      // argv that executes, including whatever vendor guardrails it carries (docs/guide/04-workflow/
+      // 05-foreign-agent.md's own "when a vendor hands you guardrails, make them visible") — shown
+      // verbatim, mono, the same treatment a connector's own `command`/`env` already get.
+      const toolsRow = toolsChips ? `<div class="prow"><span class="k">tools</span><span class="v chiprow">${toolsChips}</span></div>` : "";
+      const connectorsRow = connectorsChips ? `<div class="prow"><span class="k">connectors</span><span class="v chiprow">${connectorsChips}</span></div>` : "";
+      const commandRow = a.command?.length ? `<div class="prow"><span class="k">command</span><span class="v mono">${a.command.map(esc).join(" ")}</span></div>` : "";
+      const contextViaRow = a.context_via ? `<div class="prow"><span class="k">context_via</span><span class="v mono">${esc(a.context_via)}</span></div>` : "";
+      const contextArtifactsRow = a.context_artifacts ? `<div class="prow"><span class="k">context_artifacts</span><span class="v mono">${esc(a.context_artifacts)}</span></div>` : "";
+      const cwdRow = a.cwd ? `<div class="prow"><span class="k">cwd</span><span class="v mono">${esc(a.cwd)}</span></div>` : "";
+      const timeoutRow = a.timeout ? `<div class="prow"><span class="k">timeout</span><span class="v mono">${a.timeout}s</span></div>` : "";
+      const serverRow = a.server ? `<div class="prow"><span class="k">server</span><span class="v mono">${esc(a.server)}</span></div>` : "";
+      const toolRow = a.tool ? `<div class="prow"><span class="k">tool</span><span class="v mono">${esc(a.tool)}</span></div>` : "";
+      // `result` (required on every cli member) is prose describing what the binary emits — the same
+      // muted-lead treatment as the description above, not a cramped one-line `.prow` value.
+      const resultHtml = a.result ? leadText(a.result) : "";
+      const inner = `${leadText(firstSentence(a.body ?? ""))}<div class="card__h">Skills &amp; knowledge</div><div class="recipe">${recipe || '<span style="color:var(--fg-mute)">none declared</span>'}</div>
       <div class="card__h">Definition</div>
       <div class="prow"><span class="k">kind</span><span class="v">${agentKindBadge(a.kind)}${a.model ? ` <span class="mono">&middot; ${esc(a.model)}</span>` : ""}</span></div>
-      <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>${remoteWarning}${cliToolsWarning}${sandboxWarning}`;
+      <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>${toolsRow}${connectorsRow}${commandRow}${contextViaRow}${contextArtifactsRow}${cwdRow}${timeoutRow}${serverRow}${toolRow}${resultHtml}${remoteWarning}${cliToolsWarning}${sandboxWarning}`;
       return entityBlock("agents", `${avatar(a.style.avatar || a.name.slice(0, 2), team?.style.color, { size: "lg" })} ${esc(a.name)}`, "agent", inner, `agents/${a.name}.md`, rawFor(root, "agents", a.name), a.name, active === "agents");
     })
     .join("\n");
@@ -180,7 +311,7 @@ export function renderRegistry(
   const skillBlocks = extras.skills
     .map((s) => {
       // UI7: no "SKILL.md" heading (an implementation detail, not information) — just the description.
-      const inner = `<p style="margin:0;font-size:13.5px;line-height:1.6;color:var(--fg-dim)">${esc(String(s.data.description ?? firstParagraph(s.body)))}</p>`;
+      const inner = leadText(String(s.data.description ?? firstParagraph(s.body)));
       return entityBlock("skills", esc(s.name), "skill", inner, s.file, rawForPath(root, s.file), s.name, active === "skills");
     })
     .join("\n");
@@ -188,8 +319,13 @@ export function renderRegistry(
   const knowledgeBlocks = extras.knowledge
     .map((k) => {
       // UI7: no "Injected into" backlink section — the item's own declared tags render as chips instead.
+      // NOTES REGISTRY-BODY: a knowledge card used to show a name and two tags and nothing else — for a
+      // document whose entire value IS its content, injected into member context by name (§6). The
+      // skill card already proves the pattern for a reference document's card (a lead paragraph, no
+      // separate heading); this now does the same over the doc's own body rather than dropping it.
       const tags = Array.isArray(k.data.tags) ? (k.data.tags as unknown[]).map(String) : [];
-      const inner = tags.length ? `<div class="chiprow">${tags.map((t) => tag(t, "tag")).join("")}</div>` : '<span style="color:var(--fg-mute)">no tags declared</span>';
+      const tagsHtml = tags.length ? `<div class="chiprow">${tags.map((t) => tag(t, "tag")).join("")}</div>` : '<span style="color:var(--fg-mute)">no tags declared</span>';
+      const inner = `${leadText(firstParagraph(k.body))}${tagsHtml}`;
       return entityBlock("knowledge", esc(k.name), "knowledge", inner, k.file, rawForPath(root, k.file), k.name, active === "knowledge");
     })
     .join("\n");
@@ -199,9 +335,13 @@ export function renderRegistry(
       // NOTES UI11 (RULE A, same ruling as UI7): the title already shows the glyph — no separate
       // glyph row repeating it. `expects`/`gates` render as chip rows through the same tag/chip
       // primitive agents' `produces` already uses, not a plain arrow-joined or comma-joined string.
+      // NOTES REGISTRY-BODY: this heading used to read "Expected kinds" over BOTH rows — wrong once
+      // `gates` (where the flow halts for a human) is right underneath it: a gate is not a kind. Renamed
+      // to "Definition", the same heading the agent/connector cards already use for their own k/v rows —
+      // one word, correct for both rows, no invented per-card vocabulary.
       const expectsChips = t.expects.map((e) => tag(e, "tag")).join("");
       const gatesChips = t.gates.map((g) => tag(g, "tag")).join("");
-      const inner = `<div class="card__h">Expected kinds</div>
+      const inner = `<div class="card__h">Definition</div>
       <div class="prow"><span class="k">expects</span><span class="v chiprow">${expectsChips}</span></div>
       <div class="prow"><span class="k">gates</span><span class="v chiprow">${gatesChips || '<span style="color:var(--fg-mute)">none declared</span>'}</span></div>`;
       return entityBlock("types", `<span style="font-family:var(--mono)">${t.glyph} ${esc(t.name)}</span>`, "type", inner, `types/${t.name}.md`, rawFor(root, "types", t.name), t.name, active === "types");

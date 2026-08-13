@@ -1,11 +1,11 @@
 import { test, expect, describe, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, cpSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, cpSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRepo } from "../src/repo.ts";
 import { renderStudio, renderProject, renderRun, renderRegistry, renderArtifact, renderIdea, scoreNodeClass, scoreLineClass, elapsedLabel, projectStatusChip } from "../src/board/render.ts";
-import { scoreNodes, type NodeState } from "../src/derive.ts";
+import { scoreNodes, renderInline, type NodeState } from "../src/derive.ts";
 import { resolveGate } from "../src/board/gateops.ts";
 import type { OrchestratorStatus } from "../src/orchestrator-status.ts";
 import { chipClass, dotClass, fromWorkUnitStatus, type CanonicalStatus } from "../src/board/status.ts";
@@ -284,7 +284,7 @@ describe("project screen", () => {
   // releases → work units.
   test("the stat strip renders before the pointer/constitution card", () => {
     expect(html.indexOf('class="statstrip"')).toBeLessThan(html.indexOf('class="card"'));
-    expect(html.indexOf('class="statstrip"')).toBeLessThan(html.indexOf("Constitution"));
+    expect(html.indexOf('class="statstrip"')).toBeLessThan(html.indexOf("Founding artifacts"));
   });
 
   // Item 6c: `pace` renders as a colour-coded badge — storefront's pace is `auto`.
@@ -306,6 +306,61 @@ describe("project screen", () => {
     expect(html).toContain('<span class="chip is-done">shipped</span>');
     expect(html).not.toContain("is-approved");
     expect(html).not.toContain("is-progress");
+  });
+});
+
+// Fault 4: a unit summary is a member-authored artifact body's own first paragraph (NOTES A8) — and
+// member prose uses `**bold**` (adapters.ts's own stub brief opens "**Problem.** The current
+// three-page checkout loses buyers..."). The work-unit card (project screen) and the in-flight card
+// (studio screen) both ran that text through plain `esc()`, so a reader saw literal asterisks — on
+// the very same board that already renders markdown correctly elsewhere (artifact.ts/idea.ts's own
+// bodies, and this branch's own registry-card fix). Scratch-copies the golden fixture and edits the
+// checkout-flow spec's own leading paragraph (the exact text both cards summarize) to carry real
+// emphasis, proving both surfaces render it, not just the artifact page these cards link to.
+function scratchRootWithMarkdownSummary(): string {
+  const dir = mkdtempSync(join(tmpdir(), "levare-fault4-markdown-"));
+  cpSync("fixtures/golden", dir, { recursive: true });
+  const specFile = join(dir, "work/storefront/checkout-flow/spec-checkout-flow-v1.md");
+  const src = readFileSync(specFile, "utf8");
+  const withBold = src.replace(
+    "The guest-checkout spec is ready for review",
+    "**Problem:** the guest-checkout spec is ready for review",
+  );
+  expect(withBold).not.toBe(src); // sanity: the replace actually matched something in the fixture
+  writeFileSync(specFile, withBold);
+  return dir;
+}
+
+describe("fault 4: unit summaries render markdown, not literal asterisks", () => {
+  let scratchRoot: string | undefined;
+  afterEach(() => {
+    if (scratchRoot) rmSync(scratchRoot, { recursive: true, force: true });
+    scratchRoot = undefined;
+  });
+
+  test("the project screen's work-unit card renders **bold** as emphasis", () => {
+    scratchRoot = scratchRootWithMarkdownSummary();
+    const html = renderProject(loadRepo(scratchRoot), "storefront", scratchRoot, now);
+    // Scoped to checkout-flow's OWN unit__desc element — cart-icon-fix's card (rendered first, empty
+    // desc) would otherwise false-match, and the same leading artifact's text also appears verbatim
+    // (still unrendered markdown, out of this fix's scope) inside the gate card's own `gate__ctx`
+    // paragraph elsewhere on this page, so an unscoped `not.toContain` would false-fail too.
+    const afterUnit = html.slice(html.indexOf('data-unit="checkout-flow"'));
+    const desc = /<div class="unit__desc">([\s\S]*?)<\/div>/.exec(afterUnit)![1];
+    expect(desc).toContain("<strong>Problem:</strong>");
+    expect(desc).not.toContain("**Problem:**");
+  });
+
+  test("the studio screen's in-flight project card renders **bold** as emphasis", () => {
+    scratchRoot = scratchRootWithMarkdownSummary();
+    const html = renderStudio(loadRepo(scratchRoot), scratchRoot, now);
+    const desc = /<span class="pcard__desc">([\s\S]*?)<\/span>/.exec(html)![1];
+    expect(desc).toContain("<strong>Problem:</strong>");
+    expect(desc).not.toContain("**Problem:**");
+  });
+
+  test("renderInline still escapes real HTML-special characters — never trusts member text as markup", () => {
+    expect(renderInline("<script>alert(1)</script> **bold**")).toBe("&lt;script&gt;alert(1)&lt;/script&gt; <strong>bold</strong>");
   });
 });
 
@@ -352,6 +407,15 @@ describe("registry screen", () => {
   test("no HTML-entity double-escaping artifacts survive", () => {
     expect(html).not.toContain("&amp;middot;");
     expect(html).not.toContain("&amp;mdash;");
+  });
+
+  // Fault 2: rook (ruling C9's isolated-scratch-dir fixture) declares context_artifacts: inline — the
+  // scaffold's own agents never declare this field at all, so the golden fixture is what actually
+  // exercises the row. See registry-cards-render-definitions.test.ts's "fault 2" describe block for
+  // the paired assertion against the CSS rule itself and the team-card guardrails rows.
+  test("agent card: context_artifacts renders as its own label+value pair, not concatenated with it", () => {
+    const rookCard = /<article class="entity card"[^>]*id="agents-rook"[^>]*>[\s\S]*?<\/article>/.exec(html)![0];
+    expect(rookCard).toContain('<span class="k">context_artifacts</span><span class="v mono">inline</span>');
   });
 
   test("each entity is one bordered card — header, body, and edit actions inside it, no nested cards", () => {
@@ -632,7 +696,10 @@ describe("run screen — score rail node markers survive a real gate resolution"
 
     expect(stepCount(beforeScore)).toBe(5);
     expect(snodeClassesOf(beforeScore).length).toBe(5); // one marker per step — no gaps before the approve
-    expect(snodeClassesOf(beforeScore)).toEqual(["snode done", "snode done", "snode is-gate-open", "snode upcoming", "snode upcoming"]);
+    // Fault 1: "code" is not merely queued — no member of kestrel (the unit's responsible team)
+    // declares producing it, so it renders "blocked" (the unreachable state's shared neutral-gray
+    // treatment), never the same hollow "upcoming" a genuinely queued step like "review" gets.
+    expect(snodeClassesOf(beforeScore)).toEqual(["snode done", "snode done", "snode is-gate-open", "snode blocked", "snode upcoming"]);
 
     // The actual failing path: a real gate resolution against the real repo (not a hand-built one),
     // then a fresh re-derive from disk — exactly what the board's GET handler does on the next request.
@@ -643,10 +710,41 @@ describe("run screen — score rail node markers survive a real gate resolution"
     const afterScore = scoreBlock(after);
 
     expect(stepCount(afterScore)).toBe(5);
-    // Every step still carries its node marker post-resolution — code and review (still artifact-less)
-    // must still render their hollow "upcoming" marker, not a missing/mismatched one.
+    // Every step still carries its node marker post-resolution — "review" (still artifact-less, but
+    // reachable) keeps its hollow "upcoming" marker; "code" (still nothing anywhere in the studio
+    // produces it) keeps reading "blocked", not a missing/mismatched one.
     expect(snodeClassesOf(afterScore).length).toBe(5);
-    expect(snodeClassesOf(afterScore)).toEqual(["snode done", "snode done", "snode done", "snode upcoming", "snode upcoming"]);
+    expect(snodeClassesOf(afterScore)).toEqual(["snode done", "snode done", "snode done", "snode blocked", "snode upcoming"]);
+  });
+});
+
+// Fault 1 (NOTES RAIL-UNREACHABLE): a unit's team may cover only part of its type's expected shape —
+// `checkout-flow` (type `feature`, expects product-brief/design/spec/code/review) is run by `kestrel`,
+// whose members (wren, lyra, finch) between them produce product-brief/design/spec/review but never
+// `code` — nothing in the fixture's studio declares producing it at all. The rail used to render that
+// row exactly like "review" (an ordinary "queued" step a Conductor could reasonably keep waiting on),
+// even though no amount of waiting would ever move it. This proves the rail tells the two apart.
+describe("run screen — an uncoverable stage never reads as merely queued", () => {
+  test("scoreNodes marks the uncoverable kind 'unreachable', distinct from a genuinely queued one", () => {
+    const unit = repo.units.find((u) => u.unit === "checkout-flow")!;
+    const nodes = scoreNodes(repo, unit);
+    const codeNode = nodes.find((n) => n.kind === "code")!;
+    const reviewNode = nodes.find((n) => n.kind === "review")!;
+    expect(codeNode.state).toBe("unreachable");
+    expect(reviewNode.state).toBe("wait"); // finch produces review — genuinely just not made yet
+  });
+
+  test("the rendered rail spells it out and never calls it 'queued'", () => {
+    const html = renderRun(repo, "storefront", "checkout-flow", root, now);
+    const score = scoreBlock(html);
+    // Split on the OUTER row div only (`sstep`, never a nested `sstep__rail`/`sstep__body`/etc.).
+    const starts = [...score.matchAll(/<div class="sstep(?!__)[^"]*">/g)].map((m) => m.index);
+    const rows = starts.map((s, i) => score.slice(s, i + 1 < starts.length ? starts[i + 1] : score.length));
+    const codeRow = rows.find((r) => r.includes('class="sstep__label">code<'))!;
+    const reviewRow = rows.find((r) => r.includes('class="sstep__label">review<'))!;
+    expect(codeRow).toContain("unreachable &middot; no member produces this");
+    expect(codeRow).not.toContain(">queued<");
+    expect(reviewRow).toContain(">queued<");
   });
 });
 
@@ -1117,7 +1215,7 @@ describe("the rail is identical navigation on every screen", () => {
       expect(headings).toEqual(["Projects", "Registry", "Connectors", "Ideas"]);
       // Page-specific material must never leak back into the rail.
       expect(rail).not.toContain("Pointer");
-      expect(rail).not.toContain("Constitution");
+      expect(rail).not.toContain("Founding artifacts");
       expect(rail).not.toContain('>Score<');
       expect(rail).not.toContain("Recent releases");
       expect(rail).not.toContain('class="score2"');
@@ -1510,20 +1608,26 @@ describe("UI7: skill cards drop the SKILL.md label", () => {
 });
 
 describe("UI7: knowledge cards show frontmatter tags as chips, not an Injected-into backlink section", () => {
-  test("tags render as chips and no 'Injected into' section survives", () => {
+  test("tags render as chips and no 'Injected into' BACKLINK SECTION survives", () => {
     const html = renderRegistry(repo, root, "knowledge");
     const cards = [...html.matchAll(/<article class="entity card" id="knowledge-[^"]*"[\s\S]*?<\/article>/g)];
     expect(cards.length).toBeGreaterThan(0);
-    // The rendered body must not carry the old backlink section; the raw markdown source (verbatim
-    // in the hidden edit-source textarea) legitimately still mentions "Injected into" in its own prose.
+    // The rendered body must not carry the old backlink section's own heading — never a blind substring
+    // ban on "Injected into" itself: NOTES REGISTRY-BODY now renders the document's own markdown body,
+    // and house-style.md's actual prose legitimately uses that exact phrase ("Injected into member
+    // context when referenced") to describe itself. The regression this test guards against is the OLD
+    // structural section (a heading naming which agents/teams reference this doc), not that string.
     for (const c of cards) {
       const rendered = c[0].replace(/<textarea class="rawmd-source"[\s\S]*?<\/textarea>/, "");
-      expect(rendered).not.toContain("Injected into");
+      expect(rendered).not.toContain('<div class="card__h">Injected into</div>');
     }
     const houseStyle = /<article class="entity card" id="knowledge-house-style"[\s\S]*?<\/article>/.exec(html)![0];
     expect(houseStyle).toMatch(/<div class="chiprow">(<span class="tag">[a-z]+<\/span>)+<\/div>/);
     expect(houseStyle).toContain('<span class="tag">voice</span>');
     expect(houseStyle).toContain('<span class="tag">reference</span>');
+    // NOTES REGISTRY-BODY: the card now also shows the document's own content — a knowledge card used
+    // to render a name and two tags and nothing else, for a document whose entire value is its content.
+    expect(houseStyle).toContain("Calm, factual, slightly dry");
   });
 });
 

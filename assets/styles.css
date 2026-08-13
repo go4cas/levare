@@ -485,7 +485,12 @@ button{ font-family:inherit; }
   display:flex; flex-direction:column; gap:10px; }
 .card__h{ font-family:var(--mono); font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--fg-mute); }
 .prow{ display:flex; gap:12px; align-items:baseline; }
-.prow .k{ font-size:12px; color:var(--fg-mute); width:78px; flex:none; }
+/* Fault 2: a fixed `width:78px` gave every row's label the same column, but a key wider than that
+   (protected_branches, protected_paths, context_artifacts — no space for the box to wrap on) simply
+   overflowed it with no clipping and no separator, visually running into the value beside it
+   ("protected_branchmain"). `min-width` keeps every short label's existing alignment (still floors at
+   78px) while letting a long one grow to fit its own text, so the row's `gap` is real separation again. */
+.prow .k{ font-size:12px; color:var(--fg-mute); min-width:78px; flex:none; }
 .prow .v{ font-size:12.5px; color:var(--fg-dim); }
 
 /* NOTES UI12: the message-severity scale (components.ts#callout) — the ONLY way a note/warning/danger
@@ -579,10 +584,42 @@ button{ font-family:inherit; }
   color:var(--fg-mute); background:var(--panel-2); border:1px solid var(--border);
   padding:3px 9px 3px 7px; border-radius:var(--radius-pill); margin-left:auto; }
 .entity__kind svg{ flex:none; }
-.flowstrip{ display:flex; align-items:center; gap:0; flex-wrap:wrap; }
-.flowstrip .m{ display:flex; flex-direction:column; align-items:center; gap:6px; }
-.flowstrip .arr{ color:var(--fg-mute); font-family:var(--mono); margin:0 10px; align-self:flex-start; margin-top:11px; }
+/* Fault 3 (v2): `overflow:hidden` is load-bearing, not decorative — see `.fpair > .arr` below, which
+   relies on it to clip a connector that lands off the strip's own left edge. `column-gap` reserves,
+   before every non-first flow node, exactly the horizontal room that connector needs to render without
+   overlapping its neighbours; `flex-wrap` never inserts that gap before a wrapped LINE's own first
+   item, which is precisely the property this whole design leans on. */
+.flowstrip{ display:flex; align-items:center; column-gap:22px; row-gap:10px; flex-wrap:wrap; overflow:hidden; }
+.flowstrip .m{ display:flex; flex-direction:column; align-items:flex-start; gap:6px; }
+.flowstrip .arr{ color:var(--fg-mute); font-family:var(--mono); }
 .flowstrip .mn{ font-family:var(--mono); font-size:11px; color:var(--fg-dim); }
+/* Fault 3 (v2): each node past the first is wrapped in `.fpair`, but `.fpair` itself carries ONLY the
+   node — the arrow that logically precedes it (a direct child of `.fpair`, never the loop's OWN
+   internal ⇆ glyph — that one is a `.looppair` descendant, two levels further down, so the child
+   combinator below never reaches it) is taken clean out of flow (`position:absolute`) so it never
+   contributes to `.fpair`'s own size, which is what `flowstrip`'s flex-wrap uses to decide where a
+   line breaks. `right:calc(100% + 6px)` anchors the arrow's own right edge 6px left of `.fpair`'s left
+   edge — i.e. INSIDE the `column-gap` reserved before it when a previous sibling shares the line,
+   rendering beside that sibling exactly like a normal connector. When `.fpair` instead starts a
+   wrapped line, no such gap was ever inserted before it (flex-wrap's own rule, not something this CSS
+   asks for) — the identical `right:calc(100% + 6px)` then places the arrow at a NEGATIVE offset from
+   the strip's own left edge, where the container's `overflow:hidden` (above) clips it away entirely.
+   No JS, no line-position detection: the same fixed arithmetic yields "beside its neighbour" or
+   "invisible" purely from whether that neighbour's gap existed to begin with. */
+.flowstrip .fpair{ position:relative; }
+.flowstrip .fpair > .arr{ position:absolute; top:50%; right:calc(100% + 6px); transform:translateY(-50%); white-space:nowrap; }
+/* The loop's own node stacks an avatar row above a `.mn` caption (below) — true vertical centering
+   (the general rule above) would float the arrow between those two rows, not beside the avatars it
+   actually connects to. Anchored near the avatar row's own height instead (matching the pre-fault-3
+   layout's identical fixed-offset reasoning, not a percentage of the whole taller stack). */
+.flowstrip .fpair--loop > .arr{ top:11px; transform:none; }
+/* NOTES REGISTRY-BODY: a team flow's loop node — its two `between` member avatars side by side, joined
+   by a loop glyph — nested inside a `.flowstrip .m` column alongside its own `.mn` caption (until/max/
+   on_exhaust) below. `.m` itself stays column-flex for that stack; this is the one new row inside it.
+   Its own internal glyph (⇆, between the two `between` avatars) also carries `class="arr"` but is a
+   DESCENDANT of `.looppair`, never a direct child of `.fpair` — the `.fpair > .arr` rules above don't
+   reach it, so it keeps its plain in-flow position, centered by `.looppair`'s own `align-items`. */
+.flowstrip .looppair{ display:flex; align-items:center; gap:4px; }
 .recipe{ display:flex; gap:8px; flex-wrap:wrap; }
 .pill{ font-family:var(--mono); font-size:11.5px; color:var(--fg-dim); background:var(--panel-2);
   border:1px solid var(--border); padding:4px 9px; border-radius:20px; text-decoration:none; }

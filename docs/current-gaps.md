@@ -611,3 +611,123 @@ explanation remains open — `sdk-worker.ts` now logs every SDK-reported retry (
 attempt count, classified error status, backoff delay) and total elapsed wall-clock time
 unconditionally on every exit path, specifically so the next real occurrence is diagnosable from
 stderr instead of requiring this same investigation to be redone from a bare timeout.
+
+## The registry rendered frontmatter selectively and dropped markdown bodies entirely — closed
+## (NOTES REGISTRY-BODY)
+
+A cold-start walkthrough on a released binary found that the registry's own cards render inconsistently
+across entity kinds: the skill card shows a document's actual content (its `description`, falling back
+to the body's first paragraph); every other card either showed a partial slice of the frontmatter or
+dropped the body outright. Established before any code changed, because it decides whether the fix is
+one shared helper or four independent ones: `renderRegistry` (registry.ts) builds each entity kind's
+`inner` HTML inline, in its own `.map()` block — there is no common function a team/agent/knowledge/
+project card all funnel through. **This was four separate omissions of the same mistake class, not one
+root cause** — each kind's block independently chose not to render its own entity's body (and, for
+team/agent, several already-parsed frontmatter fields alongside it). The type card's `gates` row was
+already correct and became the reference for the team flow fix below; the skill card's own lead-paragraph
+treatment became `components.ts#leadText`, reused by every other fix rather than re-inlined a third time.
+
+**What was dropped, and what now renders, per kind:**
+
+- **Type** — the `expects`/`gates` rows were already right; only the heading over them was wrong
+  ("Expected kinds" implied `gates` was a kind). Renamed "Definition", matching the agent/connector
+  cards' own heading for the identical k/v-row shape.
+- **Knowledge** — a name and two tag chips, for a document whose entire value is its content, injected
+  into member context by name. Now renders the document's own first paragraph.
+- **Project pointer panel** (project.ts, not the registry proper, but the same class of card) — `pace`
+  alone; `default_branch` (declared, shown nowhere) and the body (house rules, injected into every
+  member's context for that project) are now rendered. "Constitution" renamed "Founding artifacts" —
+  the same jargon-heading fix applied to the type/agent cards, made here too since it named its own
+  content (founding artifacts + citation counts) metaphorically rather than plainly.
+- **Agent** — kind/model/produces and a skills+knowledge "recipe" list. Dropped: the body (a member's
+  system prompt, second person — "You are Wren, a product framer." answers exactly what a reader wants
+  to know, and is already written), `tools`/`connectors` as VALUES (read only to decide whether to show
+  a warning about them, never shown themselves), and every cli/remote field beyond kind/model
+  (`command` — the literal argv that executes, `context_via`, `context_artifacts`, `cwd`, `timeout`,
+  `server`, `tool`, `result`). `connectors` is the single most security-relevant field an agent
+  declares and had no rendering at all. The body renders as its own first SENTENCE
+  (`registry.ts#firstSentence`, new) — a deliberate density call, not a default: full second-person
+  system-prompt prose reads oddly as card copy, and dropping it entirely was the defect this closes.
+  "Context recipe" renamed "Skills & knowledge".
+- **Team** — members/produces and a flow strip. Dropped: the charter (the team's own body — exactly
+  "what does this team do", answered in one sentence by every scaffold team), `guardrails` (arguably
+  second in importance only to what the team does, since it's the actual constraint a merge gate checks
+  the diff against), and `knowledge`. All three now render.
+- **Team flow row — the one most wrong.** The flow strip rendered `t.members`, a flat avatar chain
+  carrying no flow information, on a board whose entire premise is Conductor approval AT A GATE.
+  `teams/kestrel.md` declares five stages — two `gate: human` halts and a bounded loop with an
+  escalation path — collapsed into three avatars indistinguishable from a linear handoff; both gates
+  were invisible, and DECLARED FLOW read as a redundant repeat of the Definition block's own `members`
+  row because the flow row carried no flow information to begin with. Each declared `FlowNode` now
+  renders as itself: a `step` as the resolved member's avatar (`flow.ts#resolveStep`, the Runner's own
+  step→member binding, reused rather than re-derived so the card can never disagree with what actually
+  dispatches); a `gate` as the same `.diamond.is-gate` marker the run view's own mini-score already
+  draws for a gate node, not a new glyph; a `loop` as both `between` member avatars joined by a loop
+  glyph, captioned with `until`/`max_rounds`/`on_exhaust` underneath in `.mn` — a CSS class `.flowstrip`
+  had defined since UI7 with no caller ever using it.
+
+**Tests, driven from the scaffold, not a hand-built fixture:**
+`tests/registry-cards-render-definitions.test.ts` scaffolds a real studio via `scaffoldStudio` +
+`loadRepo` (the same tree `levare init` leaves) and asserts each fix against it, so a future edit that
+changes the scaffold's shape without updating the renderer (or vice versa) fails here rather than
+drifting apart silently. Its `cardFor()` helper scopes every assertion to a card's `<div
+class="rendered">`, never the whole `<article>` — every card also carries a hidden `<textarea
+class="rawmd-source">` holding the entity's full raw markdown (`esc()`-escaped, for the edit overlay),
+and plain body text with no HTML-special characters reads identically whether it came from the real
+render or that raw fallback; an assertion against the whole article would have passed even before any
+of these fixes existed, purely because the raw source happens to repeat the same words. A dedicated
+assertion isolates the flow row specifically and counts two `diamond is-gate` markers plus the loop's
+own `spec.approved`/`3`/`gate` — the fix the goal named as most load-bearing.
+
+One pre-existing test (`tests/board-render.test.ts`, the knowledge-card UI7 test) had banned the literal
+substring "Injected into" appearing anywhere in a rendered knowledge card — a guard against the OLD
+backlink section UI7 removed. It broke the moment the card legitimately rendered `house-style.md`'s own
+body, which happens to use that exact phrase to describe itself ("Injected into member context when
+referenced"). Narrowed to the actual regression it exists to catch: the old section's own heading
+(`<div class="card__h">Injected into</div>`), never a blind substring ban on prose the fix is now
+supposed to show.
+
+No frontmatter schema changed. Every field rendered here already existed and already validated —
+repo.ts parsed all of it before this unit started; the fix is entirely in `render/registry.ts`,
+`render/project.ts`, and one small `components.ts` primitive (`leadText`), plus one CSS rule
+(`.flowstrip .looppair`) for the loop's own avatar pair.
+
+## The score rail called an uncoverable stage "queued" — closed (NOTES RAIL-UNREACHABLE)
+
+A unit's type `expects:` a fixed shape of stages (e.g. `feature`: product-brief, design, spec, code,
+review), but the team actually assigned to a unit may cover only part of that shape — `kestrel`
+produces product-brief/design/spec/review between its members but nothing anywhere in the studio
+produces `code`; the docs/guide walkthrough's `press` team covers only product-brief/review against the
+same five-kind type. `derive.ts#scoreNodes` rendered every kind with no artifact as plain "wait"
+("queued" on the rail) regardless of whether the responsible team could ever produce it — a Conductor
+watching that row had no way to tell "real work not started yet" from "nothing will ever arrive here".
+
+**Fixed with one shared computation**, `flow.ts#unreachableExpectedKinds`, checked against real
+per-member capabilities rather than a team's own declared `produces:` aggregate (which can under- or
+over-promise relative to its members). Two consumers, never two copies of the logic: the score rail
+renders a new `"unreachable"` node state ("unreachable · no member produces this", the neutral-gray
+`blocked` treatment, never "queued"); `levare validate` gains a new WARNING, `UNCOVERABLE_EXPECTED_KIND`
+— never an error, since a team covering only part of a type's shape (a brief-and-review-only unit) is a
+legitimate configuration, but the Conductor should be told rather than discovering it only as a rail row
+stuck at "queued" forever.
+
+Found alongside it on the same board walkthrough and closed together: a `.prow` row's label colliding
+with its value when the label was long (`protected_branches`/`protected_paths` on the team card,
+`context_artifacts` on the agent card — one shared CSS cause, `min-width` in place of a fixed `width`);
+an orphaned join arrow when a team's flow row wraps onto a second line; and unit summaries on the
+project and studio screens showing literal `**bold**` markdown instead of rendering it (a member-
+authored artifact body's first paragraph went through plain `esc()` at those two call sites — a new
+`derive.ts#renderInline` escapes first, then converts already-escaped `**…**` to `<strong>`).
+
+The join-arrow fix took two passes — the first (nesting the arrow inside the same flex item as its
+node) stopped the DOM from ever splitting across a wrap, but broke the connector's own vertical
+alignment and left the loop's arrow still reading as visually orphaned, caught only by rendering the
+real page in a browser, not by the DOM-assertion test suite. The corrected design takes the arrow out
+of its pair's own flow entirely (`position:absolute`, anchored to the pair's left edge, landing inside
+the `column-gap` reserved before it) so it renders beside its neighbour when one exists and is clipped
+by `overflow:hidden` when it would otherwise be the leading, disconnected thing on a wrapped line —
+see NOTES RAIL-UNREACHABLE's addendum for the full mechanism and the measurements that led to it.
+
+See NOTES RAIL-UNREACHABLE for the full reasoning behind both fault-1 decisions (what the rail renders;
+why `validate` warns instead of staying silent or hard-erroring) and why the CSS and markdown defects
+were checked for, and found NOT to share, a single root cause. No frontmatter schema changed.
