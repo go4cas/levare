@@ -14368,3 +14368,151 @@ saga takes when run outside its own required platform.
   THAT exact service to `src/sandbox.ts`, gated on `allowNetwork` (the same pattern `trustd.agent`
   already established) — never a preemptive widening now, and never the whole five-service list bundled
   together on the strength of one co-occurring kernel-log window.
+
+# NOTES R4-SANDBOX-TLS (round 2, 2026-08-13) — the live run happened: SecurityServer confirmed and
+# granted, and it exposed a second fault the goal folded into the same round — a loop critic dispatched
+# through a retry never saw what it was meant to review
+
+## The live run this file's own prior round handed back
+
+A Conductor ran `scripts/repro-r4-sandbox-tls-handshake.ts` on the real macOS host. Step 2 (the
+network-granted, codex-independent `curl` handshake) PASSED — the raw TCP probe read `OK`, the HTTPS
+request completed — but this alone was decisive in the NEGATIVE, exactly as the probe's own header
+caveat warned it might be: this host's system `curl` reports `libcurl/8.7.1 (SecureTransport)
+LibreSSL/3.3.6` — LibreSSL, which carries its own CA bundle and never consults `securityd`/the platform
+trust store at all. The PASS proved `network*` + `trustd.agent` sufficient for a TLS client that resolves
+trust itself; it said nothing about a client that defers to Security.framework, which was always the
+actual, open question (codex's own reported `UnknownIssuer`). It DID acquit the five candidates this
+round's own kernel-log capture had named without granting: with `trustd.agent` and `network*` both
+already in the profile, `configd`, `diagnosticd`, `opendirectoryd.libinfo`, `notification_center`,
+`logd`, `dtracehelper`'s file-ioctl, and a `network-outbound` denial on `mDNSResponder` were ALL still
+denied in this passing run — none of them is load-bearing for a completed handshake, on either code
+path, and none is granted by this round either.
+
+The Conductor then captured a live `codex` dispatch directly with `log stream` (the SAME differential
+technique this saga has used for every prior live finding — never guessed, never inferred from a static
+reading of Apple's own sparse public documentation on Seatbelt's mach-lookup surface) and diffed it
+against the passing `curl` capture from the step above, under the identical generated profile. Exactly
+one mach-lookup denial was present in the failing run and absent from the passing one:
+`com.apple.SecurityServer`. Granting only that one line — `(allow mach-lookup (global-name
+"com.apple.SecurityServer"))`, gated on `policy.allowNetwork`, alongside the pre-existing
+`com.apple.trustd.agent` grant (`src/sandbox.ts`) — installing it, and re-dispatching corvid live:
+**the handshake completed, the member called its API, and produced a real `review` artifact**
+(`work/todo-cli/list-command/review-list-command-v6.md`, `status: in-review`, `sandbox: full`,
+`usd: null`, `plan: ChatGPT subscription`). This is now landed, with the same comment discipline
+`trustd.agent` carries (naming the live differential capture and the live dispatch that confirmed it,
+never a guess), stating precisely what `com.apple.SecurityServer` opens (`securityd` — keychain and
+cryptographic services, a broader surface than `trustd.agent`'s own trust-evaluation-only scope; mach-
+lookup reach to talk to the daemon, never access to any particular keychain item, which `securityd`
+itself still gates per-item) — see `src/sandbox.ts`'s own comment on the grant and Operations' new
+paragraph. No separate Conductor ruling was raised for the widening: read as a continuation of NOTES
+R4-VENDOR-CLI's own investigation and gating discipline (evidence-named, network-gated, nothing
+broader), not a new policy question — but that reading is stated plainly here, not assumed silently, so
+a Conductor who disagrees has something concrete to overrule.
+
+**What this round could not do, again honestly:** confirm this grant with a probe that doesn't route
+through `curl`. `curl` on this host is LibreSSL-backed and would PASS identically whether or not
+`SecurityServer` is granted — it never exercises that path either way — so the existing TLS-handshake
+probe cannot serve as this grant's own regression test. `scripts/repro-r4-sandbox-securityserver.ts`
+(new) drives `/usr/bin/security list-keychains` instead — a system binary that genuinely round-trips
+through `securityd` for even a read-only query — under the real generated profile and a synthetic
+variant with only the `SecurityServer` line stripped, as a targeted A/B on this exact grant. Built this
+round, NOT yet run live: no macOS host was reachable for it specifically (the `log stream`/dispatch
+evidence above came from the Conductor's own hand-run session, not from this script). The honest
+residual is unchanged in shape from every prior round in this saga: a live run on a real host is the
+next step, handed back the same way.
+
+## The second fault the same live dispatch surfaced: a critic reviewing nothing
+
+The `review` artifact the live dispatch above produced opened with:
+
+> No product brief was provided to review.
+> The consumed artifacts section says: `(none)`
+
+The brief existed (`work/todo-cli/list-command/product-brief-list-command-v1.md`, produced by scribe in
+round 1, committed) and `agents/corvid.md` correctly declared `context_artifacts: inline` — ruling C9's
+own guarantee should have inlined it. `levare context` (dry-run assembly, no dispatch spent) is what
+isolates the assembled-context evidence from the dispatch itself, per this saga's own standing method of
+reading what a member actually receives rather than guessing from its complaint — and reading
+`context.ts#assembleContext` + `dagwalk.ts#produceOne` alongside it confirmed the ORIGINAL live-path
+dispatch already threads ruling C14's `extraConsumes` correctly (NOTES F15, already fixed, already
+regression-tested — `tests/loop-critic-context.test.ts`). The empty section was NOT a recurrence of F15.
+
+Grepping every OTHER call site of `memberRunner.produce()` found a second one: `board/gateops.ts
+#resolveBlockedArtifactGate`'s `retry` verb (NOTES F19) — the Conductor's own explicit re-invocation of a
+blocked artifact — called `memberRunner.produce(member, art.kind, art.unit, art.project)`, four
+arguments, dropping `extraConsumes` entirely. This unit's own review had been blocked repeatedly by the
+(then-ungranted) TLS fault above and was retried through exactly this path before the grant finally let
+it succeed — the empty consumed section is F15's own defect shape, recurring at a SECOND call site F15's
+own regression test never covered, because F15's test (correctly) only ever drives the live walk's first
+dispatch, never a retry. **Why the existing loop tests never caught this:** every one of them
+(`tests/loop-critic-context.test.ts`, `tests/loop-c14.test.ts`, `tests/f20-loop-exhaustion.test.ts`)
+drives a round to completion in one clean pass — dispatch, resolve, dispatch, resolve — because that is
+what those rounds' own regression scope was built to prove (a round completes correctly; an exhausted
+loop gates correctly). None of them ever puts the critic into a `blocked` state and retries it — that
+combination (a loop member's OWN retry path) had no test at all until this round, for either half of
+what it does wrong.
+
+The SAME retry call site had a second, independent defect once read alongside `roundOf`/`bumpVersion`:
+every retry, failed or successful, bumped the round via the identical id-suffix mechanism `dagwalk.ts`
+uses to pair a loop's two members to one round and `doRequest` uses to detect `max_rounds` exhaustion.
+The escalation gate on this SAME unit reported `6 of 3 rounds used · round 6/3` with `max_rounds: 3` —
+five infrastructure-driven retries (the TLS fault, blocking corvid over and over before the grant landed)
+inflated a loop that ran exactly ONE genuine author/critic exchange into reporting double its declared
+cap. **The reading adopted, stated plainly per the goal's own instruction to name it rather than decide
+it silently:** a blocked attempt never reaches the Conductor, so it must never spend a round of the
+loop's own budget — `max_rounds` is a budget on genuine author/critic exchanges the Conductor actually
+resolves (approve/reject/request), not on however many times infrastructure needed retrying to produce
+one. A different reading (every attempt, successful or not, spends a round) is defensible but was
+rejected here: it would mean a member's own transient infrastructure failure — not a design flaw in the
+author's work — silently consumes the same budget `on_exhaust: gate` exists to protect, and would have
+made THIS incident's own eventual success (round 1, one real exchange, five retries to get the network
+grant right) read as an already-exhausted loop the moment the fix landed.
+
+Both close with one fix, scoped to `resolveBlockedArtifactGate`'s `retry` verb only: a loop member's
+retry (detected via `gates.ts#loopMembershipFor`, the same helper `doRequest`'s own max_rounds check and
+F16's companion-gating already share) now threads `extraConsumes` — the round's author artifact id, read
+via `latestLiveArtifact`, when retrying the critic — and rewrites its own SAME slot in place (same id,
+same `supersedes`, one file, never a second) rather than minting a new round, mirroring
+`doRecheckMerge`'s own pre-existing "same slot, re-run, never supersede" precedent (`board/gateops.ts`,
+the merge-gate `recheck` verb) rather than inventing a new shape. A plain, non-loop step's retry is
+UNCHANGED — it has no round concept, and its own pre-existing fresh-id-per-attempt audit trail (tested by
+`tests/f19-blocked-artifact-verbs.test.ts`, still green) is exactly what a Conductor reviewing a chain of
+failed attempts on an ordinary step wants to see.
+
+## Docs
+
+`docs/current-gaps.md`'s OS-level sandboxing entry gains a paragraph closing the certificate-validation
+fault (the live confirmation, the grant, the five-service acquittal restated with this round's own live
+evidence behind it, and the new host-only sibling probe's own residual) and a new, separate entry closing
+the loop-retry defect (both halves, the shared fix, and why the existing suite never caught either).
+`docs/guide/06-operations.md`'s "What levare does not constrain" section gains a paragraph, in
+Operations' own voice, stating the `SecurityServer`/`trustd.agent` scope distinction plainly — what
+mach-lookup reach to `securityd` opens and what it does not.
+
+## Verification
+
+`bun test` — full suite green (1367 pass, 9 skip, 0 fail, up from 1359/9/0: three new files —
+`tests/loop-blocked-retry-context.test.ts` (3 tests, confirmed to fail without the gateops.ts fix, by
+reverting it and re-running), `tests/repro-r4-sandbox-securityserver.test.ts` (2 tests), and 5 new cases
+in `tests/sandbox.test.ts`'s own `buildSandboxExecProfile` describe block — plus `tests/f19-blocked-
+artifact-verbs.test.ts`, `tests/f20-loop-exhaustion.test.ts`, and `tests/loop-critic-context.test.ts` all
+re-verified green, unaffected, since the plain-step retry path and the ORIGINAL live-path dispatch are
+both unchanged by this round's fix). `bun run typecheck` → exit 0. `bun run deps:check` → `deps ok`.
+`bun run src/cli.ts validate fixtures/golden` and `bun run src/cli.ts replay fixtures/golden --stubs` →
+unchanged from the prior round (this round touched no golden-fixture-governed behavior). `bun run build`
+→ succeeds. `scripts/repro-r4-sandbox-securityserver.ts` in this container → exits cleanly on the
+darwin-platform guard, the same honest degradation every prior live-host harness in this saga takes when
+run outside its required platform.
+
+## Honest residuals — what a live macOS run still needs to confirm, again
+
+- **`scripts/repro-r4-sandbox-securityserver.ts` has not been run live.** The `SecurityServer` grant
+  itself IS live-confirmed (the differential `log stream` capture and the successful re-dispatch above
+  are real evidence, not construction-only) — what remains unconfirmed is this round's OWN new,
+  standalone A/B harness for it, built as the grant's lasting regression check now that the live incident
+  that found it is over.
+- **Whether a further, still-unnamed mach-lookup is load-bearing for OTHER TLS-stack shapes** (a vendor
+  CLI whose own library performs an OCSP/CRL fetch, or something else Security.framework does that a
+  bare `security list-keychains` query doesn't exercise) remains open by construction — this round
+  answers the ONE incident it was handed, not every conceivable TLS code path through this sandbox.

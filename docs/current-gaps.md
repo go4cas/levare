@@ -323,6 +323,69 @@ isolated one needing its own DNS/routing setup) — proven by construction
 (`tests/sandbox.test.ts`), not live-confirmed on a working `bubblewrap` (this dev container's own outer
 seccomp policy has never once let one run for real, the same limitation named throughout this file).
 
+**The certificate-validation fault above is now closed: a live macOS dispatch confirmed
+`com.apple.SecurityServer` as the second, load-bearing mach-lookup denial.** `trustd.agent` alone (the
+prior round's own fix) was not sufficient for a real, live TLS handshake through a platform-trust-store-
+deferring stack — a `log stream` capture of the failing live dispatch, diffed against
+`scripts/repro-r4-sandbox-tls-handshake.ts`'s own PASSING `curl` capture under the identical generated
+profile, named exactly one mach-lookup denial present in the failing run and absent from the passing
+one. Granted, gated on `policy.allowNetwork` alongside `trustd.agent` (`src/sandbox.ts`), installed, and
+re-dispatched live: the handshake completed, the member called its API, and produced a real artifact
+(`review`, `sandbox: full`). None of the five mach services that same probe's PASS already acquitted by
+evidence — `configd`, `diagnosticd`, `opendirectoryd.libinfo`, `notification_center`, `logd` (plus
+`dtracehelper`'s file-ioctl and a `network-outbound` denial on `mDNSResponder`, also observed denied in
+BOTH the passing and failing captures) — is granted; none was shown load-bearing, and this round's own
+standing discipline never grants on the strength of mere co-occurrence. `com.apple.SecurityServer` **is**
+`securityd` — a broader surface than `trustd.agent`'s own trust-evaluation-only scope; [Operations' own
+new paragraph](guide/06-operations.md) states precisely what this opens (mach-lookup reach to the daemon)
+and what it does not (any particular keychain item — `securityd` still gates those per-item, on every
+request, regardless of mach-lookup reach). Read as a continuation of NOTES R4-VENDOR-CLI's own
+investigation and gating discipline (evidence-named, network-gated, nothing broader) rather than a new
+policy question — no separate Conductor ruling was raised for it; if a future Conductor reads the
+widening as material enough to warrant one, that's a call this entry defers to them, not one it makes
+here. `scripts/repro-r4-sandbox-securityserver.ts` (new, darwin-only) is the host-only A/B this grant's
+own claim needs to stay honestly verified going forward — curl on this project's own dev/CI hosts links
+LibreSSL and never exercises `securityd` at all, so the existing TLS-handshake probe's own PASS cannot
+confirm this specific grant; the sibling drives `security list-keychains` (which does round-trip through
+`securityd`) under the real generated profile and a synthetic variant with only this one line stripped,
+and has not yet been run live from any session in this saga's own history — named as an honest residual,
+not assumed closed by construction the way the Linux side above is.
+
+## A loop's live-path dispatch and its retry path used to disagree — closed (NOTES R4-SANDBOX-TLS
+## goal, faults 2+3)
+
+The SAME live incident that surfaced the certificate-validation fault above also surfaced a second,
+unrelated defect once the TLS grant let a real dispatch finally complete: **the produced `review`
+reviewed nothing.** `agents/corvid.md` correctly declared `context_artifacts: inline` (ruling C9), and
+the loop's live-path dispatch (`dagwalk.ts#produceOne`) correctly threads ruling C14's `extraConsumes` —
+confirmed already-fixed and already regression-tested (NOTES F15, `tests/loop-critic-context.test.ts`).
+The gap was one hop further downstream: every earlier dispatch of this SAME round's critic had failed on
+the (then-ungranted) TLS fault and landed `blocked` (NOTES F19), and the Conductor's own explicit
+`retry` verb — `board/gateops.ts#resolveBlockedArtifactGate` — is a SECOND call site to
+`memberRunner.produce()` that dropped `extraConsumes` entirely. A critic retried after any transient
+failure saw an empty `(none)` consumed-artifacts section no matter how correctly `context_artifacts`
+was declared or how correctly the ORIGINAL (never-retried) dispatch would have assembled it.
+
+**The same retry path also inflated the loop's own round accounting.** Every retry — failed or
+successful — bumped `roundOf(art.id)` via `bumpVersion`, the identical mechanism `dagwalk.ts` uses to
+pair a loop's two members to one round and `board/gateops.ts#doRequest` uses to detect `max_rounds`
+exhaustion. A blocked attempt never reaches the Conductor, so this project's own reading (stated
+plainly, not left implicit) is that it must never spend a round of the loop's own budget — a round is
+spent only by a genuine author/critic exchange the Conductor actually resolves. The live incident's own
+evidence matched exactly: 5 infrastructure-driven retries before the TLS fix landed inflated a loop that
+ran exactly one genuine author/critic exchange into reporting "6 of 3 rounds used", past its own declared
+`max_rounds: 3` cap.
+
+Both close with the same fix, in `resolveBlockedArtifactGate`'s `retry` verb only (a plain, non-loop
+step's retry is unchanged — it has no round concept and keeps its own pre-existing fresh-id-per-attempt
+audit trail): a loop member's retry now threads `extraConsumes` (the round's author artifact id, when
+retrying the critic) and rewrites its OWN slot in place — same id, same `supersedes`, no second file —
+mirroring `doRecheckMerge`'s own pre-existing "same slot, re-run, never supersede" precedent, rather than
+minting a new round on an attempt that never reached the Conductor.
+`tests/loop-blocked-retry-context.test.ts` drives a real subprocess through `productionAdapterRunner`
+across a blocked→retry→…→success chain (mirroring F15's own real-subprocess technique) and asserts on
+what the member actually received and what round the loop reports — confirmed to fail without the fix.
+
 ## Connector trust-tier taxonomy — three recorded decisions, not open gaps (NOTES TAXONOMY-DECISIONS, 2026-07-21)
 
 A connector now declares `role: model | tool` (NOTES C15) — what FUNCTION it serves — and, since NOTES

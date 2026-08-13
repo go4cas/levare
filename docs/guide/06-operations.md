@@ -237,6 +237,20 @@ macOS, treat a real end-to-end TLS request as unverified until you've tested it 
 `scripts/repro-r4-sandbox-tls-handshake.ts` is the codex-independent harness this project built to isolate
 exactly this question, and [Current gaps](../../current-gaps.md) tracks the outcome.
 
+**On macOS, a network-granted member can also reach `securityd` — keychain and cryptographic services,
+not just trust evaluation (NOTES R4-SANDBOX-TLS).** `trustd.agent` alone was not sufficient for a real,
+live TLS handshake through a platform-trust-store-deferring stack: a `log stream` capture of the failing
+dispatch, diffed against a passing one, named a second mach service the handshake itself needed —
+`com.apple.SecurityServer`, granted identically (network-gated) alongside `trustd.agent`. Read the two
+grants as distinct in scope, not a pair: `com.apple.SecurityServer` **is** `securityd`, the daemon behind
+the keychain and macOS's cryptographic services generally — a broader surface than `trustd.agent`'s own
+trust-evaluation-only reach. What this grant opens: a member's process may send mach messages to
+`securityd` at all — the reach a TLS stack that defers to Security.framework needs to complete a
+handshake. What it does **not** open: access to any particular keychain item. `securityd` enforces
+keychain ACLs per item, on every request, entirely independent of whether the caller can reach it over
+mach-lookup at all — this grant is a precondition for talking to the daemon, not a bypass of what the
+daemon itself still gates.
+
 ---
 
 ## Running the daemon
