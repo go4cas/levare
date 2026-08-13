@@ -588,6 +588,11 @@ button{ font-family:inherit; }
 .flowstrip .m{ display:flex; flex-direction:column; align-items:center; gap:6px; }
 .flowstrip .arr{ color:var(--fg-mute); font-family:var(--mono); margin:0 10px; align-self:flex-start; margin-top:11px; }
 .flowstrip .mn{ font-family:var(--mono); font-size:11px; color:var(--fg-dim); }
+/* Fault 3: an arrow plus the node it points at, as ONE flex item of `.flowstrip` — the wrap algorithm
+   can only break the line between complete `.fpair`s, so an arrow can never land alone at the end of
+   a wrapped line with its node stranded on the next. Reproduces the pre-fix layout: `.arr` keeps its
+   own top-aligned nudge (it sat that way as a bare sibling before), `.m` keeps its natural column stack. */
+.flowstrip .fpair{ display:flex; align-items:flex-start; }
 /* NOTES REGISTRY-BODY: a team flow's loop node — its two `between` member avatars side by side, joined
    by a loop glyph — nested inside a `.flowstrip .m` column alongside its own `.mn` caption (until/max/
    on_exhaust) below. `.m` itself stays column-flex for that stack; this is the one new row inside it. */

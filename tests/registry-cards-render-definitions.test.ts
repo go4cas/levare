@@ -189,3 +189,38 @@ describe("fault 2: a long plain-text .prow label no longer collides with its val
   // The scaffold's own agents never declare context_artifacts — see board-render.test.ts's own "agent
   // card: context_artifacts" test (golden fixture's rook) for the paired assertion on that row.
 });
+
+// Fault 3: `.flowstrip` wraps on a narrow card, and the arrow joined between nodes by a plain
+// `.join()` was its own flex sibling — the wrap algorithm could break the line right after an arrow,
+// leaving it orphaned at the end of one line ("wr → ◆ → ly → ◆ →") with the step it points at starting
+// fresh on the next, right above the loop row. Fixed by rendering each arrow INSIDE the same flex item
+// as the node it precedes (`.fpair`) — wrapping can now only ever happen between complete pairs.
+describe("fault 3: no orphaned arrow in a wrapped team flow row", () => {
+  test("every arrow is grouped with its following node in one .fpair flex item, never a bare sibling", () => {
+    const root = scaffoldRoot();
+    const repo = loadRepo(root);
+    const html = renderRegistry(repo, root, "teams");
+    const kestrel = cardFor(html, "teams", "kestrel");
+    const flowRow = /<div class="flowstrip">([\s\S]*?)<\/div>\s*<div class="card__h">Definition/.exec(kestrel)![1];
+    // kestrel's flow (brief, gate, design, gate, loop) is 5 nodes — the first renders bare, the other
+    // 4 each pull their preceding join arrow (&rarr;) into their own .fpair, so 4 join arrows and 4
+    // .fpair wrappers. The loop's OWN internal glyph (&#8646;, between its two `between` avatars) also
+    // carries class="arr" — a different, unrelated glyph — so it's counted separately, not conflated.
+    const joinArrowCount = (flowRow.match(/<span class="arr">&rarr;<\/span>/g) || []).length;
+    const loopGlyphCount = (flowRow.match(/<span class="arr">&#8646;<\/span>/g) || []).length;
+    const fpairCount = (flowRow.match(/<div class="fpair">/g) || []).length;
+    expect(joinArrowCount).toBe(4);
+    expect(loopGlyphCount).toBe(1);
+    expect(fpairCount).toBe(4);
+    // Every join arrow's opening tag is immediately preceded by an .fpair opening tag — never a bare
+    // sibling of `.flowstrip` that the wrap algorithm could strand alone at the end of a line.
+    expect((flowRow.match(/<div class="fpair"><span class="arr">&rarr;<\/span>/g) || []).length).toBe(4);
+  });
+
+  test("assets/styles.css defines a real .fpair rule keeping the pair one flex item", () => {
+    const css = readFileSync("assets/styles.css", "utf8");
+    const rule = /\.flowstrip \.fpair\{([^}]*)\}/.exec(css);
+    expect(rule).not.toBeNull();
+    expect(rule![1].trim().length).toBeGreaterThan(0);
+  });
+});

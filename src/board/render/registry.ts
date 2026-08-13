@@ -180,7 +180,18 @@ export function renderRegistry(
       // `t.flow` itself — every declared step, gate, and loop, in order — so DECLARED FLOW and the
       // Definition block's `members` row (still every member, unordered) stop looking like the same
       // fact said twice; one is the flow, the other is the roster.
-      const flow = t.flow.map((n) => flowNodeHtml(repo, t, n, teamCapabilities)).join('<span class="arr">&rarr;</span>');
+      // Fault 3: `.flowstrip` wraps (flex-wrap:wrap) on a narrow card, and an arrow joined between
+      // nodes by plain `.join()` was its own independent flex item — a sibling the wrap algorithm
+      // could break the line after, landing it alone at the end of one line with the step it points
+      // at starting fresh on the next ("wr → ◆ → ly → ◆ →", then a wrap, then the loop row). Each
+      // arrow is now rendered INSIDE the same flex item as the node it precedes (`.fpair`, below) —
+      // wrapping can only ever happen between complete pairs, never split one apart.
+      const flow = t.flow
+        .map((n, i) => {
+          const node = flowNodeHtml(repo, t, n, teamCapabilities);
+          return i === 0 ? node : `<div class="fpair"><span class="arr">&rarr;</span>${node}</div>`;
+        })
+        .join("");
       const memberAvatars = t.members.map((m) => avatar(repo.agents.get(m)?.style.avatar ?? m.slice(0, 2), t.style.color, { title: m })).join("");
       const producesChips = t.produces.map((p) => tag(p, "tag")).join("");
       // NOTES MERGE-1: the REV1 "declared but not yet enforced" notice is retired — `checkGuardrails`
