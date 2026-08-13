@@ -573,3 +573,41 @@ loudly (naming the code, file, line, and message) on any error, and specifically
 `SUBSCRIPTION_NO_ROLE` nor `SUBSCRIPTION_NO_HOME` ever appears undocumented — the exact class of drift
 this entry closes. Without it, a broken or drifted block in this directory reads as clean until a reader
 pastes it by hand; this is the check that makes that not true again.
+
+## A test's own outer timeout could be shorter than the internal bound the code it drives is entitled to
+## use — closed (NOTES DIST5-HANG)
+
+`tests/orchestrator-compiled-smoke.test.ts`'s credential-present test ("the real spawn is attempted
+end-to-end") hung at exactly 20000/20001ms across six recorded runs (macOS host, Linux CI), every time,
+correlating with no commit — its own declared Bun `test()` timeout, not an unbounded wait anywhere in the
+real call path. The route it drives (`POST /orchestrator/message` → `orchestrator.ts#handle` →
+`interpret()`) is contractually bounded by `orchestrator-boundary.ts`'s own transport timeout (45s,
+proven sound and reaping-complete by `tests/sdk-transport-hermetic.test.ts`'s hung-worker tests) — but
+this test's own outer bound (20s) was shorter than that, so Bun's test runner killed the test before the
+already-working internal timeout-and-report ever got the chance to fire, leaving the detached
+worker+CLI process group orphaned (`killed 1 dangling process` at teardown). The same rule
+`orchestrator-boundary.ts`'s own comment and `board/serve.ts#serve`'s `idleTimeout` comment already state
+for every OTHER caller of this boundary — "your own outer timeout must stay comfortably longer than the
+bound beneath it, never shorter" — had never been audited for a TEST's own declared timeout, one level
+further out than either of those callers.
+
+Closed by exporting the real bound (`orchestrator-boundary.ts#DEFAULT_INTERPRET_TIMEOUT_MS`, still 45s)
+instead of leaving it inlined, deriving this test's own outer timeout from that export with margin
+(60s) rather than a second guessed number, and locking the export to what `interpret()`/`narrate()`
+actually default to with a dedicated unit test (`tests/orchestrator-sdk.test.ts`) — a future edit that
+changes one without the other now fails immediately and loudly in that file, not as a 45-second mystery
+hang in an unrelated compiled-binary test. See NOTES DIST5-HANG for the full instrumented reproduction
+(direct worker invocation, direct compiled-binary self-invocation, a direct `curl` against a real booted
+`serve` — none hung on this container, all completing in ~1–1.4s, consistent with "the internal bound
+works, the outer one was just shorter than it") and for the separate, pre-existing, explicitly
+untouched `readBoundPort` cold-start flake this investigation surfaced but did not cause or fix.
+
+**What is NOT closed by this entry:** why a real host took 20-45s in the first place. Direct
+measurement on this container refutes the initial "SDK retrying the fake credential with backoff"
+guess (zero retries logged, `duration_api_ms: 0`, consistently under 1.1s — this literal key is
+rejected locally before any request is built) and rules out silent dependency version drift
+(`bun.lock` pins the SDK and every platform binary exactly, `--frozen-lockfile` in CI). The real
+explanation remains open — `sdk-worker.ts` now logs every SDK-reported retry (`SDKAPIRetryMessage`:
+attempt count, classified error status, backoff delay) and total elapsed wall-clock time
+unconditionally on every exit path, specifically so the next real occurrence is diagnosable from
+stderr instead of requiring this same investigation to be redone from a bare timeout.

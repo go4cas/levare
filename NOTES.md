@@ -14623,3 +14623,165 @@ CI/container run's own log, not just discoverable by an engineer who happens to 
 this exact discipline to PRODUCTION behaviour (never claim a guarantee the current host can't back);
 extending it to test OUTPUT — not just test logic — is what turns a silent environment-blind pass into
 one a reader can catch on sight, in the same run, without needing a second host to compare against.
+
+## DIST5-HANG. `orchestrator-compiled-smoke.test.ts`'s "with a credential present" test hung at exactly
+## 20000ms on every host — a timeout-hierarchy bug in the TEST, not an unbounded wait in production code
+
+**The symptom, established across six runs before any code was touched (per instruction: no bisecting).**
+The credential-present variant of `tests/orchestrator-compiled-smoke.test.ts`'s "a compiled `serve`
+dispatches a real Orchestrator turn..." describe block timed out at **exactly 20000/20001ms**, every
+time — macOS host (full suite and file-alone, three consecutive commits, all identical), and Linux CI
+(one fail, one PASS ~2 hours earlier on the SAME commit). Its sibling in the same file — the identical
+`/orchestrator/message` spawn path with NO credential — passed in ~130ms. Teardown reported `killed 1
+dangling process`. No commit correlated (three consecutive commits failed identically; one of them had
+passed CI two hours earlier), so this was never a regression to bisect toward.
+
+**The asymmetry, read correctly.** The no-credential test is fast because `checkSdkPreconditionsCached`
+(sdk-transport.ts) rejects on a LOCAL, synchronous check ("ANTHROPIC_API_KEY is not set") before ever
+spawning anything — `selectOrchestratorBoundary` returns `null`, and `board/serve.ts`'s
+`/orchestrator/message` route returns the disabled state without calling `handle()` at all. The
+credential-present test clears that local check (a non-empty string, regardless of validity — presence
+is all `hasAnthropicCredentials` reads, invariant 11) and reaches `orchestrator.ts#handle`, which
+`await`s `boundary.interpret(text)` FIRST, unconditionally. Because the credential used
+(`sk-ant-test-not-real`) can never be valid, `interpret()` always fails — the CLI reports "Not logged
+in" fast, or (the case that matters here) doesn't reply within its own transport-level bound. Either
+way, `handle()` never reaches `narrate()`/`converse()`: a `throw` from `interpret()` exits immediately.
+So the ONE internal bound this test's HTTP call is subject to is `interpret()`'s own transport timeout —
+`orchestrator-boundary.ts`'s `timeoutMs`, previously an inlined `45_000` (now exported as
+`DEFAULT_INTERPRET_TIMEOUT_MS`, still 45 000).
+
+**Establishing the hang point — instrumented, not inferred.** Direct reproduction, no test framework
+involved: invoking the real SDK worker (`bun src/cli.ts __worker` and the scratch compiled binary's own
+`__worker` self-invocation) with the exact fake credential and hermetic env this test uses returned in
+~1–1.4s on this container — "Not logged in", not a hang. Booting the real scratch `serve` binary and
+curling `/orchestrator/message` directly reproduced the same fast (~1.3s) failure end-to-end. The
+existing `tests/sdk-transport-hermetic.test.ts` (proven still green, 5/5) independently confirms the
+transport's own timeout-and-kill mechanism is sound: a synthetic hung worker WITH a hanging grandchild is
+fully reaped and reported (`sdk worker timed out after ${timeoutMs}ms`) within its own configured bound,
+never anywhere near a caller's longer outer timeout — that was the ORIGINAL K15 fix, and it still holds.
+So the hang is not an unbounded wait anywhere in the real call path; `interpret()` is contractually
+allowed to take up to 45s before its own (working) timeout fires and returns a named error.
+
+**The actual defect: this test's own declared Bun `test()` timeout (`20_000`, the 3rd argument) was
+SHORTER than the 45s bound the code path it drives is entitled to use.** This is the identical rule
+`orchestrator-boundary.ts`'s own comment on `timeoutMs` already states for every OTHER caller of this
+boundary ("any caller's own outer timeout must stay comfortably LONGER than this, never shorter — the
+reverse is what let a hung call outlive the test that was supposed to catch it") and the same rule
+`board/serve.ts#serve`'s `idleTimeout` comment states a third time (set to 180s, "well past every
+internal SDK timeout") — but it was never audited for THIS caller: a test's own declared timeout, one
+level further out than either of those two. `finally { proc.kill(); ... }` then only reaches the DIRECT
+child (the `levare serve` process) — never the detached, still-running worker+CLI process group
+`interpret()`'s own timer (`killProcessTree`, sdk-transport.ts) would have reaped had it been allowed to
+run to completion — which is exactly the "killed 1 dangling process" teardown report seen on every failing
+run. A test that blocks on an outer timeout it structurally cannot out-wait is a defect independent of
+whatever caused the real call to be slow that particular run: even a fully-corrected, always-fast SDK call
+would leave this test one bad host/day away from the same failure, because nothing about its own declared
+bound was ever actually longer than what the code beneath it is allowed to take. **This paragraph
+originally speculated that a 20–45s real call was "plausible and unremarkable under CI load" (cold
+compiled-binary self-invocation plus network variance) — that speculation was never measured and does not
+survive the direct instrumentation below. It is struck here rather than silently corrected: the
+timeout-nesting defect above is real and independently worth fixing regardless of why any particular run
+was slow, but claiming to know why is a separate, unproven claim — see "What actually made a real run take
+20–45s — measured, not guessed" below for what direct instrumentation supports instead.**
+
+**The fix — close the gap, not paper over it.**
+1. `orchestrator-boundary.ts` now exports `DEFAULT_INTERPRET_TIMEOUT_MS` (still `45_000`) instead of
+   inlining it, specifically so a caller that needs to derive a safely-longer outer bound reads the REAL
+   number rather than a second, hand-copied one that could silently drift.
+2. `tests/orchestrator-sdk.test.ts` gained a test locking that export to what `interpret()`/`narrate()`
+   actually use by default (a mocked transport records the timeoutMs it was called with) — if a future
+   edit changes the inline default without updating the export, this fails immediately and loudly in this
+   file, not as a 45-second mystery hang in an unrelated compiled-binary test.
+3. `tests/orchestrator-compiled-smoke.test.ts`'s credential-present test's own Bun `test()` timeout is now
+   `DEFAULT_INTERPRET_TIMEOUT_MS + 15_000` (60s) — derived from the constant, not a second guessed number
+   — comfortably longer than the 45s bound the call it drives is entitled to use, with margin for this
+   run's own fresh-binary cold start and the HTTP round trip. Re-run six times (three isolated, three as
+   part of the full suite) after the fix: 0 failures on this describe block, ~2s typical when the real call
+   is fast (as it is on this container), and the test would now survive a real call that legitimately took
+   up to 45s — something it could NOT have survived before.
+
+**What this does NOT touch, and why.** `tests/orchestrator-compiled-smoke.test.ts`'s FIRST test in the
+same describe block (no credential) intermittently timed out on THIS container's own `readBoundPort`
+10 000ms bind-wait (`tests/serve-subprocess.ts`) while iterating on this fix — reproduced 3 times running
+this file alone back-to-back, absent from 3 consecutive full-suite runs. This is the SAME pre-existing,
+already-documented, already-explicitly-left-untouched flake from this file's own prior NOTES entry ("the
+DIST5 compiled-serve smoke test's 20001ms timeout: established, not a regression") — a freshly-`bun
+build --compile`d binary's first `serve` invocation paying a real one-time cold-start cost this
+memory-constrained container (2.8GB, already swapping) feels more acutely than a normal dev/CI host, not
+a code defect, and not the credential-hang this investigation was opened to explain (the goal's own
+six-run evidence table never names this failure mode). Left untouched per that same, still-standing
+instruction; a Conductor deciding whether `readBoundPort`'s fixed 10s timeout should widen for a
+cold-start compiled binary specifically is a separate call this entry does not make.
+
+**What actually made a real run take 20–45s — measured, not guessed. This is a correction of the
+speculation struck above, added after the Conductor pushed back on it (rightly: "why would a guaranteed
+auth failure take 20-45s rather than under a second" was never answered, just assumed).** Direct,
+instrumented measurement, not inference:
+
+- `sdk-worker.ts` was patched (see below) to log the real wall-clock elapsed time of every `query()` call
+  on EVERY exit path (success, non-success result, or thrown error) to stderr, unconditionally. Re-running
+  the exact failing shape — the compiled scratch binary's self-invoked `__worker`, the fake credential
+  `sk-ant-test-not-real`, the same hermetic `CLAUDE_CONFIG_DIR` — on this container: **835ms and 1018ms**
+  across two runs (`bun src/cli.ts __worker` and the compiled binary directly), both a thrown
+  `OrchestratorSdkError`-shaped error ("Claude Code returned an error result: Not logged in · Please run
+  /login"), zero retries logged.
+- Ran the native `claude` binary directly with `--debug --debug-to-stderr` (bypassing the SDK wrapper
+  entirely) against the identical fake key: total elapsed **1037ms**, and its own JSON result reported
+  `"duration_api_ms":0` — i.e. **no real network call was ever attempted**. The debug log's own line names
+  why: `[Bootstrap] Skipped: no usable OAuth, WIF, or API key` — this specific literal is recognized as
+  locally unusable (format-level, before any request is built) and the CLI fails fast. A single `API error
+  (attempt 1/11)` line appears immediately afterward (same millisecond, no delay), which is generic
+  request-logger labeling, not evidence of an actual retry loop: there is no `attempt 2/11`, no backoff
+  pause, and `duration_api_ms:0` rules out a real round trip.
+- Read the SDK's own retry logic directly (`node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs`'s
+  `shouldRetry`/`retryRequest`, the underlying `@anthropic-ai/sdk` HTTP client both this package and the
+  native `claude` binary are built on): a 401 is only retried when a `tokenCache` (OAuth session) exists
+  AND was used AND hasn't already been retried once for this call — none of which applies to a plain,
+  format-rejected API key. Otherwise a retry fires only for an explicit `x-should-retry: true` response
+  header, HTTP 408/409/429/5xx, or — confirmed from the SDK's own type declarations,
+  `SDKAPIRetryMessage`'s doc comment in `sdk.d.ts` — "connection errors (e.g. timeouts) that had no HTTP
+  response". **None of these apply to this test's fake key on the currently-pinned SDK version**: the
+  hypothesis that the SDK is now retrying THIS auth failure with backoff is directly refuted for this
+  case, not merely untested.
+- `bun.lock` pins `@anthropic-ai/claude-agent-sdk` and every one of its eight platform-binary optional
+  dependencies to the exact same version (`0.3.207`, sha512-verified), and both `.github/workflows/ci.yml`
+  and `release.yml` install via `bun install --frozen-lockfile` — ruling out silent version drift as the
+  explanation for the single most damning fact in the six-run table: the SAME commit passed CI and then
+  failed a few hours later. A frozen lockfile means the exact same SDK/CLI version was installed both
+  times.
+- Given all of the above, the still-open question is genuinely open: this container's outbound network to
+  `api.anthropic.com` is fast and unrestricted (a raw `curl` round-trip: 331ms, DNS: instant), so a
+  connection-level retry sequence — the one class of retry the SDK's own types document and this worker
+  had zero visibility into — cannot be reproduced from here. The leading remaining hypothesis, **explicitly
+  unconfirmed**: a real host (a CI runner or macOS box with different, possibly time-varying, network
+  egress conditions to Anthropic's API) hits the connection-error retry path `SDKAPIRetryMessage` exists
+  for, and the accumulated backoff delays land in the 20-45s window this test's old 20s bound couldn't
+  survive. This is a hypothesis a Conductor with access to the actual failing host can test directly now
+  that the instrumentation below exists — it is not this entry's conclusion.
+
+**The instrumentation gap this surfaced, closed:** `sdk-worker.ts`'s `runSdkWorkerFromStdin` previously
+processed only `assistant`/`result` messages from `query()`'s async generator — every `system`/`api_retry`
+message (`SDKAPIRetryMessage`: attempt count, max retries, the classified `error_status`, `null` for a
+connection-level failure with no HTTP response, and the SDK's own chosen `retry_delay_ms`) was silently
+dropped, and total elapsed wall-clock time was never logged at all on any path. So even if a real host
+WERE retrying its way to a 20-45s failure right now, nothing in this codebase would have said so — the
+only symptom would have been the exact "hangs at a fixed number, no diagnosis" signature this whole
+investigation started from. Fixed unconditionally (not debug-gated — real SDK calls are infrequent enough
+that this costs nothing, mirroring `orchestrator-boundary.ts#logReceipt`'s own always-on precedent): every
+`api_retry` message is now logged as it streams (attempt/max_retries/error_status/retry_delay_ms, plus
+elapsed-so-far), and total wall-clock elapsed time is logged on every exit path (success, non-success
+result, thrown error). The next time a real call is slow on a real host, stderr will say WHY — a retry
+count and a classified error status, or its absence — instead of leaving a bare, unexplained wait for a
+future investigation to re-derive from scratch.
+
+**Why a test that can hang past its own outer bound is a defect regardless of what it was waiting for**
+(the goal's own framing, restated concretely against this case): the whole point of `interpret()`'s
+40-line comment and its own hermetic, tree-reaping timeout machinery is that a caller downstream should
+NEVER need to guess how long a real SDK call might take — it is CONTRACTUALLY bounded, and the bound is a
+real, exported, tested number. A test that declares its own SHORTER bound throws that contract away and
+replaces it with "however long Bun's test runner happens to wait before giving up" — which tells a reader
+nothing (not "this actually hung," not "this was slow," just "something didn't finish in the number I
+picked without checking against the thing I was calling"). Fixing the number, deriving it from the real
+constant instead of a second guess, and locking that constant with its own test is what turns "hangs at
+20000ms, never varying, no diagnosis" into a test that either passes fast (the common case) or fails with
+`sdk worker timed out after 45000ms` (the slow-real-call case) — never a bare timeout with no name.

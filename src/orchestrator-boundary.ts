@@ -198,6 +198,14 @@ export function coerceIntent(raw: unknown, fallbackText: string): Intent {
   }
 }
 
+// The default bound `interpret()`/`narrate()` pass to the transport (NOTES phase-7 K15) — exported,
+// not just inlined below, so a CALLER that needs to derive a safely-longer outer bound of its own
+// (NOTES DIST5-HANG: `tests/orchestrator-compiled-smoke.test.ts`'s "with a credential present" test is
+// exactly such a caller — its own Bun `test()` timeout wraps a real `/orchestrator/message` call that
+// goes through `interpret()` first) reads the REAL number this module actually uses, rather than a
+// second, independently-guessed copy that could silently drift out of sync with it.
+export const DEFAULT_INTERPRET_TIMEOUT_MS = 45_000;
+
 export interface SdkOrchestratorBoundaryOptions {
   transport?: AsyncSdkTransport;
   model?: string;
@@ -232,8 +240,11 @@ export function createSdkOrchestratorBoundary(opts: SdkOrchestratorBoundaryOptio
   // Well under a minute (NOTES phase-7 K15) — an Orchestrator chat reply is a conversational round
   // trip, not a long-running member task; a live successful call took ~9s. Any caller's own outer
   // timeout must stay comfortably LONGER than this, never shorter — the reverse is what let a hung
-  // call outlive the test that was supposed to catch it.
-  const timeoutMs = opts.timeoutMs ?? 45_000;
+  // call outlive the test that was supposed to catch it (NOTES DIST5-HANG: exactly this rule, violated
+  // one level further out — a *test's own* declared timeout, not just another transport caller — is
+  // what produced the "hangs at exactly 20000ms" symptom `tests/orchestrator-compiled-smoke.test.ts`
+  // ran into; see `DEFAULT_INTERPRET_TIMEOUT_MS`'s own doc below).
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_INTERPRET_TIMEOUT_MS;
   // converse()'s prompt carries the full studio projection (ruling C10) rather than a short task
   // string, so it legitimately needs more room than a single-turn classification/voice call, even
   // with no tool round-trips left to wait on.

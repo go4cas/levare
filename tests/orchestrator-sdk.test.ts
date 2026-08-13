@@ -10,6 +10,7 @@ import {
   coerceIntent,
   ORCHESTRATOR_PROMPT_PATH,
   OrchestratorSdkError,
+  DEFAULT_INTERPRET_TIMEOUT_MS,
 } from "../src/orchestrator-boundary.ts";
 import {
   createAsyncSdkTransport,
@@ -393,6 +394,27 @@ describe("createSdkOrchestratorBoundary#converse (mocked transport)", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  // NOTES DIST5-HANG: `interpret()`'s default bound is exported (`DEFAULT_INTERPRET_TIMEOUT_MS`)
+  // specifically so a CALLER outside this file — `tests/orchestrator-compiled-smoke.test.ts`'s
+  // credential-present test derives its own outer `test()` timeout from it — reads the real value
+  // rather than a second, hand-copied number that could silently drift out of sync. This test is what
+  // keeps that promise honest: if a future edit changes the inline default without updating the export
+  // (or vice versa), this fails immediately, loudly, in this file — not as a mysterious hang 45 seconds
+  // into an unrelated compiled-binary test.
+  test("with no explicit timeoutMs, interpret()/narrate() use the exported DEFAULT_INTERPRET_TIMEOUT_MS", async () => {
+    const seen: Array<number | undefined> = [];
+    const transport: AsyncSdkTransport = {
+      async run(_req, opts) {
+        seen.push(opts.timeoutMs);
+        return { ok: true, result: "ok" };
+      },
+    };
+    const boundary = createSdkOrchestratorBoundary({ transport });
+    await boundary.interpret("stats");
+    await boundary.narrate("fact");
+    expect(seen).toEqual([DEFAULT_INTERPRET_TIMEOUT_MS, DEFAULT_INTERPRET_TIMEOUT_MS]);
   });
 
   // Ruling C10's wiring fix: every boundary call must receive the served studio root explicitly —
