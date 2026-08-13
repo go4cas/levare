@@ -11,7 +11,7 @@
 import type { Artifact, ArtifactStatus, Team, TypeTemplate, Usage, WorkUnit } from "./types.ts";
 import type { Repo } from "./repo.ts";
 import { firstParagraph, repoCapabilities } from "./repo.ts";
-import { isLoopCompanionKind, loopMembershipFor, responsibleTeamsFor } from "./gates.ts";
+import { isLoopCompanionKind, loopMembershipFor, responsibleTeamsFor, unreachableExpectedKinds } from "./gates.ts";
 import { roundOf } from "./runner.ts";
 import type { DaemonInvocation } from "./daemon.ts";
 
@@ -193,7 +193,12 @@ function unitShipped(repo: Repo, project: string, unitId: string): boolean {
 // Mini-score / score dots (PRD §9: "state nodes in the canonical palette")
 // ---------------------------------------------------------------------------
 
-export type NodeState = "done" | "active" | "gate" | "wait" | "rejected" | "blocked";
+// "unreachable" (fault 1 fix): a kind the unit's type `expects:` but no member of its responsible
+// team can ever produce (flow.ts#unreachableExpectedKinds) — distinct from "wait" (a kind that IS
+// reachable and just hasn't been produced yet, which real progress or a Conductor action resolves).
+// An unreachable stage never resolves on its own; conflating it with "wait" is what let the rail claim
+// a Conductor was waiting on progress that could never come.
+export type NodeState = "done" | "active" | "gate" | "wait" | "rejected" | "blocked" | "unreachable";
 export interface ScoreNode {
   kind: string;
   shape: "dot" | "diamond";
@@ -225,6 +230,7 @@ export function scoreNodes(repo: Repo, unit: WorkUnit, running: DaemonInvocation
   const artifacts = [...(repo.artifacts.get(`${unit.project}/${unit.unit}`)?.values() ?? [])];
   const inv = running.find((r) => r.project === unit.project && r.unit === unit.unit);
   const capabilities = repoCapabilities(repo);
+  const unreachable = new Set(unreachableExpectedKinds(repo, unit, capabilities));
   return expects.map((kind) => {
     // Prefer the live (non-superseded) artifact of this kind; fall back to the most recent one so a
     // rejected/blocked kind still renders its true state rather than reading as untouched.
@@ -246,6 +252,10 @@ export function scoreNodes(repo: Repo, unit: WorkUnit, running: DaemonInvocation
           live: { startedAt: inv.startedAt, loop },
         };
       }
+      // Fault 1: a kind no member of the responsible team can ever produce is not "wait" — nothing
+      // arriving changes it, and rendering it as an ordinary queued step tells a Conductor to keep
+      // watching for progress that cannot come.
+      if (unreachable.has(kind)) return { kind, shape: "dot", state: "unreachable" };
       return { kind, shape: "dot", state: "wait" };
     }
     const state = nodeStateFor(current.status);

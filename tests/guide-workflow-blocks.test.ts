@@ -81,10 +81,24 @@ describe("docs/guide/04-workflow's pasteable blocks produce a valid studio", () 
     }
   }
 
-  test("the finished studio validates with zero warnings", () => {
+  // Fault 1 (NOTES RAIL-UNREACHABLE): the finished studio is, byte for byte, the scenario that
+  // motivated the fix — `add-command` (type `feature`, expecting product-brief/design/spec/code/
+  // review) is pinned to `team: press`, and 4.6's press only ever grows to `produces: [product-brief,
+  // review]` with members scribe (product-brief) and corvid (review). design/spec/code are genuinely
+  // uncoverable by this studio as the guide leaves it — a legitimate configuration for a walkthrough
+  // that never asked the reader to build a design/spec/code-producing member, but one `levare
+  // validate` should name rather than stay silent about (see validate.ts#validateUncoverableExpectedKinds).
+  test("the finished studio validates with zero warnings, other than the one this branch intentionally added", () => {
     const r = validatePath(root);
     expect(r.ok).toBe(true);
     expect(r.errors).toEqual([]);
-    expect(r.warnings).toEqual([]);
+    expect(r.warnings).toEqual([
+      {
+        code: "UNCOVERABLE_EXPECTED_KIND",
+        message:
+          "unit 'add-command' (type 'feature') expects kind(s) [design, spec, code], but no member of its responsible team (press) declares producing any of them — this may be a legitimate configuration (a unit that only ever needs part of its type's shape), but the board's score rail will show these stage(s) as unreachable, never as merely queued",
+        file: join(root, "work", "todo-cli", "add-command", "unit.md"),
+      },
+    ]);
   });
 });

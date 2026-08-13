@@ -632,7 +632,10 @@ describe("run screen — score rail node markers survive a real gate resolution"
 
     expect(stepCount(beforeScore)).toBe(5);
     expect(snodeClassesOf(beforeScore).length).toBe(5); // one marker per step — no gaps before the approve
-    expect(snodeClassesOf(beforeScore)).toEqual(["snode done", "snode done", "snode is-gate-open", "snode upcoming", "snode upcoming"]);
+    // Fault 1: "code" is not merely queued — no member of kestrel (the unit's responsible team)
+    // declares producing it, so it renders "blocked" (the unreachable state's shared neutral-gray
+    // treatment), never the same hollow "upcoming" a genuinely queued step like "review" gets.
+    expect(snodeClassesOf(beforeScore)).toEqual(["snode done", "snode done", "snode is-gate-open", "snode blocked", "snode upcoming"]);
 
     // The actual failing path: a real gate resolution against the real repo (not a hand-built one),
     // then a fresh re-derive from disk — exactly what the board's GET handler does on the next request.
@@ -643,10 +646,41 @@ describe("run screen — score rail node markers survive a real gate resolution"
     const afterScore = scoreBlock(after);
 
     expect(stepCount(afterScore)).toBe(5);
-    // Every step still carries its node marker post-resolution — code and review (still artifact-less)
-    // must still render their hollow "upcoming" marker, not a missing/mismatched one.
+    // Every step still carries its node marker post-resolution — "review" (still artifact-less, but
+    // reachable) keeps its hollow "upcoming" marker; "code" (still nothing anywhere in the studio
+    // produces it) keeps reading "blocked", not a missing/mismatched one.
     expect(snodeClassesOf(afterScore).length).toBe(5);
-    expect(snodeClassesOf(afterScore)).toEqual(["snode done", "snode done", "snode done", "snode upcoming", "snode upcoming"]);
+    expect(snodeClassesOf(afterScore)).toEqual(["snode done", "snode done", "snode done", "snode blocked", "snode upcoming"]);
+  });
+});
+
+// Fault 1 (NOTES RAIL-UNREACHABLE): a unit's team may cover only part of its type's expected shape —
+// `checkout-flow` (type `feature`, expects product-brief/design/spec/code/review) is run by `kestrel`,
+// whose members (wren, lyra, finch) between them produce product-brief/design/spec/review but never
+// `code` — nothing in the fixture's studio declares producing it at all. The rail used to render that
+// row exactly like "review" (an ordinary "queued" step a Conductor could reasonably keep waiting on),
+// even though no amount of waiting would ever move it. This proves the rail tells the two apart.
+describe("run screen — an uncoverable stage never reads as merely queued", () => {
+  test("scoreNodes marks the uncoverable kind 'unreachable', distinct from a genuinely queued one", () => {
+    const unit = repo.units.find((u) => u.unit === "checkout-flow")!;
+    const nodes = scoreNodes(repo, unit);
+    const codeNode = nodes.find((n) => n.kind === "code")!;
+    const reviewNode = nodes.find((n) => n.kind === "review")!;
+    expect(codeNode.state).toBe("unreachable");
+    expect(reviewNode.state).toBe("wait"); // finch produces review — genuinely just not made yet
+  });
+
+  test("the rendered rail spells it out and never calls it 'queued'", () => {
+    const html = renderRun(repo, "storefront", "checkout-flow", root, now);
+    const score = scoreBlock(html);
+    // Split on the OUTER row div only (`sstep`, never a nested `sstep__rail`/`sstep__body`/etc.).
+    const starts = [...score.matchAll(/<div class="sstep(?!__)[^"]*">/g)].map((m) => m.index);
+    const rows = starts.map((s, i) => score.slice(s, i + 1 < starts.length ? starts[i + 1] : score.length));
+    const codeRow = rows.find((r) => r.includes('class="sstep__label">code<'))!;
+    const reviewRow = rows.find((r) => r.includes('class="sstep__label">review<'))!;
+    expect(codeRow).toContain("unreachable &middot; no member produces this");
+    expect(codeRow).not.toContain(">queued<");
+    expect(reviewRow).toContain(">queued<");
   });
 });
 

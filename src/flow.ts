@@ -101,6 +101,36 @@ export function resolveStep(
   return caps[0];
 }
 
+/**
+ * Kinds in the unit's type `expects:` list that no member of its responsible team(s) can actually
+ * produce — a kind the type's SHAPE calls for, but this particular unit's team can never deliver, no
+ * matter how long it waits. Checked against real per-member capabilities (the same ground truth
+ * `resolveStep` binds a flow step against), never against a team's own declared `produces:` aggregate —
+ * that field can promise more than its members back (UNPRODUCIBLE_KIND) or, just as easily, simply omit
+ * a kind a member genuinely produces (`teams/kestrel.md` declares `produces: [product-brief, design,
+ * spec]` while its member `finch` produces `review` — team-level `produces:` was never the authority on
+ * what the team can actually do). Empty when every expected kind is reachable, or when the unit has no
+ * responsible team at all (a different, already-reported failure — see validateResponsibleTeam/
+ * validateStudioBindings). Shared by the board's score rail (derive.ts#scoreNodes — an uncoverable stage
+ * must never render as merely "queued", since nothing arriving ever changes that) and `levare validate`
+ * (a warning naming what a unit's assigned team can never satisfy) so the two surfaces can never
+ * disagree on which stages are honestly reachable.
+ */
+export function unreachableExpectedKinds(
+  repo: FlowRepo,
+  unit: WorkUnit,
+  capabilities: Array<{ member: string; kind: string }>,
+): string[] {
+  const type = repo.types.get(unit.type);
+  const expects = type?.expects ?? [];
+  if (expects.length === 0) return [];
+  const teams = responsibleTeamsFor(repo, unit);
+  if (teams.length === 0) return [];
+  return expects.filter(
+    (kind) => !teams.some((team) => capabilities.some((c) => team.members.includes(c.member) && c.kind === kind)),
+  );
+}
+
 /** A unit's unmet `after:` ids — [] means the start gate condition is satisfied. */
 export function unmetAfter(repo: FlowRepo, unit: WorkUnit): string[] {
   if (!unit.after || unit.after.length === 0) return [];

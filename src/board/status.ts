@@ -144,6 +144,12 @@ export function fromNodeState(state: NodeState, isGate: boolean): CanonicalStatu
       return "failed";
     case "gate":
       return "needs-you";
+    // Fault 1: an unreachable stage reuses "blocked"'s solid-neutral-gray treatment — it is, in the
+    // same sense the palette already defines for "blocked", a stalled state with an explicit label,
+    // never a fabricated red "failed" and never blue "active" progress that isn't happening. The
+    // label itself ("unreachable", not "blocked") is set by the caller (run.ts's own chip/sub text).
+    case "unreachable":
+      return "blocked";
     case "wait":
     default:
       return "waiting";
