@@ -632,6 +632,48 @@ describe("buildSandboxExecProfile — deny-list model (NOTES R4-SANDBOX-FIX-3)",
     expect(profile).toContain('(deny file-read* (subpath "/Users/cas"))');
   });
 
+  // NOTES R4-SANDBOX-TLS: `trustd.agent` alone was not sufficient for a live `cli` member's own TLS
+  // handshake — a `log stream` capture of the failing dispatch, diffed against the TLS-handshake
+  // probe's own passing `curl` capture, named `com.apple.SecurityServer` as the one mach-lookup denial
+  // present in the failing run and absent from the passing one. Granting exactly this one line,
+  // installed and re-dispatched live, confirmed it. Mirrors the trustd test immediately above:
+  // network-gated, never unconditional.
+  test("the SecurityServer mach-lookup is allowed ONLY when the network is granted, alongside trustd.agent", () => {
+    const granted = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: true });
+    expect(granted).toContain('(allow mach-lookup (global-name "com.apple.SecurityServer"))');
+    expect(granted).toContain('(allow mach-lookup (global-name "com.apple.trustd.agent"))');
+    expect(granted).toContain("(allow network*)");
+
+    const denied = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false });
+    expect(denied).not.toContain("com.apple.SecurityServer");
+    expect(denied).toContain("(deny network*)");
+  });
+
+  // NOTES R4-SANDBOX-TLS: the SecurityServer grant must not weaken the operator-home seal either —
+  // the identical orthogonality property the trustd grant was already re-checked against above.
+  test("the SecurityServer grant coexists with the operator-home deny — network and filesystem remain orthogonal", () => {
+    const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: true, operatorHome: "/Users/cas" });
+    expect(profile).toContain('(allow mach-lookup (global-name "com.apple.SecurityServer"))');
+    expect(profile).toContain('(deny file-read* (subpath "/Users/cas"))');
+  });
+
+  // NOTES R4-SANDBOX-TLS: the five mach services (plus mDNSResponder's own network-outbound denial)
+  // the TLS-handshake probe's PASSING curl run already acquitted by evidence stay ungranted here too —
+  // none of them was load-bearing for a completed handshake, so none is added on the strength of
+  // merely co-occurring with SecurityServer in the same failing-run kernel log.
+  test("none of the five previously-acquitted mach services is granted alongside SecurityServer", () => {
+    const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: true });
+    for (const acquitted of [
+      "com.apple.SystemConfiguration.configd",
+      "com.apple.diagnosticd",
+      "com.apple.system.opendirectoryd.libinfo",
+      "com.apple.system.notification_center",
+      "com.apple.logd",
+    ]) {
+      expect(profile).not.toContain(acquitted);
+    }
+  });
+
   test("denies default, allows broad OS read, denies default and only re-opens what this dispatch needs", () => {
     const profile = buildSandboxExecProfile({ cwd: "/a/b", home: "/c/d", allowNetwork: false });
     expect(profile).toContain("(deny default)");

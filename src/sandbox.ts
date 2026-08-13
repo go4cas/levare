@@ -885,6 +885,27 @@ export function buildSandboxExecProfile(policy: SandboxPolicy): string {
       // subsequent live run shows a TLS request still failing with a DIFFERENT mach-lookup denial, the fix
       // is to name and add that EXACT service, evidence-first, never to preemptively widen this grant.
       policy.allowNetwork ? '(allow mach-lookup (global-name "com.apple.trustd.agent"))' : "",
+      // NOTES R4-SANDBOX-TLS (live macOS gate, round following the probe above): `trustd.agent` alone
+      // was not sufficient for a `cli` member's own real dispatch — the SAME class of certificate-
+      // validation failure this file's header note describes persisted even with it granted. A
+      // `log stream` capture of the failing live dispatch, diffed against `scripts/repro-r4-sandbox-
+      // tls-handshake.ts`'s own PASSING `curl` capture under the identical generated profile, named
+      // exactly one mach service present in the failing run and absent from the passing one:
+      // `com.apple.SecurityServer` — never guessed at, never bundled with the five services that same
+      // probe's PASS already acquitted by evidence (`configd`, `diagnosticd`,
+      // `opendirectoryd.libinfo`, `notification_center`, `logd`, and `dtracehelper`'s file-ioctl,
+      // plus `network-outbound` on `mDNSResponder` — all denied in that PASSING run too, so none of
+      // them is load-bearing for a TLS handshake and none is granted here). Granting exactly this one
+      // line, installing it, and re-dispatching live confirmed it: the handshake completed, the member
+      // called its API, and produced a real artifact. `com.apple.SecurityServer` IS `securityd` —
+      // macOS's keychain and cryptographic-services daemon — a broader surface than `trustd.agent`'s
+      // own trust-EVALUATION-only scope; this grant lets a member's process reach securityd's mach
+      // port at all (TALK to it), which a TLS stack that defers to Security.framework needs for the
+      // handshake itself, but it does NOT grant access to any particular keychain item — keychain ACLs
+      // are enforced by securityd itself, per item, entirely independent of whether a caller can reach
+      // it over mach-lookup. Gated on `policy.allowNetwork`, identically to `trustd.agent` immediately
+      // above and for the identical reason: a member with no network grant has no use for it either.
+      policy.allowNetwork ? '(allow mach-lookup (global-name "com.apple.SecurityServer"))' : "",
       policy.allowNetwork ? "(allow network*)" : "(deny network*)",
     ].filter(Boolean),
   );
