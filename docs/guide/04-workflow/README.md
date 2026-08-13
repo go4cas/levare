@@ -36,12 +36,15 @@ EOF
 grep -q '^\.env$' .gitignore || echo ".env" >> .gitignore
 ```
 
-levare loads that file at startup. Two things to know:
+levare loads that file **at startup** — literally, not continuously. Three things to know:
 
 - **A shell variable always wins over `.env`.** If you `export ANTHROPIC_API_KEY` in your terminal,
   that's what gets used.
 - **`levare validate` will refuse to run if `.env` is tracked by git.** Studios get shared; a
   committed credential in a shared studio is a catastrophe. This one fails closed, deliberately.
+- **Fixing a typo in `.env` doesn't do anything to a `levare serve` that's already running.** Restart
+  it. This is the first of a few places in this chapter where an edit needs a restart to take
+  effect — [4.6](06-first-loop.md) explains why, and where else it applies.
 
 Check it took:
 

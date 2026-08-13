@@ -143,4 +143,31 @@ describe("frontmatter extraction", () => {
   test("unterminated frontmatter throws", () => {
     expect(() => parseFrontmatter(["---", "kind: spec"].join("\n"))).toThrow(/not terminated/);
   });
+
+  // NOTES DOCS-WALKTHROUGH-1: a live walkthrough found a frontmatter parse error naming the WRONG
+  // line — `parse(fmText)` counts lines within `fmText` alone, which starts after the opening `---`
+  // fence `parseFrontmatter` already consumed, so a bare rethrow was off by exactly one, always
+  // pointing one line too early (often a perfectly valid neighbouring line). Pinned here directly,
+  // independent of the guide-block suite that first caught it.
+  test("a frontmatter parse error names the REAL document line, not fmText's own off-by-one count", () => {
+    const src = ["---", "kind: spec", 'note: "unterminated', "---"].join("\n");
+    // `note: "unterminated` is real-document line 3 — fmText's own count (excluding the opening
+    // fence) would see it as line 2.
+    try {
+      parseFrontmatter(src);
+      throw new Error("expected a YamlError");
+    } catch (e) {
+      expect((e as Error).message).toContain("(line 3)");
+    }
+  });
+
+  // NOTES DOCS-WALKTHROUGH-1: the error text itself used to say "unterminated double-quoted string" —
+  // a syntax symptom that reads as "you forgot a quote", not "this shape isn't supported at all". The
+  // single most common way to reach this branch is a value someone assumed could wrap onto a second
+  // line, the way real YAML's double-quoted scalars can — subset-YAML never supports that (this file's
+  // own header), so the message now names that constraint directly.
+  test("a double-quoted value spanning multiple raw lines names the single-line constraint, not just 'unterminated'", () => {
+    const src = ["---", 'note: "line one', "      line two\"", "---"].join("\n");
+    expect(() => parseFrontmatter(src)).toThrow(/single line/);
+  });
 });

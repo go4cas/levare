@@ -63,12 +63,11 @@ name: codex
 kind: cli
 command: codex
 auth: subscription
+role: model
 env: []
 home: [".codex", ".volta"]
 plan: "ChatGPT subscription"
-scope: "Codex authenticates via its own stored login (~/.codex). Declaring home: scopes a granted
-        member's process to a per-run HOME symlinking only these paths from your real one — see
-        Operations for what this does and does not close."
+scope: "Codex authenticates via its own stored login (~/.codex); home: scopes a granted member's process to a per-run HOME symlinking only these paths from your real one — see Operations for what this does and does not close."
 ---
 
 # Codex connector
@@ -109,13 +108,19 @@ levare doctor .
 ```
 
 ```
-codex · cli
+codex · cli · model
   auth: subscription · ChatGPT subscription
-  ⚠ levare cannot scope this credential — any member that can spawn `codex` can use this
-    login. The grant is documentation, not enforcement.
+  ⚠ this credential is scoped to `.codex, .volta` under a per-run HOME — but any member
+    granted this connector can still use the login (the grant is not per-member
+    revocable; only the real login is).
   cli codex on PATH
   → ok
 ```
+
+That warning is the **scoped** variant — it shows because this connector declares `home:`. Drop
+`home:` entirely and `levare doctor` warns differently (and more loudly): *"levare cannot scope
+this credential — any member that can spawn `codex` can use this login. The grant is documentation,
+not enforcement."* Declaring `home:` is what moves you from the second warning to the first.
 
 Prefer `auth: env` where the vendor offers it. Grant `auth: subscription` connectors only to members
 you'd trust with the login — because in that mode, the grant is a *label*, not a lock.
@@ -278,6 +283,11 @@ A locally-installed server invoked *through* a runner (`npx /abs/path/to/install
 "tell plainly, never reject" posture every other REV1-era warning takes. Dispatch itself only refuses it
 on a host where a working sandbox primitive is actually present — on a host with none, the connector
 runs exactly as it always has, unconfined. See NOTES MCP-1C addendum 6 for the full ruling.
+
+**One more thing, before the next step relies on it:** if `levare serve` has been running since
+[4.4](04-first-gate.md), it has not noticed either of the two files you just wrote. A connector and
+an agent are registry, not `work/` — the daemon only watches `work/`, so it takes a restart to pick
+either one up. [4.6](06-first-loop.md) is exactly where this stops being trivia and starts mattering.
 
 ---
 

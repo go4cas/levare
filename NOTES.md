@@ -14025,3 +14025,166 @@ live-host harness script in this saga takes when run outside its own required pl
 - **`bubblewrapArgv`'s new `--bind-try` for `grantedHomeTargets` is construction-only**, like every other
   bubblewrap claim in this file — this container's own outer seccomp policy has never once let a real
   bubblewrap invocation run, on any round, in this project's history.
+
+# NOTES DOCS-WALKTHROUGH-1 (2026-08-13) — a cold-start walkthrough of a released binary against
+# `docs/guide/04-workflow/` found a copy-paste block the studio's own parser rejects, a missing field
+# that produces a different documented failure than the chapter shows, an undocumented daemon behaviour
+# hit three times in one session, and a repro harness whose own plumbing bug produced a false negative
+
+Every finding below is evidenced by a live run, not inferred from reading the prose — the goal that
+opened this unit was explicit that none of the four needed re-deriving. The unit this entry closes
+also establishes a standing rule: a fenced block in the guide that a reader is told to paste is
+executable content, not prose, and from here on it is tested like code, not merely proofread.
+
+## Finding 1 — the codex connector heredoc in 4.5 doesn't parse, and the parser's own error pointed at
+## the wrong line while naming a symptom instead of the constraint
+
+`docs/guide/04-workflow/05-foreign-agent.md`'s `connectors/codex.md` heredoc declared `scope:` as a
+double-quoted string spanning three raw lines — real YAML supports this (a flow scalar folds
+continuation lines); subset-YAML does not and never has (`src/yaml.ts`'s own header lists double-quoted
+scalars among the constructs `tokenizeLines` processes one raw line at a time, with no concept of
+continuation). Pasting the block verbatim produced `PARSE_ERROR connectors/codex.md: unterminated
+double-quoted string (line 7)` — and line 7 of the pasted file is `plan: "ChatGPT subscription"`, a
+completely valid line; the actual malformed construct is the `scope:` line one below it. Reproduced
+directly against the parser (not just observed live): `parseFrontmatter`'s own line-counting was off by
+exactly one, because `YamlError`s raised inside `parse(fmText)` count lines within `fmText` — which
+starts AFTER the opening `---` fence `parseFrontmatter` already consumed — and nothing translated that
+count back to the real document's own line numbering before it reached the reader. Attempting the
+"obvious" YAML fix (`>-`, a block scalar) produces a SECOND, correct rejection
+(`block scalars (| and >) are not supported in subset-YAML`) only after the first failure, doubling the
+round trip.
+
+**Fixed, two parts, both in `src/yaml.ts`:** `parseFrontmatter` now catches a `YamlError` thrown out of
+`parse(fmText)` and rethrows it with `line + 1`, so the reported line is always the real document's own
+— `YamlError` gained a `rawMessage` field (the text before the `(line N)` suffix) so this rethrow doesn't
+need to parse its own error string back apart. And `parseDoubleQuoted`'s error text no longer says
+"unterminated double-quoted string" (a syntax symptom) — it says a double-quoted scalar must be a single
+line, no continuation, even inside quotes (the actual constraint a reader needs to know to fix it in one
+pass). Both are exercised by `tests/guide-workflow-blocks.test.ts` indirectly (the original heredoc, left
+broken, would fail that suite outright) and directly by the reproduction in this entry's own commit
+history. The doc fix itself: `scope:` collapsed to one line.
+
+## Finding 2 — the same heredoc omits `role: model`, and the chapter's shown `levare doctor` output no
+## longer matches what the block it just walked through actually produces
+
+Following 4.5 verbatim (even after fixing Finding 1) still raised `SUBSCRIPTION_NO_ROLE`
+(`validate.ts#validateConnectorRoleWarning`) — the connector never declared `role:`, and doctor's own
+warning text for a subscription connector differs by whether `home:` is present
+(`doctor.ts#diagnose`, lines ~105-120): with `home: [".codex", ".volta"]` already declared (this
+connector has always had it), the SCOPED warning applies (*"this credential is scoped to
+`.codex, .volta`... but any member granted this connector can still use the login"*) — not the UNSCOPED
+one the chapter's own `levare doctor .` sample block showed (*"levare cannot scope this credential...
+The grant is documentation, not enforcement"*), which is what a bare `auth: subscription` connector with
+NO `home:` gets. The chapter's example and its own sample output had drifted into describing two
+different connectors. Fixed: `role: model` added to the heredoc (this is `src/init.ts`'s own
+`CONNECTOR_CODEX` scaffold shape, independently arrived at — the guide's hand-authored example had simply
+drifted from it); the sample `levare doctor .` block replaced with the actual scoped-warning text
+(simulated directly against `doctor.ts#diagnose`/`formatDoctor`, not guessed), plus a line stating
+explicitly which variant appears and why.
+
+## Finding 3 — "Start the unit" (4.6) names an action nothing in the guide had defined, and reproducing
+## it surfaces a real, undocumented daemon behaviour
+
+4.6 says "Start the unit" as a bare imperative; nothing at that point in the guide (or in
+`levare --help`, which has no `start` subcommand at all) tells a reader what that means for a unit whose
+start gate was already resolved back in 4.4. Working out what actually has to happen required reading
+`src/dagwalk.ts#nextAction` (a unit's next action is derived purely from its RESPONSIBLE team's own
+`flow:`, walked fresh against on-disk artifacts — not a global step sequence) and `src/daemon.ts#start`
+(a daemon only re-derives the whole repo, registry included, at the moment it *starts* — its `fs.watch`
+only covers `work/`, never `teams/`/`agents/`/`connectors/`/`projects/`, so nothing under those paths
+ever schedules a walk). Put together: editing `teams/press.md` to add the loop is real on disk the
+instant it's saved, and genuinely inert against a `levare serve` that's been running since 4.4 — not
+because the loop doesn't apply (it does: the loop treats the already-approved product-brief as round 1's
+author artifact and looks for round 1's review), but because nothing woke the daemon up to notice. This
+is the general shape behind three separate live observations in the same session: a corrected
+`ANTHROPIC_API_KEY` in `.env` (loaded once, at `levare serve`'s own startup —
+`cli.ts#runServeCmd`/`dotenv.ts#applyStudioEnv`, confirmed by the code's own "on startup" contract, not
+just observed), a freshly-created `unit.md`, and a connector `home:` edit all produced nothing until the
+process was restarted. Each time the operator's own experience was "make the correct fix, retry, fail
+identically" — silent, not because anything was broken, but because nothing in the docs said a restart
+was sometimes required.
+
+**Fixed as documentation, not as a daemon behaviour change** — whether the daemon should re-scan the
+registry live is a product question for a separate unit, named but not decided here.
+`docs/guide/04-workflow/06-first-loop.md`'s "Run it" section now states plainly: this is the same unit,
+there is no button waiting for it, and the fix is restarting `levare serve` — with the mechanism
+(daemon watches `work/` only) stated inline, not left implicit. `docs/guide/04-workflow/07-the-daemon.md`
+gained a "What it doesn't watch" section making the same claim precisely (registry edits and `.env` need
+a restart; a walk that already started always picks up the change) and pointing back to where a reader
+first hits it. `docs/guide/04-workflow/README.md`'s `.env` section and `05-foreign-agent.md`'s connector/
+agent section each gained a one-line pointer at the exact place the behaviour becomes relevant, rather
+than only in the chapter that explains it in full.
+
+## Finding 4 — `scripts/repro-r4-appserver-codex.ts` (NOTES R4-SANDBOX-APPSERVER) produces false
+## negatives: its own plumbing bug, not the sandbox, made the app-server bug look reproduced
+
+Steps 3 (the real codex dispatch, sandboxed) and 4 (the same dispatch, unsandboxed — codex's declared
+escape hatch) both failed with `No prompt provided via stdin.` — codex-independent of any sandbox
+behaviour. Root cause, confirmed by reading (not guessed): every `runDispatch` call in the script passed
+`unit: "repro", project: "storefront"` — a unit that does not exist under `fixtures/golden/work/`. Worse,
+even a real unit wouldn't have been enough: `context.ts#assembleContext` also requires the dispatched
+member to belong to a real team (`env.ts#teamOf`: `team.members.includes(member)`) with a `flow:` label
+matching the requested kind (`context.ts#agentSteps`) — neither true for a synthetic probe agent
+constructed on the fly. Either gap makes `assembleContext` throw, and `adapters.ts#AdapterRunner#assemble`
+silently swallows ANY such throw into an EMPTY context string (deliberate, elsewhere — a context-assembly
+bug degrading one member's own prompt rather than crashing a live dispatch) — so the script had been
+piping zero bytes to `codex exec -`'s stdin the whole time, and codex's own honest complaint about that
+was being read as an app-server sandbox finding it never was. The goal's own summary text compounded
+this: it told a reader to treat step 3 as the decisive reproduction, which — before this fix — would have
+concluded the original bug still reproduces, when the live run instead proves the sandbox was never
+involved in either failure.
+
+**Fixed:** `runDispatch` now dispatches against `checkout-flow`/`storefront` (a unit that actually exists
+in `fixtures/golden`) and grafts the probe agent onto `kestrel`'s `members:` in memory before dispatch
+(`kestrel` is the one real team whose `flow:` names a `review` label at all) — never written to disk;
+`AdapterRunner.produceAsync`'s `author()` step only ever returns a doc string, it doesn't persist one, so
+this script has never mutated the fixture it reads from. A new pure function,
+`crossCheckSandboxInvolvement(step3, step4)`, compares the two results automatically: identical failure
+classification in both → prints `NOT A SANDBOX FAULT` naming why; step 3 fails and step 4 (the
+unsandboxed control) succeeds → `SANDBOX-IMPLICATED`; anything else settles nothing and says so, rather
+than guessing. The script's own closing summary no longer tells a reader to treat step 3 as decisive by
+itself. Pinned by 5 new cases in `tests/repro-r4-appserver-codex.test.ts` (13 tests total in that file
+now), independent of the darwin-only live dispatch the real classification is normally computed from.
+
+## The standing rule this unit adds: a pasteable block is executable content
+
+`tests/guide-workflow-blocks.test.ts` extracts every `cat > <path> <<'EOF' ... EOF` block from
+`docs/guide/04-workflow/*.md`, in document order, and replays them into a studio scaffolded the same way
+`levare init .` leaves one (`src/init.ts#scaffoldStudio`) — running the REAL frontmatter parser and
+`validatePath` after each paste, exactly mirroring a reader who runs `levare validate .` after every
+step. It asserts zero errors at every step and — specifically, since this is exactly the class of drift
+Findings 1/2 were — that neither `SUBSCRIPTION_NO_ROLE` nor `SUBSCRIPTION_NO_HOME` ever appears
+undocumented. 10 blocks (9 heredocs across `README.md` and `01`–`06`, plus a final finished-studio check)
+all pass clean with the fixes above in place; before Finding 1/2's fixes, the codex connector block alone
+failed this suite outright — proof the check catches the exact regression that shipped once already.
+Without a test like this, prose review alone missed a broken heredoc for an entire prior unit; that's the
+gap this closes, not just for `connectors/codex.md`, but for every future edit to any chapter in this
+directory.
+
+## Docs
+
+`docs/current-gaps.md` gains a new entry (below) recording this closure — the `Start the unit`/daemon-
+restart behaviour named as current, honest, and undecided whether it should change; the guide-block
+verification gap named as now closed. No entry needed reopening; nothing here reverses a prior ruling.
+
+## Verification
+
+`bun test` — every suite green, including the two new files this unit adds
+(`tests/guide-workflow-blocks.test.ts`, 10 tests) and extends (`tests/repro-r4-appserver-codex.test.ts`,
+13 tests, up from 8) and `tests/yaml.test.ts`/`tests/validate.test.ts` (unchanged, still green against
+the corrected line-offset and error text — nothing pinned the old off-by-one or the old message). `bun
+run typecheck` → exit 0. `bun run deps:check` → deps ok. `bun run build` → succeeds. Every
+`cat > … <<'EOF'` block in `docs/guide/04-workflow/` produces a file `levare validate` accepts with no
+warning the chapter doesn't itself show (`tests/guide-workflow-blocks.test.ts`). `levare validate
+fixtures/golden` → `valid`. `levare replay fixtures/golden --stubs` → oracle match, byte-for-byte
+(neither touched by this unit's changes — confirmed, not assumed).
+
+## Honest residual — what this unit deliberately did not do
+
+Whether `levare serve`'s daemon SHOULD re-derive the registry live (watch `teams/`/`agents/`/
+`connectors/`/`projects/`, not just `work/`) is named directly in Finding 3 above as a real product
+question this unit does not answer — the fix here is documentation matching current behaviour honestly,
+not a behaviour change. `scripts/repro-r4-appserver-codex.ts`'s own app-server root cause (H1 vs. H2,
+NOTES R4-SANDBOX-APPSERVER) is still unconfirmed pending a live macOS host — Finding 4 fixes the harness
+so that host's next run produces a real verdict instead of a false negative; it does not itself produce
+that verdict.

@@ -98,6 +98,27 @@ export function classifyCodexAppServerFailure(message: string): "app-server-init
   return "other";
 }
 
+export interface DispatchOutcome {
+  outcome: "succeeded" | "failed" | "skipped";
+  classification?: ReturnType<typeof classifyCodexAppServerFailure>;
+}
+
+// NOTES DOCS-WALKTHROUGH-1: pure arithmetic on step 3 (sandboxed) vs. step 4 (the identical command,
+// unsandboxed — step 3's own control), pinned by tests/repro-r4-appserver-codex.test.ts so this
+// specific classification mistake — treating step 3 as decisive without checking whether step 4 failed
+// the exact same way — can't silently regress. `null` means the two results don't settle the question
+// (one skipped, or they failed with DIFFERENT classifications) — the kernel log (step 5) and the
+// hypothesis verdicts (steps 1/2) are what a Conductor reads instead in that case, not this function.
+export function crossCheckSandboxInvolvement(step3: DispatchOutcome, step4: DispatchOutcome): "not-a-sandbox-fault" | "sandbox-implicated" | null {
+  if (step3.outcome === "failed" && step4.outcome === "failed" && step3.classification === step4.classification) {
+    return "not-a-sandbox-fault";
+  }
+  if (step3.outcome === "failed" && step4.outcome === "succeeded") {
+    return "sandbox-implicated";
+  }
+  return null;
+}
+
 function mkCliAgent(name: string, command: string[], connectors: string[] | undefined, extra: Partial<Agent> = {}): Agent {
   return {
     name,
@@ -119,11 +140,37 @@ function mkCodexConnector(home: string[]): Connector {
   return { name: "codex-repro", kind: "cli", command: "codex", env: [], auth: "subscription", role: "model", effects: "read", gate: "proposal", plan: "ChatGPT subscription", home };
 }
 
+// The real reproduction target: `checkout-flow`, a work unit that actually exists under
+// fixtures/golden/work/storefront/ — see `runDispatch`'s own header for why this matters (an earlier
+// version of this script used a fabricated "repro" unit that doesn't exist on disk at all).
+const REPRO_PROJECT = "storefront";
+const REPRO_UNIT = "checkout-flow";
+// The only real team in fixtures/golden whose `flow:` names a `review` label at all (kestrel's
+// `loop: between: [spec, review]`) — context assembly (context.ts#assembleContext) requires the
+// dispatched member to belong to a team (env.ts#teamOf: `team.members.includes(member)`) AND for
+// that team's flow to carry a label matching the requested kind (context.ts#agentSteps). Neither is
+// true for a synthetic probe agent by construction, so `runDispatch` grafts it onto kestrel's
+// `members:` in memory, once, immediately before dispatch — never written to disk (this repo object
+// is never persisted; `AdapterRunner.produceAsync`'s `author()` step only builds a doc string, see its
+// own header — no file this script touches is ever mutated by a live run).
+const CONTEXT_TEAM = "kestrel";
+
 async function runDispatch(repo: Repo, pricing: Pricing, label: string, agent: Agent, note: string): Promise<{ outcome: "succeeded" | "failed"; classification?: ReturnType<typeof classifyCodexAppServerFailure>; detail: string }> {
   console.log("");
   console.log(`=== ${label} ===`);
   console.log(note);
   repo.agents.set(agent.name, agent);
+  // NOTES DOCS-WALKTHROUGH-1: without this, `assembleContext` throws (`no work unit 'repro'` in the
+  // original version of this script, or `agent '<name>' belongs to no team` even after that) and
+  // `AdapterRunner#assemble` silently swallows the throw into an EMPTY context string (adapters.ts's
+  // own `assemble()` — deliberate, so a context-assembly bug degrades a member's OWN prompt rather
+  // than crashing a live dispatch, but it means THIS script was piping zero bytes to `codex exec -`'s
+  // stdin and calling the vendor's resulting "No prompt provided via stdin." an app-server sandbox
+  // finding it never was). Both fixed by using a real (project, unit) pair and a real team membership
+  // below, so context assembly succeeds and a genuine, non-empty prompt reaches stdin — the same shape
+  // a real dispatch always has.
+  const team = repo.teams.get(CONTEXT_TEAM);
+  if (team && !team.members.includes(agent.name)) team.members.push(agent.name);
   const nativeMock: NativeBoundary = { invoke: () => ({ doc: "unused" }) };
   const remoteMock: RemoteBoundary = { call: () => ({ doc: "unused" }) };
   const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: agent.name, kind: "review" }], native: nativeMock, remote: remoteMock });
@@ -132,7 +179,7 @@ async function runDispatch(repo: Repo, pricing: Pricing, label: string, agent: A
   let classification: ReturnType<typeof classifyCodexAppServerFailure> | undefined;
   let detail: string;
   try {
-    const { doc } = await runner.produceAsync(agent.name, "review", "repro", "storefront");
+    const { doc } = await runner.produceAsync(agent.name, "review", REPRO_UNIT, REPRO_PROJECT);
     outcome = "succeeded";
     const sandboxLine = /^sandbox: .+$/m.exec(doc)?.[0] ?? "sandbox: (not reported)";
     const reasonLine = /^sandbox_reason: .+$/m.exec(doc)?.[0];
@@ -213,13 +260,13 @@ async function probeGrantedHomeTargetWrite(repo: Repo, pricing: Pricing): Promis
 // STEP 3 — the real thing, if codex is actually on this host and logged in. Mirrors the Conductor's own
 // elimination table exactly: `home: [".codex", ".volta"]` (the configuration that got PAST the Volta
 // shim error to the app-server EPERM), the same flags named in the goal's own evidence.
-async function probeRealCodexDispatch(repo: Repo, pricing: Pricing): Promise<void> {
+async function probeRealCodexDispatch(repo: Repo, pricing: Pricing): Promise<{ outcome: "succeeded" | "failed" | "skipped"; classification?: ReturnType<typeof classifyCodexAppServerFailure>; detail: string }> {
   const codex = Bun.which("codex");
   if (!codex) {
     console.log("");
     console.log("=== 3. Real codex dispatch — SKIPPED ===");
     console.log("codex not found on PATH. Install/login (`codex login`) and re-run for the real reproduction. Steps 1/2/4/5 still ran above/below and stand on their own.");
-    return;
+    return { outcome: "skipped", detail: "codex not found on PATH" };
   }
   console.log(`codex resolved to: ${codex}`);
   const connector = mkCodexConnector([".codex", ".volta"]);
@@ -229,12 +276,12 @@ async function probeRealCodexDispatch(repo: Repo, pricing: Pricing): Promise<voi
     ["codex", "exec", "-", "-m", "gpt-5.5", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--skip-git-repo-check"],
     [connector.name],
   );
-  await runDispatch(
+  return runDispatch(
     repo,
     pricing,
     "3. Real codex dispatch — home: [\".codex\", \".volta\"] (the Conductor's own elimination-table configuration)",
     agent,
-    "The exact reproduction named in this round's own evidence. A 'app-server-init' classification confirms the ORIGINAL bug still reproduces on this host — read STEP 2's own result above FIRST: if step 2 passed (write-through now works) but this step STILL fails identically, H1 is RULED OUT and the kernel-log capture below (step 5) is the only remaining source of evidence — do not guess a third hypothesis without it.",
+    "The exact reproduction named in this round's own evidence. A 'app-server-init' classification confirms the ORIGINAL bug still reproduces on this host — read STEP 2's own result above FIRST: if step 2 passed (write-through now works) but this step STILL fails identically, H1 is RULED OUT and the kernel-log capture below (step 5) is the only remaining source of evidence — do not guess a third hypothesis without it. But read it against STEP 4's own result too, printed right after this one: STEP 4 runs the identical command with the OS sandbox removed entirely — if it fails the SAME way, this is not a sandbox finding at all, no matter how closely it matches the originally-reported symptom (see this script's own automatic cross-check, printed after step 4).",
   );
 }
 
@@ -242,7 +289,7 @@ async function probeRealCodexDispatch(repo: Repo, pricing: Pricing): Promise<voi
 // are both wrong and a THIRD, unnamed cause is what's actually happening, `sandbox: unsandboxed` on the
 // member definition must still produce a real, working artifact — the honest alternative this round
 // ships regardless of whether the sandboxing question itself gets fully resolved this round.
-async function probeDeclaredEscapeHatch(repo: Repo, pricing: Pricing): Promise<void> {
+async function probeDeclaredEscapeHatch(repo: Repo, pricing: Pricing): Promise<{ outcome: "succeeded" | "failed"; classification?: ReturnType<typeof classifyCodexAppServerFailure>; detail: string }> {
   const codex = Bun.which("codex");
   const command = codex ? ["codex", "exec", "-", "-m", "gpt-5.5", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--skip-git-repo-check"] : ["sh", "-c", "echo APPROVED"];
   const connector = mkCodexConnector([".codex", ".volta"]);
@@ -251,12 +298,12 @@ async function probeDeclaredEscapeHatch(repo: Repo, pricing: Pricing): Promise<v
     sandbox: "unsandboxed",
     sandbox_reason: "NOTES R4-SANDBOX-APPSERVER: codex's in-process app-server failed to initialize under the generated sandbox-exec profile (Operation not permitted) — declared unsandboxed pending a confirmed root cause from a live kernel-log capture.",
   });
-  await runDispatch(
+  return runDispatch(
     repo,
     pricing,
     `4. Declared escape hatch (sandbox: unsandboxed)${codex ? "" : " — codex not on PATH, using a stand-in command"}`,
     agent,
-    "Proves the fallback path works regardless of the sandbox investigation's own outcome: MUST succeed, and its own artifact must read 'sandbox: none' + a 'sandbox_reason:' line naming why, never silently.",
+    "Proves the fallback path works regardless of the sandbox investigation's own outcome: MUST succeed (when codex is on PATH), and its own artifact must read 'sandbox: none' + a 'sandbox_reason:' line naming why, never silently. This is also STEP 3's unsandboxed CONTROL, not just the fallback demo: it runs the same command with no OS sandbox in the way at all, so a failure here that matches step 3's failure — same classification — proves step 3's failure has nothing to do with sandboxing (see this script's own automatic cross-check, printed below).",
   );
 }
 
@@ -328,8 +375,32 @@ async function main() {
         : "        >>> H1 IS LIVE on this host even after this round's own fix — the fix is not reaching this code path, or is incomplete. Re-check LEVARE_SANDBOX_DEBUG's own profile dump above for a missing '(allow file-write* (subpath \".fake-vendor\"))' line before proposing a further change. <<<",
     );
 
-    await probeRealCodexDispatch(repo, pricing);
-    await probeDeclaredEscapeHatch(repo, pricing);
+    const real = await probeRealCodexDispatch(repo, pricing);
+    const escapeHatch = await probeDeclaredEscapeHatch(repo, pricing);
+    // NOTES DOCS-WALKTHROUGH-1: step 4 is step 3's own unsandboxed CONTROL — same command, same
+    // connector, no OS sandbox at all. A live run once let step 3's failure stand as "the app-server
+    // bug reproduces" without ever checking whether step 4 failed identically (an unrelated harness
+    // bug, at the time — see this script's own `runDispatch` header) — which would have meant the
+    // sandbox was never the cause of either. Automated here so that mistake can't repeat quietly.
+    const verdict = crossCheckSandboxInvolvement(real, escapeHatch);
+    if (verdict === "not-a-sandbox-fault") {
+      console.log("");
+      console.log(
+        `>>> NOT A SANDBOX FAULT: step 3 (sandboxed) and step 4 (unsandboxed control) both failed with the ` +
+          `IDENTICAL classification ('${real.classification}') — the OS sandbox was not in the causal chain ` +
+          `for either failure. Whatever this is, it reproduces with no sandbox present at all, so no change to ` +
+          `src/sandbox.ts's profile can be its fix. Look at what step 3 and step 4 actually share instead: the ` +
+          `command, the connector, the harness's own context assembly (this script's own known failure mode —` +
+          ` see runDispatch's header) — never the sandbox wrap. <<<`,
+      );
+    } else if (verdict === "sandbox-implicated") {
+      console.log("");
+      console.log(
+        ">>> SANDBOX-IMPLICATED: step 3 (sandboxed) failed and step 4 (the identical command, unsandboxed) " +
+          "succeeded — the sandbox is a live, confirmed part of the causal chain. Read step 3's own " +
+          "classification against steps 1/2's verdicts above to say which hypothesis it matches. <<<",
+      );
+    }
   } finally {
     if (priorDebug === undefined) delete process.env.LEVARE_SANDBOX_DEBUG;
     else process.env.LEVARE_SANDBOX_DEBUG = priorDebug;
@@ -340,11 +411,13 @@ async function main() {
   console.log("");
   console.log("=== Summary ===");
   console.log("Read the verdicts above in order: step 1 (H2) and step 2 (H1) are independently decisive and");
-  console.log("need no codex install; step 3 is the real reproduction, read against steps 1/2's own verdicts;");
-  console.log("step 4 proves the fallback works regardless; step 5's kernel log is the tie-breaker if steps");
-  console.log("1-3 leave the cause ambiguous. Record this run's FULL output in NOTES R4-SANDBOX-APPSERVER —");
-  console.log("naming which hypothesis the evidence confirms (or a third one the kernel log names) — before");
-  console.log("proposing any further src/sandbox.ts change. Never guess a fix from this summary alone.");
+  console.log("need no codex install; step 3 is the candidate reproduction, but it is NEVER decisive by itself");
+  console.log("— read it only alongside the NOT A SANDBOX FAULT / SANDBOX-IMPLICATED line printed right after");
+  console.log("step 4, since step 4 is step 3's own unsandboxed control, not just the fallback demo; step 5's");
+  console.log("kernel log is the tie-breaker if steps 1-3 still leave the cause ambiguous. Record this run's");
+  console.log("FULL output in NOTES R4-SANDBOX-APPSERVER — naming which hypothesis the evidence confirms (or");
+  console.log("a third one the kernel log names) — before proposing any further src/sandbox.ts change. Never");
+  console.log("guess a fix from this summary alone, and never treat step 3 alone as decisive.");
 }
 
 if (import.meta.main) {
