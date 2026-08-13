@@ -15076,3 +15076,83 @@ still refuse the genuinely broken shapes — no responsible team at all, or more
 ambiguously matching. `UNCOVERABLE_EXPECTED_KIND` only ever fires once a responsible team is already
 unambiguously resolved; it is strictly narrower, and never fires in either of those pre-existing error
 cases. No frontmatter schema changed.
+
+## NOTES RAIL-UNREACHABLE addendum — fault 3's first fix regressed the baseline it was meant to preserve
+
+Live review against a real `levare serve` (not just the DOM-assertion test suite, which passed
+throughout — this is exactly the class of defect a string-content assertion can't see) found the first
+fault-3 fix broke what it wasn't trying to change. Nesting the join arrow inside the same flex item as
+its node (`.fpair{ display:flex; align-items:flex-start }`) did stop the DOM from ever being torn apart
+across a wrap — but it also changed which flex container's `align-items` the arrow and its node each
+resolved against, so the connector dropped to a visibly lower baseline than its node instead of sitting
+beside it. Separately, the loop's own pair — grouped correctly in the same DOM element as its arrow —
+still read as orphaned: its node's `align-items:center` centered "ly ⇄ fi" horizontally within a box
+widened by its own wrapped caption, leaving a wide visual gap between the arrow and the avatars it
+points at that looked identical to the original stranding, even though structurally nothing was split.
+
+**Root cause, precisely.** The pre-fault-3 layout's vertical alignment worked by a specific, unstated
+mechanism: `.flowstrip{ align-items:center }` applied to every bare `.m`/`.arr` sibling PER FLEX LINE,
+and `.arr{ align-self:flex-start; margin-top:11px }` gave every line a guaranteed minimum cross-size of
+32px (11 margin + 21 line-height) regardless of what else shared that line — a short `.m` (an 8px
+diamond, a 22px avatar) then CENTERED within that 32px line via the container's own `align-items`,
+landing close enough to the arrow's fixed 11px-from-top position to read as aligned. Nesting `.m` inside
+`.fpair` moved that centering decision from "relative to the whole flex LINE" to "relative to just this
+PAIR's own cross-size" — and `.fpair{ align-items:flex-start }` never centers at all, so a short `.m`
+just sat pinned to the pair's own top (offset 0) while the arrow (still `align-self:flex-start;
+margin-top:11px`, unchanged) sat 11px below it — the exact "connector drops below its node" the review
+reported. Verified by rendering the pre-fault-3 commit itself (`git worktree`) at the same viewport and
+comparing real `getBoundingClientRect()` measurements: avatar/diamond centers landed at y=425.4, arrow
+centers at y=430.9 — a small (5.5px), visually-acceptable offset the OLD centering-within-an-inflated-
+line mechanism produced, not something the naive top-align port reproduced at all.
+
+**The v2 fix — the join arrow is taken out of `.fpair`'s own flow entirely**, not merely repositioned
+within it:
+
+```css
+.flowstrip{ display:flex; align-items:center; column-gap:22px; row-gap:10px; flex-wrap:wrap; overflow:hidden; }
+.flowstrip .m{ display:flex; flex-direction:column; align-items:flex-start; gap:6px; }
+.flowstrip .arr{ color:var(--fg-mute); font-family:var(--mono); }
+.flowstrip .fpair{ position:relative; }
+.flowstrip .fpair > .arr{ position:absolute; top:50%; right:calc(100% + 6px); transform:translateY(-50%); white-space:nowrap; }
+.flowstrip .fpair--loop > .arr{ top:11px; transform:none; }
+```
+
+`.fpair`'s own size for wrapping purposes is now just its `.m`'s size — the arrow, `position:absolute`,
+never contributes to it. `right:calc(100% + 6px)` anchors the arrow 6px left of `.fpair`'s own left
+edge, landing it INSIDE the `column-gap` `.flowstrip` reserves before every non-first item. Two
+consequences fall out of that one fact, neither one hand-tuned: (1) mid-line, the arrow renders in that
+reserved gap, beside its neighbour, indistinguishable from a normal connector — and true vertical
+centering (`top:50%; transform:translateY(-50%)`, computed against `.fpair`'s own — now node-only —
+height) exactly centers it against a short node with no leftover cross-line inflation to reason about;
+(2) `flex-wrap` never inserts that column-gap before a wrapped LINE's own first item (this is standard,
+specified flexbox behaviour, not something this CSS requests) — so the identical arrow, at the identical
+offset, lands at a NEGATIVE position relative to the strip's own left edge, and `.flowstrip`'s
+`overflow:hidden` clips it away entirely. No JavaScript, no line-position detection, no per-case special
+casing for "am I first on my line" — the SAME fixed arithmetic yields "beside its neighbour" or
+"invisible" purely from whether the neighbour (and its gap) exists. The loop pair gets one, and only
+one, deliberate exception: its node stacks an avatar row above a `.mn` caption, so true centering would
+float the arrow between the two rather than beside the avatars it actually connects to — `.fpair--loop
+> .arr` anchors near the avatar row's own height (`top:11px`, the SAME fixed constant the pre-fault-3
+design already used for the identical reason) instead of centering against the whole taller stack.
+`.flowstrip .m`'s own `align-items` also moved from `center` to `flex-start` — unrelated to the
+connector fix, but the SAME review found it: when the loop's `.m` widens to accommodate its own wrapped
+caption, centering "ly ⇄ fi" within that now-wide box was what created the visual gap that made the
+loop's (structurally correct) pair still read as orphaned. Left-aligning both rows of the loop's stack
+keeps the avatars flush against where the connector renders, regardless of how wide the caption forces
+the box.
+
+**The caption wrap defect found in the same review.** `until spec.approved · max 3 · on_exhaust: gate`
+was breaking mid-phrase ("on_exhaust:" from "gate") at narrow widths — a bare space between each key and
+its value let the browser wrap there. Fixed by using `&nbsp;` between each key and its value (`until
+X`, `max N`, `on_exhaust: Y`) while leaving the ` · ` separators between pairs as ordinary breakable
+spaces — a narrow card now wraps only at pair boundaries, never inside one.
+
+**Verification.** Rendered the actual page via a headless Chromium (Playwright, driving a real `levare
+serve fixtures/golden`) at several card-relevant widths (280/320/380/700px viewport — the card's own
+grid-constrained width, not the viewport, is what actually varies the wrap point) and read real
+`getBoundingClientRect()` measurements plus screenshots at each — not just the DOM-string test suite,
+which passed on both the broken v1 and the corrected v2 alike, exactly because a layout defect at this
+level (baseline drop, visual-but-not-structural orphaning) is invisible to a string/regex assertion over
+markup. This is also why the `assets/styles.css` assertions added for this fix check specific PROPERTIES
+(`position:absolute`, `overflow:hidden`, `column-gap:`) rather than merely "a rule exists, non-empty" —
+narrower, but at least testing the actual mechanism this design depends on, not a decoy.

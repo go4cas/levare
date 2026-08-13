@@ -193,8 +193,22 @@ describe("fault 2: a long plain-text .prow label no longer collides with its val
 // Fault 3: `.flowstrip` wraps on a narrow card, and the arrow joined between nodes by a plain
 // `.join()` was its own flex sibling — the wrap algorithm could break the line right after an arrow,
 // leaving it orphaned at the end of one line ("wr → ◆ → ly → ◆ →") with the step it points at starting
-// fresh on the next, right above the loop row. Fixed by rendering each arrow INSIDE the same flex item
-// as the node it precedes (`.fpair`) — wrapping can now only ever happen between complete pairs.
+// fresh on the next, right above the loop row.
+//
+// v1 fixed the split by nesting the arrow inside the SAME flex item as its node (`.fpair`) — that
+// stopped the DOM from ever being torn apart, but broke the vertical baseline (the nesting changed
+// which flex container's `align-items` the arrow and node each resolved against) and, separately, left
+// the loop's own arrow rendering as the visibly-leftmost thing on its wrapped line — structurally
+// grouped with its node, but with a wide gap before "ly" (the loop node's own `align-items:center`
+// centering it within a box widened by its wrapped caption) that read exactly like the original orphan.
+//
+// v2 (this fix — verified against a real `levare serve` in a headless browser at several widths, not
+// only by the DOM assertions below, since a layout defect like v1's is exactly the class a DOM
+// assertion passes straight through): the arrow is taken OUT of `.fpair`'s own flow entirely
+// (`position:absolute`), so `.fpair`'s size for wrapping purposes is just its node's size, and the
+// arrow purely decorates the `column-gap` `.flowstrip` reserves before it — a gap that, by flexbox's
+// own rule, is never inserted before a wrapped line's own first item, so the identical arrow lands off
+// the strip's clipped (`overflow:hidden`) left edge exactly when it would otherwise read as orphaned.
 describe("fault 3: no orphaned arrow in a wrapped team flow row", () => {
   test("every arrow is grouped with its following node in one .fpair flex item, never a bare sibling", () => {
     const root = scaffoldRoot();
@@ -204,23 +218,35 @@ describe("fault 3: no orphaned arrow in a wrapped team flow row", () => {
     const flowRow = /<div class="flowstrip">([\s\S]*?)<\/div>\s*<div class="card__h">Definition/.exec(kestrel)![1];
     // kestrel's flow (brief, gate, design, gate, loop) is 5 nodes — the first renders bare, the other
     // 4 each pull their preceding join arrow (&rarr;) into their own .fpair, so 4 join arrows and 4
-    // .fpair wrappers. The loop's OWN internal glyph (&#8646;, between its two `between` avatars) also
-    // carries class="arr" — a different, unrelated glyph — so it's counted separately, not conflated.
+    // .fpair wrappers (one of them also carrying the loop's `fpair--loop` modifier). The loop's OWN
+    // internal glyph (&#8646;, between its two `between` avatars) also carries class="arr" — a
+    // different, unrelated glyph — so it's counted separately, not conflated.
     const joinArrowCount = (flowRow.match(/<span class="arr">&rarr;<\/span>/g) || []).length;
     const loopGlyphCount = (flowRow.match(/<span class="arr">&#8646;<\/span>/g) || []).length;
-    const fpairCount = (flowRow.match(/<div class="fpair">/g) || []).length;
+    const fpairCount = (flowRow.match(/<div class="fpair(?: fpair--loop)?">/g) || []).length;
     expect(joinArrowCount).toBe(4);
     expect(loopGlyphCount).toBe(1);
     expect(fpairCount).toBe(4);
-    // Every join arrow's opening tag is immediately preceded by an .fpair opening tag — never a bare
-    // sibling of `.flowstrip` that the wrap algorithm could strand alone at the end of a line.
-    expect((flowRow.match(/<div class="fpair"><span class="arr">&rarr;<\/span>/g) || []).length).toBe(4);
+    expect((flowRow.match(/<div class="fpair fpair--loop">/g) || []).length).toBe(1);
+    // Every join arrow's opening tag is immediately preceded by an .fpair (or .fpair.fpair--loop)
+    // opening tag — never a bare sibling of `.flowstrip` that the wrap algorithm could strand alone.
+    expect((flowRow.match(/<div class="fpair(?: fpair--loop)?"><span class="arr">&rarr;<\/span>/g) || []).length).toBe(4);
   });
 
-  test("assets/styles.css defines a real .fpair rule keeping the pair one flex item", () => {
+  test("assets/styles.css: the join arrow is taken out of .fpair's own flow, and the strip clips whatever that leaves off its edge", () => {
     const css = readFileSync("assets/styles.css", "utf8");
-    const rule = /\.flowstrip \.fpair\{([^}]*)\}/.exec(css);
-    expect(rule).not.toBeNull();
-    expect(rule![1].trim().length).toBeGreaterThan(0);
+    // The clip mechanism itself: overflow:hidden and a column-gap on the same rule (both load-bearing —
+    // see the v2 design comment above the rule in styles.css).
+    const stripRule = /\.flowstrip\{([^}]*)\}/.exec(css)![1];
+    expect(stripRule).toContain("overflow:hidden");
+    expect(stripRule).toContain("column-gap:");
+    // The join arrow (a direct child of .fpair) is positioned out of flow — never the loop's own
+    // internal glyph, which is a `.looppair` descendant this selector's child combinator can't reach.
+    const arrRule = /\.flowstrip \.fpair > \.arr\{([^}]*)\}/.exec(css)![1];
+    expect(arrRule).toContain("position:absolute");
+    // The loop pair's arrow anchors near its avatar row's own height, not centered against the whole
+    // taller stack (avatar row + caption) its node contains.
+    const loopArrRule = /\.flowstrip \.fpair--loop > \.arr\{([^}]*)\}/.exec(css)![1];
+    expect(loopArrRule).toContain("top:");
   });
 });

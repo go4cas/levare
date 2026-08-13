@@ -714,11 +714,19 @@ stuck at "queued" forever.
 Found alongside it on the same board walkthrough and closed together: a `.prow` row's label colliding
 with its value when the label was long (`protected_branches`/`protected_paths` on the team card,
 `context_artifacts` on the agent card — one shared CSS cause, `min-width` in place of a fixed `width`);
-an orphaned join arrow when a team's flow row wraps onto a second line (each arrow now renders inside
-the same flex item as the node it precedes, so a wrap can only ever split complete pairs); and unit
-summaries on the project and studio screens showing literal `**bold**` markdown instead of rendering it
-(a member-authored artifact body's first paragraph went through plain `esc()` at those two call sites —
-a new `derive.ts#renderInline` escapes first, then converts already-escaped `**…**` to `<strong>`).
+an orphaned join arrow when a team's flow row wraps onto a second line; and unit summaries on the
+project and studio screens showing literal `**bold**` markdown instead of rendering it (a member-
+authored artifact body's first paragraph went through plain `esc()` at those two call sites — a new
+`derive.ts#renderInline` escapes first, then converts already-escaped `**…**` to `<strong>`).
+
+The join-arrow fix took two passes — the first (nesting the arrow inside the same flex item as its
+node) stopped the DOM from ever splitting across a wrap, but broke the connector's own vertical
+alignment and left the loop's arrow still reading as visually orphaned, caught only by rendering the
+real page in a browser, not by the DOM-assertion test suite. The corrected design takes the arrow out
+of its pair's own flow entirely (`position:absolute`, anchored to the pair's left edge, landing inside
+the `column-gap` reserved before it) so it renders beside its neighbour when one exists and is clipped
+by `overflow:hidden` when it would otherwise be the leading, disconnected thing on a wrapped line —
+see NOTES RAIL-UNREACHABLE's addendum for the full mechanism and the measurements that led to it.
 
 See NOTES RAIL-UNREACHABLE for the full reasoning behind both fault-1 decisions (what the rail renders;
 why `validate` warns instead of staying silent or hard-erroring) and why the CSS and markdown defects

@@ -87,7 +87,10 @@ function flowNodeHtml(repo: Repo, team: Team, node: FlowNode, capabilities: Arra
   const [a, b] = node.between;
   const avA = flowStepAvatar(repo, team, a, resolveStepMember(team, a, capabilities));
   const avB = flowStepAvatar(repo, team, b, resolveStepMember(team, b, capabilities));
-  return `<div class="m"><div class="looppair">${avA}<span class="arr">&#8646;</span>${avB}</div><span class="mn">until ${esc(node.until)} &middot; max ${node.maxRounds} &middot; on_exhaust: ${esc(node.onExhaust)}</span></div>`;
+  // Fault 3: `&nbsp;` inside each key/value pair (until X, max N, on_exhaust: Y) so a narrow card wraps
+  // only at the " · " separators between pairs, never mid-phrase (a bare space let the browser break
+  // "on_exhaust:" from "gate").
+  return `<div class="m"><div class="looppair">${avA}<span class="arr">&#8646;</span>${avB}</div><span class="mn">until&nbsp;${esc(node.until)} &middot; max&nbsp;${node.maxRounds} &middot; on_exhaust:&nbsp;${esc(node.onExhaust)}</span></div>`;
 }
 
 // One bordered container per entity, built through the shared `card()` primitive (components.ts) —
@@ -184,12 +187,21 @@ export function renderRegistry(
       // nodes by plain `.join()` was its own independent flex item — a sibling the wrap algorithm
       // could break the line after, landing it alone at the end of one line with the step it points
       // at starting fresh on the next ("wr → ◆ → ly → ◆ →", then a wrap, then the loop row). Each
-      // arrow is now rendered INSIDE the same flex item as the node it precedes (`.fpair`, below) —
-      // wrapping can only ever happen between complete pairs, never split one apart.
+      // node past the first is now wrapped in `.fpair` with its own preceding arrow taken clean OUT OF
+      // FLOW (assets/styles.css: `position:absolute`, anchored to the pair's own left edge) — `.fpair`
+      // itself carries only the NODE's own size for wrapping purposes, and the arrow purely decorates
+      // the gap `.flowstrip`'s own `column-gap` reserves before it. That gap doesn't exist before a
+      // wrapped LINE's own first item (flex-wrap never inserts one there), so the same arrow lands off
+      // the strip's own left edge and is clipped by `overflow:hidden` — no leading connector, no split
+      // pair, on one baseline. The loop pair gets its own modifier (`fpair--loop`): its node stacks an
+      // avatar row above a caption, and the arrow anchors near the avatar row specifically, not the
+      // vertical center of that whole taller stack.
       const flow = t.flow
         .map((n, i) => {
           const node = flowNodeHtml(repo, t, n, teamCapabilities);
-          return i === 0 ? node : `<div class="fpair"><span class="arr">&rarr;</span>${node}</div>`;
+          if (i === 0) return node;
+          const pairCls = n.kind === "loop" ? "fpair fpair--loop" : "fpair";
+          return `<div class="${pairCls}"><span class="arr">&rarr;</span>${node}</div>`;
         })
         .join("");
       const memberAvatars = t.members.map((m) => avatar(repo.agents.get(m)?.style.avatar ?? m.slice(0, 2), t.style.color, { title: m })).join("");
