@@ -334,6 +334,34 @@ describe("wrapForSandbox — pure argv construction, no OS sandbox required to v
     expect(wrapped.argv).not.toContain("--unshare-net");
   });
 
+  // NOTES R4-SANDBOX-TLS: the Linux side of the question NOTES R4-SANDBOX-TLS asks live on macOS —
+  // "can a network-granted member complete a TLS handshake under this platform's sandbox?" — answered
+  // here from construction alone, unlike macOS's own answer (which needs a live kernel trace, because
+  // certificate trust evaluation there round-trips through a system DAEMON over a mach service this
+  // profile must explicitly allow). Linux has no such daemon dependency: a TLS client resolves its own
+  // trusted-root store by reading files (`/etc/ssl/certs/...` on Debian/Ubuntu, symlinked into
+  // `/usr/share/ca-certificates/...`) and does the chain verification in-process — no IPC, nothing this
+  // sandbox's own `(deny default)`-equivalent (an empty `--tmpfs /` root) could silently block beyond
+  // filesystem/network reach it already governs. Both facts this depends on are asserted TOGETHER here,
+  // combined into the single claim they jointly prove, rather than left as two separate tests a reader
+  // has to connect by hand: (1) `/etc` (and `/usr`, its own symlink targets) are in the UNCONDITIONAL
+  // baseline allow-list — see `READONLY_SYSTEM_PATHS` — so DNS config (`/etc/resolv.conf`,
+  // `/etc/nsswitch.conf`, `/etc/hosts`) and the CA bundle are both readable regardless of `allowNetwork`;
+  // (2) `allowNetwork: true` omits `--unshare-net` entirely (the test above), which means the sandboxed
+  // process shares the HOST's real network namespace — not a fresh, isolated one bubblewrap would then
+  // need its own veth/DNS-proxy machinery to make useful — so name resolution and connectivity behave
+  // identically to an unsandboxed process. Construction-only, like every other bubblewrap claim in this
+  // file: this dev container's own outer seccomp policy has never once let a real bubblewrap invocation
+  // run (sanity-checked directly — `bwrap --ro-bind / / --dev /dev --unshare-net --die-with-parent --
+  // true` fails here with "No permissions to create a new namespace"), so this is the CLAIM a live Linux
+  // host with a working bubblewrap still needs to confirm — named as an honest residual, not assumed.
+  test("bubblewrap: a network-granted dispatch keeps /etc (CA certs, DNS config) readable AND shares the host's real network namespace — the two facts a real TLS handshake needs", () => {
+    const detection: SandboxDetection = { platform: "linux", primitive: "bubblewrap", level: "full", bin: "/usr/bin/bwrap" };
+    const wrapped = wrapForSandbox(["curl", "https://example.com/"], { ...policy, allowNetwork: true }, detection);
+    expect(wrapped.argv).toEqual(expect.arrayContaining(["--ro-bind-try", "/etc", "/etc", "--ro-bind-try", "/usr", "/usr"]));
+    expect(wrapped.argv).not.toContain("--unshare-net");
+  });
+
   test("bubblewrap: no home to bind → no --bind for it, cwd still bound", () => {
     const detection: SandboxDetection = { platform: "linux", primitive: "bubblewrap", level: "full", bin: "/usr/bin/bwrap" };
     const wrapped = wrapForSandbox(["codex"], { cwd: "/work/scratch-wt", allowNetwork: false }, detection);
