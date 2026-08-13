@@ -27,6 +27,19 @@ import {
   registryKindCount,
 } from "./shell.ts";
 
+// NOTES REGISTRY-BODY: an agent's body is a system prompt written in second person ("You are Wren, a
+// product framer. ...") — rendering it verbatim reads oddly as card copy, but the pre-existing behaviour
+// (dropping it entirely) hid the one thing a reader looking at a member card actually wants: its role.
+// Decided here: the body's own first SENTENCE, as a lead-in — long enough to answer "who is this" (the
+// scaffold's own agents/wren.md: "You are Wren, a product framer." is exactly this), short enough that a
+// multi-paragraph system prompt never floods the card. Falls back to the whole first paragraph when no
+// sentence boundary is found within it (a body that's just one short clause with no terminal period).
+function firstSentence(body: string): string {
+  const para = firstParagraph(body);
+  const m = /^.*?[.!?](?=\s|$)/.exec(para);
+  return m ? m[0] : para;
+}
+
 // One bordered container per entity, built through the shared `card()` primitive (components.ts) —
 // the same title-top-left/status-top-right/supporting-content-bottom contract the studio project card
 // and the work-unit row use, with the registry's own `.entity`/`.entity__*` class family (the `.card`
@@ -137,6 +150,8 @@ export function renderRegistry(
       const team = [...repo.teams.values()].find((t) => t.members.includes(a.name));
       const recipe = [...(a.skills ?? []), ...(a.knowledge ?? [])].map((p) => `<a class="pill" href="#">${esc(p)}</a>`).join("\n");
       const producesChips = a.produces.map((p) => tag(p, "tag")).join("");
+      const toolsChips = a.tools?.length ? a.tools.map((tl) => tag(tl, "tag")).join("") : "";
+      const connectorsChips = a.connectors?.length ? a.connectors.map((c) => tag(c, "tag")).join("") : "";
       // UI7: kind+model render adjacent ("native · claude-sonnet-5") in one row, the kind itself a
       // shape/treatment badge (RULE B — never colour); no "wears <team>" row (RULE A — the avatar
       // above is already tinted with the team's colour, so the team is shown, not told).
@@ -169,10 +184,36 @@ export function renderRegistry(
         (a.kind === "cli" || (a.kind === "remote" && remoteAgentImplemented(repo, a))) && sandbox.level === "none"
           ? callout("warning", "no working OS-level sandbox primitive was found on this host — this member's process runs unconfined beyond env/HOME scoping; see 'levare doctor' for what was tried.")
           : "";
-      const inner = `<div class="card__h">Context recipe</div><div class="recipe">${recipe || '<span style="color:var(--fg-mute)">none declared</span>'}</div>
+      // NOTES REGISTRY-BODY: "Context recipe" renamed "Skills & knowledge" — plain, and names exactly
+      // what this section lists (jargon flagged the same round as the type card's "Expected kinds").
+      //
+      // Everything from `toolsRow` down is newly rendered: `tools`/`connectors` used to be read only to
+      // decide whether to show a WARNING about them, never shown as values themselves — a reader could
+      // see "this cli member's tools: isn't enforceable" without ever seeing what tools: actually named.
+      // `connectors` (the member's own grant, unioned with its team's) is the single most
+      // security-relevant field an agent declares and had no rendering at all. The kind-specific rows
+      // below (`command`/`context_via`/`context_artifacts`/`cwd`/`timeout`/`server`/`tool`) are
+      // presence-gated, not kind-gated — `context_artifacts` is legal on any kind, and gating strictly
+      // by `a.kind` would silently miss a field validate.ts itself accepts. `command` is the literal
+      // argv that executes, including whatever vendor guardrails it carries (docs/guide/04-workflow/
+      // 05-foreign-agent.md's own "when a vendor hands you guardrails, make them visible") — shown
+      // verbatim, mono, the same treatment a connector's own `command`/`env` already get.
+      const toolsRow = toolsChips ? `<div class="prow"><span class="k">tools</span><span class="v chiprow">${toolsChips}</span></div>` : "";
+      const connectorsRow = connectorsChips ? `<div class="prow"><span class="k">connectors</span><span class="v chiprow">${connectorsChips}</span></div>` : "";
+      const commandRow = a.command?.length ? `<div class="prow"><span class="k">command</span><span class="v mono">${a.command.map(esc).join(" ")}</span></div>` : "";
+      const contextViaRow = a.context_via ? `<div class="prow"><span class="k">context_via</span><span class="v mono">${esc(a.context_via)}</span></div>` : "";
+      const contextArtifactsRow = a.context_artifacts ? `<div class="prow"><span class="k">context_artifacts</span><span class="v mono">${esc(a.context_artifacts)}</span></div>` : "";
+      const cwdRow = a.cwd ? `<div class="prow"><span class="k">cwd</span><span class="v mono">${esc(a.cwd)}</span></div>` : "";
+      const timeoutRow = a.timeout ? `<div class="prow"><span class="k">timeout</span><span class="v mono">${a.timeout}s</span></div>` : "";
+      const serverRow = a.server ? `<div class="prow"><span class="k">server</span><span class="v mono">${esc(a.server)}</span></div>` : "";
+      const toolRow = a.tool ? `<div class="prow"><span class="k">tool</span><span class="v mono">${esc(a.tool)}</span></div>` : "";
+      // `result` (required on every cli member) is prose describing what the binary emits — the same
+      // muted-lead treatment as the description above, not a cramped one-line `.prow` value.
+      const resultHtml = a.result ? leadText(a.result) : "";
+      const inner = `${leadText(firstSentence(a.body ?? ""))}<div class="card__h">Skills &amp; knowledge</div><div class="recipe">${recipe || '<span style="color:var(--fg-mute)">none declared</span>'}</div>
       <div class="card__h">Definition</div>
       <div class="prow"><span class="k">kind</span><span class="v">${agentKindBadge(a.kind)}${a.model ? ` <span class="mono">&middot; ${esc(a.model)}</span>` : ""}</span></div>
-      <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>${remoteWarning}${cliToolsWarning}${sandboxWarning}`;
+      <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>${toolsRow}${connectorsRow}${commandRow}${contextViaRow}${contextArtifactsRow}${cwdRow}${timeoutRow}${serverRow}${toolRow}${resultHtml}${remoteWarning}${cliToolsWarning}${sandboxWarning}`;
       return entityBlock("agents", `${avatar(a.style.avatar || a.name.slice(0, 2), team?.style.color, { size: "lg" })} ${esc(a.name)}`, "agent", inner, `agents/${a.name}.md`, rawFor(root, "agents", a.name), a.name, active === "agents");
     })
     .join("\n");
