@@ -16,7 +16,7 @@
 //    script primarily investigates.
 
 import { describe, expect, test } from "bun:test";
-import { classifyCodexAppServerFailure } from "../scripts/repro-r4-appserver-codex.ts";
+import { classifyCodexAppServerFailure, crossCheckSandboxInvolvement } from "../scripts/repro-r4-appserver-codex.ts";
 
 describe("classifyCodexAppServerFailure", () => {
   test("the exact reported failure classifies as app-server-init", () => {
@@ -52,5 +52,42 @@ describe("classifyCodexAppServerFailure", () => {
 
   test("anything else classifies as other", () => {
     expect(classifyCodexAppServerFailure("some unrelated error")).toBe("other");
+  });
+});
+
+// NOTES DOCS-WALKTHROUGH-1: a live run once treated step 3 (sandboxed) as the decisive reproduction
+// without checking that step 4 (the identical command, unsandboxed — step 3's own control) failed the
+// exact same way, which would have meant the sandbox was never the cause. This pins the arithmetic
+// that now catches that automatically, independent of the darwin-only live dispatch it's normally
+// computed from.
+describe("crossCheckSandboxInvolvement", () => {
+  test("identical classification in both → not a sandbox fault", () => {
+    const step3 = { outcome: "failed" as const, classification: "app-server-init" as const };
+    const step4 = { outcome: "failed" as const, classification: "app-server-init" as const };
+    expect(crossCheckSandboxInvolvement(step3, step4)).toBe("not-a-sandbox-fault");
+  });
+
+  test("sandboxed fails, unsandboxed control succeeds → sandbox implicated", () => {
+    const step3 = { outcome: "failed" as const, classification: "app-server-init" as const };
+    const step4 = { outcome: "succeeded" as const };
+    expect(crossCheckSandboxInvolvement(step3, step4)).toBe("sandbox-implicated");
+  });
+
+  test("different classifications settle nothing — null, not a guess", () => {
+    const step3 = { outcome: "failed" as const, classification: "app-server-init" as const };
+    const step4 = { outcome: "failed" as const, classification: "filesystem-permission" as const };
+    expect(crossCheckSandboxInvolvement(step3, step4)).toBeNull();
+  });
+
+  test("both succeeding settles nothing about a fault that didn't happen", () => {
+    const step3 = { outcome: "succeeded" as const };
+    const step4 = { outcome: "succeeded" as const };
+    expect(crossCheckSandboxInvolvement(step3, step4)).toBeNull();
+  });
+
+  test("step 3 skipped (no codex on PATH) never fabricates a verdict", () => {
+    const step3 = { outcome: "skipped" as const };
+    const step4 = { outcome: "failed" as const, classification: "app-server-init" as const };
+    expect(crossCheckSandboxInvolvement(step3, step4)).toBeNull();
   });
 });
