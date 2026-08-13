@@ -359,6 +359,25 @@ describe("wrapForSandbox — pure argv construction, no OS sandbox required to v
     expect(wrapped.argv[gitDirIdx - 1]).toBe("--bind"); // never --ro-bind-try for a writable path
   });
 
+  // NOTES R4-SANDBOX-APPSERVER: before this fix, `bubblewrapArgv` never read `grantedHomeTargets` at
+  // all — under bubblewrap's own empty-`--tmpfs /` root, a granted connector's real home target was
+  // simply never mounted into the sandboxed process's view of the filesystem, so a scratch-HOME symlink
+  // pointing at it (env.ts#scopeHomeForConnector) resolved to nothing: a `home:`-granted credential was
+  // silently UNREADABLE on Linux despite the identical grant working (read-only) on macOS. `--bind-try`
+  // (not `--ro-bind-try`) mirrors `writablePaths`'s own read-write treatment AND `home`'s own darwin
+  // read+write re-allow — `-try` because a dangling target (no login yet) is legal, same as `--ro-bind-try`.
+  test("bubblewrap: grantedHomeTargets get a real --bind-try (read-write, tolerant of a missing target)", () => {
+    const detection: SandboxDetection = { platform: "linux", primitive: "bubblewrap", level: "full", bin: "/usr/bin/bwrap" };
+    const wrapped = wrapForSandbox(["codex"], { ...policy, operatorHome: "/home/cas", grantedHomeTargets: ["/home/cas/.codex"] }, detection);
+    expect(wrapped.argv).toEqual(expect.arrayContaining(["--bind-try", "/home/cas/.codex", "/home/cas/.codex"]));
+  });
+
+  test("bubblewrap: no grantedHomeTargets → no --bind-try at all", () => {
+    const detection: SandboxDetection = { platform: "linux", primitive: "bubblewrap", level: "full", bin: "/usr/bin/bwrap" };
+    const wrapped = wrapForSandbox(["codex"], policy, detection);
+    expect(wrapped.argv).not.toContain("--bind-try");
+  });
+
   test("unshare fallback: fs-only, bind-mounts cwd/home, no network attempt at all", () => {
     const detection: SandboxDetection = { platform: "linux", primitive: "unshare", level: "fs-only", bin: "/usr/bin/unshare" };
     const wrapped = wrapForSandbox(["codex", "run"], policy, detection);
@@ -740,9 +759,34 @@ describe("buildSandboxExecProfile — deny-list model (NOTES R4-SANDBOX-FIX-3)",
     });
   });
 
-  test("re-allows a granted connector's own real home target — reading THROUGH a scopeHome symlink to it", () => {
-    const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false, operatorHome: "/Users/cas", grantedHomeTargets: ["/Users/cas/.codex"] });
-    expect(profile).toContain('(allow file-read* (subpath "/Users/cas/.codex"))');
+  // NOTES R4-SANDBOX-APPSERVER: `grantedHomeTargets` used to appear in the READ re-allow only —
+  // `scopedHome`'s own write re-allow covers the SYMLINK LINK sitting inside the scratch HOME, never
+  // the REAL target it points at (Seatbelt resolves a write-through-symlink against the target's own
+  // kernel-resolved path), so a vendor CLI refreshing its own stored credential (an OAuth token
+  // rewrite, e.g.) would have been denied despite `home:` declaring that exact path granted — the same
+  // "the symlink LINK isn't the same fact as its TARGET" lesson `canon()` already exists to enforce for
+  // reads, now closed for writes too.
+  describe("grantedHomeTargets — read AND write re-allow (NOTES R4-SANDBOX-APPSERVER)", () => {
+    test("re-allows a granted connector's own real home target — reading THROUGH a scopeHome symlink to it", () => {
+      const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false, operatorHome: "/Users/cas", grantedHomeTargets: ["/Users/cas/.codex"] });
+      expect(profile).toContain('(allow file-read* (subpath "/Users/cas/.codex"))');
+    });
+
+    test("ALSO re-allows write — a vendor CLI refreshing its own stored credential through the symlink", () => {
+      const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false, operatorHome: "/Users/cas", grantedHomeTargets: ["/Users/cas/.codex"] });
+      expect(profile).toContain('(allow file-write* (subpath "/Users/cas/.codex"))');
+    });
+
+    test("write re-allow appears exactly once even when the SAME target is also readOnlyPaths/scopedHome-adjacent (dedupe)", () => {
+      const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false, operatorHome: "/Users/cas", grantedHomeTargets: ["/Users/cas/.codex", "/Users/cas/.codex"] });
+      const lines = profile.split("\n");
+      expect(lines.filter((l) => l === '(allow file-write* (subpath "/Users/cas/.codex"))').length).toBe(1);
+    });
+
+    test("no grantedHomeTargets at all → no write re-allow beyond cwd/home, unchanged from before this fix", () => {
+      const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: false, operatorHome: "/Users/cas" });
+      expect(profile.match(/allow file-write\*/g)?.length).toBe(2); // cwd + /dev only
+    });
   });
 
   test("re-allows readOnlyPaths (studio root, interpreter tree, member command directory) for reads", () => {
@@ -1147,6 +1191,76 @@ describe("validate.ts: SANDBOX_UNAVAILABLE (NOTES R4-SANDBOX, sibling to CLI_TOO
   });
 });
 
+// ---------------------------------------------------------------------------
+// SANDBOX_UNSANDBOXED_NO_REASON / SANDBOX_DECLARED_UNSANDBOXED (NOTES R4-SANDBOX-APPSERVER) — the
+// declared escape hatch from Ruling 2. An honest, documented opt-out, never a silent one.
+// ---------------------------------------------------------------------------
+
+function cliAgentStudioWith(extraFrontmatter: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "levare-sandbox-declared-"));
+  mkdirSync(join(dir, "agents"), { recursive: true });
+  writeFileSync(
+    join(dir, "agents", "corvid.md"),
+    ["---", "name: corvid", "kind: cli", "produces: [review]", 'command: ["codex", "exec", "-"]', 'result: "plain text"', extraFrontmatter, "style:", "  avatar: Cv", "---", "", "A cli member.", ""].join("\n"),
+  );
+  return dir;
+}
+
+describe("SANDBOX_UNSANDBOXED_NO_REASON / SANDBOX_DECLARED_UNSANDBOXED (NOTES R4-SANDBOX-APPSERVER)", () => {
+  test("sandbox: unsandboxed with no sandbox_reason is a hard ERROR, naming the member", () => {
+    const dir = cliAgentStudioWith("sandbox: unsandboxed");
+    try {
+      const r = validatePath(dir);
+      expect(r.ok).toBe(false);
+      const e = r.errors.find((e) => e.code === "SANDBOX_UNSANDBOXED_NO_REASON");
+      expect(e).toBeDefined();
+      expect(e!.message).toContain("corvid");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("sandbox: unsandboxed WITH sandbox_reason is legal — a warning naming the reason, never an error", () => {
+    const dir = cliAgentStudioWith('sandbox: unsandboxed\nsandbox_reason: "vendor app-server needs OS IPC this sandbox will not grant"');
+    try {
+      const r = validatePath(dir);
+      expect(r.ok).toBe(true);
+      expect(r.errors.map((e) => e.code)).not.toContain("SANDBOX_UNSANDBOXED_NO_REASON");
+      const w = r.warnings.find((w) => w.code === "SANDBOX_DECLARED_UNSANDBOXED");
+      expect(w).toBeDefined();
+      expect(w!.message).toContain("corvid");
+      expect(w!.message).toContain("vendor app-server needs OS IPC this sandbox will not grant");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("sandbox: auto (or undeclared) never carries either the error or the declared-warning", () => {
+    const dir = cliAgentStudioWith("sandbox: auto");
+    try {
+      const r = validatePath(dir, undefined, NONE);
+      expect(r.errors.map((e) => e.code)).not.toContain("SANDBOX_UNSANDBOXED_NO_REASON");
+      expect(r.warnings.map((w) => w.code)).not.toContain("SANDBOX_DECLARED_UNSANDBOXED");
+      // The ordinary host-capability warning still fires normally — this member IS sandboxed, just on
+      // a host with nothing to sandbox it with.
+      expect(r.warnings.map((w) => w.code)).toContain("SANDBOX_UNAVAILABLE");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a member declaring sandbox: unsandboxed does NOT also get SANDBOX_UNAVAILABLE on an incapable host — the more specific warning replaces it, never doubles up", () => {
+    const dir = cliAgentStudioWith('sandbox: unsandboxed\nsandbox_reason: "needs OS IPC"');
+    try {
+      const r = validatePath(dir, undefined, NONE);
+      expect(r.warnings.map((w) => w.code)).not.toContain("SANDBOX_UNAVAILABLE");
+      expect(r.warnings.map((w) => w.code)).toContain("SANDBOX_DECLARED_UNSANDBOXED");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("doctor.ts: sandbox status line + the sibling warning (NOTES R4-SANDBOX)", () => {
   test("prints the detected level plainly when a primitive works", () => {
     const out = formatDoctor([], undefined, undefined, undefined, undefined, undefined, FULL, ["finch"]);
@@ -1198,5 +1312,26 @@ describe("doctor.ts: sandbox status line + the sibling warning (NOTES R4-SANDBOX
   test("omitting sandbox entirely leaves the report unchanged — never assumed", () => {
     const out = formatDoctor([]);
     expect(out).not.toContain("sandbox:");
+  });
+
+  // NOTES R4-SANDBOX-APPSERVER: `unsandboxedAgents` is printed UNCONDITIONALLY — an author's own
+  // declaration, true on every host, never gated on whether THIS host happens to lack a primitive.
+  describe("unsandboxedAgents — the declared escape hatch, printed with SANDBOX_UNAVAILABLE's own plainness", () => {
+    test("names the member and its own reason, even on a host WITH a working primitive", () => {
+      const out = formatDoctor([], undefined, undefined, undefined, undefined, undefined, FULL, ["finch"], [{ name: "corvid", reason: "vendor app-server needs OS IPC this sandbox will not grant" }]);
+      expect(out).toContain("⚠ 'corvid' declares sandbox: unsandboxed");
+      expect(out).toContain("vendor app-server needs OS IPC this sandbox will not grant");
+    });
+
+    test("prints alongside, never instead of, the host-capability warning for a DIFFERENT (auto) member", () => {
+      const out = formatDoctor([], undefined, undefined, undefined, undefined, undefined, NONE, ["finch"], [{ name: "corvid", reason: "needs OS IPC" }]);
+      expect(out).toContain("run unconfined beyond env/HOME scoping: finch");
+      expect(out).toContain("⚠ 'corvid' declares sandbox: unsandboxed");
+    });
+
+    test("omitted entirely → no such line, and no crash", () => {
+      const out = formatDoctor([], undefined, undefined, undefined, undefined, undefined, FULL, ["finch"]);
+      expect(out).not.toContain("declares sandbox: unsandboxed");
+    });
   });
 });

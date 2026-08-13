@@ -132,9 +132,17 @@ export function runDoctorCmd(rest: string[]): number {
     // every `kind: cli` agent, PLUS every `kind: remote` agent backed by a real, granted, stdio MCP
     // connector (ruling R3 gives it the identical confinement, adapters.ts#createAsyncStdioRemoteBoundary)
     // — named in the sandbox-unavailable warning below when no working primitive was found on this host.
-    const cliAgents = [...repo.agents.values()].filter((a) => a.kind === "cli").map((a) => a.name);
+    // NOTES R4-SANDBOX-APPSERVER: a `kind: cli` agent DECLARING `sandbox: unsandboxed` is excluded from
+    // `sandboxedAgents` (below) — the SANDBOX_UNAVAILABLE-equivalent doctor line names a HOST capability
+    // gap, which is moot for a member that never runs confined regardless of what this host offers; it
+    // gets the more specific `unsandboxedAgents` telling instead (formatDoctor's own doc explains why the
+    // two are never merged).
+    const cliAgents = [...repo.agents.values()].filter((a) => a.kind === "cli" && a.sandbox !== "unsandboxed").map((a) => a.name);
     const remoteImplementedAgents = [...repo.agents.values()].filter((a) => a.kind === "remote" && remoteAgentImplemented(repo, a)).map((a) => a.name);
     const sandboxedAgents = [...cliAgents, ...remoteImplementedAgents];
+    const unsandboxedAgents = [...repo.agents.values()]
+      .filter((a) => a.kind === "cli" && a.sandbox === "unsandboxed" && a.sandbox_reason)
+      .map((a) => ({ name: a.name, reason: a.sandbox_reason! }));
     process.stdout.write(
       runDoctor(
         [...repo.connectors.values()],
@@ -148,6 +156,7 @@ export function runDoctorCmd(rest: string[]): number {
         cliToolAgents,
         detectSandbox(),
         sandboxedAgents,
+        unsandboxedAgents,
       ),
     );
     return 0;

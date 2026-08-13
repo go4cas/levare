@@ -178,6 +178,12 @@ export interface ScopeHomeOptions {
   tmpRoot?: string;
 }
 
+// NOTES R4-SANDBOX-APPSERVER: version-manager shim-gap detection (`detectVersionManagerHomeGap`) lives
+// in validate.ts, not here — env.ts already imports `isSafeHomeDotpath` FROM validate.ts, so a second
+// pure helper needed by both validate.ts and doctor.ts belongs there too, rather than creating a
+// validate.ts <-> env.ts import cycle (the same avoidance this codebase already applies elsewhere,
+// e.g. conversation.ts's own documented reason for not importing validate.ts directly).
+
 /**
  * NOTES CAP-B / NOTES MCP-1C (PRD Amendment 3, ruling R3 — the Conductor's own confinement-fork ruling:
  * an MCP server gets the connector's `home:` mechanism "exactly as home: already scopes a subscription

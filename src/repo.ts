@@ -197,6 +197,8 @@ function toAgent(d: Record<string, YamlValue>, body: string): Agent {
     tools: d.tools ? strArr(d.tools) : undefined,
     knowledge: d.knowledge ? strArr(d.knowledge) : undefined,
     connectors: d.connectors ? strArr(d.connectors) : undefined,
+    sandbox: d.sandbox === "unsandboxed" ? "unsandboxed" : d.sandbox === "auto" ? "auto" : undefined,
+    sandbox_reason: optStr(d.sandbox_reason),
     style: { avatar: String((d.style as Record<string, YamlValue> | undefined)?.avatar ?? "") },
     body: body.trim(),
   };

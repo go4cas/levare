@@ -113,6 +113,24 @@ export interface Agent {
   knowledge?: string[];
   /** Per-agent connector grants (§5), unioned with the team's grants for env scoping. */
   connectors?: string[];
+  /**
+   * NOTES R4-SANDBOX-APPSERVER: the declared escape hatch from Ruling 2's OS sandbox (sandbox.ts) — for
+   * a `kind: cli` member whose vendor CLI cannot run confined at all (its own architecture needs OS
+   * access the sandbox's threat model won't safely grant: an in-process IPC client, a self-sandboxing
+   * helper, or whatever a live host investigation names). `"auto"` (default): best-effort sandboxing per
+   * Ruling 2, unchanged — a working primitive confines the spawn, none proceeds unconfined either way.
+   * `"unsandboxed"`: `adapters.ts#sandboxWrap` never even attempts to wrap this member's spawn, on ANY
+   * host — REQUIRES `sandbox_reason` (validate.ts rejects the declaration without one; a Conductor
+   * reading the registry or a produced artifact must never see "this member runs unconfined" without
+   * also seeing WHY). Recorded on every artifact this member produces (`sandbox_reason:`, adapters.ts#
+   * author), surfaced by `levare validate`/`levare doctor` with the same plainness `SANDBOX_UNAVAILABLE`
+   * already uses for the unrelated "host has no primitive" case — the two are deliberately never
+   * conflated (see that field's own doc). Silent degradation was ruled out explicitly; this is the
+   * honest alternative when sandboxing genuinely cannot be granted.
+   */
+  sandbox?: "auto" | "unsandboxed";
+  /** Required alongside `sandbox: unsandboxed` — the documented reason a Conductor can act on. */
+  sandbox_reason?: string;
   style: { avatar: string };
   body: string;
 }

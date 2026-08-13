@@ -1416,6 +1416,15 @@ export class AdapterRunner implements MemberRunner {
     // the only two kinds that ever spawn a real OS process levare itself confines; `native` never carries
     // one (the Claude Agent SDK call has no separate process for this module to wrap).
     if ((req.agent.kind === "cli" || req.agent.kind === "remote") && sandbox) lines.push(`sandbox: ${sandbox}`);
+    // NOTES R4-SANDBOX-APPSERVER: recorded on EVERY artifact this member produces, independent of
+    // `sandbox:`'s own value above (which reads "none" identically whether the host simply lacks a
+    // primitive or the author declared this member unsandboxeable — the two are NOT the same fact, and
+    // silently collapsing them would hide a deliberate, documented decision behind what looks like an
+    // ordinary host-capability gap). `req.agent.sandbox_reason` is required by `validate.ts` whenever
+    // `sandbox: unsandboxed` is declared, so this is never emitted without one.
+    if (req.agent.kind === "cli" && req.agent.sandbox === "unsandboxed" && req.agent.sandbox_reason) {
+      lines.push(`sandbox_reason: ${req.agent.sandbox_reason}`);
+    }
     lines.push("---", "");
     return { doc: lines.join("\n") + content + "\n", receipt: finalReceipt };
   }
@@ -1479,7 +1488,19 @@ export class AdapterRunner implements MemberRunner {
   // (`process.execPath` — many of this repo's own fixtures spawn `bun` itself), and wherever THIS
   // dispatch's own argv[0] resolves to (`resolveArgv0` — a Homebrew/user-local install, `~/.bun`,
   // anything the platform's static allowlist doesn't already cover).
+  // NOTES R4-SANDBOX-APPSERVER: `agent.sandbox === "unsandboxed"` is the declared escape hatch — an
+  // author-stated fact that THIS member's process cannot run confined at all (a vendor CLI whose own
+  // architecture needs OS access this sandbox's threat model won't safely grant — an in-process IPC
+  // client, a self-sandboxing helper, or anything else a live host investigation names), never a
+  // silent degradation. Checked BEFORE `detectSandbox()` even runs — no probe cost paid for a spawn
+  // that was never going to be wrapped regardless of what the host offers — and the spawn proceeds with
+  // the plain, unwrapped `argv`, `level: "none"`, exactly like a host with no working primitive at all.
+  // The DISTINCTION from "host lacks a primitive" — this was DECLARED, not merely unavailable — is
+  // recorded separately, on the artifact itself (`author()`'s own `sandbox_reason` line, read straight
+  // off `req.agent.sandbox_reason`, required by validate.ts whenever `sandbox: unsandboxed` is declared)
+  // rather than invented here as a second WrappedSpawn shape only this one caller would ever produce.
   private sandboxWrap(argv: string[], cwd: string | undefined, req: InvokeRequest): WrappedSpawn {
+    if (req.agent.sandbox === "unsandboxed") return { argv, level: "none" };
     const detection = this.opts.sandboxDetection ?? detectSandbox();
     const policy = buildDispatchSandboxPolicy(this.repo, req, cwd, argv[0], this.opts.baseEnv);
     return wrapForSandbox(argv, policy, detection);

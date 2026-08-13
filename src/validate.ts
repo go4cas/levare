@@ -242,6 +242,15 @@ export const ARTIFACT_SCHEMA: Schema = {
       enum: ["full", "fs-only", "none"],
       description: "The OS-level sandbox a kind: cli (or fully-implemented kind: remote) member's spawn actually ran under: full (filesystem and network confined), fs-only (filesystem-only fallback), or none (no working primitive found — the spawn ran unconfined). Absent for native members and pre-this-ruling artifacts.",
     },
+    // NOTES R4-SANDBOX-APPSERVER: present ONLY alongside `sandbox: none` produced by a member declaring
+    // `sandbox: unsandboxed` (types.ts#Agent.sandbox) — distinguishes "this host had nothing" from "this
+    // member was declared unsandboxeable, on any host" (adapters.ts#author's own doc explains why the
+    // two facts must never collapse into the identical `sandbox: none` line alone).
+    sandbox_reason: {
+      type: "str",
+      required: false,
+      description: "Present only when this artifact's producing member declared sandbox: unsandboxed — the documented reason its spawn never runs under levare's OS sandbox, on any host.",
+    },
   },
 };
 
@@ -393,6 +402,19 @@ const AGENT_SCHEMA: Schema = {
     },
     // env scoping (§6): connectors granted to this agent, unioned with its team's grants.
     connectors: { type: "str[]", required: false, description: "Per-agent connector grants, unioned with the team's grants for env scoping." },
+    // NOTES R4-SANDBOX-APPSERVER: the declared escape hatch from Ruling 2's OS sandbox — see
+    // types.ts#Agent.sandbox's own doc for the full reasoning.
+    sandbox: {
+      type: "enum",
+      required: false,
+      enum: ["auto", "unsandboxed"],
+      description: "cli: 'auto' (default) — best-effort OS sandboxing per Ruling 2, unchanged. 'unsandboxed' — this member's spawn is NEVER wrapped by levare's OS sandbox, on any host; requires sandbox_reason.",
+    },
+    sandbox_reason: {
+      type: "str",
+      required: false,
+      description: "Required alongside sandbox: unsandboxed — the documented reason a Conductor can act on (e.g. why this vendor CLI cannot run confined).",
+    },
     style: {
       type: "map",
       required: true,
@@ -780,9 +802,12 @@ function validateSingleFile(
   if (kind.schema === AGENT_SCHEMA) validateAgentTools(data, file, errors);
   if (kind.schema === AGENT_SCHEMA) validateAgentCliToolsWarning(data, file, warnings);
   if (kind.schema === AGENT_SCHEMA) validateAgentSandboxWarning(data, file, warnings, sandbox);
+  if (kind.schema === AGENT_SCHEMA) validateAgentSandboxDeclaration(data, file, errors);
+  if (kind.schema === AGENT_SCHEMA) validateAgentSandboxDeclaredWarning(data, file, warnings);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorAuth(data, file, errors);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorRoleWarning(data, file, warnings);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorHomeWarning(data, file, warnings);
+  if (kind.schema === CONNECTOR_SCHEMA) validateConnectorHomeShimWarning(data, file, warnings);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorHomeSafety(data, file, errors);
   if (kind.schema === CONNECTOR_SCHEMA) validateActionPlaceholderPosition(data, file, warnings);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorEffects(data, file, errors);
@@ -1334,12 +1359,52 @@ function validateAgentCliToolsWarning(data: Record<string, YamlValue>, file: str
 // real, granted, stdio connector (the only remote shape that spawns anything for this warning to be
 // about) as part of its own REMOTE_NOT_IMPLEMENTED check — see that function's own doc for why the
 // telling lives there rather than being re-derived a second time here from bare per-file frontmatter.
+//
+// NOTES R4-SANDBOX-APPSERVER: silenced when the member ALREADY declares `sandbox: unsandboxed` —
+// `SANDBOX_DECLARED_UNSANDBOXED` (below) is the more specific, more useful telling for that member
+// (it names the author's OWN reason, not merely "this host has nothing"), and printing BOTH for the
+// identical member on an incapable host would read as two gaps where there is exactly one fact:
+// this member never runs confined, on any host, and the studio already says why.
 function validateAgentSandboxWarning(data: Record<string, YamlValue>, file: string, warnings: ValidationWarning[], sandbox?: SandboxDetection): void {
-  if (data.kind !== "cli" || !sandbox || sandbox.level !== "none") return;
+  if (data.kind !== "cli" || !sandbox || sandbox.level !== "none" || data.sandbox === "unsandboxed") return;
   const name = typeof data.name === "string" ? data.name : basename(file, ".md");
   warnings.push({
     code: "SANDBOX_UNAVAILABLE",
     message: `agent '${name}' declares kind: cli but no working OS-level sandbox primitive was found on this host (tried: ${sandboxPrimitivesTried(sandbox)}) — its process runs unconfined beyond env/HOME scoping; see 'levare doctor' for what was tried`,
+    file,
+  });
+}
+
+// NOTES R4-SANDBOX-APPSERVER: `sandbox: unsandboxed` is a deliberate, honest escape hatch from Ruling
+// 2's OS sandbox (see types.ts#Agent.sandbox's own doc) — but an undocumented one would be exactly the
+// silent-degradation outcome that ruling explicitly refuses. A hard ERROR (not a warning) when the
+// reason is missing: unlike SANDBOX_UNAVAILABLE (a HOST fact this studio's author has no control over),
+// `sandbox: unsandboxed` is an AUTHOR'S OWN declaration — nothing stops them from also declaring why.
+function validateAgentSandboxDeclaration(data: Record<string, YamlValue>, file: string, errors: ValidationError[]): void {
+  if (data.sandbox !== "unsandboxed") return;
+  const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+  if (typeof data.sandbox_reason !== "string" || data.sandbox_reason.trim() === "") {
+    errors.push({
+      code: "SANDBOX_UNSANDBOXED_NO_REASON",
+      message: `agent '${name}' declares sandbox: unsandboxed but no 'sandbox_reason' — a member declared to run OUTSIDE levare's OS sandbox, on any host, needs a documented reason a Conductor can act on`,
+      file,
+    });
+  }
+}
+
+// The sibling WARNING to the error above — fires whenever the declaration is legally complete (a reason
+// IS present), so a Conductor reading `levare validate`'s output sees this member's unconfined status
+// with the SAME plainness `SANDBOX_UNAVAILABLE` already gives a host lacking a primitive — but the two
+// codes are deliberately DIFFERENT: this one names a DECLARED, author-chosen exemption; that one names
+// a HOST capability gap. Collapsing them would let a Conductor mistake "I decided this" for "my machine
+// can't do this," which run on entirely different remedies (fix the declaration vs. fix the host).
+function validateAgentSandboxDeclaredWarning(data: Record<string, YamlValue>, file: string, warnings: ValidationWarning[]): void {
+  if (data.kind !== "cli" || data.sandbox !== "unsandboxed") return;
+  if (typeof data.sandbox_reason !== "string" || data.sandbox_reason.trim() === "") return; // SANDBOX_UNSANDBOXED_NO_REASON already names the incomplete case as an error.
+  const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+  warnings.push({
+    code: "SANDBOX_DECLARED_UNSANDBOXED",
+    message: `agent '${name}' declares sandbox: unsandboxed — its process runs OUTSIDE levare's OS sandbox on every host, even where a working primitive exists, by explicit author declaration: ${data.sandbox_reason}`,
     file,
   });
 }
@@ -1404,6 +1469,102 @@ function validateConnectorHomeWarning(data: Record<string, YamlValue>, file: str
   warnings.push({
     code: "SUBSCRIPTION_NO_HOME",
     message: `connector '${name}' is subscription-authenticated but declares no 'home:' — the member receives your entire HOME; declare the vendor's config path (e.g. 'home: [".codex"]') to scope it`,
+    file,
+  });
+}
+
+// NOTES R4-SANDBOX-APPSERVER: a subscription connector's `home:` names dotpaths under the real HOME
+// (e.g. `.codex`) to symlink into a granted member's scratch HOME — but the connector's own `command`
+// (e.g. `codex`) is frequently NOT a plain binary sitting loose on PATH; it's a version-manager SHIM
+// (Volta, nvm, asdf, mise, pyenv, rbenv all install this way) — a small script/binary at, say,
+// `~/.volta/bin/codex` that reads the manager's OWN bookkeeping under `~/.volta/...` to find which
+// real, manager-installed binary to actually exec. `home: [".codex"]` alone gives that shim a scratch
+// HOME with no `.volta` entry at all — the shim fails to resolve anything, surfacing as the MANAGER's
+// own error ("Volta error: Could not find executable \"codex\""), naming a tool the operator will
+// wrongly go debug, never levare's own scoping decision. Confirmed live (NOTES R4-SANDBOX-APPSERVER's
+// own elimination table): adding the manager's own root to `home:` (`[".codex", ".volta"]`) clears
+// this specific failure and lets the dispatch proceed to whatever the connector's real backend does
+// next.
+//
+// This is deliberately NOT auto-granted — a version-managed binary cannot be scoped narrowly at all:
+// granting `.volta` exposes every toolchain Volta manages under this operator's account, not just the
+// one connector being defined, and only the connector's own author can judge whether that tradeoff is
+// acceptable for this studio (named explicitly in the warning text below, and in the docs). This
+// function only NAMES the gap — a pure function over an already-resolved command path, a connector's
+// declared `home:` list, and the real HOME — so both `validateConnectorHomeShimWarning` (schema-time,
+// fed a real `Bun.which` resolution) and `doctor.ts#diagnose` (host-check time) can surface the
+// identical finding in levare's own voice, rather than leaving the manager's own confusing error as
+// the only signal an operator ever sees.
+export interface VersionManagerRoot {
+  /** Human-readable name, e.g. "Volta" — used in the warning text, never parsed. */
+  manager: string;
+  /** The manager's own root dotpath under HOME, e.g. ".volta" — what `home:` would need to add. */
+  dotpath: string;
+}
+
+// Every version manager this project has independent evidence for (Volta, live-confirmed; the rest
+// are the SAME shim-under-a-HOME-dotpath shape by their own documented install layout, named per the
+// goal's own "not codex-specific in principle" scope — a `cli` member is a first-class member kind,
+// and any vendor CLI installed through a shim hits the identical wall — not independently
+// live-verified each). mise defaults to XDG (`~/.local/share/mise`), not a single dotdir — named as
+// its own two-segment dotpath rather than forcing a fictional `.mise` entry that doesn't exist on disk.
+export const VERSION_MANAGER_HOME_ROOTS: VersionManagerRoot[] = [
+  { manager: "Volta", dotpath: ".volta" },
+  { manager: "nvm", dotpath: ".nvm" },
+  { manager: "asdf", dotpath: ".asdf" },
+  { manager: "mise", dotpath: ".local/share/mise" },
+  { manager: "pyenv", dotpath: ".pyenv" },
+  { manager: "rbenv", dotpath: ".rbenv" },
+];
+
+/**
+ * `resolvedCommandPath` (a real `Bun.which`/PATH resolution result, or `undefined` when the command
+ * isn't found at all — nothing to detect a gap in) — does it sit under a known version manager's own
+ * root, under `home`, that `declaredHome` does NOT already cover? Returns the FIRST matching root, or
+ * `undefined` when the resolved path isn't under HOME at all (a system-wide install, e.g. `/usr/bin`
+ * or a plain Homebrew prefix — no shim, no gap), isn't under any known manager's root, or the
+ * manager's root (or an ancestor entry covering it) is already among `declaredHome`'s own dotpaths.
+ */
+export function detectVersionManagerHomeGap(resolvedCommandPath: string | undefined, declaredHome: string[], home: string): VersionManagerRoot | undefined {
+  if (!resolvedCommandPath) return undefined;
+  const rel = relative(home, resolvedCommandPath);
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return undefined;
+  for (const root of VERSION_MANAGER_HOME_ROOTS) {
+    if (rel !== root.dotpath && !rel.startsWith(`${root.dotpath}/`)) continue;
+    const granted = declaredHome.some((d) => d === root.dotpath || d.startsWith(`${root.dotpath}/`));
+    return granted ? undefined : root;
+  }
+  return undefined;
+}
+
+// NOTES R4-SANDBOX-APPSERVER: fires at STUDIO VALIDATION time, using a real `Bun.which` resolution
+// against THIS host's own PATH — the same "host-aware but never assumed" posture `validateAgentSandboxWarning`
+// already takes for `SANDBOX_UNAVAILABLE` (both are optional-injection, host-dependent checks; this one
+// isn't threaded through `validatePath`'s own `sandbox?` parameter because it needs no probe/spawn, only
+// a cheap PATH lookup already safe to run unconditionally — the same posture `hasResolvableLocalPath`
+// elsewhere in this file already takes for a live `existsSync` check). `which`/`home` are injectable
+// (test-only — production always uses the real ones) so `tests/capability-cap-b.test.ts` can pin the
+// exact shim-under-HOME shape without mutating this process's own real PATH/HOME. The default passes
+// `{ PATH: process.env.PATH }` explicitly rather than calling bare `Bun.which(cmd)` — proven live in
+// this container: `Bun.which` without an explicit `PATH` option resolves against whatever PATH the Bun
+// process itself started with, NOT a runtime mutation of `process.env.PATH` — the same integration
+// test that pins this warning's wiring caught the difference directly.
+function validateConnectorHomeShimWarning(
+  data: Record<string, YamlValue>,
+  file: string,
+  warnings: ValidationWarning[],
+  which: (cmd: string) => string | null = (cmd) => Bun.which(cmd, { PATH: process.env.PATH ?? "" }),
+  home: string | undefined = process.env.HOME,
+): void {
+  if (data.auth !== "subscription" || !Array.isArray(data.home) || data.home.length === 0) return;
+  if (typeof data.command !== "string" || !data.command || !home) return;
+  const declaredHome = data.home.filter((h): h is string => typeof h === "string");
+  const gap = detectVersionManagerHomeGap(which(data.command) ?? undefined, declaredHome, home);
+  if (!gap) return;
+  const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+  warnings.push({
+    code: "SUBSCRIPTION_HOME_SHIM_GAP",
+    message: `connector '${name}' declares home: [${declaredHome.join(", ")}] but '${data.command}' resolves through ${gap.manager} (~/${gap.dotpath}), which is not in that list — a version-managed binary cannot be scoped narrowly: add '${gap.dotpath}' to home: too (this exposes every toolchain ${gap.manager} manages, not just this connector) or install '${data.command}' outside a version manager. Left as-is, a scoped member's spawn fails with ${gap.manager}'s own "could not find executable" error, not levare's — see 'levare doctor' for the same finding in this host's own live context.`,
     file,
   });
 }

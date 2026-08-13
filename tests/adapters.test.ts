@@ -1881,6 +1881,62 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
     }
   });
 
+  // NOTES R4-SANDBOX-APPSERVER: the declared escape hatch — `sandbox: unsandboxed` on the agent itself
+  // must bypass `sandboxWrap` ENTIRELY, on ANY host, even one that genuinely has a working primitive
+  // (forced here via `fakeWorkingPrimitive` + `sandboxDetection: {level: "full", ...}` — the identical
+  // injection every other "full"-tier test in this describe block uses). Proven by the artifact's own
+  // recorded level: getting `sandbox: none` back from a detection that reports `full` is only possible
+  // if `sandboxWrap`'s own escape-hatch branch fired BEFORE the injected detection was ever consulted.
+  describe("the declared escape hatch — sandbox: unsandboxed (NOTES R4-SANDBOX-APPSERVER)", () => {
+    test("bypasses wrapping even under a genuinely working, full-tier detection — records sandbox: none + sandbox_reason on the artifact", async () => {
+      const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+      const primitiveBin = fakeWorkingPrimitive();
+      try {
+        const repo = repoWithRealStorefrontRepo(projectRepo);
+        const finch = repo.agents.get("finch")!;
+        repo.agents.set("finch", { ...finch, sandbox: "unsandboxed", sandbox_reason: "vendor CLI's own app-server needs OS IPC this sandbox's threat model won't grant" });
+        const runner = new AdapterRunner(repo, {
+          pricing,
+          capabilities: [{ member: "finch", kind: "review" }],
+          native: nativeMock,
+          remote: remoteMock,
+          cliCommand: (req) => ["cat", join(req.projectRepoPath!, "marker.txt")],
+          sandboxDetection: { platform: "linux", primitive: "bubblewrap", level: "full", bin: primitiveBin },
+        });
+        const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+        expect(doc).toContain("sandbox: none");
+        expect(doc).not.toContain("sandbox: full");
+        expect(doc).toContain("sandbox_reason: vendor CLI's own app-server needs OS IPC this sandbox's threat model won't grant");
+        expect(doc).toContain("MARKER-checkout-flow"); // the real, unwrapped spawn still ran and succeeded.
+      } finally {
+        rmSync(projectRepo, { recursive: true, force: true });
+        rmSync(dirname(primitiveBin), { recursive: true, force: true });
+      }
+    });
+
+    test("an ordinary (auto) member under the SAME working detection records sandbox: full — the escape hatch is per-member, not global", async () => {
+      const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+      const primitiveBin = fakeWorkingPrimitive();
+      try {
+        const repo = repoWithRealStorefrontRepo(projectRepo);
+        const runner = new AdapterRunner(repo, {
+          pricing,
+          capabilities: [{ member: "finch", kind: "review" }],
+          native: nativeMock,
+          remote: remoteMock,
+          cliCommand: (req) => ["cat", join(req.projectRepoPath!, "marker.txt")],
+          sandboxDetection: { platform: "linux", primitive: "bubblewrap", level: "full", bin: primitiveBin },
+        });
+        const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+        expect(doc).toContain("sandbox: full");
+        expect(doc).not.toContain("sandbox_reason:");
+      } finally {
+        rmSync(projectRepo, { recursive: true, force: true });
+        rmSync(dirname(primitiveBin), { recursive: true, force: true });
+      }
+    });
+  });
+
   // NOTES R4-SANDBOX-FIX-9 (live macOS gate): a "full"-tier sandbox denies the operator's own real HOME,
   // turning a git global-config read into a FATAL EPERM rather than a tolerated ENOENT. Proven end to
   // end (not just the pure redirect function) via `fakeWorkingPrimitive` — a stand-in "bwrap" that

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRepo } from "../src/repo.ts";
 import { buildMemberEnv, scopeHome } from "../src/env.ts";
-import { validatePath } from "../src/validate.ts";
+import { validatePath, detectVersionManagerHomeGap } from "../src/validate.ts";
 import { SDK_TOOL_NAMES } from "../src/sdk-transport.ts";
 import { loadPricing } from "../src/pricing.ts";
 import { AdapterRunner, type InvokeRequest, type NativeBoundary, type RemoteBoundary, type AsyncCliSpawn, type SpawnResult } from "../src/adapters.ts";
@@ -428,6 +428,127 @@ describe("SUBSCRIPTION_NO_HOME warning", () => {
       expect(r.warnings.map((w) => w.code)).not.toContain("SUBSCRIPTION_NO_HOME");
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NOTES R4-SANDBOX-APPSERVER — SUBSCRIPTION_HOME_SHIM_GAP: a connector's `home:` scopes the vendor's
+// own config directory, but the connector's `command` resolves through a version-manager SHIM (Volta,
+// nvm, asdf, ...) whose own bookkeeping lives elsewhere under HOME — live-confirmed to surface as the
+// MANAGER's own confusing error ("Volta error: Could not find executable"), never levare's, unless the
+// manager's own root is named too.
+// ---------------------------------------------------------------------------
+describe("detectVersionManagerHomeGap (pure)", () => {
+  test("names Volta when the resolved command sits under ~/.volta and home: doesn't grant it", () => {
+    const gap = detectVersionManagerHomeGap("/Users/cas/.volta/bin/codex", [".codex"], "/Users/cas");
+    expect(gap).toEqual({ manager: "Volta", dotpath: ".volta" });
+  });
+
+  test("returns undefined once the manager's own root is already in declaredHome", () => {
+    expect(detectVersionManagerHomeGap("/Users/cas/.volta/bin/codex", [".codex", ".volta"], "/Users/cas")).toBeUndefined();
+  });
+
+  test("returns undefined for a plain, non-shimmed system install", () => {
+    expect(detectVersionManagerHomeGap("/usr/local/bin/codex", [".codex"], "/Users/cas")).toBeUndefined();
+  });
+
+  test("returns undefined when the command wasn't found on PATH at all (nothing to detect a gap in)", () => {
+    expect(detectVersionManagerHomeGap(undefined, [".codex"], "/Users/cas")).toBeUndefined();
+  });
+
+  test("returns undefined when the resolved path isn't under HOME at all", () => {
+    expect(detectVersionManagerHomeGap("/opt/homebrew/bin/codex", [".codex"], "/Users/cas")).toBeUndefined();
+  });
+
+  test("recognizes every catalogued manager root, not just Volta", () => {
+    expect(detectVersionManagerHomeGap("/h/.nvm/versions/node/v20/bin/codex", [], "/h")).toEqual({ manager: "nvm", dotpath: ".nvm" });
+    expect(detectVersionManagerHomeGap("/h/.asdf/shims/codex", [], "/h")).toEqual({ manager: "asdf", dotpath: ".asdf" });
+    expect(detectVersionManagerHomeGap("/h/.local/share/mise/installs/codex/bin/codex", [], "/h")).toEqual({ manager: "mise", dotpath: ".local/share/mise" });
+    expect(detectVersionManagerHomeGap("/h/.pyenv/shims/codex", [], "/h")).toEqual({ manager: "pyenv", dotpath: ".pyenv" });
+    expect(detectVersionManagerHomeGap("/h/.rbenv/shims/codex", [], "/h")).toEqual({ manager: "rbenv", dotpath: ".rbenv" });
+  });
+});
+
+describe("SUBSCRIPTION_HOME_SHIM_GAP warning (validatePath, real PATH resolution)", () => {
+  function connectorStudio(frontmatterExtra: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "levare-connector-home-shim-warn-"));
+    mkdirSync(join(dir, "connectors"), { recursive: true });
+    writeFileSync(
+      join(dir, "connectors", "codex.md"),
+      ["---", "name: codex", "kind: cli", "command: codex", frontmatterExtra, "---", "", "# Codex connector", ""].join("\n"),
+    );
+    return dir;
+  }
+
+  // A real, executable stand-in shim on disk — Bun.which does a genuine PATH lookup, so this test
+  // proves the wiring end to end (real filesystem, real PATH env var) rather than only the pure
+  // detector above, mirroring this codebase's own "real symlink, not a mock" testing convention
+  // (sandbox.test.ts's own canonicalization proof).
+  function withFakeVoltaShimOnPath<T>(homeDir: string, fn: () => T): T {
+    const voltaBin = join(homeDir, ".volta", "bin");
+    mkdirSync(voltaBin, { recursive: true });
+    const shimPath = join(voltaBin, "codex");
+    writeFileSync(shimPath, "#!/bin/sh\necho fake codex shim\n", { mode: 0o755 });
+    const priorPath = process.env.PATH;
+    const priorHome = process.env.HOME;
+    process.env.PATH = `${voltaBin}:${priorPath ?? ""}`;
+    process.env.HOME = homeDir;
+    try {
+      return fn();
+    } finally {
+      if (priorPath === undefined) delete process.env.PATH;
+      else process.env.PATH = priorPath;
+      if (priorHome === undefined) delete process.env.HOME;
+      else process.env.HOME = priorHome;
+    }
+  }
+
+  test("fires when home: names .codex but the shim resolves under an ungranted .volta", () => {
+    const homeDir = mkdtempSync(join(tmpdir(), "levare-shim-gap-home-"));
+    const dir = connectorStudio('auth: subscription\nenv: []\nhome: [".codex"]\nplan: "ChatGPT Plus — flat monthly rate"');
+    try {
+      withFakeVoltaShimOnPath(homeDir, () => {
+        const r = validatePath(dir);
+        expect(r.ok).toBe(true); // legal declaration — a warning, never an error
+        const w = r.warnings.find((w) => w.code === "SUBSCRIPTION_HOME_SHIM_GAP");
+        expect(w).toBeDefined();
+        expect(w!.message).toContain("codex");
+        expect(w!.message).toContain("Volta");
+        expect(w!.message).toContain("~/.volta");
+        expect(w!.message).toContain("cannot be scoped narrowly");
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  test("stays silent once .volta is also declared in home:", () => {
+    const homeDir = mkdtempSync(join(tmpdir(), "levare-shim-gap-home-"));
+    const dir = connectorStudio('auth: subscription\nenv: []\nhome: [".codex", ".volta"]\nplan: "ChatGPT Plus — flat monthly rate"');
+    try {
+      withFakeVoltaShimOnPath(homeDir, () => {
+        const r = validatePath(dir);
+        expect(r.warnings.map((w) => w.code)).not.toContain("SUBSCRIPTION_HOME_SHIM_GAP");
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  test("stays silent for a connector declaring no home: at all (SUBSCRIPTION_NO_HOME already covers that gap)", () => {
+    const homeDir = mkdtempSync(join(tmpdir(), "levare-shim-gap-home-"));
+    const dir = connectorStudio('auth: subscription\nenv: []\nplan: "ChatGPT Plus — flat monthly rate"');
+    try {
+      withFakeVoltaShimOnPath(homeDir, () => {
+        const r = validatePath(dir);
+        expect(r.warnings.map((w) => w.code)).not.toContain("SUBSCRIPTION_HOME_SHIM_GAP");
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(homeDir, { recursive: true, force: true });
     }
   });
 });

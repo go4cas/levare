@@ -448,12 +448,21 @@ export interface SandboxPolicy {
    */
   operatorHome?: string;
   /**
-   * NOTES R4-SANDBOX-FIX-3 (macOS only). The RESOLVED real filesystem paths a granted `auth: subscription`
+   * NOTES R4-SANDBOX-FIX-3 (macOS deny-list model) / NOTES R4-SANDBOX-APPSERVER (bubblewrap, and READ
+   * AND WRITE on both platforms). The RESOLVED real filesystem paths a granted `auth: subscription`
    * connector's own `home:` dotpaths point at (e.g. `/Users/cas/.codex` for a connector declaring `home:
-   * [".codex"]`) — distinct from `home` above (the member's own scratch-scoped `$HOME`, which may contain
-   * SYMLINKS to these same real targets): denying the operator's `$HOME` broadly would also deny reading
-   * THROUGH those symlinks to their real targets unless the targets themselves are explicitly re-allowed.
-   * Absent/empty is a legal no-op (no subscription grant, or one declaring no `home:`).
+   * [".codex"]`) — distinct from `home` above (the member's own scratch-scoped `$HOME`, which contains
+   * SYMLINKS to these same real targets, per env.ts#scopeHomeForConnector): on macOS, denying the
+   * operator's `$HOME` broadly would also deny reading (and, since R4-SANDBOX-APPSERVER, WRITING)
+   * through those symlinks to their real targets unless the targets themselves are explicitly
+   * re-allowed for both; on Linux (bubblewrap), an empty-root sandbox never sees these real paths at
+   * all unless they're explicitly bound (`--bind-try`), the same fact `readOnlyPaths` and `home` already
+   * account for — this field went unread by `bubblewrapArgv` entirely before R4-SANDBOX-APPSERVER,
+   * silently leaving a granted credential unreachable through its own scratch-HOME symlink on Linux.
+   * Read-only was the ORIGINAL, incomplete treatment (write access is what a vendor CLI legitimately
+   * needs to refresh its own stored credential, e.g. an OAuth token) — see the write-reallow's own doc
+   * in `buildSandboxExecProfile` for the live-evidence caveat on this fix. Absent/empty is a legal
+   * no-op (no subscription grant, or one declaring no `home:`).
    */
   grantedHomeTargets?: string[];
   /**
@@ -554,6 +563,15 @@ function bubblewrapArgv(bin: string, argv: string[], policy: SandboxPolicy): str
   for (const p of policy.readOnlyPaths ?? []) out.push("--ro-bind-try", p, p);
   out.push("--dev", "/dev", "--proc", "/proc", "--bind", policy.cwd, policy.cwd);
   if (policy.home) out.push("--bind", policy.home, policy.home);
+  // NOTES R4-SANDBOX-APPSERVER: `policy.home` (the scratch HOME) contains SYMLINKS to these real
+  // targets (env.ts#scopeHomeForConnector) — under bubblewrap's own empty-`--tmpfs /` root, a symlink
+  // whose target was never itself bound resolves to nothing (the real path simply isn't present in
+  // this mount namespace at all), so the granted credential would be unreadable through its own
+  // symlink despite `home:` declaring it granted. `--ro-bind-try` was previously the ONLY treatment
+  // read-only paths beyond the platform baseline got; a granted home target needs the SAME rw
+  // treatment `policy.home` itself gets, matching darwin's own `grantedHomeTargets` re-allow (below)
+  // rather than leaving Linux the ONE platform where this field was silently inert.
+  for (const p of policy.grantedHomeTargets ?? []) out.push("--bind-try", p, p);
   for (const p of policy.writablePaths ?? []) out.push("--bind", p, p);
   if (!policy.allowNetwork) out.push("--unshare-net");
   out.push("--die-with-parent", "--", ...argv);
@@ -742,7 +760,22 @@ export function buildSandboxExecProfile(policy: SandboxPolicy): string {
   const xcrunRegexPattern = xcrunTempDir ? `^${escapeSeatbeltRegex(xcrunTempDir)}/xcrun_db-[^/]+$` : undefined;
 
   const reallowReads = dedupe([cwd, ...(scopedHome ? [scopedHome] : []), ...grantedTargets, ...readOnly, ...writable, ...gitSubpaths]);
-  const reallowWrites = dedupe([cwd, ...(scopedHome ? [scopedHome] : []), ...writable]);
+  // NOTES R4-SANDBOX-APPSERVER: `grantedTargets` used to appear in `reallowReads` ONLY — but
+  // `scopedHome` (above) is a scratch directory containing SYMLINKS to these same real targets
+  // (env.ts#scopeHomeForConnector), and `scopedHome`'s own `(subpath ...)` write re-allow covers the
+  // SYMLINK LINKS, never what they point AT: Seatbelt resolves a write through a symlink against the
+  // TARGET's own real, kernel-resolved path, which — before this fix — matched only the read-only
+  // re-allow, so any write beneath a granted `home:` target (a vendor CLI refreshing its own stored
+  // token, e.g. `codex login`'s session file, is the ordinary case, not an edge case) was silently
+  // denied despite `home:` declaring that exact path granted. This is the SAME class of gap DEFECT 1
+  // and the FIX-8/FIX-12 write reseals both exist to close — a grant that covers reads but not the
+  // writes a live, on-disk credential legitimately needs isn't a narrower grant, it's an incomplete
+  // one. Not independently live-confirmed as the cause of any specific vendor-CLI failure (see NOTES
+  // R4-SANDBOX-APPSERVER for the live evidence this round DOES and does not have) — fixed proactively
+  // because the asymmetry is a plain, provable fact about this generator's own current text, the same
+  // "cache path closure... proactive, not live-confirmed" posture NOTES R4-VENDOR-CLI round 1 already
+  // took for gh's own `$TMPDIR/gh-cli-cache` fallback.
+  const reallowWrites = dedupe([cwd, ...(scopedHome ? [scopedHome] : []), ...grantedTargets, ...writable]);
   // DEFECT 2: ancestor metadata for every read re-allow (now including the git-write subpaths, which are
   // read-reallowed above but write-reallowed separately below) plus `gitRoot` itself, so traversal INTO
   // the reseal's own re-allowed subpaths survives the reseal's own deny of their shared parent.
