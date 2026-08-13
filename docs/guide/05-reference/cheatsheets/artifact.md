@@ -55,6 +55,7 @@ A markdown deliverable with YAML frontmatter, produced by a member and tracked t
 | `merge_result.merge_commit` | string | ✅ | — | — | The resulting merge commit SHA. |
 | `merge_result.pushed` | boolean | ✅ | ✅ | — | Whether the merge also landed on the project's remote — null when the project declares no remote:. |
 | `sandbox` | enum | — | ✅ | `full` · `fs-only` · `none` | The OS-level sandbox a kind: cli (or fully-implemented kind: remote) member's spawn actually ran under: full (filesystem and network confined), fs-only (filesystem-only fallback), or none (no working primitive found — the spawn ran unconfined). Absent for native members and pre-this-ruling artifacts. |
+| `sandbox_reason` | string | — | — | — | Present only when this artifact's producing member declared sandbox: unsandboxed — the documented reason its spawn never runs under levare's OS sandbox, on any host. |
 
 ## Minimal valid skeleton
 

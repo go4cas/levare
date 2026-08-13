@@ -13,6 +13,7 @@ import type { EnvProvenance } from "./dotenv.ts";
 import type { OrchestratorStatus } from "./orchestrator-status.ts";
 import type { VersionInfo } from "./version.ts";
 import type { SandboxDetection, SandboxPrimitive } from "./sandbox.ts";
+import { detectVersionManagerHomeGap } from "./validate.ts";
 
 // NOTES R4-SANDBOX-FIX-3: a one-line reminder of what `full`/`fs-only` actually MEAN for the primitive
 // that produced them — see `formatDoctor`'s own doc for why this can't be left implicit.
@@ -73,7 +74,22 @@ export interface ConnectorHealth {
   mcp?: { server: string };
 }
 
-export function diagnose(connectors: Connector[], env: EnvProbe, probe: CliProbe, provenance?: Map<string, EnvProvenance>): ConnectorHealth[] {
+// NOTES R4-SANDBOX-APPSERVER: `resolveCliPath`/`home` are the live-host inputs
+// `validate.ts#detectVersionManagerHomeGap` needs to name a version-manager shim gap (Volta/nvm/asdf/
+// mise/pyenv/rbenv) in a scoped subscription connector — injectable (test-only; production always uses
+// the real `Bun.which`/`process.env.HOME`) so this stays the same "the CLI wires process.env presence
+// and Bun.which" posture this module's own header already states, extended to one more real check.
+export function diagnose(
+  connectors: Connector[],
+  env: EnvProbe,
+  probe: CliProbe,
+  provenance?: Map<string, EnvProvenance>,
+  // NOTES R4-SANDBOX-APPSERVER: `{ PATH: ... }` passed explicitly — a bare `Bun.which(cmd)` resolves
+  // against whatever PATH the Bun process itself started with, not a later runtime mutation (proven
+  // live in this container; see validate.ts#validateConnectorHomeShimWarning's identical default).
+  resolveCliPath: (command: string) => string | undefined = (cmd) => Bun.which(cmd, { PATH: process.env.PATH ?? "" }) ?? undefined,
+  home: string | undefined = process.env.HOME,
+): ConnectorHealth[] {
   return [...connectors]
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((c) => {
@@ -93,10 +109,14 @@ export function diagnose(connectors: Connector[], env: EnvProbe, probe: CliProbe
         // own config directory (env.ts#scopeHome gives a granted member a scratch $HOME symlinking
         // only those paths) — but the login itself remains usable by any OTHER member granted this
         // SAME connector, which is the residual C13 always named and CAP-B does not close.
-        health.warning =
-          c.home && c.home.length > 0
-            ? `this credential is scoped to \`${c.home.join(", ")}\` under a per-run HOME — but any member granted this connector can still use the login (the grant is not per-member revocable; only the real login is).`
-            : `levare cannot scope this credential — any member that can spawn \`${c.command ?? c.name}\` can use this login. The grant is documentation, not enforcement. Declare 'home:' to scope it to the vendor's own config directory.`;
+        if (c.home && c.home.length > 0) {
+          const gap = c.command && home ? detectVersionManagerHomeGap(resolveCliPath(c.command), c.home, home) : undefined;
+          health.warning = gap
+            ? `this credential is scoped to \`${c.home.join(", ")}\` under a per-run HOME — but any member granted this connector can still use the login (the grant is not per-member revocable; only the real login is). Also: \`${c.command}\` resolves through ${gap.manager} (~/${gap.dotpath}), which is NOT in that scoped list — a version-managed binary cannot be scoped narrowly; add '${gap.dotpath}' too (this exposes every toolchain ${gap.manager} manages, not just this connector) or install \`${c.command}\` outside a version manager.`
+            : `this credential is scoped to \`${c.home.join(", ")}\` under a per-run HOME — but any member granted this connector can still use the login (the grant is not per-member revocable; only the real login is).`;
+        } else {
+          health.warning = `levare cannot scope this credential — any member that can spawn \`${c.command ?? c.name}\` can use this login. The grant is documentation, not enforcement. Declare 'home:' to scope it to the vendor's own config directory.`;
+        }
       }
       if (c.kind === "cli" && c.command) health.cli = { command: c.command, probe: probe(c.command) };
       if (c.kind === "mcp" && c.server) health.mcp = { server: c.server };
@@ -144,7 +164,14 @@ export function diagnose(connectors: Connector[], env: EnvProbe, probe: CliProbe
  * named); macOS `sandbox-exec` (forced to a deny-list model by a live-host bisection — see sandbox.ts's
  * own header) leaves the OS broadly readable and denies the operator's own user data instead. Printing
  * bare `full` next to `bubblewrap`/`sandbox-exec` without saying so would let a Conductor reasonably
- * assume the two enforce identically, which they do not — `sandboxModelNote` names the difference inline. */
+ * assume the two enforce identically, which they do not — `sandboxModelNote` names the difference inline.
+ *
+ * `unsandboxedAgents`, when given (NOTES R4-SANDBOX-APPSERVER): every `kind: cli` agent DECLARING
+ * `sandbox: unsandboxed` (with its own `sandbox_reason`) — printed UNCONDITIONALLY, independent of
+ * `sandbox`/`sandboxedAgents` above, since this is an author's own decision, true on every host, never
+ * a fact about what THIS host happens to offer. Deliberately a SEPARATE line from the `sandbox.level ===
+ * "none"` warning: that one names a host capability gap outside the studio author's control; this one
+ * names a deliberate, documented exemption — collapsing the two would hide which is which. */
 export function formatDoctor(
   health: ConnectorHealth[],
   orchestrator?: OrchestratorStatus,
@@ -154,6 +181,7 @@ export function formatDoctor(
   cliToolAgents?: string[],
   sandbox?: SandboxDetection,
   sandboxedAgents?: string[],
+  unsandboxedAgents?: Array<{ name: string; reason: string }>,
 ): string {
   const out: string[] = [];
   if (versionInfo) {
@@ -175,6 +203,12 @@ export function formatDoctor(
       out.push(
         `⚠ no working OS-level sandbox primitive found on this host (tried: ${sandbox.platform === "linux" ? "bubblewrap, unshare" : sandbox.platform === "darwin" ? "sandbox-exec" : "none available for this platform"}) — these members run unconfined beyond env/HOME scoping: ${sandboxedAgents.join(", ")}`,
       );
+    }
+    out.push("");
+  }
+  if (unsandboxedAgents && unsandboxedAgents.length > 0) {
+    for (const a of unsandboxedAgents) {
+      out.push(`⚠ '${a.name}' declares sandbox: unsandboxed — its process runs OUTSIDE levare's OS sandbox on every host, by explicit author declaration: ${a.reason}`);
     }
     out.push("");
   }
@@ -229,6 +263,7 @@ export function runDoctor(
   cliToolAgents?: string[],
   sandbox?: SandboxDetection,
   sandboxedAgents?: string[],
+  unsandboxedAgents?: Array<{ name: string; reason: string }>,
 ): string {
-  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo, promptCheck, remoteAgents, cliToolAgents, sandbox, sandboxedAgents);
+  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo, promptCheck, remoteAgents, cliToolAgents, sandbox, sandboxedAgents, unsandboxedAgents);
 }

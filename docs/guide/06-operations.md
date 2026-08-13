@@ -85,6 +85,22 @@ or buggy member's filesystem reads to the vendor's own config directory; it does
 into a per-member-revocable credential. Prefer `auth: env` where the vendor offers it. Grant subscription
 connectors only to members you'd trust with the login, and declare `home:` on every one you add.
 
+**`home:` grants read AND write to what it names (NOTES R4-SANDBOX-APPSERVER).** A vendor CLI that
+refreshes its own stored credential — most OAuth-authenticated CLIs do, periodically rewriting a token
+file — needs to write back into the path `home:` names, not just read it. levare scopes both.
+
+**A version-managed binary needs the manager's own root granted too, not just the vendor's dotpath.** If
+the CLI you're wrapping is installed through Volta, nvm, asdf, mise, pyenv, or rbenv, `command:` resolves
+to a SHIM — a small script that reads the manager's own bookkeeping (`~/.volta/...`, `~/.nvm/...`, and so
+on) to find which real, installed binary to run. `home: [".codex"]` alone gives that shim a scratch HOME
+with no manager entry at all — it fails to resolve anything, and the error you'll see is the MANAGER's
+own ("Volta error: Could not find executable"), not levare's. `levare validate`/`levare doctor` name this
+gap directly when they can detect it live on your host (`SUBSCRIPTION_HOME_SHIM_GAP`) — but levare never
+grants the manager's root automatically: **a version-managed binary cannot be scoped narrowly.** Adding
+`.volta` to `home:` exposes every toolchain Volta manages under your account, not just this one
+connector — decide deliberately whether that's an acceptable tradeoff, or install the vendor CLI as a
+plain system binary instead where you want a genuinely narrow grant.
+
 ### Side-effecting connectors: the grant is not the credential
 
 A connector declared `effects: write` (NOTES CAP-A, v1.1 capability layer) — one that posts an issue,
@@ -182,6 +198,26 @@ enforcement level (`full` / `fs-only` / `none`) recorded on the produced artifac
 `cli` member, or a `remote` member's granted MCP server, with the same caution you'd treat any script
 you're about to run regardless: know what the binary is, and grant it only what it needs — the sandbox
 narrows the blast radius of a mistake, it doesn't remove the need for that judgment.
+
+**When a vendor CLI genuinely cannot run confined, declare it — never fight it silently (NOTES
+R4-SANDBOX-APPSERVER).** Some vendor CLIs have their own internal architecture — an in-process IPC
+client/server split, a self-sandboxing helper that calls into the OS's own sandbox primitive as part of
+its startup — that needs OS access this sandbox's threat model won't safely grant. If you've confirmed
+that (not merely suspected it — see [Current gaps](../../current-gaps.md) for the live investigation this
+project ran against exactly this shape), declare it on the agent:
+
+```yaml
+sandbox: unsandboxed
+sandbox_reason: "why, specifically — what this CLI's own architecture needs that the sandbox can't grant"
+```
+
+`sandbox_reason` is required — `levare validate` rejects the declaration without one. Once declared, this
+member's spawn is never wrapped, on any host, even one with a genuinely working sandbox primitive;
+`levare validate`/`levare doctor` name it with the same plainness `SANDBOX_UNAVAILABLE` gives a host that
+merely lacks a primitive, and the reason is stamped on every artifact this member produces
+(`sandbox_reason:`, alongside `sandbox: none`) — so anyone reading the registry, a review, or a produced
+artifact sees plainly that this member never runs confined, and why, rather than mistaking it for an
+ordinary host capability gap.
 
 ---
 

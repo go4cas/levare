@@ -256,6 +256,30 @@ name (those paths aren't known at profile-build time). If a future round ever ne
 grant back toward a broader shape, cross-dispatch write isolation must be independently re-examined at
 that point, not assumed to still hold by extension of the git-write reseal.
 
+**An app-server-architecture vendor CLI (`codex`) failed at spawn under this sandbox — two proactive
+fixes shipped, the root cause remains unconfirmed pending a live host (NOTES R4-SANDBOX-APPSERVER).** A
+`kind: cli` member wrapping `codex` died with `failed to initialize in-process app-server client:
+Operation not permitted` under a generated `sandbox-exec` profile. Two real, provable gaps in the
+generator were closed regardless of whether either is THIS failure's own cause: (1) `grantedHomeTargets`
+(a subscription connector's own real `home:` target, e.g. `~/.codex`) was re-allowed for READ only, never
+WRITE, on either platform — a vendor CLI refreshing its own stored credential through the scratch-HOME
+symlink was silently denied; Linux `bubblewrap` never read this field AT ALL, leaving a granted
+credential unreadable through its own symlink under an empty-root sandbox. Both fixed
+(`sandbox.ts#buildSandboxExecProfile`'s write re-allow; `bubblewrapArgv`'s new `--bind-try`), proven by
+construction (the profile/argv TEXT), not live-confirmed as codex's own cause. (2) A version-managed
+vendor CLI (Volta/nvm/asdf/mise/pyenv/rbenv) resolves through the MANAGER's own shim, which needs the
+manager's own root granted in `home:` too — undeclared, this fails with the MANAGER's own confusing
+error, not levare's; `levare validate`/`levare doctor` now name this explicitly
+(`SUBSCRIPTION_HOME_SHIM_GAP`), deliberately never auto-granted (a version-managed binary cannot be
+scoped narrowly — granting the manager's root exposes every toolchain it manages). **The declared escape
+hatch, shipped regardless of the outcome above:** `sandbox: unsandboxed` on an agent (with a required
+`sandbox_reason`) makes `adapters.ts#sandboxWrap` skip the OS sandbox entirely, on any host — surfaced by
+`levare validate`/`levare doctor` with the same plainness `SANDBOX_UNAVAILABLE` already uses, and
+recorded on every artifact that member produces (`sandbox_reason:`, alongside `sandbox: none`). A live
+diagnostic harness (`scripts/repro-r4-appserver-codex.ts`) is built and ready but not yet run — no live
+macOS host was reachable this round; see NOTES R4-SANDBOX-APPSERVER for the ranked hypotheses (a
+write-reallow gap vs. nested Seatbelt self-sandboxing) the next live run needs to distinguish.
+
 ## Connector trust-tier taxonomy — three recorded decisions, not open gaps (NOTES TAXONOMY-DECISIONS, 2026-07-21)
 
 A connector now declares `role: model | tool` (NOTES C15) — what FUNCTION it serves — and, since NOTES

@@ -30,6 +30,8 @@ A member: what it can produce, and how to invoke it.
 | `tool` | string | — | — | — | remote: the singular MCP tool this member invokes on server's connector via tools/call — the member's declared intent → server-call mapping. Distinct from native's tools: this names one chosen MCP tool, not an SDK vocabulary allowlist. |
 | `params` | map (arbitrary key → string) | — | ✅ | — | remote: the static tools/call arguments template — each value substitutes {task} with the assembled context. |
 | `connectors` | string[] | — | — | — | Per-agent connector grants, unioned with the team's grants for env scoping. |
+| `sandbox` | enum | — | — | `auto` · `unsandboxed` | cli: 'auto' (default) — best-effort OS sandboxing per Ruling 2, unchanged. 'unsandboxed' — this member's spawn is NEVER wrapped by levare's OS sandbox, on any host; requires sandbox_reason. |
+| `sandbox_reason` | string | — | — | — | Required alongside sandbox: unsandboxed — the documented reason a Conductor can act on (e.g. why this vendor CLI cannot run confined). |
 | `style` | map | ✅ | — | — | Display settings for this member. |
 | `style.avatar` | string | ✅ | — | — | The member's display avatar. |
 

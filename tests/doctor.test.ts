@@ -244,8 +244,15 @@ describe("doctor: a subscription connector declaring `home:` gets a narrower, sc
   const allPresent: EnvProbe = { has: () => true };
   const foundGh: CliProbe = () => "found";
 
+  // NOTES R4-SANDBOX-APPSERVER: `diagnose` defaults `resolveCliPath` to the REAL `Bun.which` — pinned
+  // here to a deterministic stand-in returning `undefined` (this test's own `codex` is never actually
+  // on this test-runner's PATH regardless, but a real default would make the assertion below depend on
+  // whatever happens to be installed on whichever host runs this suite; every test in this describe
+  // block passes an explicit resolver so none of them can ever depend on that).
+  const notOnPath = () => undefined;
+
   test("the warning names the scoped path, not the blanket 'cannot scope' claim", () => {
-    const health = diagnose(withScopedHome, allPresent, foundGh);
+    const health = diagnose(withScopedHome, allPresent, foundGh, undefined, notOnPath, "/Users/cas");
     const codex = health.find((h) => h.name === "codex")!;
     expect(codex.warning).toBe(
       "this credential is scoped to `.codex` under a per-run HOME — but any member granted this connector can still use the login (the grant is not per-member revocable; only the real login is).",
@@ -254,8 +261,50 @@ describe("doctor: a subscription connector declaring `home:` gets a narrower, sc
   });
 
   test("formatDoctor prints the scoped warning for a home-declaring subscription connector", () => {
-    const out = formatDoctor(diagnose(withScopedHome, allPresent, foundGh));
+    const out = formatDoctor(diagnose(withScopedHome, allPresent, foundGh, undefined, notOnPath, "/Users/cas"));
     expect(out).toContain("⚠ this credential is scoped to `.codex`");
+  });
+});
+
+// NOTES R4-SANDBOX-APPSERVER: a subscription connector's `command` resolving through a version-manager
+// shim (Volta, nvm, asdf, mise, pyenv, rbenv) under HOME, but the manager's own root isn't among the
+// declared `home:` dotpaths — the exact live-confirmed shape that surfaced as Volta's own confusing
+// "Could not find executable" error rather than levare's. `diagnose` must name it in levare's own
+// voice, alongside (never instead of) the existing "any OTHER member can still use the login" residual.
+describe("doctor: names a version-manager shim gap in a scoped subscription connector's own voice (NOTES R4-SANDBOX-APPSERVER)", () => {
+  const withScopedHome: Connector[] = [
+    ...connectors,
+    { name: "codex", kind: "cli", command: "codex", env: [], auth: "subscription", role: "model", plan: "ChatGPT Plus — flat monthly rate", effects: "read", gate: "proposal", home: [".codex"] },
+  ];
+  const allPresent: EnvProbe = { has: () => true };
+  const foundGh: CliProbe = () => "found";
+  const viaVolta = () => "/Users/cas/.volta/bin/codex";
+
+  test("names the manager and its root when the shim's own root isn't granted", () => {
+    const health = diagnose(withScopedHome, allPresent, foundGh, undefined, viaVolta, "/Users/cas");
+    const codex = health.find((h) => h.name === "codex")!;
+    expect(codex.warning).toContain("this credential is scoped to `.codex`");
+    expect(codex.warning).toContain("`codex` resolves through Volta (~/.volta)");
+    expect(codex.warning).toContain("NOT in that scoped list");
+    expect(codex.warning).toContain("a version-managed binary cannot be scoped narrowly");
+  });
+
+  test("says nothing extra once the manager's own root is also declared", () => {
+    const withVoltaGranted: Connector[] = [
+      ...connectors,
+      { name: "codex", kind: "cli", command: "codex", env: [], auth: "subscription", role: "model", effects: "read", gate: "proposal", home: [".codex", ".volta"] },
+    ];
+    const health = diagnose(withVoltaGranted, allPresent, foundGh, undefined, viaVolta, "/Users/cas");
+    const codex = health.find((h) => h.name === "codex")!;
+    expect(codex.warning).not.toContain("resolves through");
+    expect(codex.warning).not.toContain("cannot be scoped narrowly");
+  });
+
+  test("says nothing extra when the resolved binary is a plain, non-shimmed install", () => {
+    const plainInstall = () => "/usr/local/bin/codex";
+    const health = diagnose(withScopedHome, allPresent, foundGh, undefined, plainInstall, "/Users/cas");
+    const codex = health.find((h) => h.name === "codex")!;
+    expect(codex.warning).not.toContain("resolves through");
   });
 });
 

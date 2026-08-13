@@ -64,10 +64,11 @@ kind: cli
 command: codex
 auth: subscription
 env: []
+home: [".codex", ".volta"]
 plan: "ChatGPT subscription"
-scope: "Codex authenticates via its own stored login (~/.codex). levare does not scope this
-        credential — any member that can spawn `codex` can use it. The grant is documentation,
-        not enforcement."
+scope: "Codex authenticates via its own stored login (~/.codex). Declaring home: scopes a granted
+        member's process to a per-run HOME symlinking only these paths from your real one — see
+        Operations for what this does and does not close."
 ---
 
 # Codex connector
@@ -76,6 +77,17 @@ Wraps the `codex` CLI in headless mode (`codex exec`). Authenticated by a ChatGP
 rather than an API key, so usage is billed to the plan and receipts record `usd: null`.
 EOF
 ```
+
+**Why `.volta` is here too, not just `.codex`.** If `codex` on your machine resolves through a version
+manager (Volta, nvm, asdf, mise, pyenv, rbenv — anything that installs a shim rather than a plain
+binary), `home: [".codex"]` alone gives a granted member's scratch HOME no visibility into the manager's
+own bookkeeping, and the shim fails to resolve anything — you'll see the MANAGER's own confusing error
+("Volta error: Could not find executable"), not levare's. `levare validate`/`levare doctor` name this
+gap directly (`SUBSCRIPTION_HOME_SHIM_GAP`) when they can detect it live on your host. levare never
+grants the manager's root for you automatically: a version-managed binary cannot be scoped narrowly —
+adding `.volta` exposes every toolchain Volta manages, not just this one connector, and only you can
+decide whether that's the right tradeoff for a plain system install instead. If `codex` on your machine
+is a plain install (no version manager), `home: [".codex"]` alone is enough — drop `.volta`.
 
 ### `auth: env` vs `auth: subscription`
 
@@ -204,6 +216,24 @@ how the vendor CLI itself behaves, live-validated against a real one (`gh`, not 
   today; there's no connector shape that names a purely local capability. This is a deliberate stance,
   not an oversight — see [Current gaps](../../current-gaps.md)'s connector trust-tier taxonomy entry for
   why, and what would change it.
+
+**A note on Corvid specifically, as of this writing (NOTES R4-SANDBOX-APPSERVER):** an "app-server
+architecture" vendor CLI — one where the CLI itself runs an in-process client/server split for its own
+IPC — surfaced a real sandbox gap distinct from the config-directory redirect above: `home:`-granted
+credentials were re-allowed for READ only, never WRITE, which would deny a vendor CLI refreshing its own
+stored token. That's fixed. Whether it was the full story for a real `codex` dispatch under a working
+sandbox is still being confirmed on a live host — track [Current gaps](../../current-gaps.md) for the
+outcome. If your own `cli` member's vendor CLI can't run confined at all — its own architecture needs OS
+access the sandbox won't safely grant — declare that plainly rather than fighting it silently:
+
+```yaml
+sandbox: unsandboxed
+sandbox_reason: "codex's own app-server needs OS IPC this sandbox's threat model won't grant"
+```
+
+`levare validate`/`levare doctor` require the reason and echo it back plainly; the produced artifact
+records it too, so anyone reading the registry or a review knows this member never runs confined, and
+why — never a silent gap.
 
 None of this is levare talking to the CLI — it's the OS sandbox wrapping the process, so it only
 applies on a host where [Operations](../06-operations.md) reports a working sandbox primitive. Where

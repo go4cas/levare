@@ -13817,3 +13817,211 @@ specific check (every prior NOTES entry that records it does the same); a compil
 `<execPath> <stub-script-path>`, which only works when `execPath` is a real generic interpreter (a
 source run) and not itself the single compiled entrypoint (same root shape as NOTES DIST4/DIST5's
 worker-spawn problem, but for `--stubs` fixture members specifically, out of this goal's scope).
+
+# NOTES R4-SANDBOX-APPSERVER (2026-08-13) — an app-server-architecture vendor CLI (codex) unrunnable as a
+# `cli` member: two proactive fixes, a live-host diagnostic harness, and the declared escape hatch
+
+Goal: close the macOS sandbox fault that makes an app-server-architecture vendor CLI (`codex`) unrunnable
+as a `cli` member. Evidence supplied up front (a Conductor's own elimination table, run by hand on a real
+macOS 0.2.1 build before this round began):
+
+    cli member 'corvid' exited 1:
+    Error: failed to initialize in-process app-server client: Operation not permitted (os error 1)
+    (argv: ["/usr/bin/sandbox-exec","-f",".../levare-sandbox-profile-*/profile.sb",
+    "codex","exec","-","-m","gpt-5.5","--ignore-user-config","--ignore-rules",
+    "--ephemeral","--skip-git-repo-check"])
+
+| Condition | Result |
+|---|---|
+| connector `home: [".codex"]` as the docs instruct | `exited 126: Volta error: Could not find executable "codex"` |
+| `home: [".codex", ".volta"]` (host installs codex via Volta shim) | `exited 1: failed to initialize in-process app-server client` |
+| `--sandbox read-only` dropped from the member's argv | identical failure — not nested vendor sandboxing |
+| `sandbox-exec` removed; scratch HOME with symlinked `.codex`/`.volta` retained | works — codex returns a completion |
+
+**This container is Linux — no `sandbox-exec` has ever run for real here, in this project's entire
+history (every NOTES R4-SANDBOX-FIX/R4-VENDOR-CLI round says the identical thing).** Per this saga's own
+standing discipline ("guessing at macOS sandbox behaviour wasted rounds" — R4-SANDBOX-FIX-3's own
+14-profile bisection is the canonical example of what guessing costs), no rule was changed on a guess.
+What this round actually delivers: two fixes justified independently of the app-server failure's own
+unconfirmed root cause, a live-host diagnostic harness built to isolate that cause on the NEXT live run,
+and a new, honest fallback for the case where sandboxing genuinely cannot be granted.
+
+## The two findings that were NOT guesses — real, provable facts about this generator's own text
+
+**Finding 1 — the Volta/version-manager error is a DIFFERENT failure than the app-server one, host-
+independent, fully reproducible and fixed in this container.** Row 1 of the elimination table (`home:
+[".codex"]` alone) never reaches sandbox-exec at all: `codex` on a Volta-managed host resolves via PATH
+to a shim at `~/.volta/bin/codex`, which reads Volta's OWN bookkeeping under `~/.volta/...` to find which
+real, installed binary to exec. `env.ts#scopeHomeForConnector` gives a granted member a scratch HOME
+containing symlinks to ONLY the connector's declared `home:` dotpaths — `[".codex"]` alone means no
+`.volta` entry exists in that scratch HOME, so the shim itself fails to resolve anything, surfacing as
+VOLTA's own confusing error, naming a tool the operator would wrongly go debug. This is pure PATH/
+symlink logic, provable with a real (non-macOS) filesystem and a real, mutated `PATH` — proven directly
+in this container via a real executable stand-in shim on disk (`tests/capability-cap-b.test.ts`'s new
+`SUBSCRIPTION_HOME_SHIM_GAP` describe block), not inferred.
+
+**Fix:** `src/validate.ts#detectVersionManagerHomeGap` (pure — resolved command path, declared `home:`,
+real HOME in, a `{manager, dotpath}` gap or `undefined` out) recognizes Volta/nvm/asdf/mise/pyenv/rbenv's
+own install-root shape (`VERSION_MANAGER_HOME_ROOTS`) and fires a new `SUBSCRIPTION_HOME_SHIM_GAP`
+warning at `levare validate` time (`validateConnectorHomeShimWarning`, real `Bun.which`/`process.env.HOME`
+by default, injectable for tests) AND at `levare doctor` time (`doctor.ts#diagnose`'s existing
+subscription-connector warning now appends the shim finding when one exists, via the same injectable
+`resolveCliPath`/`home` pair). Deliberately NOT auto-granted — the goal's own instruction is explicit:
+"a version-managed binary cannot be scoped narrowly: granting `.volta` exposes every toolchain it
+manages" — only the connector's own author can judge that tradeoff, so the fix NAMES the gap in levare's
+own voice rather than silently widening `home:` on the operator's behalf. One real gotcha found and
+documented while building the live-PATH-mutation test: `Bun.which(cmd)` resolves against whatever PATH
+the Bun process itself started with, NOT a later runtime mutation of `process.env.PATH` — both the
+validate.ts and doctor.ts default resolvers now pass `{ PATH: process.env.PATH }` explicitly (proven
+different by the test itself failing without it, before the fix).
+
+**Finding 2 — `grantedHomeTargets` re-allowed a subscription connector's own real home target for READ
+only, never WRITE, on EITHER platform.** `sandbox.ts#buildSandboxExecProfile`'s `reallowReads` included
+`grantedTargets`; `reallowWrites` did not. A member's scratch HOME (`env.ts#scopeHomeForConnector`)
+contains a SYMLINK at e.g. `.codex` pointing to the real `~/.codex`; Seatbelt resolves a WRITE through a
+symlink against the TARGET's own kernel-resolved path — so any write beneath a granted `home:` target (a
+vendor CLI refreshing its own stored OAuth token, e.g. `codex login`'s session file — the ordinary case
+for a live, on-disk credential, not an edge case) was silently denied despite `home:` declaring that
+exact path granted. This is the SAME class of bug DEFECT 1 (R4-SANDBOX-FIX-4) and the FIX-8/FIX-12 write
+reseals both exist to close, on Bubblewrap the gap was worse: `bubblewrapArgv` never read
+`grantedHomeTargets` AT ALL — under bubblewrap's own empty-`--tmpfs /` root, a symlink whose target was
+never bound resolves to nothing, so the credential was silently UNREADABLE (not merely un-writable) on
+Linux. Provable from the generator's own emitted TEXT alone, on any platform, with no live macOS needed —
+this is what makes it a real finding, not a guess: `tests/sandbox.test.ts`'s new "grantedHomeTargets —
+read AND write re-allow" and the two new bubblewrap `--bind-try` tests assert on the profile/argv TEXT
+directly, the identical proof standard every prior FIX round in this file used for a construction-only
+claim.
+
+**Fix:** `buildSandboxExecProfile`'s `reallowWrites` now includes `grantedTargets`; `bubblewrapArgv` now
+emits `--bind-try <target> <target>` for every `policy.grantedHomeTargets` entry (`-try`, not plain
+`--bind`, mirroring `--ro-bind-try`'s own "a dangling target before first login is legal" tolerance).
+Named explicitly in both places and in `SandboxPolicy.grantedHomeTargets`'s own doc comment as **NOT
+independently live-confirmed as the cause of the app-server EPERM specifically** — the identical "cache
+path closure... proactive, not live-confirmed" posture NOTES R4-VENDOR-CLI round 1 already took for gh's
+own `$TMPDIR/gh-cli-cache` fallback. It is shipped because the asymmetry is a plain, provable fact about
+this generator's own current text and a real, independently-justified gap (ANY subscription-authenticated
+CLI that ever refreshes its own credential hits this identically) — not because it is asserted to be THE
+fix for codex's own app-server failure.
+
+## What was deliberately NOT done: guessing at the app-server EPERM's own root cause
+
+Two ranked, code-grounded hypotheses exist for the app-server failure specifically — named, NOT applied:
+
+- **H1 — the write-reallow asymmetry above.** If codex's "in-process app-server client" writes a
+  session/rollout/socket/lock file under `~/.codex` as part of its OWN initialization (an ordinary thing
+  for an app-server architecture to do at startup, not a lazy first-exec), Finding 2 alone would explain
+  the exact reported error. Finding 2 is fixed regardless; whether it was THE cause of THIS failure is
+  unconfirmed.
+- **H2 — nested Seatbelt self-sandboxing.** Some vendor CLIs implement their own command-execution
+  sandbox on macOS via `sandbox_init()` or a nested `sandbox-exec` invocation; Seatbelt has historically
+  restricted a process already inside one profile from applying a second. If codex's app-server does this
+  at STARTUP (not lazily, only on first shell-command execution), a nested-sandboxing denial reads exactly
+  as an early, generic EPERM. Row 3 of the elimination table (dropping `--sandbox read-only`) rules out
+  ONE trigger for this (codex's own flag), not the underlying architecture question.
+
+Neither was applied to `sandbox.ts` without a named denied operation from a live trace — the explicit
+instruction for this round, and the entire reason the FIX-1 through FIX-14 saga above exists in the first
+place. What WAS built: `scripts/repro-r4-appserver-codex.ts`, a live-macOS harness in this project's own
+established shape (`AdapterRunner.produceAsync` end to end, `LEVARE_SANDBOX_DEBUG=1`, a `log show`
+kernel-denial capture, honest `darwin`-only degradation — proven by direct execution in THIS container:
+it exits cleanly on the platform guard, printing exactly why). It runs FIVE steps, the first two
+DECISIVE and codex-INDEPENDENT (so a Conductor gets a real verdict on H1/H2 even without `codex` on the
+live host at all): (1) a bare nested-`sandbox-exec`-inside-`sandbox-exec` probe, decisive for H2 on any
+macOS with `sandbox-exec` present; (2) a real dispatch writing through a scratch-HOME symlink into a
+synthetic granted home target, decisive for whether Finding 2's fix actually closes the write path live;
+(3) the real reproduction, `home: [".codex", ".volta"]`, the exact flags from the goal's own evidence,
+skipped (never faked) if `codex` isn't on PATH; (4) the declared escape hatch (below), proven end to end
+regardless of steps 1-3's outcome; (5) the kernel-log capture, the tie-breaker if 1-3 leave the cause
+ambiguous. `classifyCodexAppServerFailure` (pure, exported) is pinned by 8 tests in
+`tests/repro-r4-appserver-codex.test.ts`, no live host required — mirrors `classifyGhFailure`'s own
+established shape, checked for the exact reported string first (never folded into a generic bucket a
+recurrence could hide behind) and the Volta/shim signal second (never conflated with the app-server issue
+this script exists to isolate).
+
+**What this round could NOT do, honestly: run that script.** No live macOS host was reachable this round
+— the harness is handed back, per this project's own standing method (every FIX-1 through FIX-14 and
+R4-VENDOR-CLI verdict came from a Conductor running a script BY HAND and pasting output back, never from
+an automated remote host this session reaches on its own). `bun run scripts/repro-r4-appserver-codex.ts`
+on the real macOS host that produced the original failure is the exact next step.
+
+## The declared escape hatch — an honest fallback, built regardless of which hypothesis holds
+
+Per the goal's own instruction ("if it cannot be granted safely, that is a legitimate outcome... the goal
+becomes an honest, documented escape"): `Agent.sandbox?: "auto" | "unsandboxed"` +
+`Agent.sandbox_reason?: string` (types.ts, parsed in `repo.ts#toAgent`, `AGENT_SCHEMA` in validate.ts).
+`sandbox: "auto"` (default, unchanged) keeps best-effort Ruling-2 sandboxing exactly as before.
+`sandbox: "unsandboxed"` makes `adapters.ts#AdapterRunner#sandboxWrap` skip `wrapForSandbox` ENTIRELY,
+before `detectSandbox()` even runs — no probe cost paid, and unwrapped on ANY host, including one with a
+genuinely working primitive (proven in `tests/adapters.test.ts`'s new "declared escape hatch" describe
+block: a `fakeWorkingPrimitive` forced to `level: "full"` still produces `sandbox: none` on the artifact
+when the member declares the escape hatch — only possible if the bypass fired before the injected
+detection was ever consulted).
+
+**Never silent.** `validate.ts#validateAgentSandboxDeclaration` is a hard ERROR
+(`SANDBOX_UNSANDBOXED_NO_REASON`) when `sandbox: unsandboxed` has no `sandbox_reason` — unlike
+`SANDBOX_UNAVAILABLE` (a HOST fact outside the studio author's control), this is the AUTHOR's own
+declaration, and nothing stops them from also stating why. Once a reason IS present,
+`validateAgentSandboxDeclaredWarning` fires `SANDBOX_DECLARED_UNSANDBOXED` with the SAME plainness
+`SANDBOX_UNAVAILABLE` already uses, naming the reason verbatim — and `SANDBOX_UNAVAILABLE` itself is
+silenced for a member that already declares the hatch (the more specific telling replaces it rather than
+doubling up two warnings for one fact). `doctor.ts#diagnose`/`formatDoctor` gained the identical telling,
+printed UNCONDITIONALLY (never gated on host capability, since this is true on every host) via a new
+`unsandboxedAgents` param, wired at `cli.ts#runDoctorCmd`'s real invocation (and excluded from
+`sandboxedAgents`'s own host-capability-gap warning for the same reason). **Recorded on every artifact
+this member produces**, independent of `sandbox:`'s own value (which reads `none` identically whether the
+host merely lacks a primitive or the author declared this member unsandboxeable — deliberately NOT the
+same fact): `adapters.ts#author` emits a new `sandbox_reason:` frontmatter line whenever
+`req.agent.sandbox === "unsandboxed"` and a reason is present; `ARTIFACT_SCHEMA` gained the matching
+optional field.
+
+## Docs
+
+`docs/current-gaps.md`: this entry's own closure recorded (a new paragraph under "Per-member subscription-
+credential scoping", naming both fixes and the escape hatch, and current-gaps.md's OS-sandboxing closure
+paragraph gained a sentence on the write-reallow asymmetry). `docs/guide/06-operations.md`'s `home:`
+section gained a version-manager subsection naming the shim gap and the "cannot be scoped narrowly"
+tradeoff explicitly, plus a paragraph on the declared escape hatch. `docs/guide/04-workflow/05-foreign-
+agent.md` — this chapter's own connector walkthrough (`connectors/codex.md`) is the EXACT scenario this
+round investigates (`auth: subscription`, `command: codex`, no `home:` shown at all in the worked
+example, unlike `src/init.ts`'s own scaffold, which already declares `home: [".codex"]` — a pre-existing
+doc/scaffold drift, independent of this round's own bug, named here rather than silently left) — updated
+to declare `home: [".codex", ".volta"]` and name the version-manager case inline, per the goal's own
+instruction. **Whether the chapter's own codex example needs a FURTHER rewrite once the app-server
+question is actually resolved (a working sandboxed reproduction vs. a documented `sandbox: unsandboxed`
+declaration) is flagged here for a Conductor ruling, not decided in this round** — per the goal's own
+explicit instruction to flag rather than decide.
+
+## Verification
+
+`bun test` — 1333 pass, 9 skip, 0 fail, across 95 files (up from 94/1315 at the start of this round: two
+new files — `tests/repro-r4-appserver-codex.test.ts` (8 tests, the classifier), plus extensive additions
+to `tests/capability-cap-b.test.ts` (shim-gap pure detector + real-PATH integration tests),
+`tests/doctor.test.ts` (shim-gap-in-doctor + unsandboxedAgents describe blocks), `tests/sandbox.test.ts`
+(grantedHomeTargets read+write, bubblewrap `--bind-try`, SANDBOX_UNSANDBOXED_NO_REASON/
+SANDBOX_DECLARED_UNSANDBOXED), `tests/adapters.test.ts` (the declared-escape-hatch bypass, proven against
+a genuinely-executing `fakeWorkingPrimitive` forced to `level: full`) — all real, run on THIS host, none
+gated on macOS. `bun run typecheck` → exit 0. `bun run docs:generate` regenerated `agent.md` (two new
+field rows: `sandbox`, `sandbox_reason`) and `artifact.md` (one new field row: `sandbox_reason`); the
+drift test (`tests/cheatsheets.test.ts`) is green against the committed output. `bun run src/cli.ts
+validate fixtures/golden` → `valid` (unchanged: the golden fixture's own connectors don't hit either new
+warning on this host). `bun run src/cli.ts replay fixtures/golden --stubs` → oracle match, byte-for-byte.
+`bun run build` → succeeds. `bun run scripts/repro-r4-appserver-codex.ts` in this container → exits
+cleanly on the darwin platform guard, printing exactly why — the same honest degradation every prior
+live-host harness script in this saga takes when run outside its own required platform.
+
+## Honest residuals — what a live macOS run still needs to confirm
+
+- **The app-server EPERM's own root cause remains unconfirmed.** Neither Finding 1 (fixed, host-
+  independent, confirmed live in THIS container) nor Finding 2 (fixed, proven by construction, NOT
+  live-confirmed as codex's own cause) is asserted to close the original failure. `scripts/repro-r4-
+  appserver-codex.ts` on the real host is the exact next step — run it, paste the full output back, and
+  this round's own H1/H2 ranking gets a real verdict rather than staying a ranked guess.
+- **If H2 (nested Seatbelt self-sandboxing) is confirmed live**, no further profile change is coming —
+  the answer is the declared escape hatch, already shipped, or a Conductor ruling on whether `codex`
+  belongs in this project's own documentation at all going forward (flagged above, not decided).
+- **The version-manager root list (`VERSION_MANAGER_HOME_ROOTS`) is Volta-confirmed only** — nvm/asdf/
+  mise/pyenv/rbenv are named by their own documented install layout, per the goal's own "not codex-
+  specific in principle" scope, never independently live-verified each.
+- **`bubblewrapArgv`'s new `--bind-try` for `grantedHomeTargets` is construction-only**, like every other
+  bubblewrap claim in this file — this container's own outer seccomp policy has never once let a real
+  bubblewrap invocation run, on any round, in this project's history.
