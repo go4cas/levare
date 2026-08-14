@@ -15853,3 +15853,46 @@ item 5's new doctor output). `levare doctor` (bare, no root) confirmed working f
 `levare validate fixtures/golden` → valid; `levare replay fixtures/golden --stubs` → oracle match
 byte-for-byte, unaffected (fixtures/golden's own `finch`, distinct from the scaffold's, is untouched —
 item 9 only rebacks `src/init.ts`'s scaffold template).
+
+# NOTES ORCH-B-DATE-FLAKE (round 2, 2026-08-14) — the date fix's own comment named the SHA problem and left it unfixed; closed now
+
+**Goal.** The suite has two known-intermittent tests. This entry closes the first, whose diagnosis was
+already complete going in: `tests/orchestrator.test.ts`'s "(b) one gate-resolution path: chat vs POST
+/gates" test — the SAME test the original NOTES ORCH-B-DATE-FLAKE (2026-07-23, above) closed once
+already — failed on CI this week with two genuinely different `approved_commit` SHAs
+(`a3812d7edbdda080d1f25ad0538fefb472c978bc` vs `249d60cf8b3594d22caf4aca843c8eb4f4305919`) in a
+byte-for-byte comparison the round-1 fix left otherwise unnormalized.
+
+**The gap round 1 left, read from its own words.** Round 1's fix normalized `approved_by` (a live-clock
+date) out of the comparison and left this comment directly above the assertion: *"A literal byte-for-byte
+compare is only ever wrong if the two live-clock reads straddle a UTC calendar-day boundary between
+them."* That sentence is about `approved_by` specifically — it says nothing about `approved_commit` (A7,
+`gateops.ts#doApprove`), a SEPARATE field in the same file, non-deterministic for a DIFFERENT reason: it
+records the PRE-approval HEAD of whichever of the two independently-seeded scratch repos (`viaChat`,
+`viaRoute`) it was stamped in. Two repos, two separate `git init`+commit histories — their seed commits
+share identical tree content (both copy `fixtures/golden`) but carry independent author/committer
+timestamps, so the seed SHAs match only when both `seedScratchRepo()` calls land in the same wall-clock
+second. True often enough on a fast, idle dev machine to hide this for the test's entire history since
+round 1; never guaranteed, and CI (slower, more loaded) crossed that second boundary this week.
+
+**Established, not assumed: this is a real, on-demand-reproducible divergence, the same discipline round
+1 itself modeled.** A throwaway reproduction (not committed) forced the two `seedScratchRepo()` calls
+1.1s apart — comfortably past a one-second boundary — then ran the real `handle()`-vs-`board.fetch()`
+chat/route flow against them. Result: `approved_commit` genuinely differed every time
+(`d1baa8311437ce148c12a9993d6d2152828cc33d` vs `2866a083b8a8d68c063c636a01c70b9167f33b99` on the run kept
+for record), the OLD (date-only-normalized) comparison genuinely failed against that real divergence, and
+a NEW comparison that also normalizes `approved_commit` genuinely passed against the same run — proving
+the mechanism, not hoping a real flake recurs during verification.
+
+**Fix.** `tests/orchestrator.test.ts`: normalize `approved_commit` out of the byte-for-byte comparison
+alongside the date (same `.replace()` chain), and add an independent assertion on EACH side —
+`chatFile`/`routeFile` — that `approved_commit` is a well-formed 40-hex ref
+(`/^approved_commit: [0-9a-f]{40}$/m`), mirroring the assertion `tests/security-audit.test.ts`'s own A7
+test (`~line 287`) already makes. What the test's own name promises — "the same file mutation and commit
+SHAPE" — is what it now actually checks; no two independently-seeded repos could ever be expected to
+produce the same literal commit, and asserting so was never the intent, only an oversight in round 1's
+own otherwise-correct fix. No production code changed.
+
+**Verification.** `bun test tests/orchestrator.test.ts` → 20 pass, 74 expect() calls. Full suite and
+typecheck verified together with the second fix below.
+

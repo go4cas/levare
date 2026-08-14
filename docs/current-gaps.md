@@ -600,7 +600,9 @@ hang in an unrelated compiled-binary test. See NOTES DIST5-HANG for the full ins
 (direct worker invocation, direct compiled-binary self-invocation, a direct `curl` against a real booted
 `serve` — none hung on this container, all completing in ~1–1.4s, consistent with "the internal bound
 works, the outer one was just shorter than it") and for the separate, pre-existing, explicitly
-untouched `readBoundPort` cold-start flake this investigation surfaced but did not cause or fix.
+untouched `readBoundPort` cold-start flake this investigation surfaced but did not cause or fix —
+closed separately below (NOTES DIST5-HANG-2), and it turned out not to be a cold-start-duration
+problem at all.
 
 **What is NOT closed by this entry:** why a real host took 20-45s in the first place. Direct
 measurement on this container refutes the initial "SDK retrying the fake credential with backoff"
@@ -898,3 +900,29 @@ See NOTES DOCS-WALKTHROUGH-2 for the doctor-credential decision's full reasoning
 round-trip was rejected in favor of honest wording — doctor's own standing classification as an offline
 command, alongside the file's own established discipline of naming exactly what was checked and no
 more), every finding's exact mechanism, and the tests each closes with.
+
+## The chat-vs-route gate test compared two independently seeded repos' commit SHAs byte-for-byte —
+## closed (NOTES ORCH-B-DATE-FLAKE round 2)
+
+`tests/orchestrator.test.ts`'s "(b) one gate-resolution path: chat vs POST /gates" test seeds TWO
+separate scratch git repos (`seedScratchRepo()`, called twice), approves the same artifact through each
+path, and compares the resulting file byte-for-byte. The comparison already normalized `approved_by`
+(a live-clock date) but not `approved_commit` (A7, `gateops.ts#doApprove`) — the PRE-approval HEAD
+commit, stamped into the artifact's own frontmatter. Two independently seeded repos' seed commits carry
+the same tree (identical fixture content) but different author/committer timestamps unless both `git
+commit`s land in the same wall-clock second — true often enough on a fast, idle machine to hide the bug
+for the project's entire prior history, never guaranteed. When they don't land in the same second, the
+seed SHAs differ, `approved_commit` differs, and the byte-for-byte compare fails — reproduced on CI (two
+real, different SHAs in the failure log) and, in this round, reproduced on demand by forcing the two
+seed calls apart with a deliberate delay (`approved_commit` genuinely differed every time, confirming the
+mechanism rather than assuming it).
+
+Closed by normalizing `approved_commit` out of the byte-for-byte comparison alongside the date — what
+the test actually asserts is that both paths produce the same SHAPE of mutation, not the same literal
+commit, which no two independently-seeded repos could ever guarantee — and adding an independent
+assertion on each side that `approved_commit` is a well-formed 40-hex ref, mirroring the assertion
+`tests/security-audit.test.ts`'s own A7 test already makes. Proven by construction, not by a run that
+happened not to hit it: a throwaway reproduction forced the two seed commits into different wall-clock
+seconds, confirmed the OLD (unnormalized) comparison fails against the genuinely-differing SHAs it
+produced, and confirmed the NEW (normalized) comparison passes against the same run.
+

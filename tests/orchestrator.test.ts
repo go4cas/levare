@@ -172,11 +172,24 @@ describe("(b) one gate-resolution path: chat vs POST /gates", () => {
       // only ever wrong if the two live-clock reads straddle a UTC calendar-day boundary between them
       // — rare, but a real non-determinism, not a hypothetical one (reproduced by forcing the dates
       // apart). Compare shape with the date normalized out, and verify each date independently.
-      const normalizeApprovedDate = (s: string) => s.replace(/approved_by: "cas \d{4}-\d{2}-\d{2}"/, 'approved_by: "cas <DATE>"');
+      //
+      // `approved_commit` (A7, gateops.ts#doApprove) is the SAME class of non-determinism, for a
+      // different reason: `viaChat` and `viaRoute` are two independently seeded scratch repos, so each
+      // approval records the HEAD commit of ITS OWN repo — two different SHAs BY CONSTRUCTION, never
+      // meant to match (NOTES ORCH-B-DATE-FLAKE). What this test actually asserts is that both paths
+      // produce the same SHAPE of mutation, not the same literal commit — normalize it out alongside
+      // the date, and assert each side independently carries a well-formed 40-hex commit ref, mirroring
+      // tests/security-audit.test.ts's own `approved_commit` assertion.
+      const normalizeApprovedDate = (s: string) =>
+        s
+          .replace(/approved_by: "cas \d{4}-\d{2}-\d{2}"/, 'approved_by: "cas <DATE>"')
+          .replace(/approved_commit: [0-9a-f]{40}/, "approved_commit: <COMMIT>");
       expect(normalizeApprovedDate(chatFile)).toBe(normalizeApprovedDate(routeFile));
       expect(chatFile).toContain("status: approved");
       expect(chatFile).toMatch(/approved_by: "cas \d{4}-\d{2}-\d{2}"/);
       expect(routeFile).toMatch(/approved_by: "cas \d{4}-\d{2}-\d{2}"/);
+      expect(chatFile).toMatch(/^approved_commit: [0-9a-f]{40}$/m);
+      expect(routeFile).toMatch(/^approved_commit: [0-9a-f]{40}$/m);
 
       const chatLog = spawnSync("git", ["-C", viaChat, "log", "-1", "--format=%an|%ae|%s"], { encoding: "utf8" }).stdout.trim();
       const routeLog = spawnSync("git", ["-C", viaRoute, "log", "-1", "--format=%an|%ae|%s"], { encoding: "utf8" }).stdout.trim();
