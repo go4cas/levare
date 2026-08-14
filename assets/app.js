@@ -245,6 +245,14 @@
         // the default/artifact-blocked badges never change on dispatch, only their verbs row does).
         var badge = card.querySelector('.gate__badge.is-start');
         if (badge) badge.textContent = 'dispatching';
+        // Mirrors render/shell.ts#gateCardHtml's own dispatching ctx text for a start gate — without
+        // this, the badge above flips to "dispatching" but the context line below it kept reading its
+        // pre-dispatch default ("Queued work unit awaiting your beat to begin.") until the next real
+        // re-render landed, a stale-content gap independent of whether that re-render ever arrives.
+        if (card.classList.contains('gate--start')) {
+          var ctx = card.querySelector('.gate__ctx');
+          if (ctx) ctx.textContent = 'Dispatching now — the unit is being produced.';
+        }
       }
       var label = dispatchVerb ? 'dispatching…' : (FAST_PENDING_LABEL[realVerb] || 'working…');
       var pending = beginPending(card, verbsRow, btn, dispatchVerb ? 0 : SPINNER_DELAY_MS, label);
@@ -694,6 +702,31 @@
       if (tail && typeof data.orchTail === 'string') tail.innerHTML = data.orchTail;
     }
 
+    /* NOTES ORCH-STALE-CARD: resyncs the run view's own gate card (`[data-orch-action]`, board/
+       render/shell.ts#orchestratorPanel's `actionableHtml`) on EVERY swap — unlike `syncOrchTail`
+       above, never gated on a scope change. A gate's own state (queued, dispatching, blocked, gone) is
+       exactly the runner-side change the SSE `reload` trigger below exists to carry, and — unlike a
+       persisted conversation turn — it has no "this tab already showed it live" case that resyncing
+       unconditionally would duplicate. Before this existed, the card held whatever was true at the
+       page's last cold GET forever after: the main-column score rail and timeline (inside `.main`,
+       replaced wholesale on every swap) kept updating, while this one region — reached by neither the
+       main swap nor the scope-gated tail resync — silently didn't. */
+    function syncOrchAction(data) {
+      var host = document.querySelector('[data-orch-action]');
+      if (host && typeof data.orchAction === 'string') host.innerHTML = data.orchAction;
+    }
+
+    /* NOTES ORCH-STALE-CARD addendum: the narrated briefing turn ("N gates on you"/"Nothing needs you
+       right now") had the identical gap one element up from the action region above — found only after
+       that fix landed, when the sentence kept naming a gate count the action region (and the main-
+       column stat it agrees with) had already resynced away from. Same treatment: unconditional, every
+       swap, for the same reason `syncOrchAction` is unconditional — the briefing names the same runner-
+       side fact the card renders, so it can't have a weaker resync guarantee than the card does. */
+    function syncOrchBriefing(data) {
+      var host = document.querySelector('[data-orch-briefing]');
+      if (host && typeof data.orchBriefing === 'string') host.innerHTML = data.orchBriefing;
+    }
+
     /* amendment 1 §2 R4, tier 2 (card, 1-10s resolution/refetch): a same-URL refresh (the SSE reload
        trigger below, a post-save content refresh) is a card RESOLVING, not a page transition — the
        Conductor's scroll position and reading context should survive it, and whatever visibly changed
@@ -728,9 +761,12 @@
 
     /* Replaces `.main` outright (its own opening-tag attributes, e.g. `data-highlight`, differ per
        page) and re-fills `[data-extras-host]` — never the rail or the app header, which this function
-       never even looks at. The Orchestrator `<aside>` itself is untouched too (UI10's own conversation-
-       preserving guarantee) except for the persisted-tail resync above, scoped to exactly the one
-       region that can legitimately differ per page. */
+       never even looks at. The Orchestrator `<aside>` itself keeps UI10's own conversation-preserving
+       guarantee — its history in `.orch__body` is never rebuilt — except for three regions carved out
+       of it on purpose: the persisted-tail resync (scope-gated, see `syncOrchTail`), and the gate-card
+       action and briefing resyncs (both unconditional, see `syncOrchAction`/`syncOrchBriefing`, NOTES
+       ORCH-STALE-CARD) — the latter two apply together, on every swap, since the briefing sentence
+       names the same runner-side fact the action region's card renders. */
     function swapFragment(data, sameUrl) {
       var oldMain = document.querySelector('.main');
       if (!oldMain || !oldMain.parentNode) return false;
@@ -762,6 +798,8 @@
       if (!editorIsOpen) bindEditorOverlay();
 
       syncOrchTail(data);
+      syncOrchAction(data);
+      syncOrchBriefing(data);
 
       if (typeof data.title === 'string' && data.title) document.title = decodeTitleEntities(data.title);
       applyHighlight(newMain);

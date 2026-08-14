@@ -15523,3 +15523,163 @@ enclosure's border the only visual signal marking the loop as its own stage. Rea
 keyboard Tab-focus both surface the tooltip at the trigger's actual screen position. `renderRun()`
 against fixtures/golden's checkout-flow (finch genuinely producing `review`, loop round 1/3) confirms
 the live strip states `until`/`on_exhaust` unconditionally.
+
+## NOTES ORCH-STALE-CARD (2026-08-14) — the orchestrator rail card held stale runner-side state; two
+## independent content faults on the same card; the daemon's own startup-only read is a different bug
+
+A live cold-start session found the run view's own gate/dispatch card in the Orchestrator panel
+reading state that was no longer true, four times independently: stuck at `DISPATCHING` after the unit
+had already gone `blocked`; naming `v1.md` after a retry produced `v2.md`; not showing a gate that had
+opened after a successful dispatch until a manual browser refresh; and a gate card vanishing outright
+(returned by a refresh) though nothing had acted on it. In every instance the score rail and timeline,
+on the SAME page, updated correctly. The goal's own framing — "not 'the board doesn't update' but one
+component updating on one class of change and not the other" — pointed at the ONE surface the SSE
+`reload`/client-navigation refresh paths don't reach, not at a re-render defect (the card renders
+correctly whenever it's actually asked to).
+
+**1 — The mechanism.** `board/serve.ts#extractFragment` slices `main`, `extras`, and (for a scope
+change only) the persisted conversation tail out of a rendered page string via HTML comment markers;
+`assets/app.js#swapFragment` applies exactly those slices on every refresh, whether triggered by the
+SSE `reload` tick or an in-app navigation. The run view's own gate card — `orchestratorPanel`'s
+`actionableHtml` parameter (render/shell.ts), spliced into `.orch__body` — carried NO marker at all.
+Score rail and timeline live inside `.main`, which every refresh path already replaces wholesale, so
+they always read correctly; the gate card, reached by neither the main swap nor the scope-gated tail
+resync, simply kept whatever HTML a cold GET had rendered at some earlier moment, forever after —
+including a client-side navigation to an entirely different page, which is what the fourth symptom
+(the card "vanishing") turned out to be: navigating from a unit with an open gate to one without, then
+back, within the same project (same conversation `scope`, so the tail resync never fires either)
+leaves the FIRST unit's page holding whatever the SECOND page's empty `actionableHtml` last rendered.
+Nothing about this touches `board/serve.ts`'s per-request read path — `loadRepo` re-derives the whole
+repo, including every gate, fresh on every request (the "loadRepo-per-request position", this file
+and `docs/current-gaps.md`) — the server was never the problem; the client never asked it again for
+this one region.
+
+**2 — The fix.** `orchestratorPanel` now wraps `actionableHtml` in its own `<!--orchaction-->`/
+`<!--/orchaction-->` markers inside a `data-orch-action` host, the identical mechanism `orch__tail`
+already used for the persisted conversation. `extractFragment` gains an `orchAction` field;
+`swapFragment` gains `syncOrchAction`, called on EVERY swap — unlike `syncOrchTail`, never gated on a
+scope change, since a gate card (unlike a persisted turn this tab may have already appended live) has
+no "already shown" case that reapplying it would duplicate.
+
+**3 — Content fault A: the local dispatch click handler left the ctx paragraph reading its pre-click
+default.** `render/shell.ts#gateCardHtml`'s start-gate branch already renders the ctx line correctly —
+"Dispatching now — the unit is being produced." when dispatching, "Queued work unit awaiting your beat
+to begin." otherwise — this was never a server-side bug. `assets/app.js`'s dispatch-verb click handler
+gives the Conductor instant feedback (adds `is-dispatching`, flips the badge to "dispatching") without
+waiting on the round trip, but never touched `.gate__ctx` — so between the click and whatever refresh
+eventually lands, the paragraph kept reading "Queued..." while the badge above it already said
+"dispatching". Fixed by having that same handler set the ctx text for a `gate--start` card exactly
+matching the server's own copy — a client-side echo of a string that already existed, not new prose.
+
+**4 — Content fault B: the briefing sentence assumed every gate is ready for review.**
+`render/run.ts`'s Orchestrator briefing built its one-line summary as `` `${gate.label} is ready for
+review below.` `` unconditionally — true for an in-review artifact, false for everything else a gate
+can be: an `artifact-blocked` gate's `label` is the FAILED kind's name (observed live: "review is
+ready for review below." on a blocked review, "product-brief is ready for review below." on a failed
+brief), a `start` gate's label is the literal string `"start"` ("start is ready for review below." —
+nothing has even been produced yet), and a `blocked` unit's label is `"blocked"`. New
+`derive.ts#gateBriefingSentence` switches on `gate.type`: an in-review artifact stays "ready for
+review"; `artifact-blocked` says "failed and needs your decision"; `start` says "ready to start"; a
+unit-level `blocked` gate says "blocked and needs your attention". Domain logic, not board-specific —
+lives beside `openGates`/`scoreNodes` in `derive.ts`, the same "board and Orchestrator-projection never
+quietly disagree" placement this file's own header already commits to, though `orchestrator-projection.ts`
+does not currently build this particular sentence.
+
+**5 — The daemon's startup-only state read (`.env`, `teams/`, `connectors/`, a fresh `unit.md` not
+raising a gate until restart) is a SEPARATE mechanism, not this one.** Already named and deliberately
+left undecided in `docs/current-gaps.md` ("The daemon only watches `work/`", NOTES DOCS-WALKTHROUGH-1):
+`daemon.ts#start`'s own `fs.watch` only covers `work/`, and `.env` loads once at process start
+(`dotenv.ts`'s documented contract) — so the RUNNING DAEMON PROCESS doesn't react to edits outside
+`work/` until restarted. That is a question about what triggers the daemon to re-walk and re-dispatch.
+This unit's bug is a question about what the BROWSER re-fetches and re-applies after a request the
+board's own per-request `loadRepo` already answered correctly — the server-side read has never been
+stale; the daemon's own dispatch decisions and the board's own repo reads are two different code paths
+(`daemon.ts` vs. `board/serve.ts`, meeting only at `ctx.daemon?.running()`), and this fix touches
+neither the daemon's watch scope nor its dispatch loop. Confirmed distinct, not merged into one fix.
+
+**6 — Found, root-caused, and deliberately left open: the card's age reads as clock-derived but wrong
+by an amount that isn't the local timezone offset.** `derive.ts#ageLabel`/the gate card's `age` field
+compute elapsed time from `art.created` — but every site that stamps it (`adapters.ts`'s own
+successful-production path, `dagwalk.ts#writeBlocked`, `merge.ts#formatMergeArtifact`'s caller) writes a
+bare CALENDAR DATE (`new Date().toISOString().slice(0, 10)`, e.g. `2026-08-14`), never a timestamp.
+`new Date("2026-08-14")` parses as that date's UTC midnight (ISO 8601 date-only parsing), so
+`ageLabel`'s delta is actually "time since UTC midnight of the creation date," not "time since the
+artifact was actually produced" — an artifact produced at 09:00 local (UTC+2, so 07:00 UTC) reads as
+7h old the instant it's created, then correctly ticks up by real elapsed time from there (8h an hour
+later) — exactly the observed symptom, and exactly why it isn't a simple timezone bug: a TZ mismatch
+would be a fixed offset, not "however many hours have passed since midnight," and no realistic
+timezone offset is 7 hours from UTC+2 either way.
+
+**A second, independently reported symptom of the identical defect: the studio's own `Median gate
+response` stat.** `derive.ts#medianGateResponseDays` computes `(approved − created) / 86400000` from
+the SAME bare-date `created` and a date regex-extracted from `approved_by` (also day-granularity only)
+— reading `1d` for a gate opened and approved within the same working session, hours apart, whenever
+the two events happen to straddle a UTC midnight (a `created` stamped 23:5x on day D, an `approved_by`
+stamped moments later on day D+1 — genuinely minutes apart, a full day apart by this arithmetic), and
+capable of reading `0d` for the opposite case (opened late, approved a full real day later, both still
+inside the same UTC calendar date). Not a rounding bug in `medianGateResponseDays` itself — the same
+missing precision as `ageLabel`, one level up (a duration between two dates instead of one date and
+`now`), so a schema fix that widens `created` to a real timestamp needs to widen `approved_by`'s own
+date-only regex match to match, or this consumer keeps the defect even after `ageLabel` is fixed.
+
+Fixing this properly means `created` (and `approved_by`) carrying a real timestamp, not just a date —
+a frontmatter-shape change touching every artifact write site and every `.created`/`approved_by`
+consumer in `derive.ts` (`leadingArtifact`, `projectLastActivity`, `recentReleases`,
+`medianGateResponseDays`), well outside this unit's scope ("stop the card showing state that is no
+longer true," not "add sub-day timestamp precision to the artifact schema"). Logged in
+`docs/current-gaps.md`, both consumers named, as a real, understood, un-fixed defect rather than folded
+silently into this unit's close-out.
+
+**Tests.** `tests/board-client-navigation.test.ts` gains a describe block that drives the REAL update
+path — the fake `EventSource`'s `reload` message and an in-app navigation, both through the genuine
+`assets/app.js` — and asserts `[data-orch-action]` gets replaced, never by re-rendering the gate-card
+component directly (the whole failure was that it renders correctly when asked). `tests/board-fragment.test.ts`
+gains `orchAction` extraction coverage (pure, and against a live board's run page, pinned against the
+real gate card content, not just presence). `tests/derive-gate-briefing.test.ts` pins
+`gateBriefingSentence` per `OpenGate.type`, including HTML-escaping. `tests/run-briefing-content.test.ts`
+drives the real `renderRun()` for an in-review, a start, and a genuinely blocked gate (the last via the
+same `advanceUnit`-with-a-failing-runner shape NOTES F19's own test uses), plus the no-gate case.
+`tests/board-pending-state.test.ts`'s pre-existing dispatch-click test is updated — it had been
+asserting the STALE ctx text as correct behavior; it now asserts the fixed text.
+
+## NOTES ORCH-STALE-CARD addendum (2026-08-14) — the briefing sentence one element up had the
+## identical gap, found only after the action-region fix above landed
+
+Live verification of the fix above (approving a studio's last open gate) confirmed the action region
+and the `Gates on you` stat both cleared correctly with no manual refresh — but the narrated briefing
+sentence directly above the card, in the SAME Orchestrator panel, still read "2 gates are on you. Ask
+me about any project or open a gate to review it." after two in-app navigations, now visibly
+contradicting a `0` stat one line below it. Same fault, one element up: `orchestratorPanel`'s
+`briefingHtml` parameter (the narrated summary turn — studio's "N gate(s) are on you"/"Nothing needs a
+decision right now.", run.ts's own `gateBriefingSentence`-driven sentence, and the disabled branch's
+fixed "Orchestrator unavailable..." turn) sat in `.orch__body` with no marker at all, exactly like
+`actionableHtml` before the fix above — reached by neither the `.main` swap nor the scope-gated tail
+resync, so it kept whatever a cold GET had rendered, independent of and unaffected by the action-region
+fix landing right next to it.
+
+**The fix, identical in shape to `orchAction`'s.** `orchestratorPanel` now wraps whichever briefing
+content each branch produces (the disabled turn, or the real `briefingHtml`) in a `data-orch-briefing`
+host with its own `<!--orchbriefing-->`/`<!--/orchbriefing-->` markers. `extractFragment` gains an
+`orchBriefing` field; `assets/app.js` gains `syncOrchBriefing`, called alongside `syncOrchAction` in
+`swapFragment` — unconditionally, every swap, for the identical reason: the briefing names the same
+runner-side fact the action region's card renders, so it cannot have a weaker resync guarantee than the
+card sitting right below it, or the two drift apart exactly as observed.
+
+**Why this was missed the first time.** The original fix correctly identified `actionableHtml` as "the
+one place a runner-side change shows up" because it is the only region that renders VERBS (POST-able
+decisions) — but `briefingHtml` renders the same underlying fact in prose, on every screen (not just the
+run view), and shares the exact same marker-less path into `.orch__body`. Scoping a fix to "the region
+with buttons on it" under-covered "every region whose content is derived from the same live gate list."
+Worth naming as a lesson for the next region found the same way: check every `orchestratorPanel`
+parameter, not just the one with an obvious interactive surface.
+
+**Tests.** `tests/board-client-navigation.test.ts`'s propagation describe blocks: the SSE-reload test
+now asserts `[data-orch-briefing]` resyncs on the SAME refresh as `[data-orch-action]` (the regression
+this addendum guards against — one resyncing without the other), plus its own dedicated describe block
+mirroring the action-region one (in-app navigation across an unchanged scope, and the no-`orchBriefing`-
+field safe-no-op case). `tests/board-fragment.test.ts` gains `orchBriefing` extraction coverage and
+folds it into the existing one-render-path byte-identical assertion. `tests/run-briefing-content.test.ts`
+gains a `renderStudio()`-level check that the sentence's gate count always agrees with `openGates(repo)`
+— fixtures/golden's real two-gate count, and a zero-gate minimal fixture (a single already-`shipped`
+unit, no flow-walking needed) proving the sentence reads "Nothing needs a decision right now." rather
+than a stale nonzero count.

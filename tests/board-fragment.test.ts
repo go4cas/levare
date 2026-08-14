@@ -46,6 +46,48 @@ describe("extractFragment — pure string extraction", () => {
     const html = '<title>t</title><!--main--><main class="main">x</main><!--/main--><!--extras--><!--/extras-->';
     expect(extractFragment(html)!.extras).toBe("");
   });
+
+  // NOTES ORCH-STALE-CARD: `orchAction` (the run view's own gate card, render/shell.ts#orchestratorPanel's
+  // `actionableHtml`) used to have no marker at all — nothing for a fragment response to carry, so no
+  // client refresh could ever resync it. It's sliced from `<!--orchaction-->`/`<!--/orchaction-->`, the
+  // same string-slicing mechanism as `main`/`extras`/`orchTail`, and lives OUTSIDE the main markers
+  // (inside the orch aside), same as `orchTail`.
+  test("pulls orchAction out of the orch aside, independent of main/extras", () => {
+    const html = [
+      '<title>t</title><!--main--><main class="main">HELLO</main><!--/main-->',
+      '<aside class="orch" data-scope="storefront"><div class="orch__body">',
+      '<div class="orch__tail" data-orch-tail><!--orchtail--><!--/orchtail--></div>',
+      '<div class="orch__action" data-orch-action><!--orchaction--><article class="gate gate--start">CARD</article><!--/orchaction--></div>',
+      "</div></aside>",
+    ].join("");
+    expect(extractFragment(html)!.orchAction).toBe('<article class="gate gate--start">CARD</article>');
+  });
+
+  test("orchAction is the empty string, not absent, when the page's unit has no open gate", () => {
+    const html = [
+      '<title>t</title><!--main--><main class="main">x</main><!--/main-->',
+      '<aside class="orch" data-scope="studio"><div class="orch__body">',
+      '<div class="orch__action" data-orch-action><!--orchaction--><!--/orchaction--></div>',
+      "</div></aside>",
+    ].join("");
+    expect(extractFragment(html)!.orchAction).toBe("");
+  });
+
+  // NOTES ORCH-STALE-CARD addendum: `orchBriefing` (the narrated summary turn — "N gates on you" —
+  // shared across every screen, not just the run view) had the identical gap, found only after
+  // `orchAction` was fixed: it names the same gate count the action region's card is drawn from, but
+  // carried no marker of its own either.
+  test("pulls orchBriefing out of the orch aside, independent of orchAction/orchTail", () => {
+    const html = [
+      '<title>t</title><!--main--><main class="main">HELLO</main><!--/main-->',
+      '<aside class="orch" data-scope="studio"><div class="orch__body">',
+      '<div class="orch__briefing" data-orch-briefing><!--orchbriefing--><p>Nothing needs you right now.</p><!--/orchbriefing--></div>',
+      '<div class="orch__tail" data-orch-tail><!--orchtail--><!--/orchtail--></div>',
+      '<div class="orch__action" data-orch-action><!--orchaction--><!--/orchaction--></div>',
+      "</div></aside>",
+    ].join("");
+    expect(extractFragment(html)!.orchBriefing).toBe("<p>Nothing needs you right now.</p>");
+  });
 });
 
 describe("isFragmentRequest", () => {
@@ -108,7 +150,7 @@ describe("levare serve — fragment GETs (NOTES UI10)", () => {
   });
 
   test("the fragment's `main` is byte-identical to the SAME region inside the ordinary full-page response — one render path, not a fork", async () => {
-    for (const url of ["/studio", "/project/storefront", "/registry/teams"]) {
+    for (const url of ["/studio", "/project/storefront", "/registry/teams", "/run/storefront/checkout-flow"]) {
       const [fullRes, fragRes] = await Promise.all([board.fetch(req(url)), board.fetch(req(url, { headers: FRAG }))]);
       const fullHtml = await fullRes.text();
       const fragBody = await fragRes.json();
@@ -116,7 +158,39 @@ describe("levare serve — fragment GETs (NOTES UI10)", () => {
       expect(fragBody.main).toBe(extractedFromFull.main);
       expect(fragBody.title).toBe(extractedFromFull.title);
       expect(fragBody.extras).toBe(extractedFromFull.extras);
+      // NOTES ORCH-STALE-CARD: the SAME one-render-path guarantee now covers `orchAction` too — the
+      // regression this bug was: a fragment response that silently dropped/forked the gate card content
+      // a cold GET would have shown, since nothing sliced it out at all.
+      expect(fragBody.orchAction).toBe(extractedFromFull.orchAction);
+      // NOTES ORCH-STALE-CARD addendum: and now `orchBriefing` too, found stale one element up from
+      // `orchAction` after that fix shipped.
+      expect(fragBody.orchBriefing).toBe(extractedFromFull.orchBriefing);
     }
+  });
+
+  // NOTES ORCH-STALE-CARD addendum: `orchBriefing` is populated on every screen (unlike `orchAction`,
+  // run-view-only) — this environment has no ANTHROPIC_API_KEY, so the panel renders its disabled turn
+  // rather than the real gate-count sentence (render/shell.ts#orchestratorPanel suppresses `briefingHtml`
+  // when the Orchestrator is unavailable — a real turn either way, never an empty region). The exact
+  // gate-count sentence text is pinned separately in tests/run-briefing-content.test.ts, where the
+  // Orchestrator status is pinned `available: true` directly against `renderRun`/`renderStudio`.
+  test("the studio's fragment carries a real briefing turn in orchBriefing, never an empty region", async () => {
+    const res = await board.fetch(req("/studio", { headers: FRAG }));
+    const body = await res.json();
+    expect(body.orchBriefing).not.toBe("");
+    expect(body.orchBriefing).toContain('class="turn turn--orch"');
+  });
+
+  // NOTES ORCH-STALE-CARD: the run view's own gate card lives in `orchAction`, never in `main` — a
+  // client refresh that only ever resynced `main` (the pre-fix behavior) would leave a Conductor
+  // looking at an up-to-date score rail beside a frozen gate card. Pinning the real content here (not
+  // just presence) against fixtures/golden's known open gate on storefront/checkout-flow.
+  test("a run page's fragment carries its unit's open gate in orchAction, not in main", async () => {
+    const res = await board.fetch(req("/run/storefront/checkout-flow", { headers: FRAG }));
+    const body = await res.json();
+    expect(body.orchAction).toContain('class="gate');
+    expect(body.orchAction).toContain("spec-checkout-flow-v1");
+    expect(body.main).not.toContain('class="gate');
   });
 
   test("a registry deep link (/registry/connectors/linear) carries the highlight id in the fragment, matching the full page's data-highlight", async () => {

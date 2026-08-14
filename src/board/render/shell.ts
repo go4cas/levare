@@ -158,11 +158,30 @@ function orchestratorIndicator(status: OrchestratorStatus): string {
 // previously just the page-type literal ("project"/"run"/"artifact"...), which was never actually
 // scope-aware. It doubles as the conversation file's key (conversation.ts#loadConversationTail) and
 // as the `data-scope` attribute below, which `board/serve.ts#extractFragment` reads back out of the
-// rendered HTML so a client-side navigation can tell whether the panel needs a fresh tail (see
-// assets/app.js's own comment on that path — `swapFragment` never touches the rail/header, but DOES
-// resync just the persisted-tail region when the destination page's scope differs from the current
-// one). `root`/`now` load and timestamp that tail exactly like every other per-request derivation in
-// this module (PRD §9, invariant 2) — never a second render path, never a stored, cached history.
+// rendered HTML so a client-side navigation can tell whether the panel needs a fresh tail. `root`/`now`
+// load and timestamp that tail exactly like every other per-request derivation in this module (PRD §9,
+// invariant 2) — never a second render path, never a stored, cached history.
+//
+// NOTES ORCH-STALE-CARD: `actionableHtml` (the run view's own gate card — the ONE place a runner-side
+// change such as a dispatch completing, an artifact landing, or a gate opening shows up) used to be
+// spliced straight into `orch__body` with no marker of its own. `extractFragment`/`swapFragment` only
+// ever knew about `main`, `extras`, and (conditionally, on a scope change) the persisted tail — so
+// EVERY refresh that isn't a real cold GET (the SSE `reload` tick, any client-side navigation at all,
+// same scope or not) left this card rendering whatever was true at the moment of the last full page
+// load, forever after. The score rail and timeline never had this problem: both live inside `main`,
+// which every refresh path already replaces wholesale. Wrapping it in its own `data-orch-action`
+// marker, exactly like the tail's `data-orch-tail`, lets the client resync it too — unconditionally,
+// unlike the tail, since a gate's own state (unlike conversation history) has no "already shown live"
+// case to avoid duplicating.
+//
+// NOTES ORCH-STALE-CARD addendum: `briefingHtml` (the narrated summary turn — "N gates on you"/
+// "Nothing needs you right now", and the disabled branch's own "Orchestrator unavailable..." turn) had
+// the IDENTICAL gap, one element up: it renders the gate COUNT the action region's card is drawn from,
+// but sat outside every marker just like `actionableHtml` used to. Approving the studio's last open
+// gate correctly cleared the action region and the `Gates on you` stat (both inside `main`/the newly-
+// marked action region), while this sentence — "2 gates are on you..." — survived two navigations
+// unchanged, now visibly contradicting a `0` stat in the same panel. Same fix, same reasoning: a
+// `data-orch-briefing` marker, resynced unconditionally on every swap.
 export function orchestratorPanel(scope: string, status: OrchestratorStatus, briefingHtml: string, actionableHtml: string, root: string, now: Date): string {
   const tailHtml = renderPersistedTurns(loadConversationTail(root, scope, now), now);
   // The HTML comment markers mirror `pageBody`'s own `<!--main-->`/`<!--extras-->` convention exactly
@@ -170,20 +189,22 @@ export function orchestratorPanel(scope: string, status: OrchestratorStatus, bri
   // — `esc()` turns any literal `<`/`>` inside a turn's text to `&lt;`/`&gt;`) so `extractFragment` can
   // slice this region back out the same string-slicing way, with no HTML parser, no second render call.
   const tailBlock = `<div class="orch__tail" data-orch-tail><!--orchtail-->${tailHtml}<!--/orchtail--></div>`;
+  const actionBlock = `<div class="orch__action" data-orch-action><!--orchaction-->${actionableHtml}<!--/orchaction--></div>`;
+  const briefingBlock = (html: string) => `<div class="orch__briefing" data-orch-briefing><!--orchbriefing-->${html}<!--/orchbriefing--></div>`;
   if (!status.available) {
     return `<aside class="orch is-disabled" data-scope="${esc(scope)}">
     ${orchHead(scope)}
     <div class="orch__body">
-      ${orchTurn(`<p class="turn__body">Orchestrator unavailable — ${esc(reasonSentence(status.reason))} The board, the registry, and every gate still work: you can approve, reject, and the runner will advance.</p>`)}
+      ${briefingBlock(orchTurn(`<p class="turn__body">Orchestrator unavailable — ${esc(reasonSentence(status.reason))} The board, the registry, and every gate still work: you can approve, reject, and the runner will advance.</p>`))}
       ${tailBlock}
-      ${actionableHtml}
+      ${actionBlock}
     </div>
     ${composer({ disabled: true })}
   </aside>`;
   }
   return `<aside class="orch" data-scope="${esc(scope)}">
     ${orchHead(scope)}
-    <div class="orch__body">${briefingHtml}${tailBlock}${actionableHtml}</div>
+    <div class="orch__body">${briefingBlock(briefingHtml)}${tailBlock}${actionBlock}</div>
     ${composer()}
   </aside>`;
 }

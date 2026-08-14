@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { Repo } from "../../repo.ts";
-import { esc, openGates, scoreNodes, captionTime, type ScoreNode, type NodeState } from "../../derive.ts";
+import { esc, openGates, scoreNodes, captionTime, gateBriefingSentence, type ScoreNode, type NodeState } from "../../derive.ts";
 import { loadExtras } from "../../extra.ts";
 import { buildTimeline, type TimelineActor } from "../../timeline.ts";
 import type { DaemonInvocation } from "../../daemon.ts";
@@ -203,7 +203,7 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
 
   const gateHtml = gates.map((g) => gateCardHtml(repo, g, now, { cta: true, dispatching: dispatchingFor(running, g) })).join("\n");
   const briefingBody = orchTurn(
-    `<p class="turn__body">${gates.length ? `${esc(gates[0].label)} is ready for review below.` : "No open gate on this unit right now."}</p>`,
+    `<p class="turn__body">${gates.length ? gateBriefingSentence(gates[0]) : "No open gate on this unit right now."}</p>`,
     { captionTime: captionTime(now.toISOString(), now), captionLabel: "briefing" },
   );
   const orch = orchestratorPanel(project, status, briefingBody, gateHtml, root, now);
