@@ -992,11 +992,23 @@
         ovKind.textContent = kind;
         ovFront.value = split.front;
         ovBody.value = split.body;
-        autoGrow(ovFront);
-        autoGrow(ovBody);
         ovSave.textContent = 'Save and commit';
         updateDirtyMarker();
+        // Unhide BEFORE measuring: `[hidden]` is `display:none` (styles.css), and a display:none
+        // element reports `scrollHeight` 0 — measuring first was why autoGrow ever computed a
+        // near-zero frontmatter height, and it is the root cause behind the "opens scrolled to its
+        // own bottom, clipped" defect below.
         overlay.hidden = false;
+        autoGrow(ovFront);
+        autoGrow(ovBody);
+        // Setting `.value` leaves the caret at the END of the text in every browser; focusing a
+        // textarea scrolls it to keep the caret in view, which — now that each pane scrolls on its
+        // own (styles.css) — would jump straight to that pane's own bottom. Force the caret, and each
+        // pane's own scroll position, to the start before focus ever runs.
+        ovFront.setSelectionRange(0, 0);
+        ovBody.setSelectionRange(0, 0);
+        ovFront.scrollTop = 0;
+        ovBody.scrollTop = 0;
         runCheck();
         ovFront.focus();
       };
@@ -1076,6 +1088,53 @@
     document.addEventListener('keydown', function (e) {
       var overlay = document.getElementById('editor-overlay');
       if (e.key === 'Escape' && overlay && !overlay.hidden) requestDismiss();
+    });
+
+    /* ---------- registry: loop enclosure tooltip (goal "registry cards legibility" item 2, review
+       round 3) ----------
+       The flow row's loop enclosure (`.m--loopstage`, render/registry.ts) carries its bound/escalation
+       (until/max_rounds/on_exhaust) as a `.looptip` child, shown on hover AND keyboard focus
+       (`tabindex="0"` on the trigger — never mouseover-only, per the ruling). `.flowstrip`'s own
+       `overflow:hidden` is load-bearing for the orphaned-arrow clip (fault 3) and would clip a plain
+       CSS `position:absolute` tooltip rendered above the trigger identically — `.looptip` is
+       `position:fixed` instead (assets/styles.css), which escapes that clipping, at the cost of having
+       no CSS relationship to the trigger's own box. This sets its real screen position from
+       `getBoundingClientRect()` on the way in, and only ever toggles the `is-shown` class — never
+       inline `display`/`opacity` — so the CSS transition still animates it. Delegated on `document`
+       (mouseover/mouseout, not the non-bubbling hover/mouseenter/mouseleave pair) so it survives a
+       `swapFragment` content refresh without a rebind, same discipline as every other delegated
+       handler in this file. */
+    function positionLoopTip(trigger) {
+      var tip = trigger.querySelector('.looptip');
+      if (!tip) return;
+      var r = trigger.getBoundingClientRect();
+      tip.style.left = (r.left + r.width / 2) + 'px';
+      tip.style.top = (r.top - 7) + 'px';
+      tip.classList.add('is-shown');
+    }
+    function hideLoopTip(trigger) {
+      var tip = trigger.querySelector('.looptip');
+      if (tip) tip.classList.remove('is-shown');
+    }
+    document.addEventListener('mouseover', function (e) {
+      var trigger = e.target.closest('.m--loopstage');
+      if (!trigger) return;
+      positionLoopTip(trigger);
+    });
+    document.addEventListener('mouseout', function (e) {
+      var trigger = e.target.closest('.m--loopstage');
+      if (!trigger || (e.relatedTarget && trigger.contains(e.relatedTarget))) return;
+      hideLoopTip(trigger);
+    });
+    document.addEventListener('focusin', function (e) {
+      var trigger = e.target.closest('.m--loopstage');
+      if (!trigger) return;
+      positionLoopTip(trigger);
+    });
+    document.addEventListener('focusout', function (e) {
+      var trigger = e.target.closest('.m--loopstage');
+      if (!trigger) return;
+      hideLoopTip(trigger);
     });
   });
 })();

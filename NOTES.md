@@ -15156,3 +15156,370 @@ level (baseline drop, visual-but-not-structural orphaning) is invisible to a str
 markup. This is also why the `assets/styles.css` assertions added for this fix check specific PROPERTIES
 (`position:absolute`, `overflow:hidden`, `column-gap:`) rather than merely "a rule exists, non-empty" —
 narrower, but at least testing the actual mechanism this design depends on, not a decoy.
+
+# NOTES CARD-LEGIBILITY (2026-08-14) — the registry cards became dense and hard to scan once the
+# previous unit made them render everything the files declare; four fixes: an optional description:
+# headline, the flow loop rendered as an inline stage, grid cards that stop stretching into voids, and
+# a broken Edit source modal
+
+**Goal.** The previous unit (NOTES REGISTRY-BODY) fixed a real defect — cards silently dropped fields
+and bodies the files actually declared. It also created a second-order problem: cards are now dense,
+ragged, and hard to scan. This unit is legibility, not coverage — no new field is read by the runner,
+nothing that rendered before stops rendering.
+
+## Item 4 (done first, since it's the one functional defect) — the Edit source modal couldn't show the
+## top of the file it was editing
+
+Observed on kestrel: the FRONTMATTER pane opened scrolled to its OWN bottom, clipping content
+(`never: [force-push, delete-branch]` cut off mid-line) with no way to scroll back to the start. Root
+cause, precisely: `openEditor()` (assets/app.js) called `autoGrow()` — which reads `scrollHeight` — while
+the overlay was still `[hidden]` (`display:none` per styles.css), and a `display:none` element reports
+`scrollHeight` 0. Both panes' grown heights collapsed to near-zero before the overlay was ever shown.
+Focusing the frontmatter textarea then scrolled it to reveal the caret, which every browser leaves at the
+END of the text after `.value =` is set — landing on the pane's last line instead of its first. The
+"body has ample unused height while frontmatter has almost none" symptom was the SAME bug from the other
+side: both panes had `min-height` CSS fallbacks (44px / 200px) once their JS-computed height collapsed to
+0, and those two fixed numbers had no relationship to either pane's real content length.
+
+**Fix.** `overlay.hidden = false` now runs BEFORE `autoGrow()` measures either pane, so `scrollHeight`
+reads real content. `ovFront.setSelectionRange(0, 0)` / `ovBody.setSelectionRange(0, 0)` and an explicit
+`scrollTop = 0` on both run before `.focus()`, so even a stale scroll position from a previous open can't
+survive. Separately: the old design had ONE shared scroll region for both panes (a deliberate prior
+choice, per that CSS rule's own comment) with a fixed `min-height` each — the actual source of the
+disproportionate space. Each pane now caps its own growth (`max-height` + `overflow-y:auto` on the
+textarea itself) and scrolls independently; `.editor-overlay__zones` keeps a fallback `overflow-y:auto`
+for the rare case both panes are simultaneously maxed on a short viewport, normally inert. `.entity`'s
+former `flex:1`/`margin-top:auto` design (see item 3 below) is a distinct, unrelated mechanism — noted
+here only because both bugs independently produced "space in the wrong place."
+
+**Resizing, considered and rejected.** `autoGrow()` re-measures on every keystroke; a user-dragged pane
+size would be silently overwritten by the next character typed. Reconciling drag-resize with a live
+auto-grow textarea is real work with no complaint asking for it — each pane already adapts to its own
+content and caps sensibly. Not worth adding for this unit.
+
+**Verification.** Rendered a real `levare serve fixtures/golden` in headless Chromium (Playwright) and
+opened kestrel's Edit source: `frontmatter.scrollTop === 0` with `name: kestrel` visible at the very top,
+`body.scrollTop === 0`, body's actual content height (163px) exactly filling its box (no dead space). The
+DOM-assertion suite (`tests/board-editor-overlay.test.ts`, a hand-rolled fake-DOM harness with no real
+layout engine) can only prove the FIX'S OWN LOGIC — that `openEditor()` unhides before measuring and
+resets scroll/caret to zero — never that a real browser paints it correctly; both were checked.
+
+## Item 1 — an optional `description:` headline on teams and agents
+
+**The ruling, and the argument against it.** The case against: the body already serves this purpose —
+a team's charter and an agent's system prompt already open with a sentence naming what they do
+(`leadText(firstParagraph(...))` / `leadText(firstSentence(...))`, from NOTES REGISTRY-BODY). A second
+field that duplicates what the first sentence of an existing field already says is redundant machinery
+for a problem prose density already half-solves, and it's one more thing an author can forget to update
+when the body changes. Overridden anyway, for two reasons the goal named directly: consistency across
+registry entities (skill/knowledge cards already carry an optional `description:` with exactly this
+fallback shape — teams/agents were the odd ones out, not the norm) and scannability — `Designer` reads
+in a glance; `You are Lyra, a flow designer and spec author.` requires reading a full sentence to extract
+the same fact, and a grid of a dozen cards multiplies that cost by a dozen.
+
+**Additive, never a replacement.** The description renders via a new `cardHeadline()` (components.ts,
+bold, `--fg`, distinct from `leadText`'s muted-prose treatment) ABOVE the existing lead paragraph, which
+keeps rendering completely unchanged, unconditionally, below it. Considered and rejected: making the
+headline ALWAYS render (`description ?? firstSentence(body)`) with the lead paragraph always below it —
+this satisfies "falls back to the body's first sentence" as a literal, uniform rule, but for a
+studio with no `description:` anywhere it would put the SAME sentence on the card twice (once as the
+manufactured headline, once as the start of the unchanged lead paragraph directly below it) — worse
+legibility than before this unit touched it, for the majority case (no author has written one yet).
+Instead: the headline element is only emitted when `description:` is actually declared; when absent,
+the card is byte-identical to its pre-existing output, and the existing lead — which already opens with
+the body's own first sentence/paragraph — continues to serve as the de facto headline without a
+duplicate copy of the same words. `tests/registry-cards-render-definitions.test.ts`'s fallback test
+asserts this directly: the sentence appears exactly once, not twice, and no headline-styled element
+(`font-weight:600`) is present at all.
+
+**Display-only, by construction, not by convention.** `description` is parsed into `Team`/`Agent`
+(repo.ts) and validated (validate.ts, `type: "str", required: false`) exactly like every other display
+field — never read by `flow.ts`, `derive.ts`, `orchestrator.ts`, or any dispatch path. `produces`/
+`consumes` remain the only fields that carry real capability; adding a second field that LOOKS like it
+means something to the Runner, when it doesn't, is exactly the drift risk named below.
+
+**The accepted cost, named rather than hidden.** A hand-written description can drift from the body it
+summarizes — kestrel's description could say "Pitch to approved spec" long after its charter changes to
+describe a different flow, and nothing in `levare validate` (or anywhere else) would ever detect that
+divergence, because the two fields are deliberately unrelated as far as the runner is concerned. This is
+the accepted price of a scannable headline: catching prose drift would require either generating the
+description FROM the body (defeating the "short label a human chose" purpose) or a second validation
+pass with no ground truth to check against. Left as a standing, named gap — a Conductor who edits a
+charter should also glance at the description, not something the tool enforces.
+
+**Scaffold and docs.** `levare init` now writes `description:` on all four scaffold entities (kestrel:
+"Pitch to approved spec"; wren: "Product framer"; lyra: "Designer" — literally the goal's own
+illustrating example; finch: "Wrapped Codex reviewer"), so a fresh studio demonstrates the field, not
+only its fallback. Both cheatsheets (`team.md`, `agent.md`) pick up the new optional field automatically
+via `bun run docs:generate` — no hand-editing, since a cheatsheet's field table is computed from the
+same `TEAM_SCHEMA`/`AGENT_SCHEMA` `levare validate` enforces (NOTES DOCS1).
+
+## Item 2 — the declared-flow loop renders inline as the sequence's own fifth stage
+
+`teams/kestrel.md` declares `flow:` as an ordered list whose fifth element is a `loop:` — the card
+already rendered every node in ONE `.flowstrip` (NOTES REGISTRY-BODY), so the loop was always
+structurally part of the sequence; what it lacked was any VISUAL signal that it was one. Bare avatars
+plus a caption, at the same weight as a step or gate, naturally wraps onto its own line once the
+preceding "wr → ◆ → ly → ◆" runs out of card width (ordinary `flex-wrap`, not a deliberate placement) —
+and with nothing marking it as a bounded unit, that wrap reads as "a separate thing below the flow," not
+"the fifth step, wrapped."
+
+**Fix.** `flowNodeHtml`'s loop branch (registry.ts) adds `m--loopstage` to the node's own class; the new
+CSS rule (`.flowstrip .m--loopstage`) draws a subtle bordered/tinted box (`border`, `border-radius`,
+`background:var(--panel-2)`) around BOTH the avatar pair and its caption together — "one stage, two
+members alternating inside it," per the goal's own phrase, using the same "reuse what exists" discipline
+the gate diamond already established (no new glyph). The join arrow into the loop still uses the exact
+`.fpair`/`.fpair--loop` mechanism NOTES RAIL-UNREACHABLE's addendum built for every other node, so the
+loop wraps as ONE unit when width runs out (never split across a line) and renders inline beside its
+neighbour when it fits — unchanged, reused, not reinvented. The caption (`.mn`) keeps its existing
+smaller (11px), muted (`--fg-dim`) treatment, now visually tucked inside the enclosure instead of
+floating loose below it — subordinate to the loop, never removed to hover: `max_rounds`/`on_exhaust`
+answer "what happens if they never agree," which is what a Conductor most needs before approving a start
+gate, and hover hides it on touch, in screenshots, and from anyone auditing the registry file-by-file.
+
+**The arrow's vertical offset needed re-tuning, not reuse.** `.fpair--loop > .arr{ top:11px }` was tuned
+(NOTES RAIL-UNREACHABLE's addendum) against the loop node's PRE-enclosure box — adding `padding:6px …`
+around that box shifts the avatar row down by the same amount, so the fixed offset needed the same
+correction. Guessing wasn't good enough (the previous unit's own addendum exists BECAUSE a guessed
+offset silently regressed once); instead, built an isolated HTML fixture (real `assets/styles.css`
+loaded, no served studio needed) and read real `getBoundingClientRect()` centers: at `top:11px` (the old
+value) the arrow center sat 9.5px below the avatar center; at `top:8px` the two are 0.5px apart —
+functionally centered. `tests/registry-cards-render-definitions.test.ts` covers the STRUCTURE (the
+enclosure class, its position inside the `.fpair`/`&rarr;` chain, the caption inside it, the CSS rule's
+own properties) — never the pixel alignment itself, which only a real layout engine can prove; that part
+is the screenshot/measurement record above, per the previous unit's own stated lesson that a DOM
+assertion passes through a layout defect.
+
+## Item 3 — registry cards in a grid stop stretching into voids
+
+On Agents (docs/guide's own walkthrough studio, five members: wren/lyra/finch from the scaffold plus
+scribe/corvid added by chapters 4.3/4.5): corvid and finch (`kind: cli`, warnings, command rows) are
+much taller than lyra/scribe (bare `kind: native`, three fields) — CSS grid's default
+`align-items:stretch` made every card in a row match the tallest. On Teams: press (two fields, no
+guardrails) inherited kestrel's height (charter, flow, guardrails, knowledge).
+
+**Not a new problem — a previously "fixed" one, whose fix didn't remove the leftover space, only moved
+it.** `.rendered{flex:1}` + `.editbar{margin-top:auto}` (an earlier gate-review round's own fix, its
+comment preserved verbatim in the diff this unit removed) already pinned the actions row to the
+stretched card's true bottom, so every row's Edit source buttons WERE already on one consistent
+baseline. That's necessary but not sufficient: the leftover height between a short card's own content
+and the row's shared bottom edge still has to go somewhere, and stretching `.rendered` to absorb it put
+that blank space INSIDE the visible content area — no border, no background change, nothing to mark it
+as intentional, so it reads exactly like a card that's missing its own content. Confirmed by direct
+measurement on a real served page: lyra's `.rendered` box measured the identical bottom edge as
+corvid's (802.25px) despite having a fraction of its content, proving the stretch was live, not merely
+theoretical.
+
+**Chose content-height (ragged bottoms) over footer-pinning, since footer-pinning was already tried and
+still produced the reported defect.** `.entity-grid{ align-items:start }` opts registry's OWN `.pcards`
+grid instance out of row-stretch (scoped via a second class on the registry page's grid div specifically
+— never the shared `.pcards` default the studio's project-card grid also uses, since that grid's cards
+are already close to uniform height via `.pcard__desc{min-height:36px}` and don't share this problem).
+Each card is now exactly as tall as its own content; a row's cards end at different heights, same as any
+masonry-style grid — an intentional ragged bottom, not a void, and never mistaken for missing content
+since nothing bordered ends abruptly mid-card. `.rendered{flex:1}` and `.editbar{margin-top:auto}` are
+removed outright rather than left inert: once nothing stretches, they have no leftover space to consume,
+and leaving dead CSS that documents an abandoned design intention is worse than deleting it.
+`tests/board-render.test.ts`'s updated assertion checks for their ABSENCE, not merely their presence
+being optional — a regression back to stretch-then-pin should fail here, not resurface as a visual bug
+discovered by eye a third time.
+
+**Verification.** Built the exact studio docs/guide/04-workflow's chapters produce (scaffold + every
+`cat > … <<'EOF'` heredoc pasted in document order, the same construction `tests/guide-workflow-
+blocks.test.ts` already uses) and rendered it via headless Chromium at 1800px (wide enough for 3
+columns on Agents, 2 on Teams — the narrowest width at which the reported unevenness is visible; the
+grid's own `minmax(320px,1fr)` track means viewport width beyond "as many 320px columns as exist cards"
+doesn't stretch individual cards further, since `auto-fill` reserves empty tracks rather than collapsing
+them). Before: lyra/scribe/press showed large blank regions ending well below their own last content
+row. After: every card ends immediately after its own content plus the fixed footer divider/padding —
+no card in either grid contains a void.
+
+## Tests
+
+`tests/board-editor-overlay.test.ts` (item 4): two new tests against the real `assets/app.js`, driven
+through the existing fake-DOM harness — extended with settable `scrollTop`/`scrollHeight` and a
+`setSelectionRange` no-op tracker (properties/methods app.js's fix now calls that no prior test needed).
+One asserts both panes' scroll position and caret reset to zero on open even when simulated content is
+taller than the pane; one asserts `autoGrow` never measures `scrollHeight` while the overlay is still
+`hidden`, by instrumenting the getter and recording the overlay's own hidden state at the first read.
+
+`tests/registry-cards-render-definitions.test.ts` (items 1 and 2, scaffold-driven, `cardFor()`-scoped to
+`.rendered` per the extraction discipline NOTES REGISTRY-BODY established — never the whole `<article>`,
+whose hidden raw-markdown textarea would make a whole-article match pass for the wrong reason): a card
+WITH `description:` renders it as a distinct headline element alongside the unchanged charter/body text
+still below it; a card with NO `description:` anywhere validates clean (`validatePath`, zero errors) and
+renders with no headline element and no duplicated lead sentence. The loop's enclosure: joined to the
+sequence by the same `&rarr;`/`.fpair` chain as every other node, its caption inside the same
+`.m--loopstage` box, both structural facts and — separately — the CSS rule's own declared properties.
+
+`tests/board-render.test.ts` (item 3): the registry's own grid div carries `entity-grid` in addition to
+`pcards`; `.entity-grid{ align-items:start }` exists; `.rendered{flex:1}`/`.editbar{margin-top:auto}` are
+gone, not merely superseded.
+
+## Commits, one item at a time, per the goal's own sequencing (modal first since it's the only
+## functional defect and independent of the rest; description next, since it changes what the flow row
+## and grid are laid out around; flow row and grid last, together, since both needed checking by eye
+## against the same real `levare serve`)
+
+(1) the Edit source modal fix (assets/app.js, assets/styles.css, tests/board-editor-overlay.test.ts).
+(2) the `description:` field end to end — types.ts, repo.ts, validate.ts, components.ts#cardHeadline,
+registry.ts's two call sites, the init.ts scaffold, both regenerated cheatsheets, and its own test
+coverage. (3) the loop-inline enclosure and the grid content-height fix together — registry.ts,
+assets/styles.css, and both affected test files.
+
+## What this doesn't touch
+
+`produces`/`consumes` remain the only fields the Runner reads for capability; `description` joins
+`skill`/`knowledge`'s existing optional-description precedent, it doesn't establish a new pattern other
+entities lack. No frontmatter schema changed beyond the one new optional string field on two entity
+kinds. The modal's split is now content-adaptive with each pane capped and independently scrollable, but
+still not operator-resizable — a deliberate scope cut, not an oversight (see item 4 above). The grid's
+ragged-bottom choice is scoped to `.entity-grid` (registry only); the studio's project-card grid keeps
+its existing stretch behavior, untouched, since nothing in this goal named it as broken.
+
+## NOTES CARD-LEGIBILITY addendum (2026-08-14) — review round 2: the loop still wasn't inline, and the
+## grid-column claim didn't reproduce
+
+A review against a real `levare serve` (not the DOM-assertion suite, which passed throughout both
+rounds — the exact class of defect this whole unit's own methodology warns about) found item 2's first
+fix incomplete, and could not confirm item 3's reported regression.
+
+**The loop still rendered on its own row, with a leading arrow visibly pointing at nothing.** Direct
+measurement (`getBoundingClientRect()` on a real served page) found `.fpair--loop`'s rendered width was
+a constant ~326px at EVERY card width tested — far wider than the avatar pair (~63px) the enclosure was
+meant to hold, and wider than nearly every real card's own content area (~320–430px). Root cause: `.mn`
+(the caption) had no `max-width`; as a flex item inside `.m--loopstage`'s column-flex layout
+(`align-items:flex-start`, its cross-axis default), a text item with no width constraint sizes to its
+own max-content width — i.e., it tries to render on ONE line — and `.m--loopstage`'s own width, being a
+column-flex container with no explicit width, is driven by its widest child. The caption
+("until spec.approved · max 3 · on_exhaust: gate") on one line is ~300px+; that became the enclosure's
+effective preferred width, guaranteeing it could never share a line with the preceding sequence no
+matter how the arrow/`.fpair` mechanism was tuned. This bug predates this unit — the caption sat in the
+identical unconstrained column-flex layout before the enclosure existed — it just had no prior
+consequence, since the loop was unconditionally on its own row before this unit's own work ever tried to
+join it to the sequence. The isolated fixture used to verify the FIRST fix (a synthetic 900px-wide test
+card) had enough width to fit the oversized box anyway, which is why that verification round's own
+"looks inline" screenshot didn't catch it — a passing check on an artificially generous fixture standing
+in for the real, much narrower card.
+
+**Fix:** `.flowstrip .m--loopstage` gains `max-width:150px`. The caption now wraps onto 2–3 lines
+instead of demanding one ~300px line; the enclosure's own preferred width drops to ~150px (plus
+padding/border), small enough to fit beside the preceding sequence at effectively every practical card
+width. Verified two ways: (1) exhaustive `getBoundingClientRect()` comparison — `loopBox.left >
+lastGate.right` (genuinely inline, not merely same-flex-line-by-coincidence) — true at every one of 48
+real width×height combinations swept from 1024×800 to 3440×1080, plus the narrow single-team-column
+band down to 620px; (2) when a card genuinely is too narrow even for the now-much-smaller box (found at
+one specific width, ~700px, for the scaffold/golden studio's own 1–2-team layout), it wraps to its own
+row CLEANLY, with the leading arrow correctly clipped by the pre-existing `.fpair`/`overflow:hidden`
+mechanism (fault 3) — zoomed pixel-level screenshots at that width show no dangling arrow. A regression
+guard (`tests/registry-cards-render-definitions.test.ts`) asserts `.m--loopstage` declares a `max-width`
+at or under 200px, so an edit that drops the cap can't silently reintroduce the always-wraps defect.
+
+**A known, accepted trade-off, not chased further.** With the caption wrapping to multiple lines, the
+enclosure is now taller than a bare avatar/diamond node sharing its line, and `.flowstrip`'s
+`align-items:center` centers the WHOLE box on the line — since the box is the line's tallest item, its
+border-box height always exactly equals the line's own height (proven algebraically: any `align-self`
+value produces the identical position when an item's own height defines the line height it's being
+positioned within), so the avatar row (the box's first, shorter child) ends up sitting above the shared
+line-center rather than exactly on it — by a visible but small amount (~25–29px at typical 2–3 line
+wraps). Reaching exact pixel parity would require either inflating the line's reserved height (fighting
+this whole unit's own "no wasted space" goal) or moving the caption out of normal flow (breaking the
+"caption inside the SAME enclosure as the avatars" requirement). Left as-is: the sequence reads
+correctly left-to-right, connected by a real (non-orphaned) arrow, which was the review's actual ask;
+pixel-identical vertical centering of a taller composite item against single-line siblings was not.
+
+**The Agents grid column-count claim did not reproduce.** Compared the pre-unit commit (56593d5,
+`git worktree`) against this branch, same walkthrough-studio content (scaffold + docs/guide/04-workflow's
+own chapters, pasted in order — corvid, finch, lyra, scribe, wren), same real `levare serve`, at 48
+realistic width×height combinations (16 widths from 1024px to 3440px — covering every common desktop/
+laptop logical resolution — × 3 heights). Every single breakpoint (the exact viewport width where the
+grid gains or loses a column) was byte-identical between the two builds. This matches the CSS mechanism
+directly: `align-items` controls cross-axis (vertical, for a row-based grid) placement/stretching of
+items WITHIN an already-decided set of rows/columns — it has no input into `grid-template-columns`'s own
+track count, which `repeat(auto-fill, minmax(320px,1fr))` computes purely from container width. Also
+ruled out: the `description:` headline (item 1) adding min-content width to a card (tested old-vs-new
+init.ts scaffold content directly, no effect on any breakpoint); a scrollbar-width side-effect from the
+old build's taller stretched rows (row height in CSS Grid is set by the tallest item regardless of
+`align-items`, so total page height is unaffected by this specific change either way). Not disputing the
+observation — reporting that this specific reproduction, built the same way the goal's own review
+described it (scaffold + walkthrough chapters, corvid named explicitly), shows no difference at any
+tested width. No change made to the grid CSS this round; flagged for a follow-up with the specific
+viewport width if the discrepancy persists on a real host.
+
+## NOTES CARD-LEGIBILITY addendum 2 (2026-08-14) — review round 3: the caption comes out of the
+## enclosure entirely, its bounds move to an accessible tooltip, and the run view's live strip states
+## them unconditionally
+
+The `max-width:150px` fix (addendum 1) made the loop enclosure technically inline, but the review found
+this insufficient: a multi-line caption still made the box taller than its siblings, so `wr → ◆ → ly →
+◆` ran along one baseline while the enclosure sat higher — two things at different heights, not one
+sequence. Conductor ruling: the caption comes out of the enclosure entirely.
+
+**1 — The enclosure holds only the avatar pair.** `flowNodeHtml`'s loop branch (registry.ts) no longer
+emits a `.mn` caption span inside `.m--loopstage` at all — just `.looppair` (the two avatars + the ⇆
+glyph). `.m--loopstage`'s CSS drops `max-width` and the caption-sized padding (`6px 10px 7px` →
+`2px 6px`), so the box is (near enough) the same height as a bare step's avatar or a gate's diamond.
+With nothing taller than its siblings on the line, `.flowstrip`'s `align-items:center` centers it
+exactly like everything else — the `.fpair--loop > .arr{ top:8px }` override from addendum 1 is deleted
+outright, not merely unused; the ordinary `.fpair > .arr` centered-arrow rule now applies to the loop
+unmodified, since there's no longer a taller box to misalign against.
+
+**2 — The bounds become a hover/focus tooltip, reachable by keyboard.** `until`/`max_rounds`/
+`on_exhaust` render in a `.looptip` element, `role="tooltip"`, linked from the trigger via
+`aria-describedby` — the WAI-ARIA tooltip pattern. The trigger (`.m--loopstage`) carries
+`tabindex="0"`, so Tab reaches it exactly like a pointer reaches it on hover — verified with a REAL
+keyboard `Tab` press sequence (Playwright `page.keyboard.press('Tab')`, not `element.focus()`), landing
+on the trigger and showing the tooltip. A native `title=""` attribute was considered and rejected: no
+current browser makes `title` keyboard-accessible, which is exactly what the ruling's own condition
+("an affordance that only exists on mouseover is not an affordance for everyone") rules out.
+
+**A genuine layout obstacle, found and fixed: `.flowstrip`'s own `overflow:hidden` clips the
+tooltip identically to how it clips an off-screen arrow.** `overflow:hidden` on an ancestor clips
+ANY descendant painted outside its box, regardless of that descendant's own `position` value — a
+`position:absolute` tooltip anchored above the trigger (`bottom:calc(100% + 7px)`) renders above
+`.flowstrip`'s own top edge, which is exactly the region that property clips (verified: the tooltip's
+computed `opacity`/`visibility` read as shown, but no pixels painted in a real screenshot — CSS-computed
+"visible" and "actually painted" are not the same question here). `position:fixed` escapes an
+ancestor's overflow clipping (verified directly against a minimal isolated fixture: a `position:fixed`
+box nested inside a zero-height `overflow:hidden` parent paints in full) — at the cost of having no
+CSS relationship to the trigger's own screen position, since a fixed element's containing block is the
+viewport. `assets/app.js` gains a small delegated hover/focus handler (`mouseover`/`mouseout` on
+`document`, matching the file's own existing delegation discipline so it survives a `swapFragment`
+content refresh with no rebind, plus `focusin`/`focusout` for the keyboard path) that sets the
+tooltip's real `left`/`top` from the trigger's own `getBoundingClientRect()` before toggling an
+`is-shown` class — CSS drives the opacity transition, JS only ever supplies the position. Without JS,
+the tooltip does not appear at all (no CSS-only fallback) — an accepted trade-off given the alternative
+(a fixed-position box pinned at (0,0) with no JS to place it) is worse than absent, and the run view
+compensates unconditionally regardless of whether JS ran (see below).
+
+**3 — The run view states the SAME two facts unconditionally, live.** This is the ruling's own stated
+condition for moving the bounds off the card at all: hover/focus doesn't reach touch, screenshots, or a
+registry audit, so the information must not be ABSENT from the product, only relocated to where a
+Conductor watching a loop execute actually needs it. `ScoreNode.live.loop` (derive.ts) gains `until` and
+`onExhaust` alongside the existing `round`/`maxRounds`, sourced from the same `LoopMembership` (gates.ts)
+the round count already came from — no new data path. The run view's tier-3 live strip (render/run.ts,
+the "round n/m + elapsed" line that only renders while a member is genuinely, currently dispatched)
+appends ` · until <until> · on_exhaust: <onExhaust>` to that same line, unconditionally, whenever the
+active kind belongs to a loop. Verified against a real rendering (`renderRun()`, unmocked, real
+`assets/styles.css` linked) of fixtures/golden's checkout-flow with finch genuinely producing `review`:
+the live strip reads "1/3 · 0m 47s · until spec.approved · on_exhaust: gate" — present without any
+interaction, exactly matching the ruling's condition.
+
+**Tests.** `tests/registry-cards-render-definitions.test.ts`: the enclosure's markup carries no caption
+(`.mn`/`max_rounds` absent from its own subtree); the trigger carries a real `tabindex="0"` +
+`aria-describedby` pointing at a `role="tooltip"` element with the bound text; `assets/styles.css`
+assertions on the removed `max-width`/tall-padding (regression guard against the addendum-1 shape
+reappearing), the tooltip's `position:fixed` (not `absolute`) and its `.is-shown`-driven (not
+`:hover`/`:focus`-driven) visibility rule, and `assets/app.js` carrying real `focusin`/`focusout`
+listeners (not merely `mouseover`, which would silently fail the ruling's own keyboard condition).
+`tests/board-render.test.ts`: a new test drives `renderRun()` with a genuinely active loop-producing
+invocation and asserts the live strip's text contains both `until spec.approved` and `on_exhaust: gate`
+alongside the existing round count — extending, not replacing, the pre-existing "no fabricated token
+count" coverage for the one-shot-step (no loop) case.
+
+**Verification.** Real `levare serve` (headless Chromium) at 900/1100/1280/1440/1800/2200px: kestrel's
+flow reads as one baseline-aligned sequence at every width, `wr → ◆ → ly → ◆ → [ly ⇄ fi]`, with the
+enclosure's border the only visual signal marking the loop as its own stage. Real mouse hover and real
+keyboard Tab-focus both surface the tooltip at the trigger's actual screen position. `renderRun()`
+against fixtures/golden's checkout-flow (finch genuinely producing `review`, loop round 1/3) confirms
+the live strip states `until`/`on_exhaust` unconditionally.

@@ -14,6 +14,7 @@ A group with a job — what it consumes, what it produces, its members, and its 
 | Field | Type | Required | Nullable | Enum values | Description |
 |---|---|---|---|---|---|
 | `name` | string | ✅ | — | — | The team's name. |
+| `description` | string | — | — | — | A short card headline (display-only — never read by the runner). Falls back to the charter's own lead when absent. |
 | `consumes` | string[] | ✅ | — | — | Artifact kinds this team consumes as input. |
 | `produces` | string[] | ✅ | — | — | Artifact kinds this team can produce. |
 | `members` | string[] | ✅ | — | — | The agents (members) that belong to this team. |

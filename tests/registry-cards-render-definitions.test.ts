@@ -14,7 +14,7 @@
 // shape without updating the renderer (or vice versa) fails here, rather than silently drifting apart.
 
 import { test, expect, describe, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scaffoldStudio } from "../src/init.ts";
@@ -22,6 +22,7 @@ import { loadRepo } from "../src/repo.ts";
 import { loadExtras } from "../src/extra.ts";
 import { renderRegistry } from "../src/board/render.ts";
 import { renderProject } from "../src/board/render/project.ts";
+import { validatePath } from "../src/validate.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -157,6 +158,60 @@ describe("registry cards render each entity's declared body and fields (scaffold
   });
 });
 
+// Goal "registry cards legibility", item 1: a card's headline used to be whatever prose the body/
+// charter happened to open with — "Designer" reads faster than "You are Lyra, a flow designer and
+// spec author" at a glance across a grid of cards. `description:` is optional display-only prose
+// (never read by the runner — produces/consumes still carry every real capability fact); it renders
+// as the card's headline ABOVE the existing body-derived lead paragraph, which keeps rendering
+// unconditionally underneath — the description is additive, never a replacement for the charter/body
+// text a Conductor already relies on (kestrel's own "never touches a project's main branch" line).
+describe("goal 'registry cards legibility' item 1: description: renders as an additive card headline", () => {
+  test("team and agent cards with description: render it as the headline, with the charter/body still present below it", () => {
+    const root = scaffoldRoot();
+    const repo = loadRepo(root);
+    // The scaffold itself now declares description: on kestrel/lyra — demonstrating the field, not
+    // just its fallback (goal requirement 1).
+    const kestrel = cardFor(renderRegistry(repo, root, "teams"), "teams", "kestrel");
+    expect(kestrel).toContain("Pitch to approved spec"); // the headline
+    expect(kestrel).toContain("Kestrel takes a pitch to an approved specification"); // the charter, still below it
+    expect(kestrel).toContain("never touches a project's main branch"); // none of the charter may disappear
+
+    const lyra = cardFor(renderRegistry(repo, root, "agents"), "agents", "lyra");
+    expect(lyra).toContain("Designer"); // the headline
+    expect(lyra).toContain("You are Lyra, a flow designer and spec author."); // the body, still below it
+  });
+
+  test("a team/agent with no description: anywhere validates clean and renders exactly as it did before the field existed — no headline element, no duplicated lead text", () => {
+    const root = scaffoldRoot();
+    // Strip the scaffold's own `description:` lines to reproduce "no description: anywhere in the studio".
+    for (const rel of ["teams/kestrel.md", "agents/wren.md", "agents/lyra.md", "agents/finch.md"]) {
+      const file = join(root, rel);
+      writeFileSync(file, readFileSync(file, "utf8").replace(/^description:.*\n/m, ""));
+    }
+    const repo = loadRepo(root);
+    expect(repo.teams.get("kestrel")!.description).toBeUndefined();
+    expect(repo.agents.get("wren")!.description).toBeUndefined();
+
+    const result = validatePath(root);
+    expect(result.errors).toEqual([]);
+
+    const kestrel = cardFor(renderRegistry(repo, root, "teams"), "teams", "kestrel");
+    // No separate headline element — the pre-existing lead paragraph (which already opens with the
+    // charter's own first sentence) is the only thing rendered in that position, unchanged.
+    expect(kestrel).not.toContain('font-weight:600');
+    const firstParaStart = kestrel.indexOf("Kestrel takes a pitch to an approved specification");
+    expect(firstParaStart).toBeGreaterThan(-1);
+    // The same sentence must not appear a second time (no headline duplicating the lead below it).
+    expect(kestrel.indexOf("Kestrel takes a pitch to an approved specification", firstParaStart + 1)).toBe(-1);
+
+    const wren = cardFor(renderRegistry(repo, root, "agents"), "agents", "wren");
+    expect(wren).not.toContain('font-weight:600');
+    // Falls back to the body's own first sentence — the exact behaviour the card already had.
+    expect(wren).toContain("You are Wren, a product framer.");
+    expect((wren.match(/You are Wren, a product framer\./g) || []).length).toBe(1);
+  });
+});
+
 // Fault 2: a plain-text `.prow` row's label and value rendered with no visible separation —
 // `protected_branchmain`, `context_artifactinline` — while the `never` row directly below (chip-
 // valued) was fine. Root cause traced to ONE shared rule: `.prow .k{ width:78px; flex:none }` gave
@@ -244,9 +299,85 @@ describe("fault 3: no orphaned arrow in a wrapped team flow row", () => {
     // internal glyph, which is a `.looppair` descendant this selector's child combinator can't reach.
     const arrRule = /\.flowstrip \.fpair > \.arr\{([^}]*)\}/.exec(css)![1];
     expect(arrRule).toContain("position:absolute");
-    // The loop pair's arrow anchors near its avatar row's own height, not centered against the whole
-    // taller stack (avatar row + caption) its node contains.
-    const loopArrRule = /\.flowstrip \.fpair--loop > \.arr\{([^}]*)\}/.exec(css)![1];
-    expect(loopArrRule).toContain("top:");
+    // Review round 3 ruling (NOTES CARD-LEGIBILITY addendum): the loop's enclosure no longer carries a
+    // caption, so it's the same height as any other node and needs no special-cased arrow offset — the
+    // generic `.fpair > .arr` rule above applies to it unmodified; a `.fpair--loop > .arr` override
+    // reappearing would mean the enclosure grew tall again.
+    expect(css).not.toMatch(/\.flowstrip \.fpair--loop > \.arr\{/);
+  });
+});
+
+// Goal "registry cards legibility", item 2: the loop is `teams/kestrel.md`'s fifth declared flow
+// stage (after the second human gate). Review round 3 ruling: an earlier version wrapped the avatar
+// pair AND its bound/escalation caption in one enclosure — the caption made the box taller than its
+// siblings, so even once it technically shared a line with the sequence, it read as two things at
+// different heights, not one. The caption now moves out of the enclosure entirely: the enclosure holds
+// only the avatar pair (the same height as any other node, joined by the same `&rarr;`/`.fpair`
+// mechanism), and the bound/escalation becomes a hover/focus tooltip on it — reachable by keyboard,
+// never mouseover-only — with the same facts rendered unconditionally in the run view as the ruling's
+// compensating condition (see tests/board-render.test.ts's own tier-3 live-strip coverage).
+describe("goal 'registry cards legibility' item 2 (review round 3): the loop enclosure is avatar-pair-only, its bounds move to an accessible tooltip", () => {
+  test("the loop node is joined to the sequence by the same &rarr;/.fpair mechanism as every other node, and its enclosure carries only the avatar pair", () => {
+    const root = scaffoldRoot();
+    const repo = loadRepo(root);
+    const html = renderRegistry(repo, root, "teams");
+    const kestrel = cardFor(html, "teams", "kestrel");
+    const flowRow = /<div class="flowstrip">([\s\S]*?)<\/div>\s*<div class="card__h">Definition/.exec(kestrel)![1];
+    // The loop is the 5th node (after step/gate/step/gate) — still inside .fpair.fpair--loop, joined
+    // by the ordinary sequence arrow, exactly like the gate/step nodes before it (fault 3's mechanism).
+    expect(flowRow).toContain('<div class="fpair fpair--loop"><span class="arr">&rarr;</span>');
+    const loopNode = /<div class="m m--loopstage"[\s\S]*?<\/div>\s*<\/div>/.exec(flowRow)![0];
+    expect(loopNode).toContain('<div class="looppair">');
+    // No caption inside the enclosure anymore — it holds only the avatar pair, the same shape as a
+    // bare step's `.m`.
+    expect(loopNode).not.toContain('class="mn"');
+    expect(loopNode).not.toContain("max_rounds");
+  });
+
+  test("the loop's bound/escalation is a tooltip reachable by keyboard focus, not only pointer hover", () => {
+    const root = scaffoldRoot();
+    const repo = loadRepo(root);
+    const html = renderRegistry(repo, root, "teams");
+    const kestrel = cardFor(html, "teams", "kestrel");
+    const flowRow = /<div class="flowstrip">([\s\S]*?)<\/div>\s*<div class="card__h">Definition/.exec(kestrel)![1];
+    const loopNode = /<div class="m m--loopstage"[\s\S]*?<\/div>\s*<\/div>/.exec(flowRow)![0];
+    // Keyboard-reachable: a real tabindex, not merely a title="" attribute a keyboard user can't reach.
+    expect(loopNode).toMatch(/<div class="m m--loopstage" tabindex="0" aria-describedby="([^"]+)"/);
+    const describedbyId = /aria-describedby="([^"]+)"/.exec(loopNode)![1];
+    // The ARIA tooltip pattern: the trigger's aria-describedby points at the tooltip's own id.
+    expect(loopNode).toContain(`role="tooltip" id="${describedbyId}"`);
+    expect(loopNode).toContain("until&nbsp;spec.approved &middot; max&nbsp;3 &middot; on_exhaust:&nbsp;gate");
+  });
+
+  test("assets/styles.css: the enclosure is a near-content-height box (no caption-driven padding/width), and the tooltip shows on both :hover and :focus", () => {
+    const css = readFileSync("assets/styles.css", "utf8");
+    const loopStageRule = /\.flowstrip \.m--loopstage\{([^}]*)\}/.exec(css)![1];
+    expect(loopStageRule).toContain("border:");
+    expect(loopStageRule).toContain("border-radius:");
+    // Regression guard: a caption-sized box (padding tall enough for wrapped text, or any max-width at
+    // all) is what made the enclosure taller than its siblings in the design this closes — see NOTES
+    // CARD-LEGIBILITY's own addendum for the measurements. A real fix has neither.
+    expect(loopStageRule).not.toMatch(/max-width:/);
+    expect(loopStageRule).not.toMatch(/padding:[^;]*\b\d{2,}px/); // no double-digit-plus padding value
+    // The tooltip itself: hidden by default. `position:fixed`, not `absolute` — `.flowstrip`'s own
+    // `overflow:hidden` (fault 3's load-bearing arrow clip) would clip an absolutely-positioned
+    // tooltip rendered above the trigger identically, since it's still a DOM descendant of the
+    // clipped ancestor regardless of its own positioning scheme (verified directly against a real
+    // browser: an `overflow:hidden` ancestor clips a `position:absolute` descendant painted outside
+    // its box, but not a `position:fixed` one — see NOTES CARD-LEGIBILITY's own addendum).
+    const tipRule = /\.flowstrip \.looptip\{([^}]*)\}/.exec(css)![1];
+    expect(tipRule).toContain("position:fixed");
+    expect(tipRule).toMatch(/opacity:0/);
+    // Shown via a JS-toggled class (assets/app.js sets real pixel left/top from the trigger's own
+    // getBoundingClientRect() before showing it — a fixed-position box has no CSS relationship to its
+    // trigger's location) — never a bare `:hover`/`:focus` rule, which would show it pinned at (0,0).
+    expect(css).toMatch(/\.flowstrip \.looptip\.is-shown\{[^}]*opacity:1/);
+    const appJs = readFileSync("assets/app.js", "utf8");
+    expect(appJs).toContain("m--loopstage");
+    // Keyboard-reachable exactly like a pointer: focusin/focusout drive the SAME show/hide path as
+    // mouseover/mouseout, not merely a CSS :focus rule (title="" tooltips famously aren't keyboard
+    // reachable in any browser today — the ruling's own explicit requirement this guards against).
+    expect(appJs).toMatch(/addEventListener\('focusin'/);
+    expect(appJs).toMatch(/addEventListener\('focusout'/);
   });
 });

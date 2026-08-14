@@ -13,7 +13,7 @@ import { detectSandbox, type SandboxDetection } from "../../sandbox.ts";
 import { remoteAgentImplemented } from "../../env.ts";
 import { resolveStep } from "../../flow.ts";
 import type { Team, FlowNode } from "../../types.ts";
-import { tag, kindTag, editorOverlay, orchTurn, callout, card, leadText } from "../components.ts";
+import { tag, kindTag, editorOverlay, orchTurn, callout, card, leadText, cardHeadline } from "../components.ts";
 import { registryKindIconBody } from "./entity-icons.ts";
 import { deriveTeamStyle } from "../team-color.ts";
 import {
@@ -76,7 +76,7 @@ function flowStepAvatar(repo: Repo, team: Team, label: string, member: string | 
   return avatar(repo.agents.get(member)?.style.avatar ?? member.slice(0, 2), team.style.color, { title: `${member} · ${label}` });
 }
 
-function flowNodeHtml(repo: Repo, team: Team, node: FlowNode, capabilities: Array<{ member: string; kind: string }>): string {
+function flowNodeHtml(repo: Repo, team: Team, node: FlowNode, capabilities: Array<{ member: string; kind: string }>, index: number): string {
   if (node.kind === "step") {
     const member = resolveStepMember(team, node.step, capabilities);
     return `<div class="m">${flowStepAvatar(repo, team, node.step, member)}</div>`;
@@ -87,10 +87,18 @@ function flowNodeHtml(repo: Repo, team: Team, node: FlowNode, capabilities: Arra
   const [a, b] = node.between;
   const avA = flowStepAvatar(repo, team, a, resolveStepMember(team, a, capabilities));
   const avB = flowStepAvatar(repo, team, b, resolveStepMember(team, b, capabilities));
-  // Fault 3: `&nbsp;` inside each key/value pair (until X, max N, on_exhaust: Y) so a narrow card wraps
-  // only at the " · " separators between pairs, never mid-phrase (a bare space let the browser break
-  // "on_exhaust:" from "gate").
-  return `<div class="m"><div class="looppair">${avA}<span class="arr">&#8646;</span>${avB}</div><span class="mn">until&nbsp;${esc(node.until)} &middot; max&nbsp;${node.maxRounds} &middot; on_exhaust:&nbsp;${esc(node.onExhaust)}</span></div>`;
+  // Goal "registry cards legibility", item 2, review round 3 ruling: a caption inside the enclosure
+  // forced it wider/taller than its neighbours (see NOTES CARD-LEGIBILITY's own addendum — capping the
+  // width made it technically inline but visibly two things at different heights, not one sequence).
+  // The enclosure now holds ONLY the avatar pair — the same height as a step's avatar or a gate's
+  // diamond, so it sits on the shared line with nothing to centre against and nothing left over.
+  // `until`/`on_exhaust` move to a hover/focus tooltip (`role="tooltip"` + `aria-describedby`,
+  // `tabindex="0"` so a keyboard user reaches it exactly like a pointer user — never mouseover-only).
+  // Hover/focus doesn't reach touch, screenshots, or a registry audit — the same two facts also render
+  // unconditionally in the run view's own live strip (render/run.ts), which is the ruling's condition
+  // for moving them off the card at all, not an unrelated addition.
+  const tipId = `loopbounds-${esc(team.name)}-${index}`;
+  return `<div class="m m--loopstage" tabindex="0" aria-describedby="${tipId}"><div class="looppair">${avA}<span class="arr">&#8646;</span>${avB}</div><span class="looptip" role="tooltip" id="${tipId}">until&nbsp;${esc(node.until)} &middot; max&nbsp;${node.maxRounds} &middot; on_exhaust:&nbsp;${esc(node.onExhaust)}</span></div>`;
 }
 
 // One bordered container per entity, built through the shared `card()` primitive (components.ts) —
@@ -193,12 +201,14 @@ export function renderRegistry(
       // the gap `.flowstrip`'s own `column-gap` reserves before it. That gap doesn't exist before a
       // wrapped LINE's own first item (flex-wrap never inserts one there), so the same arrow lands off
       // the strip's own left edge and is clipped by `overflow:hidden` — no leading connector, no split
-      // pair, on one baseline. The loop pair gets its own modifier (`fpair--loop`): its node stacks an
-      // avatar row above a caption, and the arrow anchors near the avatar row specifically, not the
-      // vertical center of that whole taller stack.
+      // pair, on one baseline. The loop pair carries its own modifier (`fpair--loop`) purely to select
+      // its enclosure's border/tint (assets/styles.css `.m--loopstage`) — since review round 3 moved
+      // its bound/escalation caption to a hover/focus tooltip (NOTES CARD-LEGIBILITY's own addendum),
+      // the node itself is exactly as tall as its avatar pair, the same as every sibling `.m`, and
+      // needs no special arrow offset: the ordinary centered `.fpair > .arr` rule now applies to it too.
       const flow = t.flow
         .map((n, i) => {
-          const node = flowNodeHtml(repo, t, n, teamCapabilities);
+          const node = flowNodeHtml(repo, t, n, teamCapabilities, i);
           if (i === 0) return node;
           const pairCls = n.kind === "loop" ? "fpair fpair--loop" : "fpair";
           return `<div class="${pairCls}"><span class="arr">&rarr;</span>${node}</div>`;
@@ -223,7 +233,7 @@ export function renderRegistry(
         ? `${g.protected_branches?.length ? `<div class="prow"><span class="k">protected_branches</span><span class="v mono">${g.protected_branches.map(esc).join(", ")}</span></div>` : ""}${g.protected_paths?.length ? `<div class="prow"><span class="k">protected_paths</span><span class="v mono">${g.protected_paths.map(esc).join(", ")}</span></div>` : ""}${g.never?.length ? `<div class="prow"><span class="k">never</span><span class="v chiprow">${g.never.map((n) => tag(n, "tag")).join("")}</span></div>` : ""}`
         : "";
       const knowledgeRow = t.knowledge?.length ? `<div class="prow"><span class="k">knowledge</span><span class="v chiprow">${t.knowledge.map((k) => tag(k, "tag")).join("")}</span></div>` : "";
-      const inner = `${leadText(firstParagraph(t.charter))}<div class="card__h">Declared flow</div><div class="flowstrip">${flow}</div>
+      const inner = `${cardHeadline(t.description)}${leadText(firstParagraph(t.charter))}<div class="card__h">Declared flow</div><div class="flowstrip">${flow}</div>
       <div class="card__h">Definition</div>
       <div class="prow"><span class="k">members</span><span class="v chiprow">${memberAvatars}</span></div>
       <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>${guardrailRows}${knowledgeRow}`;
@@ -300,7 +310,7 @@ export function renderRegistry(
       // `result` (required on every cli member) is prose describing what the binary emits — the same
       // muted-lead treatment as the description above, not a cramped one-line `.prow` value.
       const resultHtml = a.result ? leadText(a.result) : "";
-      const inner = `${leadText(firstSentence(a.body ?? ""))}<div class="card__h">Skills &amp; knowledge</div><div class="recipe">${recipe || '<span style="color:var(--fg-mute)">none declared</span>'}</div>
+      const inner = `${cardHeadline(a.description)}${leadText(firstSentence(a.body ?? ""))}<div class="card__h">Skills &amp; knowledge</div><div class="recipe">${recipe || '<span style="color:var(--fg-mute)">none declared</span>'}</div>
       <div class="card__h">Definition</div>
       <div class="prow"><span class="k">kind</span><span class="v">${agentKindBadge(a.kind)}${a.model ? ` <span class="mono">&middot; ${esc(a.model)}</span>` : ""}</span></div>
       <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>${toolsRow}${connectorsRow}${commandRow}${contextViaRow}${contextArtifactsRow}${cwdRow}${timeoutRow}${serverRow}${toolRow}${resultHtml}${remoteWarning}${cliToolsWarning}${sandboxWarning}`;
@@ -415,7 +425,7 @@ export function renderRegistry(
       <h1>${title}</h1>
     </header>
     ${filterHtml}
-    <div class="pcards" style="grid-template-columns:repeat(auto-fill,minmax(320px,1fr))">
+    <div class="pcards entity-grid" style="grid-template-columns:repeat(auto-fill,minmax(320px,1fr))">
       ${teamBlocks}${agentBlocks}${skillBlocks}${knowledgeBlocks}${typeBlocks}${connectorBlocks}${evalBlocks}
     </div>
   </main>`;

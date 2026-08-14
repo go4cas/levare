@@ -135,6 +135,14 @@ class FakeElement extends FakeEventTarget {
   disabled = false;
   hidden = false;
   style: Record<string, string> = {};
+  // Modal-scroll regression (goal unit "registry cards legibility", item 4): scrollHeight is settable
+  // by a fixture to stand in for real layout ("this textarea's content is N px tall"), scrollTop tracks
+  // what app.js#openEditor actually does to it, and selectionStart/End track the caret app.js sets
+  // before focusing — enough to assert the fix without a real layout engine.
+  scrollTop = 0;
+  scrollHeight = 0;
+  selectionStart = 0;
+  selectionEnd = 0;
   private attrs = new Map<string, string>();
   private classSet = new Set<string>();
   private _value = "";
@@ -205,6 +213,10 @@ class FakeElement extends FakeEventTarget {
   }
   focus(): void {
     /* no-op — nothing in the tested logic depends on real focus behavior */
+  }
+  setSelectionRange(start: number, end: number): void {
+    this.selectionStart = start;
+    this.selectionEnd = end;
   }
   get value(): string {
     return this._value;
@@ -540,6 +552,42 @@ describe("registry overlay editor — real app.js exercised against a fake DOM",
   beforeEach(() => {
     h = setupOverlay();
     p = overlayParts(h);
+  });
+
+  // Modal-scroll regression (goal unit "registry cards legibility", item 4): the overlay used to open
+  // scrolled to the frontmatter pane's own BOTTOM, clipping content a Conductor could never scroll back
+  // up to see — a caret-follow-on-focus artifact (setting `.value` leaves the caret at the end; focusing
+  // the textarea then scrolled to reveal it). Simulate "this pane's content is taller than its visible
+  // box" via the fixture's own scrollHeight, then assert app.js#openEditor explicitly resets both the
+  // caret and each pane's scroll position to the start before it ever focuses anything.
+  test("opening the editor resets both panes to their own top, regardless of content length", () => {
+    p.front.scrollHeight = 900; // taller than the frontmatter pane's capped max-height
+    p.body.scrollHeight = 1400; // taller than the body pane's capped max-height
+    p.front.scrollTop = 500; // simulate a stale scroll position from a previous open
+    p.body.scrollTop = 700;
+    clickOn(h.doc, h.editOpen);
+    expect(p.front.scrollTop).toBe(0);
+    expect(p.body.scrollTop).toBe(0);
+    expect(p.front.selectionStart).toBe(0);
+    expect(p.front.selectionEnd).toBe(0);
+    expect(p.body.selectionStart).toBe(0);
+    expect(p.body.selectionEnd).toBe(0);
+  });
+
+  // The same measurement bug this fix closes: autoGrow reads `scrollHeight`, which the real DOM
+  // reports as 0 for a `display:none` (hidden) element — so autoGrow MUST run after the overlay is
+  // unhidden, never before, or every pane's grown height silently collapses to its CSS min-height.
+  test("the overlay is unhidden before autoGrow measures either pane's content height", () => {
+    const state: { hiddenAtFirstMeasure: boolean | null; measureCount: number } = { hiddenAtFirstMeasure: null, measureCount: 0 };
+    Object.defineProperty(p.front, "scrollHeight", {
+      get() {
+        if (state.measureCount++ === 0) state.hiddenAtFirstMeasure = h.overlay.hidden;
+        return 240;
+      },
+    });
+    clickOn(h.doc, h.editOpen);
+    expect(state.measureCount).toBeGreaterThan(0);
+    expect(state.hiddenAtFirstMeasure).toBe(false);
   });
 
   test("opening the editor populates the overlay's two zones from the clicked card and kicks off a live check", () => {

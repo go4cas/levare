@@ -731,3 +731,58 @@ see NOTES RAIL-UNREACHABLE's addendum for the full mechanism and the measurement
 See NOTES RAIL-UNREACHABLE for the full reasoning behind both fault-1 decisions (what the rail renders;
 why `validate` warns instead of staying silent or hard-erroring) and why the CSS and markdown defects
 were checked for, and found NOT to share, a single root cause. No frontmatter schema changed.
+
+## The registry cards became dense and hard to scan, and one modal couldn't show its own file's top — closed (NOTES CARD-LEGIBILITY)
+
+The previous unit (NOTES REGISTRY-BODY) fixed cards silently dropping fields and bodies the files
+actually declared — a real defect. It also created a second-order problem: with everything rendering,
+the cards are dense, ragged, and hard to scan. This unit closes four findings from the same board
+walkthrough, in priority order.
+
+**The Edit source modal opened scrolled to the frontmatter pane's own bottom**, clipping content with no
+way to scroll back to the start — the one genuinely functional defect here (the modal is the board's
+only write path). Root cause: `autoGrow()` measured `scrollHeight` while the overlay was still
+`display:none` (reads 0), and focusing the frontmatter textarea afterward scrolled to reveal the caret,
+which sits at the END of the text after `.value` is set. Fixed by unhiding before measuring and
+explicitly resetting scroll position and caret to the start before focus runs; each pane now also caps
+its own growth and scrolls independently (`max-height` + `overflow-y:auto` per textarea) instead of
+sharing one region with fixed `min-height` fallbacks — the same bug's other visible symptom
+("body has ample unused height, frontmatter has almost none").
+
+**Teams and agents gain an optional `description:`**, rendered as a short, bold card headline above the
+existing body-derived lead paragraph — additive, never a replacement (kestrel's charter, including "the
+team never touches a project's main branch," keeps rendering unconditionally below it). Falls back to
+no headline at all (not a manufactured one) when absent, so a studio with no `description:` anywhere
+renders byte-identical to before this unit — matching the precedent skill/knowledge cards already set
+with their own optional `description:`. Display-only: parsed and validated like every other card field,
+never read by the Runner. The accepted cost: a hand-written description can drift from the body it
+summarizes, and nothing detects that — see NOTES CARD-LEGIBILITY for the full argument against adding
+the field at all, and why it was overridden.
+
+**The declared-flow loop renders inline as the sequence's own fifth stage**, joined by the same
+`&rarr;`/`.fpair` mechanism (NOTES RAIL-UNREACHABLE) every other node uses, wrapped in a new subtle
+bordered enclosure (`.m--loopstage`) marking "one stage, two members alternating inside it." Its bound
+and escalation path (`until`/`max_rounds`/`on_exhaust`) stay visible inside that enclosure at their
+existing smaller, muted treatment — never moved to hover, since a Conductor approving a start gate needs
+to see what happens if a loop never converges, not go looking for it.
+
+**Registry cards stop stretching to a grid row's tallest sibling.** A prior round already pinned the
+actions row to a stretched card's true bottom (`.rendered{flex:1}` + `.editbar{margin-top:auto}`) — that
+kept every row's buttons on one baseline, but the leftover space still had to go somewhere, and it
+landed as a blank region inside a shorter card's own content area (lyra/scribe next to corvid; press
+next to kestrel) — exactly the void this unit reports. Pinning the footer relocates the leftover space,
+it doesn't remove it. `.entity-grid{ align-items:start }` opts registry's own grid out of row-stretch
+entirely (scoped so the studio's project-card grid, which doesn't share this problem, is untouched), so
+each card is exactly as tall as its own content — an intentional ragged bottom across a row, never a
+void. The old flex:1/margin-top:auto rules are removed, not left inert.
+
+The loop's arrow-to-avatar alignment and the grid fix were both verified by rendering a real
+`levare serve` in headless Chromium (the same lesson NOTES RAIL-UNREACHABLE's addendum names: a
+DOM-string assertion passes through a layout defect) — against the exact studio docs/guide/04-workflow's
+own chapters build up incrementally, the only fixture with enough flow elements to wrap and an uneven
+grid row.
+
+No frontmatter schema changed beyond the one new optional `description:` string on two entity kinds.
+See NOTES CARD-LEGIBILITY for the full reasoning, the rejected alternative designs (an always-rendered
+headline that would duplicate the lead paragraph's own opening sentence; footer-pinning instead of
+content-height grid cards), and the measurements behind the arrow re-alignment.

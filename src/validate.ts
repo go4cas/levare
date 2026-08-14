@@ -296,6 +296,11 @@ const TEAM_SCHEMA: Schema = {
   name: "team",
   fields: {
     name: { type: "str", required: true, description: "The team's name." },
+    description: {
+      type: "str",
+      required: false,
+      description: "A short card headline (display-only — never read by the runner). Falls back to the charter's own lead when absent.",
+    },
     consumes: { type: "str[]", required: true, description: "Artifact kinds this team consumes as input." },
     produces: { type: "str[]", required: true, description: "Artifact kinds this team can produce." },
     members: { type: "str[]", required: true, description: "The agents (members) that belong to this team." },
@@ -331,6 +336,11 @@ const AGENT_SCHEMA: Schema = {
   name: "agent",
   fields: {
     name: { type: "str", required: true, description: "The member's name." },
+    description: {
+      type: "str",
+      required: false,
+      description: "A short card headline (display-only — never read by the runner). Falls back to the body's own lead when absent.",
+    },
     kind: {
       type: "enum",
       required: true,

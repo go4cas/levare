@@ -116,6 +116,7 @@ const DEVCONTAINER = `{
 
 const TEAM_KESTREL = `---
 name: kestrel
+description: "Pitch to approved spec"
 consumes: [pitch, product-brief]
 produces: [product-brief, design, spec]
 members: [wren, lyra, finch]
@@ -148,6 +149,7 @@ review loop and a merge gate.
 
 const AGENT_WREN = `---
 name: wren
+description: "Product framer"
 kind: native
 produces: [product-brief]
 model: claude-sonnet-5
@@ -165,6 +167,7 @@ Write in the calm, factual register of the studio. Produce a single \`brief\` ar
 
 const AGENT_LYRA = `---
 name: lyra
+description: "Designer"
 kind: native
 produces: [design, spec]
 model: claude-sonnet-5
@@ -183,6 +186,7 @@ question in the body; never guess laterally. Produce \`design\` then \`spec\` ar
 
 const AGENT_FINCH = `---
 name: finch
+description: "Wrapped Codex reviewer"
 kind: cli
 produces: [review]
 command: [codex, review, --input, "{task}", --repo, "{feature_repo}"]

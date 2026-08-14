@@ -121,6 +121,7 @@ function toTeam(d: Record<string, YamlValue>, body: string, file: string): Team 
   const learnings = existsSync(learningsFile) ? readFileSync(learningsFile, "utf8") : "";
   return {
     name,
+    description: optStr(d.description),
     consumes: strArr(d.consumes),
     produces: strArr(d.produces),
     members: strArr(d.members),
@@ -179,6 +180,7 @@ function toActions(v: YamlValue): Record<string, string[]> | undefined {
 function toAgent(d: Record<string, YamlValue>, body: string): Agent {
   return {
     name: reqStr(d, "name"),
+    description: optStr(d.description),
     kind: d.kind as Agent["kind"],
     produces: strArr(d.produces),
     model: optStr(d.model),

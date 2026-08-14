@@ -14,6 +14,7 @@ A member: what it can produce, and how to invoke it.
 | Field | Type | Required | Nullable | Enum values | Description |
 |---|---|---|---|---|---|
 | `name` | string | ✅ | — | — | The member's name. |
+| `description` | string | — | — | — | A short card headline (display-only — never read by the runner). Falls back to the body's own lead when absent. |
 | `kind` | enum | ✅ | — | `native` · `cli` · `remote` | How this member is invoked: native (the built-in Claude Agent SDK), cli (a wrapped vendor CLI), or remote (an MCP tool call). |
 | `produces` | string[] | ✅ | — | — | The artifact kinds this member can produce — the studio's capability declaration. A member that produces nothing can bind to no flow step, so no team it belongs to can run. |
 | `model` | string | — | — | — | native: the model this member uses. cli: also settable, but only reaches the vendor if command includes a {model} placeholder. |
