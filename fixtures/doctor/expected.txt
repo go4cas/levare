@@ -11,4 +11,4 @@ linear · mcp · tool
   env LINEAR_API_KEY missing
   mcp linear-mcp
   → missing-env
-  ⚠ members depending on 'linear' will fail mid-work when they reach for it
+  ⚠ members depending on 'linear' will fail mid-work when they reach for it — cp .env.example .env, then set LINEAR_API_KEY

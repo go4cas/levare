@@ -245,7 +245,12 @@ export function formatDoctor(
         h.role === "model"
           ? `members depending on '${h.name}' for model access cannot start`
           : `members depending on '${h.name}' will fail mid-work when they reach for it`;
-      out.push(`  ⚠ ${consequence}`);
+      // NOTES DOCS-WALKTHROUGH-2: the diagnosis alone ("missing-env", the consequence above) named the
+      // problem but not the remedy — a cold-start walkthrough had to already know `cp .env.example .env`
+      // to fix this; nothing in doctor's own output said so. Match the standard the subscription warning
+      // above already sets: name the field, the consequence, AND the literal fix.
+      const missing = h.env.filter((e) => !e.present).map((e) => e.name);
+      out.push(`  ⚠ ${consequence} — cp .env.example .env, then set ${missing.join(", ")}`);
     }
   }
   return out.join("\n") + "\n";

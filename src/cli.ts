@@ -108,8 +108,16 @@ function checkOrchestratorPrompt(): PromptCheck {
 
 // `levare doctor [root]` — walk connectors, report env presence + CLI/MCP reachability (§6), the
 // Orchestrator's own boundary state, and where each present variable came from (.env or shell).
+// NOTES DOCS-WALKTHROUGH-2: `[root]` is documented (`--help`, above) as optional, defaulting to
+// wherever the operator actually is — the ONE thing a cold-start walkthrough found it did NOT do: a
+// bare `levare doctor` resolved to `DEFAULT_ROOT` (`fixtures/golden`, levare's own dev fixture),
+// which only exists inside levare's own source checkout. Run from a real studio, or an empty
+// directory, or anywhere else, it failed with `NOT_FOUND fixtures/golden` — location-independent,
+// since the fixture path is compiled in, not discovered. `context`/`serve` keep `DEFAULT_ROOT` (a
+// deliberate dev convenience for those two, unaffected by this fix); `doctor [root]`'s own
+// documented default is the current directory.
 export function runDoctorCmd(rest: string[]): number {
-  const root = rest.find((a) => !a.startsWith("-")) ?? DEFAULT_ROOT;
+  const root = rest.find((a) => !a.startsWith("-")) ?? ".";
   try {
     // NOTES C11 part 4: `.env` at the studio root loads into this process's own env BEFORE anything
     // below reads it — the same "on startup" contract `runServeCmd` follows — so doctor reports
