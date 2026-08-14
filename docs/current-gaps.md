@@ -926,3 +926,42 @@ happened not to hit it: a throwaway reproduction forced the two seed commits int
 seconds, confirmed the OLD (unnormalized) comparison fails against the genuinely-differing SHAs it
 produced, and confirmed the NEW (normalized) comparison passes against the same run.
 
+## `readBoundPort`'s intermittent cold-start flake was a read-loop race, not a too-tight timeout —
+## closed (NOTES DIST5-HANG-2)
+
+`tests/serve-subprocess.ts#readBoundPort` (every `spawnLevareServe` caller, most visibly
+`tests/orchestrator-compiled-smoke.test.ts`'s real compiled-binary spawns) intermittently failed with
+"did not print its bound port" — carried across three prior units this week as a pre-existing,
+environmental, deliberately-untouched flake, provisionally attributed to a freshly `bun build
+--compile`d binary's real one-time cold-start cost exceeding the fixed 10s wait. That attribution was
+never measured. Direct instrumentation this round found the real cause: the polling loop issued a FRESH
+`reader.read()` every ~200ms tick to keep checking its own deadline, racing it against a timer via
+`Promise.race` — but a losing `Promise.race` promise is not cancelled, so once the target log line took
+more than one tick to appear, TWO OR MORE `read()` calls were outstanding on the same reader at once.
+When the process finally wrote its line, the Streams spec resolves queued reads FIFO: an earlier,
+already-abandoned tick's `read()` silently consumed the real chunk, and the iteration actually being
+awaited saw the stream already drained. The loop then spun uselessly to the full deadline and failed —
+REGARDLESS of how long that deadline was, which is why widening the timeout alone would not have fixed
+it. Reproduced deterministically (not intermittently) at any artificial delay past ~200ms
+(`tests/serve-subprocess.test.ts`), which also explains the real-world "roughly 1 in 7" rate: direct
+measurement of repeated fresh compiled-binary spawns on this project's own container put real bind
+times mostly in the tens of milliseconds, occasionally crossing the one 200ms tick boundary that
+triggers the bug.
+
+Closed by keeping exactly one outstanding `reader.read()` at a time — a tick that loses the race reuses
+the SAME pending read next iteration instead of abandoning it and starting a new one — so no chunk is
+ever handed to a promise nothing is still listening for. `readBoundPort` is now exported and driven
+directly against fake slow/dead subprocesses at scaled-down timeouts, proving the mechanism (not
+timing luck): a process that writes its line past a too-tight bound is killed by it and reported by
+name; the identical delay against a properly-sized bound succeeds every time; a process that actually
+exits (vs. one that's merely slow) is now told apart in the failure message itself
+(`tests/serve-subprocess.test.ts`). As defense in depth, a compiled binary's own bound-port wait
+(`COMPILED_BINARY_BIND_TIMEOUT_MS`, 30s, exported from `serve-subprocess.ts`) is now separately derived
+and used by both `orchestrator-compiled-smoke.test.ts` spawns, with their own outer Bun `test()`
+timeouts widened to match — the same "outer must stay comfortably longer than inner, never shorter" rule
+NOTES DIST5-HANG already established for this same describe block, now audited for `readBoundPort`'s own
+bound too. Every successful bind now logs its own real elapsed time unconditionally, and a timeout now
+names whether the process was still alive (healthy but slow) or had actually exited (with its code) —
+the same "surface which side of the constraint it ran on, in its own output, every run" practice this
+project adopted after its third false-pass incident (see the pattern section under NOTES DIST5-HANG),
+applied here as its fourth instance.
