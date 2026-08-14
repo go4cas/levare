@@ -251,6 +251,16 @@ export const ARTIFACT_SCHEMA: Schema = {
       required: false,
       description: "Present only when this artifact's producing member declared sandbox: unsandboxed — the documented reason its spawn never runs under levare's OS sandbox, on any host.",
     },
+    // NOTES REGISTRY-PROVENANCE: a content hash over the governing registry — teams/, agents/,
+    // connectors/, projects/, skills/, knowledge/, types/, studio.md — exactly as it stood on disk when
+    // this artifact was produced (git.ts#registryStateHash). Present on every artifact from every member
+    // kind, unlike sandbox above. Optional/nullable: pre-this-ruling artifacts carry none.
+    registry: {
+      type: "str",
+      required: false,
+      nullable: true,
+      description: "A content hash over the governing registry (teams/agents/connectors/projects/skills/knowledge/types/studio.md) as it stood on disk when this artifact was produced — what definitions actually governed the dispatch. Absent on pre-this-ruling artifacts.",
+    },
   },
 };
 

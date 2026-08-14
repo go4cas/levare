@@ -389,6 +389,12 @@ export interface Artifact {
    * because nothing else was reported. Absent for native/remote and every pre-this-ruling artifact
    * (Ruling 2 wraps only the two cli spawn paths). */
   sandbox?: "full" | "fs-only" | "none" | null;
+  /** NOTES REGISTRY-PROVENANCE: a content hash over the governing registry (teams/, agents/,
+   * connectors/, projects/, skills/, knowledge/, types/, studio.md) exactly as it stood on disk when
+   * this artifact was produced — see git.ts#registryStateHash's own doc for why a content hash, not
+   * `HEAD`, is what gets recorded. Present on every artifact from every member kind (unlike `sandbox`,
+   * this is not about how the spawn ran, but about what defined it). Absent on pre-this-ruling artifacts. */
+  registry?: string | null;
 }
 
 export interface Usage {
