@@ -2,7 +2,7 @@ import { test, expect, describe, afterAll } from "bun:test";
 import { readFileSync, rmSync, mkdtempSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnLevareServe } from "./serve-subprocess.ts";
+import { spawnLevareServe, COMPILED_BINARY_BIND_TIMEOUT_MS } from "./serve-subprocess.ts";
 import { DEFAULT_INTERPRET_TIMEOUT_MS } from "../src/orchestrator-boundary.ts";
 
 // NOTES DIST4/DIST5: proof against the ACTUAL compiled binary, not just the source shim, of two
@@ -115,10 +115,17 @@ describe("the compiled binary's hidden `__worker` subcommand reaches the real wo
 describe("a compiled `serve` dispatches a real Orchestrator turn through the real self-invoked worker (NOTES DIST5)", () => {
   test("with no credential at all, still reports the honest disabled state (a genuinely missing prerequisite, not a compiled-binary limitation)", async () => {
     const root = seedScratchStudio();
+    // NOTES DIST5-HANG-2 (readBoundPort cold-start flake): `spawnLevareServe`'s own bound-port wait
+    // must use `COMPILED_BINARY_BIND_TIMEOUT_MS`, not the source-shim-sized default, because `bin`
+    // below is a freshly `bun build --compile`d binary — see serve-subprocess.ts's own comment on that
+    // constant for why. This test's own outer Bun `test()` timeout (3rd arg) is derived from it, the
+    // same rule DEFAULT_INTERPRET_TIMEOUT_MS's callers already follow: comfortably longer, never
+    // shorter, with margin for the rest of the test's own work (the fetch call, assertions, cleanup).
     const { proc, base } = await spawnLevareServe([root, "--no-daemon"], {
       cwd: process.cwd(),
       env: { ...process.env, ANTHROPIC_API_KEY: "" },
       bin: scratchOut,
+      timeoutMs: COMPILED_BINARY_BIND_TIMEOUT_MS,
     });
     try {
       const res = await fetch(`${base}/orchestrator/message`, {
@@ -137,7 +144,7 @@ describe("a compiled `serve` dispatches a real Orchestrator turn through the rea
       proc.kill();
       rmSync(root, { recursive: true, force: true });
     }
-  }, 15_000);
+  }, COMPILED_BINARY_BIND_TIMEOUT_MS + 15_000);
 
   // The core DIST5 proof: a credential IS present (so the boundary is selectable) and the native
   // binary resolves (this sandbox's own installed platform package) — the route must now actually
@@ -182,10 +189,14 @@ describe("a compiled `serve` dispatches a real Orchestrator turn through the rea
   // unconditionally, so if/when a real host DOES take 20-45s, the reason is in stderr, not re-derived.
   test("with a credential present, the real spawn is attempted end-to-end — never disabled, never ENOENT/$bunfs/unknown-command", async () => {
     const root = seedScratchStudio();
+    // NOTES DIST5-HANG-2: see the sibling test's identical comment — `timeoutMs` must be
+    // `COMPILED_BINARY_BIND_TIMEOUT_MS` here too, since this also spawns the freshly-compiled
+    // `scratchOut` binary, not the fast source shim.
     const { proc, base } = await spawnLevareServe([root, "--no-daemon"], {
       cwd: process.cwd(),
       env: { ...process.env, ANTHROPIC_API_KEY: "sk-ant-test-not-real" },
       bin: scratchOut,
+      timeoutMs: COMPILED_BINARY_BIND_TIMEOUT_MS,
     });
     try {
       const res = await fetch(`${base}/orchestrator/message`, {
@@ -223,10 +234,10 @@ describe("a compiled `serve` dispatches a real Orchestrator turn through the rea
       proc.kill();
       rmSync(root, { recursive: true, force: true });
     }
-    // Comfortably longer than `DEFAULT_INTERPRET_TIMEOUT_MS` (45s, the real bound `interpret()` is
-    // entitled to take before its own timeout-and-report fires) — margin on top covers this run's own
-    // fresh scratch-binary self-invocation cold start and the HTTP round trip, never the reverse (see
-    // this test's own comment above, and orchestrator-boundary.ts's identical rule for every other
-    // caller of this boundary).
-  }, DEFAULT_INTERPRET_TIMEOUT_MS + 15_000);
+    // Comfortably longer than `COMPILED_BINARY_BIND_TIMEOUT_MS + DEFAULT_INTERPRET_TIMEOUT_MS` — the
+    // two bounds this test's own call chain is entitled to use IN SEQUENCE (readBoundPort's own wait,
+    // then `interpret()`'s own timeout-and-report) — plus margin for the HTTP round trip and
+    // assertions, never the reverse (see this test's own comment above, and orchestrator-boundary.ts's
+    // identical rule for every other caller of that boundary).
+  }, COMPILED_BINARY_BIND_TIMEOUT_MS + DEFAULT_INTERPRET_TIMEOUT_MS + 15_000);
 });

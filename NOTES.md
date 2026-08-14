@@ -15853,3 +15853,154 @@ item 5's new doctor output). `levare doctor` (bare, no root) confirmed working f
 `levare validate fixtures/golden` → valid; `levare replay fixtures/golden --stubs` → oracle match
 byte-for-byte, unaffected (fixtures/golden's own `finch`, distinct from the scaffold's, is untouched —
 item 9 only rebacks `src/init.ts`'s scaffold template).
+
+# NOTES ORCH-B-DATE-FLAKE (round 2, 2026-08-14) — the date fix's own comment named the SHA problem and left it unfixed; closed now
+
+**Goal.** The suite has two known-intermittent tests. This entry closes the first, whose diagnosis was
+already complete going in: `tests/orchestrator.test.ts`'s "(b) one gate-resolution path: chat vs POST
+/gates" test — the SAME test the original NOTES ORCH-B-DATE-FLAKE (2026-07-23, above) closed once
+already — failed on CI this week with two genuinely different `approved_commit` SHAs
+(`a3812d7edbdda080d1f25ad0538fefb472c978bc` vs `249d60cf8b3594d22caf4aca843c8eb4f4305919`) in a
+byte-for-byte comparison the round-1 fix left otherwise unnormalized.
+
+**The gap round 1 left, read from its own words.** Round 1's fix normalized `approved_by` (a live-clock
+date) out of the comparison and left this comment directly above the assertion: *"A literal byte-for-byte
+compare is only ever wrong if the two live-clock reads straddle a UTC calendar-day boundary between
+them."* That sentence is about `approved_by` specifically — it says nothing about `approved_commit` (A7,
+`gateops.ts#doApprove`), a SEPARATE field in the same file, non-deterministic for a DIFFERENT reason: it
+records the PRE-approval HEAD of whichever of the two independently-seeded scratch repos (`viaChat`,
+`viaRoute`) it was stamped in. Two repos, two separate `git init`+commit histories — their seed commits
+share identical tree content (both copy `fixtures/golden`) but carry independent author/committer
+timestamps, so the seed SHAs match only when both `seedScratchRepo()` calls land in the same wall-clock
+second. True often enough on a fast, idle dev machine to hide this for the test's entire history since
+round 1; never guaranteed, and CI (slower, more loaded) crossed that second boundary this week.
+
+**Established, not assumed: this is a real, on-demand-reproducible divergence, the same discipline round
+1 itself modeled.** A throwaway reproduction (not committed) forced the two `seedScratchRepo()` calls
+1.1s apart — comfortably past a one-second boundary — then ran the real `handle()`-vs-`board.fetch()`
+chat/route flow against them. Result: `approved_commit` genuinely differed every time
+(`d1baa8311437ce148c12a9993d6d2152828cc33d` vs `2866a083b8a8d68c063c636a01c70b9167f33b99` on the run kept
+for record), the OLD (date-only-normalized) comparison genuinely failed against that real divergence, and
+a NEW comparison that also normalizes `approved_commit` genuinely passed against the same run — proving
+the mechanism, not hoping a real flake recurs during verification.
+
+**Fix.** `tests/orchestrator.test.ts`: normalize `approved_commit` out of the byte-for-byte comparison
+alongside the date (same `.replace()` chain), and add an independent assertion on EACH side —
+`chatFile`/`routeFile` — that `approved_commit` is a well-formed 40-hex ref
+(`/^approved_commit: [0-9a-f]{40}$/m`), mirroring the assertion `tests/security-audit.test.ts`'s own A7
+test (`~line 287`) already makes. What the test's own name promises — "the same file mutation and commit
+SHAPE" — is what it now actually checks; no two independently-seeded repos could ever be expected to
+produce the same literal commit, and asserting so was never the intent, only an oversight in round 1's
+own otherwise-correct fix. No production code changed.
+
+**Verification.** `bun test tests/orchestrator.test.ts` → 20 pass, 74 expect() calls. Full suite and
+typecheck verified together with the second fix below.
+
+# NOTES DIST5-HANG-2 (2026-08-14) — `readBoundPort`'s cold-start flake was a read-loop concurrency bug, not a too-tight timeout
+
+**Goal.** The suite's second known-intermittent test: `tests/orchestrator-compiled-smoke.test.ts`'s
+`readBoundPort` (via `tests/serve-subprocess.ts`, shared by every `spawnLevareServe` caller) fires
+roughly 1 in 7 full-suite runs — carried across three prior units this week as pre-existing and
+environmental, per NOTES's own "the DIST5 compiled-serve smoke test's 20001ms timeout" entry (above,
+under the R4-SANDBOX-TLS round-3 goal), which explicitly left it untouched pending "a Conductor deciding
+whether `readBoundPort`'s fixed 10s timeout should widen for a cold-start case." Instructed to check
+NOTES DIST5-HANG first: that fault was a test's own OUTER bound (20s) shorter than a real INNER bound
+the code beneath it was contractually entitled to use (45s, `DEFAULT_INTERPRET_TIMEOUT_MS`) — a
+timeout-NESTING bug. Instructed not to assume this is the same shape until established.
+
+**It is not the same shape — established by direct measurement, not inference, the same rule DIST5-HANG
+itself had to relearn after its own struck-through speculation.** `serve()`'s own startup path
+(`board/serve.ts`) is a synchronous chain (`createBoard`, then `Bun.serve`) with no code-level timeout
+contract to derive a ceiling from — unlike `interpret()`, nothing here is an async operation with a
+documented bound. So the FIRST question had to be: how long does a fresh compiled binary's `serve`
+startup actually take? A dedicated measurement script (`bun build --compile`ing 6 fresh scratch binaries
+and timing each one's real bound-port log line, mirroring `orchestrator-compiled-smoke.test.ts`'s own
+shape) put real bind times at **35ms–250ms**, including the very first invocation right after compile —
+nowhere near the old 10s bound, and nowhere near the ~20s figure the prior entry's own title cited.
+Deliberate memory pressure (a 1.4GB hog process, pushing this container's already-tight 2.8GB/2GB-swap
+budget further) moved the needle by only tens of milliseconds. Cold start was never the bottleneck.
+
+**The real defect, found by instrumenting `readBoundPort` directly.** The polling loop issued a FRESH
+`reader.read()` every ~200ms tick, racing it against a deadline-check timer via `Promise.race` — but a
+LOSING `Promise.race` promise is not cancelled; the underlying `reader.read()` call stays outstanding.
+Once the target log line took more than one 200ms tick to appear, TWO OR MORE `read()` calls were
+outstanding on the same reader simultaneously. The Streams spec resolves queued reads FIFO: when the
+process finally wrote its line, an EARLIER, already-abandoned tick's `read()` — not the one the current
+loop iteration was actually awaiting — silently consumed the real chunk. The current iteration's own
+await then saw the stream already drained (`done: true`, no value, once the process later exited), spun
+uselessly to the FULL deadline, and failed — regardless of how long that deadline was. This is why
+widening the timeout alone (30s, 60s, anything) would never have fixed it: the bug discards the data,
+it doesn't merely run out of time to find it.
+
+**Reproduced deterministically, not intermittently — the actual explanation for "roughly 1 in 7."** A
+fake subprocess that sleeps a controlled delay then prints a matching log line, raced against
+`readBoundPort` directly: any delay ≤ ~200ms (single read, no concurrency) succeeded; ANY delay past
+~200ms (150ms passed, 250ms/450ms/900ms all failed, every single time, at a 3s bound — not
+intermittently) triggered the bug. Cross-referenced against the real measurement above (35ms–250ms
+across 6 fresh binaries, ONE of six landing at 247ms — just past the boundary): a real bind crossing that
+one 200ms tick is exactly the rare-but-real event the "1 in 7" rate describes, not cold-start duration
+variance.
+
+**Fix.** `tests/serve-subprocess.ts#readBoundPort`: keep exactly ONE outstanding `reader.read()` (and
+its `.then()` wrapper) at a time — a tick that loses the race reuses the SAME pending promise next
+iteration instead of abandoning it and issuing a new one, so no chunk is ever handed to a promise
+nothing is still listening for. `reader.releaseLock()` on a still-outstanding read now gets its expected
+`AbortError` pre-caught (a deliberate, harmless rejection on deadline, not an unhandled one). Two
+secondary hardenings, applied on the same DIST5-HANG "audit every caller, derive don't guess" principle:
+(1) a separate, explicitly-derived `COMPILED_BINARY_BIND_TIMEOUT_MS` (30s, exported) for the two
+compiled-binary spawns in `orchestrator-compiled-smoke.test.ts` — defense in depth for a genuinely
+slower real host, not because 10s was ever proven too tight for THIS bug — with both tests' own outer
+Bun `test()` timeouts re-derived from it (45s and `COMPILED_BINARY_BIND_TIMEOUT_MS +
+DEFAULT_INTERPRET_TIMEOUT_MS + 15s` = 90s respectively), preserving the inner-never-exceeds-outer rule
+DIST5-HANG established for this same describe block; (2) a timeout's error message now names which side
+of the constraint the process was actually on — `exitCode === null` ("still running — healthy but slow,
+not hung or crashed") vs. a real exit code — instead of one bare "did not print its bound port" for two
+different failure classes. Every successful bind now logs its own real elapsed time unconditionally
+(`[serve-subprocess] <bin> serve bound port <port> in <ms>ms`), the same "surface which side of the
+constraint it ran on, in its own output, every run" practice this project adopted after its own
+third false-pass incident (NOTES DIST5-HANG's "the pattern" section).
+
+**Tests.** `readBoundPort` is now exported specifically so `tests/serve-subprocess.test.ts` can drive it
+directly against fake slow/dead subprocesses at scaled-down timeouts (hundreds of milliseconds, not real
+10s/30s — the mechanism is timeout-scale-invariant, so this proves the defect-and-fix shape without
+spending real suite time): a process that writes its line before the deadline succeeds; the IDENTICAL
+600ms delay fails against a too-tight 200ms bound and succeeds against a widened 2s bound, back to back,
+in the same test — proof by construction that the fix, not luck, is what closes the gap; a process that
+actually exits (vs. one that's merely slow) is reported by its real exit code, never conflated with
+"still running." All five existing `spawnLevareServe` callers (`board-serve-e2e`,
+`board-serve-sse-leak`, `serve-cli-nonblocking-e2e`, `serve-real-cli-e2e`,
+`orchestrator-compiled-smoke`) re-verified green with the fixed loop.
+
+## The fourth instance, and an honest answer on what would catch the fifth
+
+Combined with this round's other fix (NOTES ORCH-B-DATE-FLAKE round 2, above), this project has now hit
+FOUR instances of a test whose result depended on something other than the behaviour it asserts: `cwd`
+(NOTES DIST7 — a compiled binary's `require.resolve` fallback only worked from the one directory `bun
+test` itself runs in), a sandbox-denied write present only on a real host with a working sandbox
+primitive (the R4-SANDBOX-TLS round-3 goal), a test's own outer timeout nested shorter than a real inner
+bound (NOTES DIST5-HANG), and two independently-seeded repos' commit timing (ORCH-B-DATE-FLAKE round 2,
+this round). NOTES DIST5-HANG's own "the pattern" section already named the practice that generalizes
+across those: surface, in the test's own output, every run, which side of the constraint it actually ran
+on — never let "green in this container" silently stand in for "the constraint was exercised."
+
+**This investigation's OWN readBoundPort defect is the fifth instance — and it does not fit that mold,
+which is itself the honest answer to "what would catch the fifth."** The bug found here is not
+environment-dependent in the way the first four are (nothing about a different host or a different day
+would make it disappear); it is a genuine concurrency defect in the test harness's own polling loop —
+abandoned `reader.read()` calls silently consuming data meant for a still-awaited one. No single
+practice tuned to the first four shapes (name the environment, derive bounds from real constants, audit
+nesting) would have caught this fifth one; it needed direct instrumentation of the loop itself, the same
+"measure, don't guess" move DIST5-HANG's own struck-through speculation had to relearn. What DOES
+generalize across all five, and is the only thing this project can honestly claim going forward: never
+accept a passing run alone as proof a flake fix works. Force the exact condition that broke the old code
+(a straddled UTC boundary, a shorter nested bound, a controlled read delay), show the OLD code fails
+under it, and show the NEW code doesn't — on demand, not by waiting for luck to cooperate twice. A
+lint rule or a single generalized helper would not have caught this fifth shape any more than the
+fourth's shape would have caught this one; the fix is procedural (reproduce, don't assume), not
+mechanical.
+
+**Tests, docs, overall.** `docs/current-gaps.md` gains and closes both entries (chat-vs-route
+`approved_commit` normalization; `readBoundPort`'s read-loop race). `bun test` — see this goal's own
+five-consecutive-full-suite-run verification, logged where this goal's acceptance criteria are recorded.
+`bun run typecheck`, `bun run deps:check`, `bun run build` all clean; `levare validate fixtures/golden` →
+valid; `levare replay fixtures/golden --stubs` → oracle match, byte-for-byte.
