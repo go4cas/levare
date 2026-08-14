@@ -12,10 +12,11 @@
 // breaks the moment prose and reality drift apart again.
 
 import { test, expect, describe, afterAll } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { scaffoldStudio } from "../src/init.ts";
+import { scaffoldStudio, initStudio } from "../src/init.ts";
 import { validatePath } from "../src/validate.ts";
 
 const HEREDOC_RE = /cat > (\S+) <<'EOF'\n([\s\S]*?)\nEOF/g;
@@ -100,5 +101,39 @@ describe("docs/guide/04-workflow's pasteable blocks produce a valid studio", () 
         file: join(root, "work", "todo-cli", "add-command", "unit.md"),
       },
     ]);
+  });
+});
+
+// NOTES DOCS-WALKTHROUGH-2: `work/` vanished on clone before this fix — git never tracks an empty
+// directory, and the scaffold's own README overstated the layout (it marked work/, alongside
+// evals/ and ideas/, as merely "created on first use", when work/ is where the job actually happens).
+// This drives a REAL `git init` + founding commit, then a REAL `git clone` into a second directory —
+// the only way to prove a directory is actually tracked, not just present before the first commit —
+// and asserts work/ (with its tracked .gitkeep) survives while evals/ and ideas/, genuinely
+// empty-until-used, do not.
+describe("a freshly-initialized studio's work/ survives a clone (NOTES DOCS-WALKTHROUGH-2)", () => {
+  test("git clone of a freshly-`levare init`'d studio keeps work/, but not the still-empty evals/ or ideas/", () => {
+    const source = mkdtempSync(join(tmpdir(), "levare-clone-src-"));
+    const clone = mkdtempSync(join(tmpdir(), "levare-clone-dst-"));
+    const configFile = join(tmpdir(), `levare-clone-gitconfig-${Math.random().toString(36).slice(2)}`);
+    try {
+      writeFileSync(configFile, "[user]\n\tname = Clone Test\n\temail = clone@example.com\n");
+      const env = { ...process.env, GIT_CONFIG_GLOBAL: configFile, GIT_CONFIG_SYSTEM: "/dev/null" };
+
+      const result = initStudio(source, env);
+      expect(result.git.committed).toBe(true);
+
+      rmSync(clone, { recursive: true, force: true }); // git clone requires the target not exist yet
+      const cloneResult = spawnSync("git", ["clone", "-q", source, clone], { encoding: "utf8", env });
+      expect(cloneResult.status).toBe(0);
+
+      expect(readdirSync(join(clone, "work"))).toEqual([".gitkeep"]);
+      expect(() => readdirSync(join(clone, "evals"))).toThrow();
+      expect(() => readdirSync(join(clone, "ideas"))).toThrow();
+    } finally {
+      rmSync(source, { recursive: true, force: true });
+      rmSync(clone, { recursive: true, force: true });
+      rmSync(configFile, { force: true });
+    }
   });
 });

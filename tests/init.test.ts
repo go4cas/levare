@@ -50,8 +50,9 @@ describe("scaffoldStudio", () => {
       "types",
       "work",
     ]);
-    // No demo work units: work/ and ideas/ are scaffolded empty.
-    expect(readdirSync(join(root, "work"))).toEqual([]);
+    // No demo work units: ideas/ is scaffolded empty; work/ carries only a tracked .gitkeep (NOTES
+    // DOCS-WALKTHROUGH-2 — so the directory itself survives a clone, unlike evals/ideas).
+    expect(readdirSync(join(root, "work"))).toEqual([".gitkeep"]);
     expect(readdirSync(join(root, "ideas"))).toEqual([]);
   });
 
@@ -94,6 +95,32 @@ describe("scaffoldStudio", () => {
     // Agent Skills format: a folder carrying its own SKILL.md plus supporting files.
     expect(existsSync(join(root, "skills/new-project/SKILL.md"))).toBe(true);
     expect(existsSync(join(root, "skills/new-project/scripts/create-repo.sh"))).toBe(true);
+  });
+
+  // NOTES DOCS-WALKTHROUGH-2 (Conductor ruling): the scaffold's own `kind: cli` example must be
+  // runnable on any machine — a cold-start walkthrough found the pre-existing finch wrapped Codex, a
+  // paid ChatGPT Plus subscription CLI, making a brand-new studio's founding example unrunnable until
+  // the operator bought one. This spawns finch's REAL declared command for real (never a stub/mock) —
+  // the only way to actually prove no vendor CLI or subscription is required, not just that the
+  // definition parses — and asserts it succeeds and produces non-empty output.
+  test("finch's real command needs no vendor CLI or subscription — a real, unmocked spawn succeeds", () => {
+    const root = tmpRoot();
+    scaffoldStudio(root);
+    spawnSync("git", ["init", "-q"], { cwd: root });
+    spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t.com", "-c", "commit.gpgsign=false", "add", "-A"], { cwd: root });
+    spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t.com", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "seed"], { cwd: root });
+
+    const repo = loadRepo(root);
+    const finch = repo.agents.get("finch")!;
+    expect(finch.kind).toBe("cli");
+    const argv = finch.command!;
+    // Never a paid/vendor CLI — the whole point of this fix.
+    expect(["codex", "gemini", "claude", "gh", "copilot"]).not.toContain(argv[0]);
+    expect(Bun.which(argv[0])).toBeTruthy();
+
+    const result = spawnSync(argv[0], argv.slice(1), { cwd: root, encoding: "utf8" });
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim().length).toBeGreaterThan(0);
   });
 
   test("every scaffolded definition validates: `levare validate` on the fresh studio exits ok with zero errors", () => {

@@ -10,8 +10,10 @@
 // branding, just generic pitch-to-spec vocabulary), so "genericizing" here means dropping everything
 // that WAS demo-specific — the storefront project pointer, the checkout-flow/cart-icon-fix/
 // loyalty-flow work units, the loyalty-program idea, the checkout-flow eval — and keeping the rest
-// almost verbatim. `work/` and `ideas/` are scaffolded empty: a new studio has no work yet and no
-// captured pitches yet, so the honest starting state is empty, not fabricated demo content. The
+// almost verbatim. `work/` and `ideas/` are scaffolded with no demo content: a new studio has no work
+// yet and no captured pitches yet, so the honest starting state is empty of DEMO content, not
+// fabricated. `work/` itself is still tracked (a `.gitkeep`, NOTES DOCS-WALKTHROUGH-2) so the
+// directory survives a clone; `ideas/`/`evals/` stay genuinely untracked-until-used. The
 // example team also ships with no `teams/<name>.learnings.md`: LEARNINGS accumulate from real runs,
 // and a studio that has never run anything has none yet — inventing one would misrepresent history
 // that doesn't exist.
@@ -37,8 +39,13 @@ interface Template {
   content: string;
 }
 
-// Directories that must exist even though the fresh studio has no files in them yet.
-const EMPTY_DIRS = ["work", "ideas", "evals"];
+// Directories that must exist even though the fresh studio has no files in them yet. `work/` is NOT
+// here (NOTES DOCS-WALKTHROUGH-2, Conductor ruling): git does not track empty directories, so a
+// scaffolded-but-uncommitted `work/` vanishes the moment a fresh studio is cloned — a real papercut,
+// since `work/` is where the job actually happens. `evals/`/`ideas/` stay genuinely empty-until-used
+// by design (the README already said so); `work/` gets a tracked `.gitkeep` (in `FILES`, below)
+// instead, so it survives a clone like every other scaffolded file.
+const EMPTY_DIRS = ["ideas", "evals"];
 
 // Shared verbatim between the scaffolded README and `runInitCmd`'s (cli.ts) fallback output when no
 // git identity resolves — one sentence of rationale, one place it's written (phase-6 gate fix-up).
@@ -68,7 +75,7 @@ types/       the five work-unit templates: inception, feature, fix, spike, resea
 connectors/  external services members can be granted (env var *names* only — never secrets)
 projects/    pointers to the products you're building (repo, deploy, pace, house rules)
 evals/       rubrics scoring a unit type's output — empty until you write one
-work/        work units and their artifacts — empty until you open one
+work/        work units and their artifacts — present from the start (tracked, so it survives a clone)
 ideas/       captured pitches with no project yet — empty until you capture one
 \`\`\`
 
@@ -184,12 +191,20 @@ without further questions. If a decision is genuinely ambiguous, exit blocked wi
 question in the body; never guess laterally. Produce \`design\` then \`spec\` artifacts.
 `;
 
+// NOTES DOCS-WALKTHROUGH-2 (Conductor ruling): the scaffold's own founding example must run on any
+// machine, with no purchase or login required — a cold-start walkthrough found the pre-existing finch
+// wrapped Codex, a paid subscription CLI, so the very first thing a new studio's example team could do
+// was unrunnable until the operator bought a subscription. Codex stays the docs' own canonical `cli`
+// example (docs/guide 4.5/4.6 — thoroughly validated there already); only the SCAFFOLD's finch changes,
+// to plain \`git\` — present on every machine that can already run \`levare init\` (git is this studio's
+// own dependency, for the founding commit alone). See \`connectors/codex.md\` for the \`role: model\` +
+// \`auth: subscription\` shape a real vendor CLI would use once you wire one in.
 const AGENT_FINCH = `---
 name: finch
-description: "Wrapped Codex reviewer"
+description: "Wrapped git reviewer"
 kind: cli
 produces: [review]
-command: [codex, review, --input, "{task}", --repo, "{feature_repo}"]
+command: [git, log, -p, "-1"]
 cwd: "{feature_repo}"
 timeout: 600
 result: "Emits review commentary as plain text on stdout — content only, never frontmatter of its own; levare authors the artifact wrapper (id, status, consumes, usage) around that content and validates the whole document against the artifact contract before recording it (ruling C12)."
@@ -197,12 +212,15 @@ style:
   avatar: Fi
 ---
 
-# Finch — wrapped Codex reviewer
+# Finch — wrapped git reviewer
 
-Finch is a foreign CLI (Codex) wrapped as a member. The Runner spawns the \`command\`
-template with \`{task}\` substituted, enforces the timeout, and validates that the raw
-output conforms to the artifact contract at the boundary — the contract is never
-trusted from the member.
+Finch is a foreign CLI wrapped as a member — \`git\` itself, so this founding example runs on any
+machine with no vendor CLI to install or subscription to buy. The Runner spawns the \`command\`
+template, enforces the timeout, and validates that the raw output conforms to the artifact contract
+at the boundary — the contract is never trusted from the member. \`git log -p -1\` is a placeholder (the
+most recent commit's own diff, standing in for "review the changes"); swap it for a real reviewer —
+Codex, a linter, a custom script — whenever you're ready. \`connectors/codex.md\` models the
+\`role: model\` + \`auth: subscription\` shape a vendor CLI like Codex would need once you do.
 `;
 
 const SKILL_FLOW_DESIGN = `---
@@ -361,9 +379,11 @@ from the environment at run time. \`role: tool\` — Linear grants a service cap
 model access (NOTES C15).
 `;
 
-// NOTES C15: the canonical `role: model` example — the same Codex CLI finch wraps directly
-// (agents/finch.md) authenticates itself from its own stored session (\`codex login\`) rather than an
-// env var levare could inject (NOTES C13). Declared here, unwired to any agent, purely to model the
+// NOTES C15: the canonical `role: model` example — Codex authenticates itself from its own stored
+// session (\`codex login\`) rather than an env var levare could inject (NOTES C13). Declared here,
+// unwired to any agent (NOTES DOCS-WALKTHROUGH-2: finch, the scaffold's own \`kind: cli\` example, wraps
+// plain \`git\` instead — a founding commit that needs no vendor CLI or subscription to run — so this
+// connector is illustrative only, not load-bearing for a fresh studio), purely to model the
 // shape a studio should declare when it grants model access through a connector: \`auth: subscription\`
 // (the credential lives outside levare's scoping) plus \`role: model\` (what it's FOR). NOTES CAP-B:
 // \`home: [".codex"]\` is the canonical scoping declaration this connector's own doctor/card warning
@@ -517,6 +537,8 @@ const FILES: Template[] = [
   { path: "knowledge/house-style.md", content: KNOWLEDGE_HOUSE_STYLE },
   { path: "knowledge/model-pricing.md", content: KNOWLEDGE_MODEL_PRICING },
   { path: "projects/studio.md", content: PROJECT_STUDIO },
+  // NOTES DOCS-WALKTHROUGH-2: tracked so `work/` itself survives a clone — see EMPTY_DIRS's own note.
+  { path: "work/.gitkeep", content: "" },
 ];
 
 /**

@@ -97,8 +97,8 @@ describe("registry cards render each entity's declared body and fields (scaffold
     const repo = loadRepo(root);
     const html = renderRegistry(repo, root, "agents");
     const finch = cardFor(html, "agents", "finch");
-    expect(finch).toContain("codex");
-    expect(finch).toContain("--repo");
+    // NOTES DOCS-WALKTHROUGH-2: finch wraps plain `git`, not a vendor CLI — see src/init.ts#AGENT_FINCH.
+    expect(finch).toContain("git log -p -1");
     expect(finch).toContain("{feature_repo}");
     expect(finch).toContain("600s");
     expect(finch).toContain("Emits review commentary as plain text on stdout");
