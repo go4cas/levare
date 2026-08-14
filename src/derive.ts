@@ -202,6 +202,26 @@ function unitShipped(repo: Repo, project: string, unitId: string): boolean {
   return repo.units.some((u) => u.project === project && u.unit === unitId && u.status === "shipped");
 }
 
+/**
+ * The Orchestrator briefing's one-line summary of a unit's open gate (run.ts's own conversation
+ * turn). Previously named the artifact's kind (`gate.label`) with the fixed suffix "is ready for
+ * review below" regardless of `gate.type` — true for an in-review artifact, but a lie for an
+ * `artifact-blocked` gate (nothing to review; a member FAILED) or a `blocked` unit (nothing was even
+ * produced). A Conductor reading a blocked review's briefing saw "review is ready for review below."
+ */
+export function gateBriefingSentence(gate: OpenGate): string {
+  switch (gate.type) {
+    case "artifact":
+      return `${esc(gate.label)} is ready for review below.`;
+    case "artifact-blocked":
+      return `${esc(gate.label)} failed and needs your decision below.`;
+    case "start":
+      return "This unit is ready to start below.";
+    case "blocked":
+      return "This unit is blocked and needs your attention below.";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Mini-score / score dots (PRD §9: "state nodes in the canonical palette")
 // ---------------------------------------------------------------------------
