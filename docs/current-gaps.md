@@ -965,3 +965,43 @@ names whether the process was still alive (healthy but slow) or had actually exi
 the same "surface which side of the constraint it ran on, in its own output, every run" practice this
 project adopted after its third false-pass incident (see the pattern section under NOTES DIST5-HANG),
 applied here as its fourth instance.
+
+## git could prove what an artifact SAID, never what GOVERNED it — closed (NOTES REGISTRY-PROVENANCE)
+
+Every artifact a member produces commits itself automatically, and an approved artifact's content is
+pinned against tampering (NOTES A7). But the registry that GOVERNS a dispatch — `teams/`, `agents/`,
+`connectors/`, `projects/`, `skills/`, `knowledge/`, `types/`, `studio.md` — was committed only if the
+operator happened to do it themselves; the board's own `Edit source` route already commits its writes,
+but a plain editor edit did not, and `git log` could never answer "what was this member actually
+configured to do when it ran" for those.
+
+Closed in two parts. **Part 2 (the stamp):** every produced artifact now carries `registry:`, a sha256
+content hash over the governing subtree exactly as it stood on disk at dispatch time
+(`git.ts#registryStateHash`) — deliberately NOT the repo's `HEAD`, which `work/` commits move between
+dispatches without touching a single governing file, making a `HEAD`-SHA comparison unable to tell
+"same registry" from "different registry" without re-deriving the diff by hand. Two artifacts sharing
+the same `registry:` value ran under byte-identical definitions, full stop. **Part 1 (the check):**
+`board/gateops.ts#doStart` refuses a `start` dispatch outright, fail-closed, naming the dirty files and
+the remedy, when `git.ts#dirtyRegistryFiles` finds the governing subtree modified or holding untracked
+files — the same posture `validate.ts`'s `ENV_FILE_TRACKED` already takes. Scoped to `start` only, not
+`request`/`retry` (both also dispatch a member on an explicit Conductor click, but `start` is what
+`docs/guide/04-workflow/04-first-gate.md`'s own constitution names as THE invariant-1 consent point),
+and never to `advanceUnit`/the daemon's own autonomous tick — a loop's automatic author→critic round, or
+`docs/guide/04-workflow/06-first-loop.md`'s own edit-then-restart walkthrough, both run through
+`advanceUnit` with no operator click in that specific call's causal chain, and refusing one of those
+over a stray editor save would strand a unit halfway through a round it was already consented to. A
+studio with no git history at all is a separate, pre-existing condition (no founding commit ever ran)
+and is not conflated with "dirty" — the check fail-opens there, mirroring `ENV_FILE_TRACKED`'s own
+`gitToplevel`-null posture.
+
+**The cost, recorded rather than minimised:** every registry edit made outside the board is now
+commit-then-dispatch — felt most during the exploratory work `docs/guide/04-workflow/` teaches, where
+the daemon already needs a restart after any registry edit regardless of git status
+(NOTES DOCS-WALKTHROUGH-1), so the real cycle is now edit → commit → restart → dispatch, not the old
+two-step edit → restart. `03-first-team-and-member.md` (§4.3, the first chapter that creates a registry
+file) now says so explicitly, before a reader reaches `04-first-gate.md`'s first `Start` click. If Part
+1 is later judged not worth its friction and reverted, Part 2 alone still closes the audit gap at zero
+friction — the stamp is computed from disk, independent of anything Part 1 checks.
+
+See NOTES REGISTRY-PROVENANCE for the full decision record (why a content hash over `HEAD`, why `start`
+alone over the broader dispatching-verb set, and the exact test list).
