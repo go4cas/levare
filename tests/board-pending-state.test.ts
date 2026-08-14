@@ -454,7 +454,10 @@ describe("gate-card pending feedback is local, not a whole-card replacement (NOT
     expect(card.querySelector(".gate__name-row")).not.toBeNull();
     expect(card.querySelector(".gate__name-row")!.textContent).toContain("loyalty-flow");
     expect(card.querySelector(".gate__ctx")).not.toBeNull();
-    expect(card.querySelector(".gate__ctx")!.textContent).toContain("Queued work unit");
+    // NOTES ORCH-STALE-CARD: the ctx line mirrors render/shell.ts#gateCardHtml's own dispatching text
+    // for a start gate now, not the pre-dispatch default it's replacing — a Conductor reading it mid-
+    // click sees "dispatching", not a paragraph still claiming the unit is merely queued.
+    expect(card.querySelector(".gate__ctx")!.textContent).toContain("Dispatching now");
     expect(card.classList.contains("is-dispatching")).toBe(true);
 
     // Only the start badge's text changes (matches render.ts's own server-rendered dispatching state).
