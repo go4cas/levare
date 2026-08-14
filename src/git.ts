@@ -5,7 +5,8 @@
 // overrides: a Conductor action must never hang on a host signing prompt or a stray commit hook.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, unlinkSync, readdirSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 
 export const CONDUCTOR_NAME = "cas";
@@ -214,4 +215,98 @@ export function makeFoundingCommit(root: string, message: string, env: NodeJS.Pr
   if (commit.status !== 0) return { gitAvailable: true, repoInitialized: true, identity, committed: false, commit: null };
   const rev = spawnSync("git", gitArgs(["rev-parse", "HEAD"]), { encoding: "utf8", env });
   return { gitAvailable: true, repoInitialized: true, identity, committed: true, commit: rev.stdout.trim() };
+}
+
+// ---------------------------------------------------------------------------
+// Registry provenance (goal REGISTRY-PROVENANCE). Every artifact a member produces commits itself
+// automatically — but what GOVERNS that dispatch (the team's flow/guardrails, the agent's argv/model,
+// the connectors it was granted, the project's house rules, its skills, its knowledge, its type
+// template, and studio.md's own settings) is committed only when an operator remembers to do it by
+// hand outside the board's own `Edit source` route (which already commits — board/serve.ts's registry
+// edit route). Without this, `git log` can prove what an artifact SAID and who approved it, but never
+// what the member was actually CONFIGURED to do when it ran. Both halves below share one definition of
+// "the registry" so the dirty-check (Part 1) and the stamp (Part 2) can never silently diverge on scope.
+// ---------------------------------------------------------------------------
+
+/** Everything that governs a dispatch — deliberately NOT `work/` (artifacts are written mid-dispatch;
+ * including them would make the dirty-check self-defeating) and not `.env` (gitignored by construction,
+ * covered by validate.ts's own ENV_FILE_TRACKED instead). Mirrors board/serve.ts's own
+ * `REGISTRY_EDITABLE_DIRS` minus `evals`/`ideas` — neither governs how a member is invoked, so neither
+ * belongs in a "what was in force when this ran" reconstruction. */
+export const GOVERNING_REGISTRY_DIRS = ["teams", "agents", "connectors", "projects", "skills", "knowledge", "types"];
+export const GOVERNING_REGISTRY_ROOT_FILE = "studio.md";
+
+// Part 1: refuse to dispatch with a dirty registry ---------------------------------------------------
+//
+// `git status --porcelain` scoped to exactly the governing paths above — modified tracked files AND
+// untracked ones both show up (untracked counts as dirty: an uncommitted new team is exactly as
+// unauditable as an uncommitted edit to an existing one). Not a git repo at all is a SEPARATE,
+// pre-existing condition (no founding commit ever ran — see makeFoundingCommit) and is deliberately not
+// conflated with "dirty": this returns no dirty files rather than blocking every dispatch a studio with
+// no git history could ever make.
+export function dirtyRegistryFiles(root: string): string[] {
+  const r = spawnSync("git", ["-C", root, "status", "--porcelain", "--", ...GOVERNING_REGISTRY_DIRS, GOVERNING_REGISTRY_ROOT_FILE], { encoding: "utf8" });
+  if (r.status !== 0) return [];
+  return r.stdout
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => {
+      const path = line.slice(3);
+      // A rename reports "old -> new"; the new path is the one that actually exists now.
+      const arrow = path.indexOf(" -> ");
+      return arrow === -1 ? path : path.slice(arrow + 4);
+    });
+}
+
+// Part 2: stamp what was in force ---------------------------------------------------------------------
+//
+// A content hash over the governing registry's CURRENT on-disk state, not `HEAD` at dispatch time.
+// `HEAD` was the obvious first candidate, but it is not honest: `work/` commits (artifacts, gate
+// resolutions) land between dispatches and advance `HEAD` without touching a single governing file, so
+// two artifacts stamped with the same `HEAD` SHA could still have run under different registries (if a
+// registry commit landed in between) and two stamped with DIFFERENT SHAs could have run under the exact
+// same one (if only `work/` moved in between) — a reader could not tell which without re-deriving the
+// diff by hand. A content hash makes the comparison direct: two artifacts sharing the same `registry:`
+// value ran under byte-identical governing definitions, full stop, independent of how many unrelated
+// commits moved `HEAD` in between. It is computed from whatever is actually on disk at dispatch time,
+// not from git at all — so it stamps something meaningful even when Part 1's check is off (or a
+// dispatch path Part 1 doesn't gate produces the artifact anyway), which is what lets Part 2 stand on
+// its own if Part 1 is ever reversed.
+function collectRegistryFiles(dir: string, relPrefix: string, out: string[]): void {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return; // doesn't exist — nothing under it to hash
+  }
+  for (const name of names) {
+    if (name.startsWith(".")) continue;
+    const full = join(dir, name);
+    const rel = relPrefix ? `${relPrefix}/${name}` : name;
+    let st: ReturnType<typeof statSync>;
+    try {
+      st = statSync(full);
+    } catch {
+      continue;
+    }
+    if (st.isDirectory()) collectRegistryFiles(full, rel, out);
+    else out.push(rel);
+  }
+}
+
+/** Content hash (sha256 hex) of the governing registry exactly as it stands on disk right now — see
+ * this section's own header for why this, and not `HEAD`, is what gets stamped on a produced artifact. */
+export function registryStateHash(root: string): string {
+  const files: string[] = [];
+  for (const dir of GOVERNING_REGISTRY_DIRS) collectRegistryFiles(join(root, dir), dir, files);
+  if (existsSync(join(root, GOVERNING_REGISTRY_ROOT_FILE))) files.push(GOVERNING_REGISTRY_ROOT_FILE);
+  files.sort();
+  const hash = createHash("sha256");
+  for (const rel of files) {
+    hash.update(rel);
+    hash.update("\0");
+    hash.update(readFileSync(join(root, rel)));
+    hash.update("\0");
+  }
+  return hash.digest("hex");
 }
