@@ -529,6 +529,21 @@ button{ font-family:inherit; }
    the shipped-status chip already uses (a shipped unit IS the palette's `done` state). */
 .release--latest{ border-left:2px solid var(--ok); padding-left:9px; margin-left:-11px; }
 .release--latest .cite{ color:var(--ok); background:color-mix(in oklab, var(--ok) 14%, transparent); border-color:transparent; }
+/* NOTES DOCS-WALKTHROUGH-2: "cited N" (render/project.ts) was unexplained on the card — what a
+   founding artifact's citation count is counting. A hover/focus tooltip, the identical accessible
+   shape `.flowstrip .looptip` established (`position:fixed`, JS-positioned from the trigger's own
+   `getBoundingClientRect()`, `tabindex="0"` + `aria-describedby` so a keyboard user reaches it exactly
+   like a pointer — never hover-only) — a DISTINCT class from the loop tooltip's own, since this trigger
+   is a small inline badge, not the loop enclosure's bordered box, but otherwise the same recipe. */
+.cite--count{ position:relative; cursor:default; }
+.cite--count:focus{ outline:2px solid var(--accent); outline-offset:2px; }
+.citetip{ position:fixed; left:0; top:0; transform:translate(-50%, 0);
+  z-index:50; background:var(--fg); color:var(--bg); font-family:var(--mono); font-size:11px;
+  line-height:1.5; white-space:normal; max-width:220px; width:max-content; padding:6px 10px;
+  border-radius:7px; box-shadow:var(--shadow); opacity:0; visibility:hidden;
+  transition:opacity var(--motion-fast); pointer-events:none; }
+.citetip.is-shown{ opacity:1; visibility:visible; }
+@media (prefers-reduced-motion: reduce){ .citetip{ transition:none; } }
 
 /* ---------- work unit rows (project view) ---------- */
 .units{ display:flex; flex-direction:column; gap:10px; }
@@ -642,13 +657,20 @@ button{ font-family:inherit; }
    (render/run.ts), which is the other half of this same ruling, not an unrelated addition.
    `position:fixed`, not `absolute`: `.flowstrip`'s own `overflow:hidden` is load-bearing for the
    orphaned-arrow clip (fault 3) and would clip an absolutely-positioned tooltip identically — it
-   renders ABOVE the trigger, outside `.flowstrip`'s own box, exactly what that overflow exists to
+   renders BELOW the trigger, outside `.flowstrip`'s own box, exactly what that overflow exists to
    hide. `position:fixed` escapes an ancestor's overflow clipping (verified directly: a fixed-position
    box paints in full even nested inside a zero-height `overflow:hidden` parent), at the cost of having
    no CSS relationship to the trigger's own position — `assets/app.js`'s hover/focus handler sets
    `left`/`top` from the trigger's real `getBoundingClientRect()` on show, which is why the class
-   toggle (`is-shown`), not `:hover`/`:focus`, drives visibility here. */
-.flowstrip .looptip{ position:fixed; left:0; top:0; transform:translate(-50%, -100%);
+   toggle (`is-shown`), not `:hover`/`:focus`, drives visibility here.
+   NOTES DOCS-WALKTHROUGH-2: this used to render ABOVE the trigger (`translate(-50%, -100%)`, `top:
+   trigger.top - 7`) — the flow row sits directly under the card's own charter paragraph and "Declared
+   flow" heading, with little vertical clearance, so the tooltip routinely overlapped both instead of
+   the empty space it was aiming for. Flipped to render BELOW instead: the loop stage is the flow row's
+   own last element (every declared flow ends on its loop, gated or not), so the space directly beneath
+   it is the card's ordinary row spacing before "Definition," not another paragraph of prose — the same
+   placement fix a below-anchored tooltip gets everywhere else on the board. */
+.flowstrip .looptip{ position:fixed; left:0; top:0; transform:translate(-50%, 0);
   z-index:50; background:var(--fg); color:var(--bg); font-family:var(--mono); font-size:11px;
   line-height:1.5; white-space:normal; max-width:220px; width:max-content; padding:6px 10px;
   border-radius:7px; box-shadow:var(--shadow); opacity:0; visibility:hidden;

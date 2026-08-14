@@ -257,6 +257,24 @@ describe("project screen", () => {
     expect(html).toContain("cited 2"); // product-brief-v1 is consumed by design + spec
   });
 
+  // NOTES DOCS-WALKTHROUGH-2: "cited N" was previously unexplained on the card. Same accessible
+  // treatment as the loop-bounds tooltip — keyboard-reachable (a real tabindex + aria-describedby
+  // trigger, not a title="" attribute), never hover-only — and scoped to a class distinct from the
+  // plain, non-interactive `.cite` badge the releases list below reuses for its own age/latest label.
+  test("'cited N' carries a keyboard-reachable tooltip explaining what it counts", () => {
+    const foundingBlock = /<div class="founding">[\s\S]*?<\/div>\n\s*<div class="founding release--latest"/.exec(html)?.[0] ?? html;
+    const citeMatch = /<span class="cite cite--count" tabindex="0" aria-describedby="([^"]+)">cited \d+<span class="citetip" role="tooltip" id="([^"]+)">([^<]+)<\/span><\/span>/.exec(
+      foundingBlock,
+    );
+    expect(citeMatch).not.toBeNull();
+    const [, describedBy, tipId, tipText] = citeMatch!;
+    expect(describedBy).toBe(tipId);
+    expect(tipText.length).toBeGreaterThan(0);
+    // The release badge just below reuses the bare `.cite` class for an unrelated age/latest label —
+    // it must never pick up tooltip behaviour by class collision.
+    expect(html).toMatch(/<span class="cite">latest<\/span>|<span class="cite">\d+[dh]<\/span>/);
+  });
+
   test("founding artifact links into the artifact render view (item 1)", () => {
     expect(html).toContain('href="/artifact/storefront/checkout-flow/product-brief-v1"');
   });

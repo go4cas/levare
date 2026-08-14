@@ -62,12 +62,20 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
   const founding = foundingArtifacts(repo, projectName);
   const gates = openGates(repo).filter((g) => g.project === projectName);
 
+  // NOTES DOCS-WALKTHROUGH-2: "cited N" (derive.ts#foundingArtifacts) was unexplained on the card — a
+  // reader can see the number change (`product-brief-done-command-v1.md · cited 1` from a real
+  // consumption) but nothing on the card says what it counts. Same accessible treatment as the
+  // loop-bounds tooltip (registry.ts/`feat/board-card-legibility`): `tabindex="0"` +
+  // `aria-describedby` on the trigger, `role="tooltip"` on the tip itself, so a keyboard user reaches
+  // it exactly like a pointer user — never hover-only. A DISTINCT class (`cite--count`) from the plain
+  // `.cite` badge the releases list below reuses for its own age/latest label, which is never
+  // interactive and must not pick up tooltip behaviour by class collision.
   const foundingHtml = founding.length
     ? founding
-        .map(
-          (f) =>
-            `<div class="founding">${artifactTokenLink(projectName, f.artifact.unit, f.artifact.id, artifactFileName(f.artifact))}<span class="cite">cited ${f.citations}</span></div>`,
-        )
+        .map((f) => {
+          const tipId = `citecount-${esc(f.artifact.id)}`;
+          return `<div class="founding">${artifactTokenLink(projectName, f.artifact.unit, f.artifact.id, artifactFileName(f.artifact))}<span class="cite cite--count" tabindex="0" aria-describedby="${tipId}">cited ${f.citations}<span class="citetip" role="tooltip" id="${tipId}">how many other artifacts in this project declare this one in their own consumes: — direct references only, not the whole downstream chain</span></span></div>`;
+        })
         .join("\n")
     : `<div class="founding" style="color:var(--fg-mute)">no founding artifacts yet</div>`;
 
