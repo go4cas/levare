@@ -15683,3 +15683,173 @@ gains a `renderStudio()`-level check that the sentence's gate count always agree
 — fixtures/golden's real two-gate count, and a zero-gate minimal fixture (a single already-`shipped`
 unit, no flow-walking needed) proving the sentence reads "Nothing needs a decision right now." rather
 than a stale nonzero count.
+
+## NOTES DOCS-WALKTHROUGH-2 (2026-08-14) — ten findings from a cold-start walkthrough on a released
+## binary, closed; one (`orchestrator: on`) was a decision, not an edit
+
+A second live cold-start session — install script through first loop, on a released binary, same
+discipline as NOTES DOCS-WALKTHROUGH-1 — surfaced ten small findings. Nine were one-line-cause fixes;
+the tenth (doctor's `orchestrator: on` claim) needed a real decision and is the one worth reading in
+full. Two others (the scaffold's `work/` tracking, its example `cli` member's vendor dependency) were
+Conductor rulings made ahead of implementation, carried out here as stated.
+
+**1 — `levare doctor` with no root argument resolved to `fixtures/golden`, levare's own dev fixture.**
+`--help` has always advertised `levare doctor [root]` with the root optional; `cli.ts#runDoctorCmd`
+actually defaulted the missing argument to `DEFAULT_ROOT` (`"fixtures/golden"`, NOTES A1's own
+dev-convenience default for `context`/`serve`), a path that only exists inside levare's own source
+checkout. Run from a real studio, or an empty directory, the failure was identical either way —
+`NOT_FOUND fixtures/golden: path does not exist` — proving it location-independent, i.e. compiled in
+rather than discovered from the actual cwd. Fixed: `doctor`'s own bare-arg default is now `"."`,
+`DEFAULT_ROOT` unchanged for `context`/`serve` (a deliberate, separate dev convenience this finding
+doesn't touch). `tests/doctor.test.ts` gains a real-subprocess test spawning `./levare doctor` with
+`cwd` set to a studio OUTSIDE the repo and no root argument at all — per NOTES DIST7's own lesson, a
+test that merely runs from the repo root proves nothing here (the old default's `fixtures/golden`
+lookup happened to resolve there too, by the same coincidence DIST7's own native-binary bug hid behind
+for months).
+
+**2 — Nothing named `init` before a new user needed it.** `scripts/install.sh` printed the installed
+path and version, then stopped — the walkthrough found `levare init` only by reading `--help`.
+`levare init`'s own closing line already names the NEXT command (`levare validate` / `levare serve`,
+`cli.ts#runInitCmd`); the install script never named the one after IT. Fixed with a matching closing
+line (`levare-install: next, run 'levare init' to scaffold a studio`); `tests/install-script.test.ts`
+asserts it appears on a successful install.
+
+**3 — `missing-env` named the problem and its consequence, never the remedy.** Doctor's existing
+consequence line (`⚠ members depending on 'X' will fail mid-work when they reach for it` /
+`... cannot start`, NOTES C15) is correct but incomplete — a reader acting on doctor output alone has
+no way to know the fix is `cp .env.example .env` unless they already know the scaffold's own
+convention (`src/init.ts#ENV_EXAMPLE`, NOTES F23). Contrast with `SUBSCRIPTION_NO_HOME`/
+`SUBSCRIPTION_HOME_SHIM_GAP` (doctor.ts's own subscription-connector warning), which name the field,
+the consequence, AND the literal value to write — the standard this closes the gap against. Fixed:
+the same consequence line now appends `— cp .env.example .env, then set <NAME[, NAME...]>`, the exact
+missing var name(s) for that connector, never a generic "check your env" hand-wave. `fixtures/doctor/
+expected.txt` (the byte-for-byte frozen fixture) and `tests/doctor.test.ts` both updated.
+
+**4 — `Gates on you` rendered its zero in amber, the one metric where zero is the calm state.**
+`components.ts#Stat`'s own doc states the Foundation stat-band rule plainly: "a stat tints ONLY when
+actionable... never a general-purpose amber" — `actionable` (driving `.stat--actionable`'s cell
+background) is supposed to be the SINGLE mechanism. `render/studio.ts`'s "Gates on you" stat
+additionally passed `cls: "is-gate"`, an unconditional second mechanism coloring the NUMBER amber via
+`.stat .n.is-gate` regardless of `actionable` — so the count read urgent even at zero. The Project
+page's structurally identical "Gates open" stat (`render/project.ts`) never carried that extra `cls`
+and was already correct; the fix removes it from the Studio page's stat to match, and the now-dead
+`.stat .n.is-gate` CSS rule is deleted rather than left orphaned. `tests/board-render.test.ts` asserts
+both the zero-gates (no tint at all) and open-gates (cell-only tint, no separate number class) cases.
+
+**5 — Doctor reported `orchestrator: on · The Orchestrator is live.` for an expired or invalid API
+key — the one finding needing a decision, not an edit.** Observed live: doctor's green light, then the
+FIRST real dispatch failed with `API Error: 401 API key is invalid` — a wrong-direction debugging
+session doctor exists specifically to prevent (its own header: "before anything runs"). Root cause:
+`sdk-transport.ts#checkSdkPreconditions` (what `orchestrator-status.ts#resolveOrchestratorStatus`
+reports through) proves exactly two LOCAL facts — the env var is set, and the platform's native SDK
+binary resolves — and makes no network call at all. It cannot know the key is valid; "is live" claimed
+more than that.
+
+**The decision: reword, don't add a round-trip.** Two answers were on the table — (a) a minimal API
+call during doctor (a cheap `models.list`-shape ping) that would actually catch this, at the cost of a
+token and a network call on EVERY doctor run; (b) stop claiming "live" and say only what's actually
+known — presence, not validity. Taken: (b). Reasons, in order: `cli.ts` itself already classifies
+`doctor` among the CLI's OFFLINE commands (line ~313's own comment: "offline ones (`validate`,
+`doctor`, `context`) that never touch a model") — a network call inside it would be a first, quiet
+violation of that classification, not an extension of it. Every other doctor line in this file already
+follows the same discipline of naming exactly what was checked and no more (`env NAME present`, never
+"env NAME works"; `cli NAME on PATH`, never "cli NAME runs correctly"; the sandbox section's own
+`sandboxModelNote` exists specifically because "full" doesn't mean the same guarantee on every
+primitive and doctor says so rather than implying uniformity) — a validity-claiming credential line
+would be the one exception to a pattern the rest of the file is built around. And the cost side is real
+without being hypothetical: doctor is the command a CI job or a pre-flight script calls precisely
+because it's fast and side-effect-free; spending a token and a round-trip on every invocation, for
+every studio, changes that contract for everyone to catch a failure mode only the FIRST real dispatch
+after a credential goes stale actually needs to catch once.
+
+**What changed:** `orchestrator-status.ts#resolveOrchestratorStatus`'s viable-branch reason is now
+`"ANTHROPIC_API_KEY is present — its validity isn't checked until the Orchestrator makes a real
+request."` — rendered identically everywhere `OrchestratorStatus.reason` already flowed (doctor's own
+`orchestrator: on · <reason>` line, the board header's popover, the disabled-state prose), so the same
+honest sentence appears everywhere the old, overclaiming one did, with no second copy to keep in sync.
+`available`/the "on" badge itself is UNCHANGED — "on" has always meant "the boundary's local
+preconditions are satisfied," a fact this doesn't touch; only the human sentence attached to it stops
+implying a check that never ran. `tests/orchestrator-status.test.ts` gains a real (non-mocked)
+`resolveOrchestratorStatus` assertion: a present key with a resolvable native binary reports
+`available: true` with a reason containing "is present" and never containing "live" — the literal
+regression this closes. **Left open, by the decision above:** a real credential-validity check remains
+unbuilt; if a future Conductor wants (a) instead, it should be opt-in (a flag, never doctor's default
+path) and doctor's offline-command classification updated to say so explicitly, not silently broken.
+
+**6 — `cited N` (a founding artifact's citation count, `derive.ts#foundingArtifacts`) was unexplained
+on the card.** Demonstrably meaningful — a real consumption showing up as `cited 1` was itself what the
+walkthrough noticed — but nothing on the card said what it counts. Same accessible treatment as the
+loop-bounds tooltip below (item 7, `feat/board-card-legibility`): `tabindex="0"` + `aria-describedby`
+on the trigger, `role="tooltip"` on the tip, keyboard-reachable, never hover-only. A DISTINCT class
+(`cite--count`) from the plain `.cite` badge the releases list reuses for its own age/latest label
+immediately below on the same card — that badge is never interactive and must not pick up tooltip
+behaviour by class collision. `assets/app.js`'s loop-tooltip positioning logic (`positionLoopTip`/
+`hideLoopTip` + four delegated listeners) is generalized into one `wireTooltip(triggerSelector,
+tipSelector)` helper, called once for the loop stage and once for the citation count — the two were
+about to be byte-for-byte identical machinery with two consumers, the point where duplicating it a
+second time would have been the worse call. `tests/board-render.test.ts` asserts the new tooltip's
+markup and that the sibling release badge stays inert.
+
+**7 — The loop-bounds tooltip (item 6's own sibling, `feat/board-card-legibility`) rendered above and
+left of its trigger, overlapping the team charter paragraph and the "Declared flow" heading directly
+above the flow row.** Functional — it correctly escaped `.flowstrip`'s `overflow:hidden` clip via
+`position:fixed` — this was placement only. The flow row sits directly beneath a full paragraph of
+prose with little vertical clearance; anchoring the tooltip `translate(-50%, -100%)` above the trigger
+routinely ate into that prose instead of the empty space it was aiming for. Flipped to render BELOW:
+the loop stage is a team's flow's own LAST declared element (every flow ends on its loop, gated or
+not), so the space directly beneath it is the card's ordinary pre-"Definition" row spacing, not another
+paragraph. `assets/styles.css`'s `.flowstrip .looptip` transform and `assets/app.js`'s position
+function both flip in lockstep (now shared with item 6's citation tooltip via `wireTooltip`).
+`tests/registry-cards-render-definitions.test.ts` pins the transform and the JS's `r.bottom`/`r.top`
+usage directly, so a future placement change can't silently revert either half alone.
+
+**8 — `work/` vanished on a fresh clone; the scaffolded README overstated the layout — Conductor
+ruling, carried out as stated.** Git never tracks an empty directory; `scaffoldStudio` created `work/`
+the same EMPTY_DIRS way as `evals/`/`ideas/`, so all three existed on disk immediately after `levare
+init` but only survived a `git add`/commit if something was later written inside them — and `work/` is
+the one of the three where the job itself happens, making its disappearance a real papercut rather than
+a `evals/`/`ideas/`-style "empty until used" non-event. Ruling: `work/` gets a tracked `.gitkeep` (now
+in `FILES`, not `EMPTY_DIRS`, in `src/init.ts`); `evals/`/`ideas/` stay untracked-until-used, unchanged.
+The scaffolded README's layout block, which previously marked all three "empty until you—", now says
+`work/` is "present from the start (tracked, so it survives a clone)". `tests/guide-workflow-blocks.test.ts`
+gains a real `git init` + founding commit + real `git clone` into a second directory — the only way to
+actually prove tracked-vs-present-before-first-commit, not merely scaffolded-but-uncommitted — asserting
+`work/.gitkeep` survives the clone while `evals/`/`ideas/` (correctly) don't. `tests/init.test.ts`'s own
+scaffold-shape assertion updates from `readdirSync(work) === []` to `=== [".gitkeep"]`.
+
+**9 — The scaffold's example `cli` member (`finch`) was backed by a paid ChatGPT Plus subscription —
+Conductor ruling, carried out as stated.** `finch` wrapped `codex` directly (`command: [codex, review,
+...]`) — a brand-new studio's founding example team was unrunnable, for every user, until they bought a
+subscription. Ruling, two halves: Codex stays the DOCS' own canonical `cli` example across chapters 4.5
+and 4.6 (post-NOTES R4-SANDBOX-TLS, the most thoroughly live-validated `cli` member in the project;
+rewriting two chapters would discard that validation for no gain) — but the SCAFFOLD's own finch is
+rebacked with `git` (`command: [git, log, -p, "-1"]`, the most recent commit's own diff standing in for
+"review the changes"), universally present on any machine that can already run `levare init` at all.
+`connectors/codex.md` (the `role: model` + `auth: subscription` shape, NOTES C15) stays scaffolded,
+unwired to any agent, now explicitly noted as illustrative rather than load-bearing. `tests/init.test.ts`
+gains a REAL, unmocked spawn of finch's actual declared command (never a stub) — the only way to prove
+no vendor CLI or subscription is required, not merely that the definition parses — asserting it resolves
+via `Bun.which`, is never one of the known paid CLIs, and produces real non-empty output.
+`tests/registry-cards-render-definitions.test.ts`'s card-rendering assertion updated to match.
+
+**10 — `approved_commit` questioned, then confirmed correct as written — no change, recorded so the
+next reader doesn't re-ask it.** The field (`gates.ts`, stamped by `board/gateops.ts#stampApproval`)
+records the repo's HEAD captured BEFORE an approval commits — i.e. the PRE-approval baseline, the
+commit whose content the Conductor actually approved — not the approval commit's own SHA (a commit
+cannot contain its own hash; recording the pre-approval HEAD sidesteps that self-reference paradox with
+no second commit or amend). `validate.ts`'s A7 immutability check (`~line 2520`) diffs an approved
+artifact's current content against exactly that ref, not HEAD, stripping only the approval-stamp fields
+(`status`/`approved_by`/`approved_commit`) before comparing. This is precisely what catches a committed
+POST-approval edit — a HEAD-diff would read the mutated content as HEAD's own truth and launder it as
+unchanged, the exact hole recording the APPROVAL commit instead (rather than the pre-approval baseline)
+would reintroduce. Investigated fresh against the real code (not assumed from the field's name alone);
+confirmed correct as designed. No code change.
+
+**Tests, docs, overall.** `docs/current-gaps.md` gains and closes all ten findings, briefly, each
+pointing back here. `bun test` (1427 pass), `bun run typecheck`, `bun run deps:check`, and `bun run
+build` all clean; `bun run docs:generate` left no diff beyond this goal's own manual edits to
+`docs/guide/04-workflow/README.md` and `docs/guide/05-reference/03-cli.md` (both hand-updated to match
+item 5's new doctor output). `levare doctor` (bare, no root) confirmed working from outside the repo;
+`levare validate fixtures/golden` → valid; `levare replay fixtures/golden --stubs` → oracle match
+byte-for-byte, unaffected (fixtures/golden's own `finch`, distinct from the scaffold's, is untouched —
+item 9 only rebacks `src/init.ts`'s scaffold template).
