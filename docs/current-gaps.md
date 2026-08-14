@@ -786,3 +786,51 @@ No frontmatter schema changed beyond the one new optional `description:` string 
 See NOTES CARD-LEGIBILITY for the full reasoning, the rejected alternative designs (an always-rendered
 headline that would duplicate the lead paragraph's own opening sentence; footer-pinning instead of
 content-height grid cards), and the measurements behind the arrow re-alignment.
+
+## The orchestrator rail card held stale runner-side state — closed (NOTES ORCH-STALE-CARD)
+
+A live cold-start session found the run view's own gate/dispatch card reading state that was no longer
+true — stuck at `DISPATCHING` after the unit had gone `blocked`, naming a superseded artifact after a
+retry, not showing a gate that opened after a successful dispatch until a manual refresh, and (the same
+fault from the other direction) an open gate vanishing until a refresh brought it back. The score rail
+and timeline on the SAME page always updated correctly. Root cause: the run view's gate card
+(`orchestratorPanel`'s `actionableHtml`, render/shell.ts) was the one region of the page
+`board/serve.ts#extractFragment`/`assets/app.js#swapFragment` never carved a marker for — every refresh
+path (the SSE `reload` tick, any in-app navigation) replaces `.main` wholesale and, on a scope change
+only, the persisted conversation tail, but had no way to know this region existed at all. The server's
+own per-request read was never stale (`loadRepo` re-derives fresh every request — see "The
+loadRepo-per-request position" above); the client simply never asked for this one region again after
+the page's first cold GET. Fixed the same way the persisted tail already worked: a `data-orch-action`
+marker plus a client-side resync (`syncOrchAction`) — applied on EVERY refresh, unlike the tail, since a
+gate card has no "already shown live" case that would make reapplying it a duplicate.
+
+Two content faults on the same card, found and fixed alongside it, independent of the propagation
+question above: the Orchestrator briefing's one-line summary said "`<label> is ready for review below.`"
+for every open gate regardless of kind — true for an in-review artifact, false for a blocked/failed one
+("review is ready for review below." on a blocked review, observed live) or a start gate ("start is
+ready for review below." — nothing produced yet). New `derive.ts#gateBriefingSentence` states what's
+actually true per `gate.type`. Separately, the local dispatch-click handler (`assets/app.js`) updated
+the start-gate card's badge and spinner instantly but never its `.gate__ctx` paragraph, which kept
+reading its pre-click default until the next real re-render landed — now updated in the same handler.
+
+Investigated and explicitly NOT closed here: the same card's age reads as clock-derived but wrong by an
+amount that isn't a timezone offset (7h on an artifact produced moments earlier, 8h an hour later).
+Root cause found: every artifact-write site (`adapters.ts`'s production path, `dagwalk.ts#writeBlocked`,
+`merge.ts#formatMergeArtifact`'s caller) stamps `created` as a bare calendar date
+(`new Date().toISOString().slice(0, 10)`), never a timestamp — `ageLabel` then measures from that
+date's UTC midnight, not from the artifact's real creation moment, which is never recorded at all. A
+real fix means widening `created` to a full timestamp — a frontmatter-shape change touching every write
+site and every `.created` sort/recency computation in `derive.ts` (`leadingArtifact`,
+`projectLastActivity`, `recentReleases`, `medianGateResponseDays`), out of scope for a unit titled
+"stop the card showing state that is no longer true." Logged here as a real, understood, open defect.
+
+Also investigated and confirmed SEPARATE, not the same mechanism: the daemon's own startup-only reads
+(`.env` loaded once, `teams:`/`connectors:`/a fresh `unit.md` invisible until `levare serve` restarts —
+"The daemon only watches `work/`" above, NOTES DOCS-WALKTHROUGH-1). That gap is about what makes the
+RUNNING DAEMON PROCESS re-walk and re-dispatch; this one is about what makes the BROWSER re-fetch and
+re-apply a region of a page the board's own per-request read had already answered correctly. Different
+code paths (`daemon.ts` vs. `board/serve.ts`), left as two gaps, not merged into one fix.
+
+See NOTES ORCH-STALE-CARD for the full mechanism, the fourth symptom's exact reproduction (a client-side
+navigation between two units in the same project, never resyncing the action region because the
+conversation `scope` — a project, not a unit — never changes), and the age-label root-causing in full.
