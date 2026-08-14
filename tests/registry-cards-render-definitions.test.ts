@@ -305,3 +305,42 @@ describe("fault 3: no orphaned arrow in a wrapped team flow row", () => {
     expect(loopArrRule).toContain("top:");
   });
 });
+
+// Goal "registry cards legibility", item 2: the loop is `teams/kestrel.md`'s fifth declared flow
+// stage (after the second human gate) — it used to render on its own row below the sequence, reading
+// as parallel to the flow rather than part of it. It now renders inline, joined to what precedes it by
+// the SAME `&rarr;`/`.fpair` mechanism every other node uses, wrapped in its own subtle enclosure
+// (`.m--loopstage`) marking "one stage, two members alternating inside it" — and the loop's bounds
+// (until/max_rounds/on_exhaust) stay visible IN that enclosure, never moved to hover.
+describe("goal 'registry cards legibility' item 2: the loop renders inline within the sequence, its bounds visible", () => {
+  test("the loop node is joined to the sequence by the same &rarr;/.fpair mechanism as every other node, wrapped in its own bordered enclosure", () => {
+    const root = scaffoldRoot();
+    const repo = loadRepo(root);
+    const html = renderRegistry(repo, root, "teams");
+    const kestrel = cardFor(html, "teams", "kestrel");
+    const flowRow = /<div class="flowstrip">([\s\S]*?)<\/div>\s*<div class="card__h">Definition/.exec(kestrel)![1];
+    // The loop is the 5th node (after step/gate/step/gate) — still inside .fpair.fpair--loop, joined
+    // by the ordinary sequence arrow, exactly like the gate/step nodes before it (fault 3's mechanism).
+    expect(flowRow).toContain('<div class="fpair fpair--loop"><span class="arr">&rarr;</span>');
+    // Its own enclosure — a distinct box, not bare avatars floating at the same weight as a step.
+    expect(flowRow).toContain('<div class="m m--loopstage">');
+    // The bound/escalation caption renders INSIDE that same enclosure (a sibling of .looppair within
+    // .m--loopstage), not detached elsewhere on the card and not gated behind a title="" hover-only
+    // attribute — a Conductor reading a screenshot or auditing the registry must see it without
+    // interacting with anything.
+    const loopNode = /<div class="m m--loopstage">[\s\S]*?<\/div>\s*<\/div>/.exec(flowRow)![0];
+    expect(loopNode).toContain('<div class="looppair">');
+    expect(loopNode).toContain('<span class="mn">until&nbsp;spec.approved &middot; max&nbsp;3 &middot; on_exhaust:&nbsp;gate</span>');
+  });
+
+  test("assets/styles.css: .m--loopstage draws a subtle bordered/tinted enclosure, and the caption stays at its smaller, subordinate treatment", () => {
+    const css = readFileSync("assets/styles.css", "utf8");
+    const loopStageRule = /\.flowstrip \.m--loopstage\{([^}]*)\}/.exec(css)![1];
+    expect(loopStageRule).toContain("border:");
+    expect(loopStageRule).toContain("border-radius:");
+    // The caption (.mn) keeps its existing smaller/muted treatment — subordinate to the enclosure,
+    // never a peer of the flow row's own text size.
+    const mnRule = /\.flowstrip \.mn\{([^}]*)\}/.exec(css)![1];
+    expect(mnRule).toMatch(/font-size:1[01]px/);
+  });
+});

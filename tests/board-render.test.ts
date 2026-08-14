@@ -1439,7 +1439,7 @@ describe("project card layout consistency", () => {
 describe("registry cards are gridded, not one-per-row", () => {
   test("entity cards render inside an auto-fill grid wrapper, minmax(320px,1fr)", () => {
     const html = renderRegistry(repo, root);
-    expect(html).toContain('<div class="pcards" style="grid-template-columns:repeat(auto-fill,minmax(320px,1fr))">');
+    expect(html).toContain('<div class="pcards entity-grid" style="grid-template-columns:repeat(auto-fill,minmax(320px,1fr))">');
   });
 
   test("UI5: the in-page registry tab strip is gone; the rail alone lists every entity kind with its count", () => {
@@ -1459,8 +1459,16 @@ describe("registry cards are gridded, not one-per-row", () => {
 
   // Gate-review round 3, item 3: the kind chip and the Edit-source action row weren't on consistent
   // baselines. Fix: the kind badge (.entity__kind) right-aligns on the header line (matching every
-  // other card's label-left/status-right anatomy), and the actions row (.editbar) pins to the card's
-  // bottom edge regardless of that entity's own content height.
+  // other card's label-left/status-right anatomy).
+  //
+  // Goal "registry cards legibility", item 3 (superseding the round-3 fix below): pinning the actions
+  // row to a STRETCHED card's true bottom (`.rendered{flex:1}` + `.editbar{margin-top:auto}`) kept
+  // every row's buttons on one baseline, but the leftover space between a short card's own content and
+  // that pinned row became a visible void (lyra/scribe next to corvid; press next to kestrel) — the
+  // exact defect this goal reports. The fix opts registry's own grid out of row-stretch entirely
+  // (`.entity-grid{ align-items:start }`, scoped so the studio's project-card grid — which doesn't
+  // share this problem — is untouched) so each card is exactly as tall as its own content; there is no
+  // leftover space left to pin anything to, so `flex:1`/`margin-top:auto` are gone rather than dead.
   describe("registry card header/actions alignment", () => {
     const css = readFileSync("assets/styles.css", "utf8");
 
@@ -1468,9 +1476,14 @@ describe("registry cards are gridded, not one-per-row", () => {
       expect(css).toMatch(/\.entity__kind\{[^}]*margin-left:auto/);
     });
 
-    test(".editbar pins to the bottom of the card regardless of the entity's own content height", () => {
-      expect(css).toMatch(/\.rendered\{[^}]*flex:1/);
-      expect(css).toMatch(/\.editbar\{[^}]*margin-top:auto/);
+    test("registry's own grid opts out of row-stretch (content-height cards, no void) — scoped to .entity-grid, never the shared .pcards default", () => {
+      expect(css).toMatch(/\.entity-grid\{[^}]*align-items:start/);
+      const html = renderRegistry(repo, root);
+      expect(html).toContain('<div class="pcards entity-grid"');
+      // The earlier stretch-then-pin approach is gone, not merely unused — its leftover space is what
+      // created the void; a regression back to it should fail here, not resurface as a visual bug.
+      expect(css).not.toMatch(/\.rendered\{[^}]*flex:1/);
+      expect(css).not.toMatch(/\.editbar\{[^}]*margin-top:auto/);
     });
 
     // UI7 (RULE A): team/agent/skill cards no longer carry a kind tag at all (that's covered by its

@@ -561,6 +561,20 @@ button{ font-family:inherit; }
 .founding{ flex-wrap:wrap; }
 
 /* ---------- registry ---------- */
+/* Goal "registry cards legibility", item 3: `.pcards`' grid default (`align-items:stretch`) makes
+   every card in a row match its row's tallest sibling — an agent card with a cli command, warnings,
+   and a result paragraph next to a bare native agent with three fields. A prior round already tried
+   pinning the actions row to the stretched card's true bottom (`.rendered`'s old `flex` grow, plus
+   `.editbar`'s old auto top-margin — both removed here) — it kept the buttons on one baseline, but the
+   leftover space still had to go SOMEWHERE, and it landed as a blank region inside the shorter card's
+   own content area, directly above its own divider — exactly the void this goal reports (lyra/scribe
+   next to corvid; press next to kestrel). Pinning the footer doesn't remove the leftover space, it
+   only relocates it; the actual fix is to stop manufacturing it — `.entity-grid` (registry's own
+   `.pcards` instance only, never the studio's project-card grid, which doesn't share this problem)
+   opts out of row-stretch, so each card is exactly as tall as its own content and no taller. A short
+   row's cards end at different heights, same as any masonry-style grid — an intentional ragged
+   bottom, not a void, and never mistaken for missing content since nothing bordered ends abruptly. */
+.entity-grid{ align-items:start; }
 .reg-nav{ display:flex; flex-direction:column; gap:1px; }
 .reg-nav a{ display:flex; align-items:center; gap:9px; padding:5px 8px; margin:0 -8px; border-radius:7px;
   font-family:var(--mono); font-size:12.5px; color:var(--fg-dim); text-decoration:none; }
@@ -568,10 +582,7 @@ button{ font-family:inherit; }
 .reg-nav a.is-active{ background:var(--panel-2); color:var(--fg); }
 .reg-nav a .ct{ margin-left:auto; font-size:10.5px; color:var(--fg-mute); }
 .entity{ display:flex; flex-direction:column; gap:14px; }
-/* flex:1 so a card stretched taller than its content (grid row alignment, .pcards' default
-   align-items:stretch) still puts its actions row at the true bottom edge, not right after its own
-   shorter content — the fix for entity cards of different natural heights sharing a grid row. */
-.rendered{ display:flex; flex-direction:column; gap:11px; flex:1; }
+.rendered{ display:flex; flex-direction:column; gap:11px; }
 .entity__head{ display:flex; align-items:center; gap:13px; }
 .entity__title{ font-size:22px; font-weight:600; letter-spacing:-.01em; }
 /* Right-aligned on the header line, matching every other card's label/status-right anatomy in the
@@ -612,7 +623,7 @@ button{ font-family:inherit; }
    (the general rule above) would float the arrow between those two rows, not beside the avatars it
    actually connects to. Anchored near the avatar row's own height instead (matching the pre-fault-3
    layout's identical fixed-offset reasoning, not a percentage of the whole taller stack). */
-.flowstrip .fpair--loop > .arr{ top:11px; transform:none; }
+.flowstrip .fpair--loop > .arr{ top:8px; transform:none; }
 /* NOTES REGISTRY-BODY: a team flow's loop node — its two `between` member avatars side by side, joined
    by a loop glyph — nested inside a `.flowstrip .m` column alongside its own `.mn` caption (until/max/
    on_exhaust) below. `.m` itself stays column-flex for that stack; this is the one new row inside it.
@@ -620,6 +631,16 @@ button{ font-family:inherit; }
    DESCENDANT of `.looppair`, never a direct child of `.fpair` — the `.fpair > .arr` rules above don't
    reach it, so it keeps its plain in-flow position, centered by `.looppair`'s own `align-items`. */
 .flowstrip .looppair{ display:flex; align-items:center; gap:4px; }
+/* Goal "registry cards legibility", item 2: the loop used to render as bare avatars + a caption,
+   floating at the same visual weight as every other flow node — nothing marked it as ONE stage
+   rather than two loose members beside a footnote. A subtle bordered/tinted enclosure (never a new
+   glyph — same "reuse what exists" discipline as the gate diamond) wraps the avatar pair AND its
+   caption together, reading as "one stage, two members alternating inside it" at a glance; the
+   caption keeps its existing smaller, muted `.mn` treatment, now visually tucked inside the same box
+   instead of sitting loose below it — subordinate to the enclosure, never hidden behind hover (a
+   Conductor approving a start gate needs max_rounds/on_exhaust visible, not one click away). */
+.flowstrip .m--loopstage{ border:1px solid var(--border); border-radius:8px; background:var(--panel-2);
+  padding:6px 10px 7px; }
 .recipe{ display:flex; gap:8px; flex-wrap:wrap; }
 .pill{ font-family:var(--mono); font-size:11.5px; color:var(--fg-dim); background:var(--panel-2);
   border:1px solid var(--border); padding:4px 9px; border-radius:20px; text-decoration:none; }
@@ -639,10 +660,7 @@ button{ font-family:inherit; }
    agent kind's own outlined `--cli` variant (same concept, same treatment); `mcp` is filled, like
    `--native`, so the two connector kinds read as a clear filled/outlined pair. */
 .kindbadge--mcp{ background:var(--fg); color:var(--bg); border:1px solid var(--fg); }
-/* margin-top:auto pins this row to the bottom of .rendered's (now flex:1) box, so every entity
-   kind's actions row lands on a consistent baseline regardless of its own content's natural height —
-   the fix for the chip/actions-row misalignment across teams/agents/skills/etc. sharing a grid row. */
-.editbar{ display:flex; align-items:center; gap:10px; margin-top:auto; padding-top:var(--space-3);
+.editbar{ display:flex; align-items:center; gap:10px; padding-top:var(--space-3);
   border-top:1px solid var(--border); }
 .togglebtn{ background:var(--panel); border:1px solid var(--border-strong); color:var(--fg-dim);
   padding:6px 12px; border-radius:7px; font-size:12px; font-weight:500; cursor:pointer; font-family:var(--mono); }

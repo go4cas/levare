@@ -90,7 +90,15 @@ function flowNodeHtml(repo: Repo, team: Team, node: FlowNode, capabilities: Arra
   // Fault 3: `&nbsp;` inside each key/value pair (until X, max N, on_exhaust: Y) so a narrow card wraps
   // only at the " · " separators between pairs, never mid-phrase (a bare space let the browser break
   // "on_exhaust:" from "gate").
-  return `<div class="m"><div class="looppair">${avA}<span class="arr">&#8646;</span>${avB}</div><span class="mn">until&nbsp;${esc(node.until)} &middot; max&nbsp;${node.maxRounds} &middot; on_exhaust:&nbsp;${esc(node.onExhaust)}</span></div>`;
+  //
+  // Goal "registry cards legibility", item 2: the loop is the flow's fifth STAGE, not a subordinate
+  // aside below it — `m--loopstage` draws the subtle bordered/tinted enclosure that reads as "one
+  // stage, two members alternating inside it" (assets/styles.css), so the pair renders as a single
+  // unit within the same left-to-right sequence rather than looking parallel to it. The bound/
+  // escalation caption stays present (never hidden behind hover — a Conductor auditing the registry or
+  // reading a screenshot needs it), tucked inside the same enclosure at its existing smaller, muted
+  // `.mn` treatment so it reads as subordinate to the loop, not a peer of the flow row.
+  return `<div class="m m--loopstage"><div class="looppair">${avA}<span class="arr">&#8646;</span>${avB}</div><span class="mn">until&nbsp;${esc(node.until)} &middot; max&nbsp;${node.maxRounds} &middot; on_exhaust:&nbsp;${esc(node.onExhaust)}</span></div>`;
 }
 
 // One bordered container per entity, built through the shared `card()` primitive (components.ts) —
@@ -415,7 +423,7 @@ export function renderRegistry(
       <h1>${title}</h1>
     </header>
     ${filterHtml}
-    <div class="pcards" style="grid-template-columns:repeat(auto-fill,minmax(320px,1fr))">
+    <div class="pcards entity-grid" style="grid-template-columns:repeat(auto-fill,minmax(320px,1fr))">
       ${teamBlocks}${agentBlocks}${skillBlocks}${knowledgeBlocks}${typeBlocks}${connectorBlocks}${evalBlocks}
     </div>
   </main>`;
