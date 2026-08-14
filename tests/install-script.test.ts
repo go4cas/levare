@@ -299,3 +299,21 @@ describe("idempotency and PATH warning (NOTES DIST6)", () => {
     expect(result.stderr).not.toContain("not on PATH");
   });
 });
+
+// NOTES DOCS-WALKTHROUGH-2: a cold-start walkthrough found the script prints the installed path and
+// version, then stops — nothing names the next command, and a new user found `levare init` only by
+// reading --help. The script's own closing line must name it.
+describe("next-step pointer (NOTES DOCS-WALKTHROUGH-2)", () => {
+  test("a successful install names `levare init` as the next command", () => {
+    const asset = "levare-linux-x64";
+    const fixture = makeFixtureRoot();
+    writeAsset(join(fixture, "latest", "download"), asset, "ok");
+    const unameDir = stubUnameDir("Linux", "x86_64");
+    const binDir = join(scratchDir("bin"), "bin");
+
+    const result = runInstall(baseEnv(unameDir, { LEVARE_RELEASE_BASE_URL: `file://${fixture}`, LEVARE_BIN_DIR: binDir }));
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("levare init");
+  });
+});
