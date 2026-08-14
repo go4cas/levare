@@ -992,11 +992,23 @@
         ovKind.textContent = kind;
         ovFront.value = split.front;
         ovBody.value = split.body;
-        autoGrow(ovFront);
-        autoGrow(ovBody);
         ovSave.textContent = 'Save and commit';
         updateDirtyMarker();
+        // Unhide BEFORE measuring: `[hidden]` is `display:none` (styles.css), and a display:none
+        // element reports `scrollHeight` 0 — measuring first was why autoGrow ever computed a
+        // near-zero frontmatter height, and it is the root cause behind the "opens scrolled to its
+        // own bottom, clipped" defect below.
         overlay.hidden = false;
+        autoGrow(ovFront);
+        autoGrow(ovBody);
+        // Setting `.value` leaves the caret at the END of the text in every browser; focusing a
+        // textarea scrolls it to keep the caret in view, which — now that each pane scrolls on its
+        // own (styles.css) — would jump straight to that pane's own bottom. Force the caret, and each
+        // pane's own scroll position, to the start before focus ever runs.
+        ovFront.setSelectionRange(0, 0);
+        ovBody.setSelectionRange(0, 0);
+        ovFront.scrollTop = 0;
+        ovBody.scrollTop = 0;
         runCheck();
         ovFront.focus();
       };

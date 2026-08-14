@@ -676,22 +676,28 @@ button{ font-family:inherit; }
 .editor-overlay__dirty{ font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg-dim);
   background:var(--panel-2); border:1px solid var(--border-strong); padding:2px 8px; border-radius:999px; }
 
-/* ---------- labeled zones — frontmatter (yaml) / body (markdown) in ONE scroll area (item 4a) ----------
-   The design brief's own frontmatter/body split, made visible: two textareas that read as distinct
-   labeled regions inside a single bordered surface, divided by a hairline — never two independently-
-   scrolling boxes. Each textarea auto-grows to its content (assets/app.js#autoGrow); the WRAPPER is
-   what scrolls once the combined content overflows the modal. */
-.editor-overlay__zones{ flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column;
+/* ---------- labeled zones — frontmatter (yaml) / body (markdown), each its OWN scroll region ----------
+   Goal unit "registry cards legibility", item 4: the old single shared scroll wrapper (one textarea's
+   overflow spilling into the other's reading position) is what let the overlay open scrolled to the
+   frontmatter pane's OWN bottom — a caret-follow-on-focus artifact with nowhere for the Conductor to
+   scroll back up from. Each textarea now caps its own growth (assets/app.js#autoGrow still sets
+   `height:scrollHeight`, but CSS `max-height` clamps that and `overflow-y:auto` gives the textarea its
+   OWN scrollbar once content exceeds it) — content-adaptive (a short frontmatter never reserves the
+   long body's space, and vice versa) and independently scrollable (scrolling deep into a long body
+   never carries the frontmatter's own scroll position with it). `.editor-overlay__zones` keeps a
+   fallback `overflow-y:auto` for the rare case both panes are simultaneously maxed on a short viewport
+   — normally inert, since the sum of both caps is sized to fit the panel's own `max-height:88vh`. */
+.editor-overlay__zones{ flex:0 1 auto; min-height:0; overflow-y:auto; display:flex; flex-direction:column;
   background:var(--panel-2); border:1px solid var(--border); border-radius:12px; }
 .editor-overlay__zone--front{ border-bottom:1px solid var(--border); }
 .editor-overlay__zone-label{ display:flex; align-items:baseline; gap:7px; font-size:10px; letter-spacing:.08em;
   text-transform:uppercase; color:var(--fg-mute); padding:10px 16px 4px; }
 .editor-overlay__zone-hint{ text-transform:none; letter-spacing:0; opacity:.75; }
-.editor-overlay__textarea{ display:block; width:100%; box-sizing:border-box; resize:none; overflow:hidden;
+.editor-overlay__textarea{ display:block; width:100%; box-sizing:border-box; resize:none; overflow-y:auto;
   font-family:var(--mono); font-size:12.5px; line-height:1.7; color:var(--fg); background:transparent;
   border:none; padding:0 16px 14px; tab-size:2; outline:none; white-space:pre; }
-.editor-overlay__textarea--front{ min-height:44px; }
-.editor-overlay__textarea--body{ min-height:200px; }
+.editor-overlay__textarea--front{ min-height:44px; max-height:30vh; }
+.editor-overlay__textarea--body{ min-height:80px; max-height:46vh; }
 .editor-overlay__foot{ display:flex; align-items:flex-start; gap:16px; justify-content:space-between; }
 .editor-overlay__status{ display:flex; flex-direction:column; gap:8px; min-width:0; }
 .editor-overlay__errors{ display:flex; flex-direction:column; gap:7px; }
