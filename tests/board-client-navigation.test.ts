@@ -513,6 +513,16 @@ function buildPage(doc: FakeDocument, opts: { path?: string } = {}) {
   orchAction.innerHTML = '<article class="gate gate--start is-dispatching" id="stale-gate-card"><p class="gate__ctx">Dispatching now — the unit is being produced.</p></article>';
   orchBody.appendChild(orchAction);
 
+  // NOTES ORCH-STALE-CARD addendum: the narrated briefing turn — found stale one element up from the
+  // action region above, AFTER that fix landed: it names the same gate count the action region's card
+  // is drawn from, but had no marker of its own, so it kept reading a stale count once the region below
+  // it had already resynced. Seeded here with a stale "2 gates" sentence, same shape as the live report.
+  const orchBriefing = doc.createElement("div");
+  orchBriefing.setAttribute("class", "orch__briefing");
+  orchBriefing.setAttribute("data-orch-briefing", "");
+  orchBriefing.innerHTML = '<div class="turn turn--orch" id="stale-briefing-turn"><p class="turn__body">2 gates are on you. Ask me about any project or open a gate to review it.</p></div>';
+  orchBody.appendChild(orchBriefing);
+
   const extrasHost = doc.createElement("div");
   extrasHost.setAttribute("data-extras-host", "");
   const oldExtra = doc.createElement("template");
@@ -520,7 +530,7 @@ function buildPage(doc: FakeDocument, opts: { path?: string } = {}) {
   extrasHost.appendChild(oldExtra);
   doc.body.appendChild(extrasHost);
 
-  return { app, rail, railLink, main, inAppLink, externalLink, downloadLink, orch, orchBody, existingTurn, orchTail, orchAction, extrasHost };
+  return { app, rail, railLink, main, inAppLink, externalLink, downloadLink, orch, orchBody, existingTurn, orchTail, orchAction, orchBriefing, extrasHost };
 }
 
 const NEW_FRAGMENT = {
@@ -819,6 +829,7 @@ describe("client-side navigation — the orchestrator action region (the gate/di
       extras: "",
       highlightId: null,
       orchAction: '<article class="gate gate--artifact-blocked" id="fresh-gate-card"><p class="gate__ctx">Blocked: simulated member timeout</p></article>',
+      orchBriefing: '<div class="turn turn--orch" id="fresh-briefing-turn"><p class="turn__body">Nothing needs you right now.</p></div>',
     });
     await flush();
 
@@ -826,8 +837,16 @@ describe("client-side navigation — the orchestrator action region (the gate/di
     expect(actionHost.querySelector("#fresh-gate-card")).not.toBeNull();
     expect(actionHost.querySelector("#stale-gate-card")).toBeNull(); // the frozen card is gone, not just supplemented
     expect(actionHost.textContent).toContain("Blocked: simulated member timeout");
+    // The regression this test guards: the action region resyncing is not enough on its own — the
+    // briefing sentence one element up must move on the SAME refresh, or a Conductor sees a `0`-shaped
+    // action region sitting directly under a briefing still claiming gates are on them.
+    const briefingHost = h.doc.querySelector("[data-orch-briefing]")!;
+    expect(briefingHost.querySelector("#fresh-briefing-turn")).not.toBeNull();
+    expect(briefingHost.querySelector("#stale-briefing-turn")).toBeNull();
+    expect(briefingHost.textContent).toContain("Nothing needs you right now.");
+    expect(briefingHost.textContent).not.toContain("2 gates are on you");
     // Score-rail/timeline equivalent for this fixture: the main swap landed too, on the SAME refresh —
-    // proving both regions now move together instead of only one of them updating.
+    // proving all three regions now move together instead of only one of them updating.
     expect(h.doc.querySelector("#refreshed")).not.toBeNull();
   });
 
@@ -863,5 +882,70 @@ describe("client-side navigation — the orchestrator action region (the gate/di
     await flush();
 
     expect(h.doc.querySelector("[data-orch-action]")!.querySelector("#stale-gate-card")).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NOTES ORCH-STALE-CARD addendum — found only after the action-region fix above shipped: approving a
+// studio's last open gate correctly cleared the action region's card and the `Gates on you` stat, but
+// the narrated briefing sentence directly above it ("2 gates are on you...") survived two in-app
+// navigations unchanged, now visibly contradicting the `0` stat in the very same panel. The briefing is
+// rendered by the same `orchestratorPanel` call as the action region, but sat outside every marker —
+// this suite proves it now gets the identical unconditional-resync treatment, on the same refresh.
+// ---------------------------------------------------------------------------
+describe("client-side navigation — the orchestrator briefing sentence resyncs on every refresh too, in step with the action region", () => {
+  test("the SSE reload trigger replaces [data-orch-briefing] with the fragment's orchBriefing, same as the action region", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    expect(refs.orchBriefing.querySelector("#stale-briefing-turn")).not.toBeNull();
+
+    const es = h.esInstances[0];
+    es.onmessage({ data: "reload" });
+    h.fetchCalls[0].resolveOk({
+      ok: true,
+      title: "t",
+      main: '<main class="main"></main>',
+      extras: "",
+      highlightId: null,
+      orchBriefing: '<div class="turn turn--orch" id="fresh-briefing-turn"><p class="turn__body">Nothing needs you right now.</p></div>',
+    });
+    await flush();
+
+    const briefingHost = h.doc.querySelector("[data-orch-briefing]")!;
+    expect(briefingHost.querySelector("#fresh-briefing-turn")).not.toBeNull();
+    expect(briefingHost.querySelector("#stale-briefing-turn")).toBeNull();
+  });
+
+  test("an in-app navigation to a DIFFERENT page resyncs [data-orch-briefing] too, even though the scope (and so the persisted tail) is unchanged", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    click(h.doc, refs.inAppLink);
+    h.fetchCalls[0].resolveOk({
+      ...NEW_FRAGMENT,
+      scope: "studio",
+      orchBriefing: '<div class="turn turn--orch" id="destination-briefing-turn"><p class="turn__body">1 gate is on you, oldest first: spec-v2.</p></div>',
+    });
+    await flush();
+
+    expect(refs.orch.getAttribute("data-scope")).toBe("studio"); // confirms the tail path took its no-op branch
+    const briefingHost = h.doc.querySelector("[data-orch-briefing]")!;
+    expect(briefingHost.querySelector("#stale-briefing-turn")).toBeNull(); // the old page's sentence did not persist
+    expect(briefingHost.querySelector("#destination-briefing-turn")).not.toBeNull();
+  });
+
+  test("a fragment response with no orchBriefing field at all (e.g. an older server) is a safe no-op, never a crash", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    click(h.doc, refs.inAppLink);
+    h.fetchCalls[0].resolveOk(NEW_FRAGMENT); // no `orchBriefing` field
+    await flush();
+
+    expect(h.doc.querySelector("[data-orch-briefing]")!.querySelector("#stale-briefing-turn")).not.toBeNull();
   });
 });

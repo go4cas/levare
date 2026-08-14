@@ -173,6 +173,15 @@ function orchestratorIndicator(status: OrchestratorStatus): string {
 // marker, exactly like the tail's `data-orch-tail`, lets the client resync it too — unconditionally,
 // unlike the tail, since a gate's own state (unlike conversation history) has no "already shown live"
 // case to avoid duplicating.
+//
+// NOTES ORCH-STALE-CARD addendum: `briefingHtml` (the narrated summary turn — "N gates on you"/
+// "Nothing needs you right now", and the disabled branch's own "Orchestrator unavailable..." turn) had
+// the IDENTICAL gap, one element up: it renders the gate COUNT the action region's card is drawn from,
+// but sat outside every marker just like `actionableHtml` used to. Approving the studio's last open
+// gate correctly cleared the action region and the `Gates on you` stat (both inside `main`/the newly-
+// marked action region), while this sentence — "2 gates are on you..." — survived two navigations
+// unchanged, now visibly contradicting a `0` stat in the same panel. Same fix, same reasoning: a
+// `data-orch-briefing` marker, resynced unconditionally on every swap.
 export function orchestratorPanel(scope: string, status: OrchestratorStatus, briefingHtml: string, actionableHtml: string, root: string, now: Date): string {
   const tailHtml = renderPersistedTurns(loadConversationTail(root, scope, now), now);
   // The HTML comment markers mirror `pageBody`'s own `<!--main-->`/`<!--extras-->` convention exactly
@@ -181,11 +190,12 @@ export function orchestratorPanel(scope: string, status: OrchestratorStatus, bri
   // slice this region back out the same string-slicing way, with no HTML parser, no second render call.
   const tailBlock = `<div class="orch__tail" data-orch-tail><!--orchtail-->${tailHtml}<!--/orchtail--></div>`;
   const actionBlock = `<div class="orch__action" data-orch-action><!--orchaction-->${actionableHtml}<!--/orchaction--></div>`;
+  const briefingBlock = (html: string) => `<div class="orch__briefing" data-orch-briefing><!--orchbriefing-->${html}<!--/orchbriefing--></div>`;
   if (!status.available) {
     return `<aside class="orch is-disabled" data-scope="${esc(scope)}">
     ${orchHead(scope)}
     <div class="orch__body">
-      ${orchTurn(`<p class="turn__body">Orchestrator unavailable — ${esc(reasonSentence(status.reason))} The board, the registry, and every gate still work: you can approve, reject, and the runner will advance.</p>`)}
+      ${briefingBlock(orchTurn(`<p class="turn__body">Orchestrator unavailable — ${esc(reasonSentence(status.reason))} The board, the registry, and every gate still work: you can approve, reject, and the runner will advance.</p>`))}
       ${tailBlock}
       ${actionBlock}
     </div>
@@ -194,7 +204,7 @@ export function orchestratorPanel(scope: string, status: OrchestratorStatus, bri
   }
   return `<aside class="orch" data-scope="${esc(scope)}">
     ${orchHead(scope)}
-    <div class="orch__body">${briefingHtml}${tailBlock}${actionBlock}</div>
+    <div class="orch__body">${briefingBlock(briefingHtml)}${tailBlock}${actionBlock}</div>
     ${composer()}
   </aside>`;
 }

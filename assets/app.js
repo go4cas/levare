@@ -716,6 +716,17 @@
       if (host && typeof data.orchAction === 'string') host.innerHTML = data.orchAction;
     }
 
+    /* NOTES ORCH-STALE-CARD addendum: the narrated briefing turn ("N gates on you"/"Nothing needs you
+       right now") had the identical gap one element up from the action region above — found only after
+       that fix landed, when the sentence kept naming a gate count the action region (and the main-
+       column stat it agrees with) had already resynced away from. Same treatment: unconditional, every
+       swap, for the same reason `syncOrchAction` is unconditional — the briefing names the same runner-
+       side fact the card renders, so it can't have a weaker resync guarantee than the card does. */
+    function syncOrchBriefing(data) {
+      var host = document.querySelector('[data-orch-briefing]');
+      if (host && typeof data.orchBriefing === 'string') host.innerHTML = data.orchBriefing;
+    }
+
     /* amendment 1 §2 R4, tier 2 (card, 1-10s resolution/refetch): a same-URL refresh (the SSE reload
        trigger below, a post-save content refresh) is a card RESOLVING, not a page transition — the
        Conductor's scroll position and reading context should survive it, and whatever visibly changed
@@ -751,9 +762,11 @@
     /* Replaces `.main` outright (its own opening-tag attributes, e.g. `data-highlight`, differ per
        page) and re-fills `[data-extras-host]` — never the rail or the app header, which this function
        never even looks at. The Orchestrator `<aside>` itself keeps UI10's own conversation-preserving
-       guarantee — its history in `.orch__body` is never rebuilt — except for two regions carved out of
-       it on purpose: the persisted-tail resync (scope-gated, see `syncOrchTail`) and the gate-card
-       action resync (unconditional, see `syncOrchAction`, NOTES ORCH-STALE-CARD). */
+       guarantee — its history in `.orch__body` is never rebuilt — except for three regions carved out
+       of it on purpose: the persisted-tail resync (scope-gated, see `syncOrchTail`), and the gate-card
+       action and briefing resyncs (both unconditional, see `syncOrchAction`/`syncOrchBriefing`, NOTES
+       ORCH-STALE-CARD) — the latter two apply together, on every swap, since the briefing sentence
+       names the same runner-side fact the action region's card renders. */
     function swapFragment(data, sameUrl) {
       var oldMain = document.querySelector('.main');
       if (!oldMain || !oldMain.parentNode) return false;
@@ -786,6 +799,7 @@
 
       syncOrchTail(data);
       syncOrchAction(data);
+      syncOrchBriefing(data);
 
       if (typeof data.title === 'string' && data.title) document.title = decodeTitleEntities(data.title);
       applyHighlight(newMain);

@@ -1,10 +1,10 @@
 import { test, expect, describe } from "bun:test";
-import { mkdtempSync, rmSync, cpSync } from "node:fs";
+import { mkdtempSync, rmSync, cpSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRepo } from "../src/repo.ts";
-import { renderRun } from "../src/board/render.ts";
+import { renderRun, renderStudio } from "../src/board/render.ts";
 import { openGates } from "../src/derive.ts";
 import { advanceUnit } from "../src/dagwalk.ts";
 import { resolveGate } from "../src/board/gateops.ts";
@@ -112,5 +112,47 @@ describe("run view briefing — states what's true about the gate it's actually 
     expect(noGateUnit).toBeDefined();
     const html = renderRun(repo, noGateUnit!.project, noGateUnit!.unit, root, now, [], ON);
     expect(html).toContain("No open gate on this unit right now.");
+  });
+});
+
+// NOTES ORCH-STALE-CARD addendum: the studio's own briefing sentence ("N gates are on you...") names
+// the SAME `openGates(repo)` count studio.ts's `Gates on you` stat and gate-card list are built from —
+// pinning the real render here (never the sentence in isolation) so a future edit can't desync the
+// count the sentence states from the count the rest of the page actually shows.
+describe("studio briefing — the gate count in the sentence always agrees with openGates(repo)", () => {
+  test("fixtures/golden's two open gates (checkout-flow's spec, loyalty-flow's start) are both counted in the sentence", () => {
+    const root = "fixtures/golden";
+    const repo = loadRepo(root);
+    const gateCount = openGates(repo).length;
+    expect(gateCount).toBe(2);
+    const html = renderStudio(repo, root, now, [], ON);
+    expect(html).toContain(`${gateCount} gates are on you.`);
+  });
+
+  test("zero open gates reads 'Nothing needs a decision right now.', never a stale nonzero count", () => {
+    // A minimal, self-contained studio (no git, no flow-walking — loadRepo needs neither) with its one
+    // unit already `shipped`: `openGates` only ever raises a start gate for `status: active`, so this
+    // is a genuinely, trivially zero-gate repo, deterministic regardless of any flow's step count.
+    const root = mkdtempSync(join(tmpdir(), "levare-studio-zero-gates-"));
+    try {
+      mkdirSync(join(root, "types"), { recursive: true });
+      mkdirSync(join(root, "projects"), { recursive: true });
+      mkdirSync(join(root, "teams"), { recursive: true });
+      mkdirSync(join(root, "agents"), { recursive: true });
+      mkdirSync(join(root, "work/acme/widget"), { recursive: true });
+      writeFileSync(join(root, "types/research.md"), "---\nname: research\nglyph: \"▤\"\nexpects: [note]\ngates: [note]\noutput: note\n---\n\n# Research\n");
+      writeFileSync(join(root, "projects/acme.md"), "---\nname: acme\nrepo: .\nremote: null\ndefault_branch: main\ndeploy: null\npace: auto\n---\n\n# Acme\n");
+      writeFileSync(join(root, "teams/core.md"), "---\nname: core\nconsumes: []\nproduces: [note]\nmembers: [scout]\nflow:\n  - step: note\nstyle:\n  color: \"#333333\"\n---\n\n# Core\n");
+      writeFileSync(join(root, "agents/scout.md"), "---\nname: scout\nkind: native\nproduces: [note]\nmodel: claude-sonnet-5\nstyle:\n  avatar: Sc\n---\n\n# Scout\n");
+      writeFileSync(join(root, "work/acme/widget/unit.md"), "---\ntype: research\nstatus: shipped\nproject: acme\nunit: widget\n---\n\n# Widget\n\nAlready shipped — nothing left for the Orchestrator to raise.\n");
+
+      const repo = loadRepo(root);
+      expect(openGates(repo).length).toBe(0);
+      const html = renderStudio(repo, root, now, [], ON);
+      expect(html).toContain("Nothing needs a decision right now.");
+      expect(html).not.toMatch(/\d+ gates? (is|are) on you/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

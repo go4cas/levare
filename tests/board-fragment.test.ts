@@ -72,6 +72,22 @@ describe("extractFragment — pure string extraction", () => {
     ].join("");
     expect(extractFragment(html)!.orchAction).toBe("");
   });
+
+  // NOTES ORCH-STALE-CARD addendum: `orchBriefing` (the narrated summary turn — "N gates on you" —
+  // shared across every screen, not just the run view) had the identical gap, found only after
+  // `orchAction` was fixed: it names the same gate count the action region's card is drawn from, but
+  // carried no marker of its own either.
+  test("pulls orchBriefing out of the orch aside, independent of orchAction/orchTail", () => {
+    const html = [
+      '<title>t</title><!--main--><main class="main">HELLO</main><!--/main-->',
+      '<aside class="orch" data-scope="studio"><div class="orch__body">',
+      '<div class="orch__briefing" data-orch-briefing><!--orchbriefing--><p>Nothing needs you right now.</p><!--/orchbriefing--></div>',
+      '<div class="orch__tail" data-orch-tail><!--orchtail--><!--/orchtail--></div>',
+      '<div class="orch__action" data-orch-action><!--orchaction--><!--/orchaction--></div>',
+      "</div></aside>",
+    ].join("");
+    expect(extractFragment(html)!.orchBriefing).toBe("<p>Nothing needs you right now.</p>");
+  });
 });
 
 describe("isFragmentRequest", () => {
@@ -146,7 +162,23 @@ describe("levare serve — fragment GETs (NOTES UI10)", () => {
       // regression this bug was: a fragment response that silently dropped/forked the gate card content
       // a cold GET would have shown, since nothing sliced it out at all.
       expect(fragBody.orchAction).toBe(extractedFromFull.orchAction);
+      // NOTES ORCH-STALE-CARD addendum: and now `orchBriefing` too, found stale one element up from
+      // `orchAction` after that fix shipped.
+      expect(fragBody.orchBriefing).toBe(extractedFromFull.orchBriefing);
     }
+  });
+
+  // NOTES ORCH-STALE-CARD addendum: `orchBriefing` is populated on every screen (unlike `orchAction`,
+  // run-view-only) — this environment has no ANTHROPIC_API_KEY, so the panel renders its disabled turn
+  // rather than the real gate-count sentence (render/shell.ts#orchestratorPanel suppresses `briefingHtml`
+  // when the Orchestrator is unavailable — a real turn either way, never an empty region). The exact
+  // gate-count sentence text is pinned separately in tests/run-briefing-content.test.ts, where the
+  // Orchestrator status is pinned `available: true` directly against `renderRun`/`renderStudio`.
+  test("the studio's fragment carries a real briefing turn in orchBriefing, never an empty region", async () => {
+    const res = await board.fetch(req("/studio", { headers: FRAG }));
+    const body = await res.json();
+    expect(body.orchBriefing).not.toBe("");
+    expect(body.orchBriefing).toContain('class="turn turn--orch"');
   });
 
   // NOTES ORCH-STALE-CARD: the run view's own gate card lives in `orchAction`, never in `main` — a
