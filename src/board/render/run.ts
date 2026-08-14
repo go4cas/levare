@@ -125,11 +125,20 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
       // Tier 3 (amendment 1 §2 R4, 10s+): the live strip — round n/m (only when this kind belongs to
       // a review loop; a plain one-shot step has no round to state), plus real elapsed time. No token
       // count (see ScoreNode.live's doc comment) — the strip states only what's actually known.
+      //
+      // Goal "registry cards legibility" item 2 ruling: the registry card's own loop enclosure moved
+      // `until`/`on_exhaust` to a hover/focus affordance, since the enclosure can't carry that text
+      // inline without pulling the loop off its sequence — but that affordance doesn't reach touch,
+      // screenshots, or a registry audit. The condition attached to that move: the SAME two facts
+      // render here UNCONDITIONALLY, right where the round count is already live, never behind an
+      // interaction — this is where a Conductor watching a loop actually needs them.
       const liveStrip =
         n.state === "active" && n.live
           ? `<div class="sstep__live"><span class="ld" aria-hidden="true"></span><span>${
               n.live.loop ? `<b>${n.live.loop.round}</b>/${n.live.loop.maxRounds} &middot; ` : ""
-            }${elapsedLabel(n.live.startedAt, now)}</span></div>`
+            }${elapsedLabel(n.live.startedAt, now)}${
+              n.live.loop ? ` &middot; until ${esc(n.live.loop.until)} &middot; on_exhaust: ${esc(n.live.loop.onExhaust)}` : ""
+            }</span></div>`
           : "";
       const lineHtml = `<span class="sstep__line ${scoreLineClass(n.state)}" aria-hidden="true"></span>`;
       // The rail is now a sibling of `.sstep__body` (head + meta stacked), not nested inside the head

@@ -1089,5 +1089,52 @@
       var overlay = document.getElementById('editor-overlay');
       if (e.key === 'Escape' && overlay && !overlay.hidden) requestDismiss();
     });
+
+    /* ---------- registry: loop enclosure tooltip (goal "registry cards legibility" item 2, review
+       round 3) ----------
+       The flow row's loop enclosure (`.m--loopstage`, render/registry.ts) carries its bound/escalation
+       (until/max_rounds/on_exhaust) as a `.looptip` child, shown on hover AND keyboard focus
+       (`tabindex="0"` on the trigger — never mouseover-only, per the ruling). `.flowstrip`'s own
+       `overflow:hidden` is load-bearing for the orphaned-arrow clip (fault 3) and would clip a plain
+       CSS `position:absolute` tooltip rendered above the trigger identically — `.looptip` is
+       `position:fixed` instead (assets/styles.css), which escapes that clipping, at the cost of having
+       no CSS relationship to the trigger's own box. This sets its real screen position from
+       `getBoundingClientRect()` on the way in, and only ever toggles the `is-shown` class — never
+       inline `display`/`opacity` — so the CSS transition still animates it. Delegated on `document`
+       (mouseover/mouseout, not the non-bubbling hover/mouseenter/mouseleave pair) so it survives a
+       `swapFragment` content refresh without a rebind, same discipline as every other delegated
+       handler in this file. */
+    function positionLoopTip(trigger) {
+      var tip = trigger.querySelector('.looptip');
+      if (!tip) return;
+      var r = trigger.getBoundingClientRect();
+      tip.style.left = (r.left + r.width / 2) + 'px';
+      tip.style.top = (r.top - 7) + 'px';
+      tip.classList.add('is-shown');
+    }
+    function hideLoopTip(trigger) {
+      var tip = trigger.querySelector('.looptip');
+      if (tip) tip.classList.remove('is-shown');
+    }
+    document.addEventListener('mouseover', function (e) {
+      var trigger = e.target.closest('.m--loopstage');
+      if (!trigger) return;
+      positionLoopTip(trigger);
+    });
+    document.addEventListener('mouseout', function (e) {
+      var trigger = e.target.closest('.m--loopstage');
+      if (!trigger || (e.relatedTarget && trigger.contains(e.relatedTarget))) return;
+      hideLoopTip(trigger);
+    });
+    document.addEventListener('focusin', function (e) {
+      var trigger = e.target.closest('.m--loopstage');
+      if (!trigger) return;
+      positionLoopTip(trigger);
+    });
+    document.addEventListener('focusout', function (e) {
+      var trigger = e.target.closest('.m--loopstage');
+      if (!trigger) return;
+      hideLoopTip(trigger);
+    });
   });
 })();

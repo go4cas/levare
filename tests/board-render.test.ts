@@ -799,7 +799,7 @@ describe("scoreNodes — a genuinely in-flight step reaches the canonical 'activ
     const reviewNode = nodes.find((n) => n.kind === "review")!;
     expect(reviewNode.state).toBe("active");
     expect(reviewNode.producedBy).toBe("kestrel/finch");
-    expect(reviewNode.live?.loop).toEqual({ round: 1, maxRounds: 3 });
+    expect(reviewNode.live?.loop).toEqual({ round: 1, maxRounds: 3, until: "spec.approved", onExhaust: "gate" });
   });
 
   test("renderRun wires the invocation through: the ictus node, the is-live row wash, and the tier-3 live strip — round + real elapsed, no fabricated token count", () => {
@@ -820,6 +820,26 @@ describe("scoreNodes — a genuinely in-flight step reaches the canonical 'activ
     // token count anywhere, ever (ScoreNode.live's own doc comment: no live token stream exists).
     expect(liveStripMatch![0]).not.toMatch(/\d\/\d/); // no "n/m" round fragment
     expect(liveStripMatch![0]).not.toMatch(/tok/i);
+  });
+
+  // Goal "registry cards legibility" item 2 ruling: the registry card moved the loop's bound/
+  // escalation to a hover/focus affordance — the condition attached to that move is that the SAME
+  // facts render unconditionally here, where the round count is already live. A Conductor watching a
+  // loop actually execute (never a screenshot, never touch, never an audit trail) is exactly the
+  // reader this line is for.
+  test("the tier-3 live strip states until/on_exhaust alongside the round count, unconditionally — never behind hover", () => {
+    scratchRoot = seedScratchRepo();
+    const running = [{ project: "storefront", unit: "checkout-flow", member: "finch", kind: "review", startedAt: now.toISOString() }];
+    const html = renderRun(loadRepo(scratchRoot), "storefront", "checkout-flow", scratchRoot, now, running);
+    const score = scoreBlock(html);
+
+    const liveStripMatch = /<div class="sstep__live">.*?<\/div>/s.exec(score);
+    expect(liveStripMatch).not.toBeNull();
+    const strip = liveStripMatch![0];
+    expect(strip).toContain("<b>1</b>/3");
+    // fixtures/golden's kestrel.md: `until: spec.approved`, `on_exhaust: gate`.
+    expect(strip).toContain("until spec.approved");
+    expect(strip).toContain("on_exhaust: gate");
   });
 });
 

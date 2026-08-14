@@ -15445,3 +15445,81 @@ observation — reporting that this specific reproduction, built the same way th
 described it (scaffold + walkthrough chapters, corvid named explicitly), shows no difference at any
 tested width. No change made to the grid CSS this round; flagged for a follow-up with the specific
 viewport width if the discrepancy persists on a real host.
+
+## NOTES CARD-LEGIBILITY addendum 2 (2026-08-14) — review round 3: the caption comes out of the
+## enclosure entirely, its bounds move to an accessible tooltip, and the run view's live strip states
+## them unconditionally
+
+The `max-width:150px` fix (addendum 1) made the loop enclosure technically inline, but the review found
+this insufficient: a multi-line caption still made the box taller than its siblings, so `wr → ◆ → ly →
+◆` ran along one baseline while the enclosure sat higher — two things at different heights, not one
+sequence. Conductor ruling: the caption comes out of the enclosure entirely.
+
+**1 — The enclosure holds only the avatar pair.** `flowNodeHtml`'s loop branch (registry.ts) no longer
+emits a `.mn` caption span inside `.m--loopstage` at all — just `.looppair` (the two avatars + the ⇆
+glyph). `.m--loopstage`'s CSS drops `max-width` and the caption-sized padding (`6px 10px 7px` →
+`2px 6px`), so the box is (near enough) the same height as a bare step's avatar or a gate's diamond.
+With nothing taller than its siblings on the line, `.flowstrip`'s `align-items:center` centers it
+exactly like everything else — the `.fpair--loop > .arr{ top:8px }` override from addendum 1 is deleted
+outright, not merely unused; the ordinary `.fpair > .arr` centered-arrow rule now applies to the loop
+unmodified, since there's no longer a taller box to misalign against.
+
+**2 — The bounds become a hover/focus tooltip, reachable by keyboard.** `until`/`max_rounds`/
+`on_exhaust` render in a `.looptip` element, `role="tooltip"`, linked from the trigger via
+`aria-describedby` — the WAI-ARIA tooltip pattern. The trigger (`.m--loopstage`) carries
+`tabindex="0"`, so Tab reaches it exactly like a pointer reaches it on hover — verified with a REAL
+keyboard `Tab` press sequence (Playwright `page.keyboard.press('Tab')`, not `element.focus()`), landing
+on the trigger and showing the tooltip. A native `title=""` attribute was considered and rejected: no
+current browser makes `title` keyboard-accessible, which is exactly what the ruling's own condition
+("an affordance that only exists on mouseover is not an affordance for everyone") rules out.
+
+**A genuine layout obstacle, found and fixed: `.flowstrip`'s own `overflow:hidden` clips the
+tooltip identically to how it clips an off-screen arrow.** `overflow:hidden` on an ancestor clips
+ANY descendant painted outside its box, regardless of that descendant's own `position` value — a
+`position:absolute` tooltip anchored above the trigger (`bottom:calc(100% + 7px)`) renders above
+`.flowstrip`'s own top edge, which is exactly the region that property clips (verified: the tooltip's
+computed `opacity`/`visibility` read as shown, but no pixels painted in a real screenshot — CSS-computed
+"visible" and "actually painted" are not the same question here). `position:fixed` escapes an
+ancestor's overflow clipping (verified directly against a minimal isolated fixture: a `position:fixed`
+box nested inside a zero-height `overflow:hidden` parent paints in full) — at the cost of having no
+CSS relationship to the trigger's own screen position, since a fixed element's containing block is the
+viewport. `assets/app.js` gains a small delegated hover/focus handler (`mouseover`/`mouseout` on
+`document`, matching the file's own existing delegation discipline so it survives a `swapFragment`
+content refresh with no rebind, plus `focusin`/`focusout` for the keyboard path) that sets the
+tooltip's real `left`/`top` from the trigger's own `getBoundingClientRect()` before toggling an
+`is-shown` class — CSS drives the opacity transition, JS only ever supplies the position. Without JS,
+the tooltip does not appear at all (no CSS-only fallback) — an accepted trade-off given the alternative
+(a fixed-position box pinned at (0,0) with no JS to place it) is worse than absent, and the run view
+compensates unconditionally regardless of whether JS ran (see below).
+
+**3 — The run view states the SAME two facts unconditionally, live.** This is the ruling's own stated
+condition for moving the bounds off the card at all: hover/focus doesn't reach touch, screenshots, or a
+registry audit, so the information must not be ABSENT from the product, only relocated to where a
+Conductor watching a loop execute actually needs it. `ScoreNode.live.loop` (derive.ts) gains `until` and
+`onExhaust` alongside the existing `round`/`maxRounds`, sourced from the same `LoopMembership` (gates.ts)
+the round count already came from — no new data path. The run view's tier-3 live strip (render/run.ts,
+the "round n/m + elapsed" line that only renders while a member is genuinely, currently dispatched)
+appends ` · until <until> · on_exhaust: <onExhaust>` to that same line, unconditionally, whenever the
+active kind belongs to a loop. Verified against a real rendering (`renderRun()`, unmocked, real
+`assets/styles.css` linked) of fixtures/golden's checkout-flow with finch genuinely producing `review`:
+the live strip reads "1/3 · 0m 47s · until spec.approved · on_exhaust: gate" — present without any
+interaction, exactly matching the ruling's condition.
+
+**Tests.** `tests/registry-cards-render-definitions.test.ts`: the enclosure's markup carries no caption
+(`.mn`/`max_rounds` absent from its own subtree); the trigger carries a real `tabindex="0"` +
+`aria-describedby` pointing at a `role="tooltip"` element with the bound text; `assets/styles.css`
+assertions on the removed `max-width`/tall-padding (regression guard against the addendum-1 shape
+reappearing), the tooltip's `position:fixed` (not `absolute`) and its `.is-shown`-driven (not
+`:hover`/`:focus`-driven) visibility rule, and `assets/app.js` carrying real `focusin`/`focusout`
+listeners (not merely `mouseover`, which would silently fail the ruling's own keyboard condition).
+`tests/board-render.test.ts`: a new test drives `renderRun()` with a genuinely active loop-producing
+invocation and asserts the live strip's text contains both `until spec.approved` and `on_exhaust: gate`
+alongside the existing round count — extending, not replacing, the pre-existing "no fabricated token
+count" coverage for the one-shot-step (no loop) case.
+
+**Verification.** Real `levare serve` (headless Chromium) at 900/1100/1280/1440/1800/2200px: kestrel's
+flow reads as one baseline-aligned sequence at every width, `wr → ◆ → ly → ◆ → [ly ⇄ fi]`, with the
+enclosure's border the only visual signal marking the loop as its own stage. Real mouse hover and real
+keyboard Tab-focus both surface the tooltip at the trigger's actual screen position. `renderRun()`
+against fixtures/golden's checkout-flow (finch genuinely producing `review`, loop round 1/3) confirms
+the live strip states `until`/`on_exhaust` unconditionally.

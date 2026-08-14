@@ -224,8 +224,13 @@ export interface ScoreNode {
    * belongs to a review loop) a real round count — rather than fabricated numbers. There is no live
    * token count anywhere in the system (usage is only known once a member's call completes and the
    * ledger is written), so the live strip deliberately never shows one — inventing a ticking number
-   * with nothing behind it would violate the board's own "never lie" projection invariant. */
-  live?: { startedAt: string; loop?: { round: number; maxRounds: number } };
+   * with nothing behind it would violate the board's own "never lie" projection invariant.
+   * `until`/`onExhaust` (goal "registry cards legibility", item 2 ruling): the registry card moved the
+   * loop's bound/escalation to a hover/focus affordance, since the enclosure can no longer carry that
+   * text inline without pulling the loop off the sequence. Hover hides it on touch, in screenshots, and
+   * from anyone auditing the registry — so the SAME two facts render unconditionally here, where the
+   * loop is actually executing and the round counter is already live, never behind an interaction. */
+  live?: { startedAt: string; loop?: { round: number; maxRounds: number; until: string; onExhaust: string } };
 }
 
 /**
@@ -256,7 +261,9 @@ export function scoreNodes(repo: Repo, unit: WorkUnit, running: DaemonInvocation
         // artifact's own `produced_by` does everywhere else on the board.
         const team = responsibleTeamsFor(repo, unit).find((t) => t.members.includes(inv.member));
         const membership = team ? loopMembershipFor(team, kind, capabilities) : undefined;
-        const loop = membership ? { round: live.length + 1, maxRounds: membership.loop.maxRounds } : undefined;
+        const loop = membership
+          ? { round: live.length + 1, maxRounds: membership.loop.maxRounds, until: membership.loop.until, onExhaust: membership.loop.onExhaust }
+          : undefined;
         return {
           kind,
           shape: "dot",

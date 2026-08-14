@@ -76,7 +76,7 @@ function flowStepAvatar(repo: Repo, team: Team, label: string, member: string | 
   return avatar(repo.agents.get(member)?.style.avatar ?? member.slice(0, 2), team.style.color, { title: `${member} · ${label}` });
 }
 
-function flowNodeHtml(repo: Repo, team: Team, node: FlowNode, capabilities: Array<{ member: string; kind: string }>): string {
+function flowNodeHtml(repo: Repo, team: Team, node: FlowNode, capabilities: Array<{ member: string; kind: string }>, index: number): string {
   if (node.kind === "step") {
     const member = resolveStepMember(team, node.step, capabilities);
     return `<div class="m">${flowStepAvatar(repo, team, node.step, member)}</div>`;
@@ -87,18 +87,18 @@ function flowNodeHtml(repo: Repo, team: Team, node: FlowNode, capabilities: Arra
   const [a, b] = node.between;
   const avA = flowStepAvatar(repo, team, a, resolveStepMember(team, a, capabilities));
   const avB = flowStepAvatar(repo, team, b, resolveStepMember(team, b, capabilities));
-  // Fault 3: `&nbsp;` inside each key/value pair (until X, max N, on_exhaust: Y) so a narrow card wraps
-  // only at the " · " separators between pairs, never mid-phrase (a bare space let the browser break
-  // "on_exhaust:" from "gate").
-  //
-  // Goal "registry cards legibility", item 2: the loop is the flow's fifth STAGE, not a subordinate
-  // aside below it — `m--loopstage` draws the subtle bordered/tinted enclosure that reads as "one
-  // stage, two members alternating inside it" (assets/styles.css), so the pair renders as a single
-  // unit within the same left-to-right sequence rather than looking parallel to it. The bound/
-  // escalation caption stays present (never hidden behind hover — a Conductor auditing the registry or
-  // reading a screenshot needs it), tucked inside the same enclosure at its existing smaller, muted
-  // `.mn` treatment so it reads as subordinate to the loop, not a peer of the flow row.
-  return `<div class="m m--loopstage"><div class="looppair">${avA}<span class="arr">&#8646;</span>${avB}</div><span class="mn">until&nbsp;${esc(node.until)} &middot; max&nbsp;${node.maxRounds} &middot; on_exhaust:&nbsp;${esc(node.onExhaust)}</span></div>`;
+  // Goal "registry cards legibility", item 2, review round 3 ruling: a caption inside the enclosure
+  // forced it wider/taller than its neighbours (see NOTES CARD-LEGIBILITY's own addendum — capping the
+  // width made it technically inline but visibly two things at different heights, not one sequence).
+  // The enclosure now holds ONLY the avatar pair — the same height as a step's avatar or a gate's
+  // diamond, so it sits on the shared line with nothing to centre against and nothing left over.
+  // `until`/`on_exhaust` move to a hover/focus tooltip (`role="tooltip"` + `aria-describedby`,
+  // `tabindex="0"` so a keyboard user reaches it exactly like a pointer user — never mouseover-only).
+  // Hover/focus doesn't reach touch, screenshots, or a registry audit — the same two facts also render
+  // unconditionally in the run view's own live strip (render/run.ts), which is the ruling's condition
+  // for moving them off the card at all, not an unrelated addition.
+  const tipId = `loopbounds-${esc(team.name)}-${index}`;
+  return `<div class="m m--loopstage" tabindex="0" aria-describedby="${tipId}"><div class="looppair">${avA}<span class="arr">&#8646;</span>${avB}</div><span class="looptip" role="tooltip" id="${tipId}">until&nbsp;${esc(node.until)} &middot; max&nbsp;${node.maxRounds} &middot; on_exhaust:&nbsp;${esc(node.onExhaust)}</span></div>`;
 }
 
 // One bordered container per entity, built through the shared `card()` primitive (components.ts) —
@@ -201,12 +201,14 @@ export function renderRegistry(
       // the gap `.flowstrip`'s own `column-gap` reserves before it. That gap doesn't exist before a
       // wrapped LINE's own first item (flex-wrap never inserts one there), so the same arrow lands off
       // the strip's own left edge and is clipped by `overflow:hidden` — no leading connector, no split
-      // pair, on one baseline. The loop pair gets its own modifier (`fpair--loop`): its node stacks an
-      // avatar row above a caption, and the arrow anchors near the avatar row specifically, not the
-      // vertical center of that whole taller stack.
+      // pair, on one baseline. The loop pair carries its own modifier (`fpair--loop`) purely to select
+      // its enclosure's border/tint (assets/styles.css `.m--loopstage`) — since review round 3 moved
+      // its bound/escalation caption to a hover/focus tooltip (NOTES CARD-LEGIBILITY's own addendum),
+      // the node itself is exactly as tall as its avatar pair, the same as every sibling `.m`, and
+      // needs no special arrow offset: the ordinary centered `.fpair > .arr` rule now applies to it too.
       const flow = t.flow
         .map((n, i) => {
-          const node = flowNodeHtml(repo, t, n, teamCapabilities);
+          const node = flowNodeHtml(repo, t, n, teamCapabilities, i);
           if (i === 0) return node;
           const pairCls = n.kind === "loop" ? "fpair fpair--loop" : "fpair";
           return `<div class="${pairCls}"><span class="arr">&rarr;</span>${node}</div>`;

@@ -299,21 +299,25 @@ describe("fault 3: no orphaned arrow in a wrapped team flow row", () => {
     // internal glyph, which is a `.looppair` descendant this selector's child combinator can't reach.
     const arrRule = /\.flowstrip \.fpair > \.arr\{([^}]*)\}/.exec(css)![1];
     expect(arrRule).toContain("position:absolute");
-    // The loop pair's arrow anchors near its avatar row's own height, not centered against the whole
-    // taller stack (avatar row + caption) its node contains.
-    const loopArrRule = /\.flowstrip \.fpair--loop > \.arr\{([^}]*)\}/.exec(css)![1];
-    expect(loopArrRule).toContain("top:");
+    // Review round 3 ruling (NOTES CARD-LEGIBILITY addendum): the loop's enclosure no longer carries a
+    // caption, so it's the same height as any other node and needs no special-cased arrow offset — the
+    // generic `.fpair > .arr` rule above applies to it unmodified; a `.fpair--loop > .arr` override
+    // reappearing would mean the enclosure grew tall again.
+    expect(css).not.toMatch(/\.flowstrip \.fpair--loop > \.arr\{/);
   });
 });
 
 // Goal "registry cards legibility", item 2: the loop is `teams/kestrel.md`'s fifth declared flow
-// stage (after the second human gate) — it used to render on its own row below the sequence, reading
-// as parallel to the flow rather than part of it. It now renders inline, joined to what precedes it by
-// the SAME `&rarr;`/`.fpair` mechanism every other node uses, wrapped in its own subtle enclosure
-// (`.m--loopstage`) marking "one stage, two members alternating inside it" — and the loop's bounds
-// (until/max_rounds/on_exhaust) stay visible IN that enclosure, never moved to hover.
-describe("goal 'registry cards legibility' item 2: the loop renders inline within the sequence, its bounds visible", () => {
-  test("the loop node is joined to the sequence by the same &rarr;/.fpair mechanism as every other node, wrapped in its own bordered enclosure", () => {
+// stage (after the second human gate). Review round 3 ruling: an earlier version wrapped the avatar
+// pair AND its bound/escalation caption in one enclosure — the caption made the box taller than its
+// siblings, so even once it technically shared a line with the sequence, it read as two things at
+// different heights, not one. The caption now moves out of the enclosure entirely: the enclosure holds
+// only the avatar pair (the same height as any other node, joined by the same `&rarr;`/`.fpair`
+// mechanism), and the bound/escalation becomes a hover/focus tooltip on it — reachable by keyboard,
+// never mouseover-only — with the same facts rendered unconditionally in the run view as the ruling's
+// compensating condition (see tests/board-render.test.ts's own tier-3 live-strip coverage).
+describe("goal 'registry cards legibility' item 2 (review round 3): the loop enclosure is avatar-pair-only, its bounds move to an accessible tooltip", () => {
+  test("the loop node is joined to the sequence by the same &rarr;/.fpair mechanism as every other node, and its enclosure carries only the avatar pair", () => {
     const root = scaffoldRoot();
     const repo = loadRepo(root);
     const html = renderRegistry(repo, root, "teams");
@@ -322,35 +326,58 @@ describe("goal 'registry cards legibility' item 2: the loop renders inline withi
     // The loop is the 5th node (after step/gate/step/gate) — still inside .fpair.fpair--loop, joined
     // by the ordinary sequence arrow, exactly like the gate/step nodes before it (fault 3's mechanism).
     expect(flowRow).toContain('<div class="fpair fpair--loop"><span class="arr">&rarr;</span>');
-    // Its own enclosure — a distinct box, not bare avatars floating at the same weight as a step.
-    expect(flowRow).toContain('<div class="m m--loopstage">');
-    // The bound/escalation caption renders INSIDE that same enclosure (a sibling of .looppair within
-    // .m--loopstage), not detached elsewhere on the card and not gated behind a title="" hover-only
-    // attribute — a Conductor reading a screenshot or auditing the registry must see it without
-    // interacting with anything.
-    const loopNode = /<div class="m m--loopstage">[\s\S]*?<\/div>\s*<\/div>/.exec(flowRow)![0];
+    const loopNode = /<div class="m m--loopstage"[\s\S]*?<\/div>\s*<\/div>/.exec(flowRow)![0];
     expect(loopNode).toContain('<div class="looppair">');
-    expect(loopNode).toContain('<span class="mn">until&nbsp;spec.approved &middot; max&nbsp;3 &middot; on_exhaust:&nbsp;gate</span>');
+    // No caption inside the enclosure anymore — it holds only the avatar pair, the same shape as a
+    // bare step's `.m`.
+    expect(loopNode).not.toContain('class="mn"');
+    expect(loopNode).not.toContain("max_rounds");
   });
 
-  test("assets/styles.css: .m--loopstage draws a subtle bordered/tinted enclosure, and the caption stays at its smaller, subordinate treatment", () => {
+  test("the loop's bound/escalation is a tooltip reachable by keyboard focus, not only pointer hover", () => {
+    const root = scaffoldRoot();
+    const repo = loadRepo(root);
+    const html = renderRegistry(repo, root, "teams");
+    const kestrel = cardFor(html, "teams", "kestrel");
+    const flowRow = /<div class="flowstrip">([\s\S]*?)<\/div>\s*<div class="card__h">Definition/.exec(kestrel)![1];
+    const loopNode = /<div class="m m--loopstage"[\s\S]*?<\/div>\s*<\/div>/.exec(flowRow)![0];
+    // Keyboard-reachable: a real tabindex, not merely a title="" attribute a keyboard user can't reach.
+    expect(loopNode).toMatch(/<div class="m m--loopstage" tabindex="0" aria-describedby="([^"]+)"/);
+    const describedbyId = /aria-describedby="([^"]+)"/.exec(loopNode)![1];
+    // The ARIA tooltip pattern: the trigger's aria-describedby points at the tooltip's own id.
+    expect(loopNode).toContain(`role="tooltip" id="${describedbyId}"`);
+    expect(loopNode).toContain("until&nbsp;spec.approved &middot; max&nbsp;3 &middot; on_exhaust:&nbsp;gate");
+  });
+
+  test("assets/styles.css: the enclosure is a near-content-height box (no caption-driven padding/width), and the tooltip shows on both :hover and :focus", () => {
     const css = readFileSync("assets/styles.css", "utf8");
     const loopStageRule = /\.flowstrip \.m--loopstage\{([^}]*)\}/.exec(css)![1];
     expect(loopStageRule).toContain("border:");
     expect(loopStageRule).toContain("border-radius:");
-    // Regression guard: an UNCAPPED enclosure lets the caption's own natural (single-line) width
-    // drive the whole box's preferred width — on a real board this measured ~326px, wider than most
-    // card content areas, which is why the loop NEVER actually fit beside the preceding sequence and
-    // always wrapped to its own row regardless of card width (verified against a real `levare serve`,
-    // not just this DOM assertion — a card-width-driven layout defect a string/regex check can't see
-    // on its own). Capping the box's own width forces the caption to wrap onto multiple lines instead
-    // of demanding one very wide line, which is what actually lets the enclosure fit inline.
-    expect(loopStageRule).toMatch(/max-width:\d+px/);
-    const maxWidthPx = Number(/max-width:(\d+)px/.exec(loopStageRule)![1]);
-    expect(maxWidthPx).toBeLessThanOrEqual(200);
-    // The caption (.mn) keeps its existing smaller/muted treatment — subordinate to the enclosure,
-    // never a peer of the flow row's own text size.
-    const mnRule = /\.flowstrip \.mn\{([^}]*)\}/.exec(css)![1];
-    expect(mnRule).toMatch(/font-size:1[01]px/);
+    // Regression guard: a caption-sized box (padding tall enough for wrapped text, or any max-width at
+    // all) is what made the enclosure taller than its siblings in the design this closes — see NOTES
+    // CARD-LEGIBILITY's own addendum for the measurements. A real fix has neither.
+    expect(loopStageRule).not.toMatch(/max-width:/);
+    expect(loopStageRule).not.toMatch(/padding:[^;]*\b\d{2,}px/); // no double-digit-plus padding value
+    // The tooltip itself: hidden by default. `position:fixed`, not `absolute` — `.flowstrip`'s own
+    // `overflow:hidden` (fault 3's load-bearing arrow clip) would clip an absolutely-positioned
+    // tooltip rendered above the trigger identically, since it's still a DOM descendant of the
+    // clipped ancestor regardless of its own positioning scheme (verified directly against a real
+    // browser: an `overflow:hidden` ancestor clips a `position:absolute` descendant painted outside
+    // its box, but not a `position:fixed` one — see NOTES CARD-LEGIBILITY's own addendum).
+    const tipRule = /\.flowstrip \.looptip\{([^}]*)\}/.exec(css)![1];
+    expect(tipRule).toContain("position:fixed");
+    expect(tipRule).toMatch(/opacity:0/);
+    // Shown via a JS-toggled class (assets/app.js sets real pixel left/top from the trigger's own
+    // getBoundingClientRect() before showing it — a fixed-position box has no CSS relationship to its
+    // trigger's location) — never a bare `:hover`/`:focus` rule, which would show it pinned at (0,0).
+    expect(css).toMatch(/\.flowstrip \.looptip\.is-shown\{[^}]*opacity:1/);
+    const appJs = readFileSync("assets/app.js", "utf8");
+    expect(appJs).toContain("m--loopstage");
+    // Keyboard-reachable exactly like a pointer: focusin/focusout drive the SAME show/hide path as
+    // mouseover/mouseout, not merely a CSS :focus rule (title="" tooltips famously aren't keyboard
+    // reachable in any browser today — the ruling's own explicit requirement this guards against).
+    expect(appJs).toMatch(/addEventListener\('focusin'/);
+    expect(appJs).toMatch(/addEventListener\('focusout'/);
   });
 });

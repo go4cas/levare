@@ -603,7 +603,6 @@ button{ font-family:inherit; }
 .flowstrip{ display:flex; align-items:center; column-gap:22px; row-gap:10px; flex-wrap:wrap; overflow:hidden; }
 .flowstrip .m{ display:flex; flex-direction:column; align-items:flex-start; gap:6px; }
 .flowstrip .arr{ color:var(--fg-mute); font-family:var(--mono); }
-.flowstrip .mn{ font-family:var(--mono); font-size:11px; color:var(--fg-dim); }
 /* Fault 3 (v2): each node past the first is wrapped in `.fpair`, but `.fpair` itself carries ONLY the
    node — the arrow that logically precedes it (a direct child of `.fpair`, never the loop's OWN
    internal ⇆ glyph — that one is a `.looppair` descendant, two levels further down, so the child
@@ -619,28 +618,44 @@ button{ font-family:inherit; }
    "invisible" purely from whether that neighbour's gap existed to begin with. */
 .flowstrip .fpair{ position:relative; }
 .flowstrip .fpair > .arr{ position:absolute; top:50%; right:calc(100% + 6px); transform:translateY(-50%); white-space:nowrap; }
-/* The loop's own node stacks an avatar row above a `.mn` caption (below) — true vertical centering
-   (the general rule above) would float the arrow between those two rows, not beside the avatars it
-   actually connects to. Anchored near the avatar row's own height instead (matching the pre-fault-3
-   layout's identical fixed-offset reasoning, not a percentage of the whole taller stack). */
-.flowstrip .fpair--loop > .arr{ top:8px; transform:none; }
 /* NOTES REGISTRY-BODY: a team flow's loop node — its two `between` member avatars side by side, joined
-   by a loop glyph — nested inside a `.flowstrip .m` column alongside its own `.mn` caption (until/max/
-   on_exhaust) below. `.m` itself stays column-flex for that stack; this is the one new row inside it.
-   Its own internal glyph (⇆, between the two `between` avatars) also carries `class="arr"` but is a
-   DESCENDANT of `.looppair`, never a direct child of `.fpair` — the `.fpair > .arr` rules above don't
-   reach it, so it keeps its plain in-flow position, centered by `.looppair`'s own `align-items`. */
+   by a loop glyph. Its own internal glyph (⇆) also carries `class="arr"` but is a DESCENDANT of
+   `.looppair`, never a direct child of `.fpair` — the `.fpair > .arr` rule above doesn't reach it, so
+   it keeps its plain in-flow position, centered by `.looppair`'s own `align-items`. */
 .flowstrip .looppair{ display:flex; align-items:center; gap:4px; }
-/* Goal "registry cards legibility", item 2: the loop used to render as bare avatars + a caption,
-   floating at the same visual weight as every other flow node — nothing marked it as ONE stage
-   rather than two loose members beside a footnote. A subtle bordered/tinted enclosure (never a new
-   glyph — same "reuse what exists" discipline as the gate diamond) wraps the avatar pair AND its
-   caption together, reading as "one stage, two members alternating inside it" at a glance; the
-   caption keeps its existing smaller, muted `.mn` treatment, now visually tucked inside the same box
-   instead of sitting loose below it — subordinate to the enclosure, never hidden behind hover (a
-   Conductor approving a start gate needs max_rounds/on_exhaust visible, not one click away). */
-.flowstrip .m--loopstage{ border:1px solid var(--border); border-radius:8px; background:var(--panel-2);
-  padding:6px 10px 7px; max-width:150px; }
+/* Goal "registry cards legibility", item 2, review round 3 ruling: an EARLIER version of this
+   enclosure held the loop's bound/escalation caption too — that made the box taller than its siblings,
+   which broke the sequence's shared baseline no matter how the arrow was tuned (see NOTES
+   CARD-LEGIBILITY's own addendum for the measurements). The caption is gone from here entirely; the
+   enclosure now holds ONLY the avatar pair, at (near enough) the same height as a step's avatar or a
+   gate's diamond, so it takes the ordinary centered position on the line like everything else — no
+   special-cased arrow offset needed anymore. The border/tint is what's left to mark "one stage, two
+   members alternating inside it" (never a new glyph — the same "reuse what exists" discipline as the
+   gate diamond). `position:relative` anchors the hover/focus tooltip below (`.looptip`). */
+.flowstrip .m--loopstage{ position:relative; border:1px solid var(--border); border-radius:8px;
+  background:var(--panel-2); padding:2px 6px; cursor:default; }
+.flowstrip .m--loopstage:focus{ outline:2px solid var(--accent); outline-offset:2px; }
+/* The loop's bound/escalation (until/max_rounds/on_exhaust) moved off the card face into a hover/focus
+   tooltip — `tabindex="0"` + `aria-describedby` (registry.ts) makes it reachable by keyboard exactly
+   like a pointer, per the ruling's own condition ("an affordance that only exists on mouseover is not
+   an affordance for everyone"). Hover/focus still doesn't reach touch, screenshots, or a registry
+   audit — the SAME two facts render unconditionally in the run view's live strip instead
+   (render/run.ts), which is the other half of this same ruling, not an unrelated addition.
+   `position:fixed`, not `absolute`: `.flowstrip`'s own `overflow:hidden` is load-bearing for the
+   orphaned-arrow clip (fault 3) and would clip an absolutely-positioned tooltip identically — it
+   renders ABOVE the trigger, outside `.flowstrip`'s own box, exactly what that overflow exists to
+   hide. `position:fixed` escapes an ancestor's overflow clipping (verified directly: a fixed-position
+   box paints in full even nested inside a zero-height `overflow:hidden` parent), at the cost of having
+   no CSS relationship to the trigger's own position — `assets/app.js`'s hover/focus handler sets
+   `left`/`top` from the trigger's real `getBoundingClientRect()` on show, which is why the class
+   toggle (`is-shown`), not `:hover`/`:focus`, drives visibility here. */
+.flowstrip .looptip{ position:fixed; left:0; top:0; transform:translate(-50%, -100%);
+  z-index:50; background:var(--fg); color:var(--bg); font-family:var(--mono); font-size:11px;
+  line-height:1.5; white-space:normal; max-width:220px; width:max-content; padding:6px 10px;
+  border-radius:7px; box-shadow:var(--shadow); opacity:0; visibility:hidden;
+  transition:opacity var(--motion-fast); pointer-events:none; }
+.flowstrip .looptip.is-shown{ opacity:1; visibility:visible; }
+@media (prefers-reduced-motion: reduce){ .flowstrip .looptip{ transition:none; } }
 .recipe{ display:flex; gap:8px; flex-wrap:wrap; }
 .pill{ font-family:var(--mono); font-size:11.5px; color:var(--fg-dim); background:var(--panel-2);
   border:1px solid var(--border); padding:4px 9px; border-radius:20px; text-decoration:none; }
