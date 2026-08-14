@@ -21,7 +21,7 @@ import { bumpVersion, roundOf, type Verb } from "../runner.ts";
 import { productionAdapterRunner } from "../replay.ts";
 import { loopMembershipFor, isLoopCompanionKind, loopUntilKind, resolveStep, responsibleTeamFor, responsibleTeamsFor, unmetAfter, patchFrontmatter, upsertFrontmatterField, upsertFrontmatterMap } from "../gates.ts";
 import { locateArtifactFile } from "../locate.ts";
-import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL, transactionalWrite, type TxFile } from "../git.ts";
+import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL, transactionalWrite, dirtyRegistryFiles, type TxFile } from "../git.ts";
 import { advanceUnit, latestLiveArtifact, type AsyncMemberRunner } from "../dagwalk.ts";
 import { executeProposal, type ExecuteProposalOptions } from "../execution.ts";
 import { resolveProjectRepoPath, workBranchName, trialMerge, checkGuardrailsForMerge, executeMerge, createWorkBranch } from "../merge.ts";
@@ -740,6 +740,24 @@ async function resolveStartGate(
 // production followed an explicit start click, distinguishing it from a later autonomous advance —
 // only the identity was ever wrong.
 async function doStart(root: string, repo: Repo, unit: WorkUnit, memberRunner: AsyncMemberRunner, daemon?: Daemon): Promise<GateOpResult> {
+  // Goal REGISTRY-PROVENANCE, Part 1: `start` IS the operator's consent point (invariant 1's own
+  // causal chain — see this function's own doc, below) — the one place a dirty registry is refused
+  // outright, fail-closed, the same posture as validate.ts's ENV_FILE_TRACKED. Deliberately NOT
+  // repeated inside `advanceUnit`/the daemon's own autonomous walk: a loop's automatic author→critic
+  // continuation, a request-changes round, or any later daemon tick all run under whatever the
+  // registry already was when THIS click authorized the unit's walk — refusing one of those over a
+  // stray editor save would strand a unit halfway through a round it was already consented to.
+  const dirty = dirtyRegistryFiles(root);
+  if (dirty.length > 0) {
+    return {
+      ok: false,
+      status: 409,
+      error:
+        `registry has uncommitted changes — ${dirty.join(", ")} — and a member cannot be dispatched while ` +
+        `what governs it isn't in git: nothing could prove afterward what it was actually configured to do. ` +
+        `Commit the registry (git add ${dirty.join(" ")} && git commit) and start again.`,
+    };
+  }
   const unmet = unmetAfter(repo, unit);
   if (unmet.length > 0) return { ok: false, status: 409, error: `unit '${unit.unit}' still has unmet after: [${unmet.join(", ")}]` };
   const team = responsibleTeamFor(repo, unit);
