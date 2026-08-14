@@ -104,6 +104,40 @@ describe("studio screen", () => {
   });
 });
 
+// NOTES DOCS-WALKTHROUGH-2: the "Gates on you" stat number used to render amber (`.n.is-gate`) even at
+// zero — the calm state, when nothing needs the Conductor — because studio.ts passed `cls: "is-gate"`
+// unconditionally, independent of the `actionable` flag that's supposed to be the ONE thing gating any
+// gate-brass tint (components.ts#Stat's own doc). Fixed to match the Project page's identical stat,
+// which never had the extra `cls` and always got this right.
+describe("the studio 'Gates on you' stat tints only when actionable, matching the Project page's own stat", () => {
+  test("zero open gates: the stat number carries no is-gate class, and the cell isn't tinted", () => {
+    const emptyRepo: Repo = {
+      root: "/tmp/synthetic-zero-gates",
+      teams: new Map(),
+      types: new Map(),
+      projects: new Map(),
+      agents: new Map(),
+      connectors: new Map(),
+      units: [],
+      artifacts: new Map(),
+      studio: {},
+    };
+    const html = renderStudio(emptyRepo, "/tmp/synthetic-zero-gates", now);
+    const statMatch = html.match(/<div class="stat[^"]*"><div class="n[^"]*"[^>]*data-gatestat[^>]*>0<\/div><div class="l">Gates on you<\/div><\/div>/);
+    expect(statMatch).not.toBeNull();
+    expect(statMatch![0]).not.toContain("is-gate");
+    expect(statMatch![0]).not.toContain("stat--actionable");
+  });
+
+  test("open gates present: the cell is actionable-tinted, and the number still carries no separate is-gate class", () => {
+    const html = renderStudio(repo, root, now);
+    const statMatch = html.match(/<div class="stat[^"]*"><div class="n[^"]*"[^>]*data-gatestat[^>]*>2<\/div><div class="l">Gates on you<\/div><\/div>/);
+    expect(statMatch).not.toBeNull();
+    expect(statMatch![0]).toContain('class="stat stat--actionable"');
+    expect(statMatch![0]).not.toContain('class="n is-gate"');
+  });
+});
+
 // NOTES F10 defect 3: clicking Start left the board completely static for however long a real model
 // call takes — "Members running" only ever populated from the daemon's OWN autonomous tick, which a
 // Conductor-triggered start never went through. The board must acknowledge the click immediately: the

@@ -109,7 +109,14 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date(), r
       <h1>Studio</h1>
     </header>
     ${statStrip([
-      { value: `${gates.length}`, label: "Gates on you", cls: "is-gate", actionable: gates.length > 0, attr: { name: "data-gatestat", value: gates.length } },
+      // NOTES DOCS-WALKTHROUGH-2: this used to pass `cls: "is-gate"` unconditionally, colouring the
+      // number amber even at zero — the calm state, when nothing needs the Conductor. That directly
+      // contradicted the Foundation stat-band rule right above (`components.ts#Stat.actionable`'s own
+      // doc: "tints ONLY when actionable... never a general-purpose amber") and disagreed with the
+      // Project page's identical "Gates open" stat (render/project.ts), which never carried the extra
+      // `cls` and already got this right. `actionable` alone (the cell background tint) is the single
+      // mechanism now, matching that page.
+      { value: `${gates.length}`, label: "Gates on you", actionable: gates.length > 0, attr: { name: "data-gatestat", value: gates.length } },
       { value: `${running.length}`, label: "Members running", attr: { name: "data-runningstat", value: running.length } },
       { value: `${shippedUnits}`, label: "Units shipped &middot; 30d" },
       { value: median === null ? "&mdash;" : `${median.toFixed(median % 1 === 0 ? 0 : 1)}d`, label: "Median gate response" },
