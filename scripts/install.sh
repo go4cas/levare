@@ -108,3 +108,8 @@ case ":$PATH:" in
   *":$bin_dir:"*) ;;
   *) echo "levare-install: warning: $bin_dir is not on PATH — add it to your shell profile to run 'levare'" >&2 ;;
 esac
+
+# NOTES DOCS-WALKTHROUGH-2: a cold-start walkthrough found nothing after this script names the next
+# command — `levare init` was found only by reading --help. `levare init`'s own closing line already
+# names what comes after IT (validate, serve); this closes the same gap one command earlier.
+printf 'levare-install: next, run '"'"'levare init'"'"' to scaffold a studio\n'

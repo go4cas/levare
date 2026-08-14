@@ -854,3 +854,47 @@ navigation between two units in the same project, never resyncing the action reg
 conversation `scope` — a project, not a unit — never changes), and the age-label root-causing in full.
 See its addendum for the briefing-sentence gap found afterward and why the original fix's own scoping
 missed it.
+
+## Ten cold-start-walkthrough findings — closed (NOTES DOCS-WALKTHROUGH-2); one was a decision
+
+A second live cold-start walkthrough (install through first loop, on a released binary) found ten small
+defects; nine were one-line-cause fixes, closed as stated below. The tenth — doctor's `orchestrator: on`
+claim for a credential whose validity was never actually checked — needed a real decision, made and
+recorded, not merely an edit; read NOTES DOCS-WALKTHROUGH-2 for its full reasoning, not the summary here.
+
+**Bare `levare doctor` now defaults to the current directory**, not `fixtures/golden` (levare's own dev
+fixture, previously the compiled-in default regardless of where `doctor` was actually run from) —
+`context`/`serve` keep that dev-convenience default unchanged, deliberately. **The install script now
+names `levare init`** as the next command in its own closing line, matching what `init`'s own closing
+line already does for the command after IT. **Doctor's `missing-env` consequence line now names the
+literal remedy** (`cp .env.example .env, then set <NAME>`), matching the standard
+`SUBSCRIPTION_NO_HOME`/`SUBSCRIPTION_HOME_SHIM_GAP` already set (field, consequence, AND the literal
+fix) rather than stopping at diagnosis. **The Studio page's `Gates on you` stat no longer tints its
+number amber at zero** — it carried a second, unconditional colour mechanism alongside `actionable`
+that directly contradicted the Foundation stat-band rule `components.ts#Stat` itself documents; removed
+to match the Project page's own identical stat, which never had the bug. **The loop-bounds tooltip
+(`feat/board-card-legibility`) now renders below its trigger, not above** — it was placement-only and
+functional, but "above" routinely overlapped the team charter paragraph and "Declared flow" heading
+directly above the flow row; "below" lands in the card's ordinary pre-"Definition" spacing instead.
+**A founding artifact's `cited N` now carries the same accessible tooltip treatment**, explaining what
+the count is (how many other artifacts in the project declare this one in their own `consumes:`) —
+keyboard-reachable, never hover-only, sharing its positioning logic with the (also-fixed) loop tooltip
+via one generalized `wireTooltip` helper rather than a second copy of the same machinery.
+
+Two Conductor rulings, carried out as stated rather than relitigated: **the scaffold's `work/` now
+ships a tracked `.gitkeep`**, so a freshly-cloned studio keeps the directory where the job actually
+happens (`evals/`/`ideas/` stay untracked-until-used, unchanged — genuinely empty-until-used, not a
+papercut); and **the scaffold's example `cli` member (`finch`) now wraps plain `git`, not Codex** — a
+founding example runnable on any machine with no purchase or login, while the DOCS keep Codex as their
+own canonical `cli` example across chapters 4.5/4.6 (the most thoroughly live-validated `cli` member in
+the project after NOTES R4-SANDBOX-TLS; docs and scaffold serve different audiences here).
+
+One investigated and confirmed correct, unchanged: `approved_commit` (`gates.ts`/`board/gateops.ts`)
+records the PRE-approval baseline commit, not the approval commit's own SHA — precisely what lets
+`validate.ts`'s A7 check diff against a permanent ancestor and catch a committed post-approval edit that
+a HEAD-diff would launder as unchanged. Recorded here so the question isn't re-asked.
+
+See NOTES DOCS-WALKTHROUGH-2 for the doctor-credential decision's full reasoning (why a real API
+round-trip was rejected in favor of honest wording — doctor's own standing classification as an offline
+command, alongside the file's own established discipline of naming exactly what was checked and no
+more), every finding's exact mechanism, and the tests each closes with.

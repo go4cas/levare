@@ -65,7 +65,7 @@ levare doctor ~/studio
 ```
 
 ```
-orchestrator: on · The Orchestrator is live.
+orchestrator: on · ANTHROPIC_API_KEY is present — its validity isn't checked until the Orchestrator makes a real request.
 
 levare doctor · 3 connectors
 

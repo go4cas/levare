@@ -17,7 +17,7 @@ import type { OrchestratorStatus } from "../src/orchestrator-status.ts";
 // renders when the Orchestrator is available — an unavailable one (e.g. no ANTHROPIC_API_KEY in this
 // test environment) shows a fixed "Orchestrator unavailable..." turn instead. Pin availability so
 // every assertion below is actually exercising the briefing text, not the disabled-state branch.
-const ON: OrchestratorStatus = { available: true, reason: "The Orchestrator is live.", envVar: "ANTHROPIC_API_KEY" };
+const ON: OrchestratorStatus = { available: true, reason: "ANTHROPIC_API_KEY is present — its validity isn't checked until the Orchestrator makes a real request.", envVar: "ANTHROPIC_API_KEY" };
 
 // NOTES ORCH-STALE-CARD (content fault 2, independent of the propagation fix): the run view's
 // Orchestrator briefing used to say "<kind> is ready for review below." for EVERY open gate on the

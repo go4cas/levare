@@ -104,6 +104,40 @@ describe("studio screen", () => {
   });
 });
 
+// NOTES DOCS-WALKTHROUGH-2: the "Gates on you" stat number used to render amber (`.n.is-gate`) even at
+// zero — the calm state, when nothing needs the Conductor — because studio.ts passed `cls: "is-gate"`
+// unconditionally, independent of the `actionable` flag that's supposed to be the ONE thing gating any
+// gate-brass tint (components.ts#Stat's own doc). Fixed to match the Project page's identical stat,
+// which never had the extra `cls` and always got this right.
+describe("the studio 'Gates on you' stat tints only when actionable, matching the Project page's own stat", () => {
+  test("zero open gates: the stat number carries no is-gate class, and the cell isn't tinted", () => {
+    const emptyRepo: Repo = {
+      root: "/tmp/synthetic-zero-gates",
+      teams: new Map(),
+      types: new Map(),
+      projects: new Map(),
+      agents: new Map(),
+      connectors: new Map(),
+      units: [],
+      artifacts: new Map(),
+      studio: {},
+    };
+    const html = renderStudio(emptyRepo, "/tmp/synthetic-zero-gates", now);
+    const statMatch = html.match(/<div class="stat[^"]*"><div class="n[^"]*"[^>]*data-gatestat[^>]*>0<\/div><div class="l">Gates on you<\/div><\/div>/);
+    expect(statMatch).not.toBeNull();
+    expect(statMatch![0]).not.toContain("is-gate");
+    expect(statMatch![0]).not.toContain("stat--actionable");
+  });
+
+  test("open gates present: the cell is actionable-tinted, and the number still carries no separate is-gate class", () => {
+    const html = renderStudio(repo, root, now);
+    const statMatch = html.match(/<div class="stat[^"]*"><div class="n[^"]*"[^>]*data-gatestat[^>]*>2<\/div><div class="l">Gates on you<\/div><\/div>/);
+    expect(statMatch).not.toBeNull();
+    expect(statMatch![0]).toContain('class="stat stat--actionable"');
+    expect(statMatch![0]).not.toContain('class="n is-gate"');
+  });
+});
+
 // NOTES F10 defect 3: clicking Start left the board completely static for however long a real model
 // call takes — "Members running" only ever populated from the daemon's OWN autonomous tick, which a
 // Conductor-triggered start never went through. The board must acknowledge the click immediately: the
@@ -221,6 +255,24 @@ describe("project screen", () => {
   test("constitution shows founding artifacts with citation counts", () => {
     expect(html).toContain('class="founding"');
     expect(html).toContain("cited 2"); // product-brief-v1 is consumed by design + spec
+  });
+
+  // NOTES DOCS-WALKTHROUGH-2: "cited N" was previously unexplained on the card. Same accessible
+  // treatment as the loop-bounds tooltip — keyboard-reachable (a real tabindex + aria-describedby
+  // trigger, not a title="" attribute), never hover-only — and scoped to a class distinct from the
+  // plain, non-interactive `.cite` badge the releases list below reuses for its own age/latest label.
+  test("'cited N' carries a keyboard-reachable tooltip explaining what it counts", () => {
+    const foundingBlock = /<div class="founding">[\s\S]*?<\/div>\n\s*<div class="founding release--latest"/.exec(html)?.[0] ?? html;
+    const citeMatch = /<span class="cite cite--count" tabindex="0" aria-describedby="([^"]+)">cited \d+<span class="citetip" role="tooltip" id="([^"]+)">([^<]+)<\/span><\/span>/.exec(
+      foundingBlock,
+    );
+    expect(citeMatch).not.toBeNull();
+    const [, describedBy, tipId, tipText] = citeMatch!;
+    expect(describedBy).toBe(tipId);
+    expect(tipText.length).toBeGreaterThan(0);
+    // The release badge just below reuses the bare `.cite` class for an unrelated age/latest label —
+    // it must never pick up tooltip behaviour by class collision.
+    expect(html).toMatch(/<span class="cite">latest<\/span>|<span class="cite">\d+[dh]<\/span>/);
   });
 
   test("founding artifact links into the artifact render view (item 1)", () => {
@@ -1306,7 +1358,7 @@ describe("the app header carries the wordmark, version chip, orchestrator status
   // — "on" maps to the canonical `done` state (green), "off" to `waiting` (solid neutral gray), never
   // `failed` (red) — this is a configuration state, never an error.
   test("orchestrator: on — the done chip, never the danger colour", () => {
-    const html = renderStudio(repo, root, now, [], { available: true, reason: "The Orchestrator is live.", envVar: "ANTHROPIC_API_KEY" });
+    const html = renderStudio(repo, root, now, [], { available: true, reason: "ANTHROPIC_API_KEY is present — its validity isn't checked until the Orchestrator makes a real request.", envVar: "ANTHROPIC_API_KEY" });
     const header = headerOf(html);
     expect(header).toContain("orchestrator: on");
     expect(header).toContain('class="chip is-done"');
@@ -1756,7 +1808,7 @@ describe("UI4 item 1: the confirm-modal primitive renders on every screen", () =
 // ---------------------------------------------------------------------------
 
 describe("the header status indicator shows the Orchestrator's real state, on every screen", () => {
-  const ON: OrchestratorStatus = { available: true, reason: "The Orchestrator is live.", envVar: "ANTHROPIC_API_KEY" };
+  const ON: OrchestratorStatus = { available: true, reason: "ANTHROPIC_API_KEY is present — its validity isn't checked until the Orchestrator makes a real request.", envVar: "ANTHROPIC_API_KEY" };
   const OFF: OrchestratorStatus = { available: false, reason: "ANTHROPIC_API_KEY is not set", envVar: "ANTHROPIC_API_KEY" };
 
   const screensWith = (status: OrchestratorStatus): Array<[string, string]> => [

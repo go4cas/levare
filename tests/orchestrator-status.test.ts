@@ -31,6 +31,17 @@ describe("resolveOrchestratorStatus — reflects the local precondition only, no
   // Drives the SAME local check `selectOrchestratorBoundary` uses — a genuinely unresolvable native
   // binary (simulated via `requireFrom` pointed at an empty scratch dir, never touching the real
   // installed packages) reports unavailable with that specific reason, regardless of the credential.
+  // NOTES DOCS-WALKTHROUGH-2: `resolveOrchestratorStatus` proves presence + binary resolvability, never
+  // validity — a live cold-start walkthrough hit exactly this gap (doctor reported "on", the first real
+  // dispatch then failed with a 401 for an expired key). The reason text must say only what's actually
+  // known (presence) and must not claim the credential works.
+  test("a present key with a resolvable native binary → available, reason names presence, never claims validity", () => {
+    const status = resolveOrchestratorStatus({ ANTHROPIC_API_KEY: "sk-ant-test" });
+    expect(status.available).toBe(true);
+    expect(status.reason).toContain(`${ORCHESTRATOR_ENV_VAR} is present`);
+    expect(status.reason.toLowerCase()).not.toContain("live");
+  });
+
   test("a present key but an unresolvable native binary → unavailable, with the binary reason", async () => {
     const { mkdtempSync, rmSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");

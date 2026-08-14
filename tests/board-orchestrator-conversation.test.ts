@@ -20,7 +20,7 @@ import type { OrchestratorStatus } from "../src/orchestrator-status.ts";
 const root = "fixtures/golden";
 const repo = loadRepo(root);
 const now = new Date("2026-07-11T20:00:00Z");
-const ON: OrchestratorStatus = { available: true, reason: "The Orchestrator is live.", envVar: "ANTHROPIC_API_KEY" };
+const ON: OrchestratorStatus = { available: true, reason: "ANTHROPIC_API_KEY is present — its validity isn't checked until the Orchestrator makes a real request.", envVar: "ANTHROPIC_API_KEY" };
 const OFF: OrchestratorStatus = { available: false, reason: "ANTHROPIC_API_KEY is not set", envVar: "ANTHROPIC_API_KEY" };
 
 // Strip the hidden raw-markdown textareas / templates the same way board-render.test.ts's registry

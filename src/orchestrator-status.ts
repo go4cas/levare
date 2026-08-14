@@ -31,7 +31,16 @@ export function resolveOrchestratorStatus(env: Record<string, string | undefined
   const check = checkSdkPreconditionsCached(env, opts);
   return {
     available: check.viable,
-    reason: check.viable ? "The Orchestrator is live." : (check.reason ?? `${ORCHESTRATOR_ENV_VAR} is not set`),
+    // NOTES DOCS-WALKTHROUGH-2: this used to read "The Orchestrator is live." — a claim doctor cannot
+    // back up. `checkSdkPreconditions` only proves the key is SET and the native binary resolves; it
+    // never makes a request, so an expired or revoked key reports this identically to a good one, and
+    // only fails later at real dispatch (an operator hit exactly this live: a green doctor, then a 401
+    // on the first real message). Say only what's actually known — presence, not validity — rather than
+    // implying a check that never ran. See docs/current-gaps.md for why a real round-trip check was
+    // rejected rather than added.
+    reason: check.viable
+      ? `${ORCHESTRATOR_ENV_VAR} is present — its validity isn't checked until the Orchestrator makes a real request.`
+      : (check.reason ?? `${ORCHESTRATOR_ENV_VAR} is not set`),
     envVar: ORCHESTRATOR_ENV_VAR,
   };
 }

@@ -91,9 +91,9 @@ describe("doctor: env provenance (NOTES C11)", () => {
 // the board's header indicator shows (orchestrator-status.ts), so the two can never disagree.
 describe("doctor: reports the Orchestrator boundary (NOTES C11)", () => {
   test("formatDoctor prints an 'on' line ahead of the connector report when given an available status", () => {
-    const status: OrchestratorStatus = { available: true, reason: "The Orchestrator is live.", envVar: "ANTHROPIC_API_KEY" };
+    const status: OrchestratorStatus = { available: true, reason: "ANTHROPIC_API_KEY is present — its validity isn't checked until the Orchestrator makes a real request.", envVar: "ANTHROPIC_API_KEY" };
     const out = formatDoctor(diagnose(connectors, env, noGh), status);
-    expect(out.split("\n")[0]).toBe("orchestrator: on · The Orchestrator is live.");
+    expect(out.split("\n")[0]).toBe("orchestrator: on · ANTHROPIC_API_KEY is present — its validity isn't checked until the Orchestrator makes a real request.");
   });
 
   test("formatDoctor prints an 'off' line naming the missing env var", () => {
@@ -351,6 +351,16 @@ describe("doctor: reports connector role, and the consequence differs by role fo
   });
 });
 
+// NOTES DOCS-WALKTHROUGH-2: `missing-env` used to name the problem and the consequence but never the
+// remedy — a reader had to already know `cp .env.example .env` to fix it. Matches the standard
+// SUBSCRIPTION_NO_HOME/SUBSCRIPTION_HOME_SHIM_GAP already set: field, consequence, and the literal fix.
+describe("doctor: missing-env names the remedy, not just the diagnosis (NOTES DOCS-WALKTHROUGH-2)", () => {
+  test("the consequence line names the exact `cp .env.example .env` remedy and the missing var(s)", () => {
+    const out = formatDoctor(diagnose(connectors, env, noGh));
+    expect(out).toContain("⚠ members depending on 'linear' will fail mid-work when they reach for it — cp .env.example .env, then set LINEAR_API_KEY");
+  });
+});
+
 // NOTES MERGE-1: the REV1 "declared but not yet enforced" notice is retired — `checkGuardrails`
 // acquired its production call site (board/gateops.ts's merge-gate execution, PRD Amendment 2 M3).
 // `formatDoctor` no longer takes a `guardrailsTeams` param at all; these tests prove the retirement,
@@ -404,6 +414,31 @@ describe("doctor: remote-member-not-implemented telling (NOTES MCP-1B)", () => {
       const out = p.stdout.toString();
       expect(out).toContain("remote members without a real, granted, stdio MCP connector are not yet implemented");
       expect(out).toContain("echo");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// NOTES DOCS-WALKTHROUGH-2: `levare doctor [root]` documents `[root]` as optional in `--help`, but a
+// cold-start walkthrough found the bare form resolved to `fixtures/golden` — a path that only exists
+// inside levare's own source checkout — everywhere else. Per NOTES DIST7's own lesson, a test that
+// merely runs from the repo root proves nothing here (the old, buggy default's fallback walk happened
+// to succeed there too); this spawns the real CLI with its `cwd` set to a studio OUTSIDE the repo, with
+// no root argument at all, and asserts it resolves against that cwd instead of failing to find the
+// compiled-in fixture default.
+describe("doctor: bare `[root]` defaults to the current directory (NOTES DOCS-WALKTHROUGH-2)", () => {
+  test("`levare doctor` with no root arg, run from a studio outside the repo, doctors that studio — not fixtures/golden", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-doctor-cwd-"));
+    try {
+      cpSync("fixtures/golden", dir, { recursive: true });
+      const levareBin = join(process.cwd(), "levare");
+      const p = Bun.spawnSync([levareBin, "doctor"], { cwd: dir, env: { ...process.env, ANTHROPIC_API_KEY: "" } });
+      const out = p.stdout.toString();
+      expect(p.exitCode).toBe(0);
+      expect(out).not.toContain("NOT_FOUND");
+      expect(out).not.toContain("fixtures/golden: path does not exist");
+      expect(out).toContain("levare doctor ·");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

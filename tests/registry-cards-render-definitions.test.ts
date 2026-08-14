@@ -97,8 +97,8 @@ describe("registry cards render each entity's declared body and fields (scaffold
     const repo = loadRepo(root);
     const html = renderRegistry(repo, root, "agents");
     const finch = cardFor(html, "agents", "finch");
-    expect(finch).toContain("codex");
-    expect(finch).toContain("--repo");
+    // NOTES DOCS-WALKTHROUGH-2: finch wraps plain `git`, not a vendor CLI — see src/init.ts#AGENT_FINCH.
+    expect(finch).toContain("git log -p -1");
     expect(finch).toContain("{feature_repo}");
     expect(finch).toContain("600s");
     expect(finch).toContain("Emits review commentary as plain text on stdout");
@@ -368,6 +368,16 @@ describe("goal 'registry cards legibility' item 2 (review round 3): the loop enc
     const tipRule = /\.flowstrip \.looptip\{([^}]*)\}/.exec(css)![1];
     expect(tipRule).toContain("position:fixed");
     expect(tipRule).toMatch(/opacity:0/);
+    // NOTES DOCS-WALKTHROUGH-2: the tooltip used to render above the trigger — `translate(-50%, -100%)`
+    // paired with `top: trigger.top - 7` — which routinely overlapped the card's own charter paragraph
+    // and "Declared flow" heading directly above the flow row (a cold-start walkthrough finding). Fixed
+    // to render below instead: the transform's own vertical component is `0`, never `-100%`, and the JS
+    // sets `top` from the trigger's `bottom` edge, never its `top`.
+    expect(tipRule).toMatch(/transform:translate\(-50%,\s*0\)/);
+    expect(tipRule).not.toContain("-100%");
+    const appJsPositioning = readFileSync("assets/app.js", "utf8");
+    expect(appJsPositioning).toContain("r.bottom + 7");
+    expect(appJsPositioning).not.toContain("r.top - 7");
     // Shown via a JS-toggled class (assets/app.js sets real pixel left/top from the trigger's own
     // getBoundingClientRect() before showing it — a fixed-position box has no CSS relationship to its
     // trigger's location) — never a bare `:hover`/`:focus` rule, which would show it pinned at (0,0).
