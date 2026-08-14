@@ -338,6 +338,16 @@ describe("goal 'registry cards legibility' item 2: the loop renders inline withi
     const loopStageRule = /\.flowstrip \.m--loopstage\{([^}]*)\}/.exec(css)![1];
     expect(loopStageRule).toContain("border:");
     expect(loopStageRule).toContain("border-radius:");
+    // Regression guard: an UNCAPPED enclosure lets the caption's own natural (single-line) width
+    // drive the whole box's preferred width — on a real board this measured ~326px, wider than most
+    // card content areas, which is why the loop NEVER actually fit beside the preceding sequence and
+    // always wrapped to its own row regardless of card width (verified against a real `levare serve`,
+    // not just this DOM assertion — a card-width-driven layout defect a string/regex check can't see
+    // on its own). Capping the box's own width forces the caption to wrap onto multiple lines instead
+    // of demanding one very wide line, which is what actually lets the enclosure fit inline.
+    expect(loopStageRule).toMatch(/max-width:\d+px/);
+    const maxWidthPx = Number(/max-width:(\d+)px/.exec(loopStageRule)![1]);
+    expect(maxWidthPx).toBeLessThanOrEqual(200);
     // The caption (.mn) keeps its existing smaller/muted treatment — subordinate to the enclosure,
     // never a peer of the flow row's own text size.
     const mnRule = /\.flowstrip \.mn\{([^}]*)\}/.exec(css)![1];

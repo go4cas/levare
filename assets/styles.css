@@ -640,7 +640,7 @@ button{ font-family:inherit; }
    instead of sitting loose below it — subordinate to the enclosure, never hidden behind hover (a
    Conductor approving a start gate needs max_rounds/on_exhaust visible, not one click away). */
 .flowstrip .m--loopstage{ border:1px solid var(--border); border-radius:8px; background:var(--panel-2);
-  padding:6px 10px 7px; }
+  padding:6px 10px 7px; max-width:150px; }
 .recipe{ display:flex; gap:8px; flex-wrap:wrap; }
 .pill{ font-family:var(--mono); font-size:11.5px; color:var(--fg-dim); background:var(--panel-2);
   border:1px solid var(--border); padding:4px 9px; border-radius:20px; text-decoration:none; }

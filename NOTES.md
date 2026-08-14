@@ -15376,3 +15376,72 @@ kinds. The modal's split is now content-adaptive with each pane capped and indep
 still not operator-resizable — a deliberate scope cut, not an oversight (see item 4 above). The grid's
 ragged-bottom choice is scoped to `.entity-grid` (registry only); the studio's project-card grid keeps
 its existing stretch behavior, untouched, since nothing in this goal named it as broken.
+
+## NOTES CARD-LEGIBILITY addendum (2026-08-14) — review round 2: the loop still wasn't inline, and the
+## grid-column claim didn't reproduce
+
+A review against a real `levare serve` (not the DOM-assertion suite, which passed throughout both
+rounds — the exact class of defect this whole unit's own methodology warns about) found item 2's first
+fix incomplete, and could not confirm item 3's reported regression.
+
+**The loop still rendered on its own row, with a leading arrow visibly pointing at nothing.** Direct
+measurement (`getBoundingClientRect()` on a real served page) found `.fpair--loop`'s rendered width was
+a constant ~326px at EVERY card width tested — far wider than the avatar pair (~63px) the enclosure was
+meant to hold, and wider than nearly every real card's own content area (~320–430px). Root cause: `.mn`
+(the caption) had no `max-width`; as a flex item inside `.m--loopstage`'s column-flex layout
+(`align-items:flex-start`, its cross-axis default), a text item with no width constraint sizes to its
+own max-content width — i.e., it tries to render on ONE line — and `.m--loopstage`'s own width, being a
+column-flex container with no explicit width, is driven by its widest child. The caption
+("until spec.approved · max 3 · on_exhaust: gate") on one line is ~300px+; that became the enclosure's
+effective preferred width, guaranteeing it could never share a line with the preceding sequence no
+matter how the arrow/`.fpair` mechanism was tuned. This bug predates this unit — the caption sat in the
+identical unconstrained column-flex layout before the enclosure existed — it just had no prior
+consequence, since the loop was unconditionally on its own row before this unit's own work ever tried to
+join it to the sequence. The isolated fixture used to verify the FIRST fix (a synthetic 900px-wide test
+card) had enough width to fit the oversized box anyway, which is why that verification round's own
+"looks inline" screenshot didn't catch it — a passing check on an artificially generous fixture standing
+in for the real, much narrower card.
+
+**Fix:** `.flowstrip .m--loopstage` gains `max-width:150px`. The caption now wraps onto 2–3 lines
+instead of demanding one ~300px line; the enclosure's own preferred width drops to ~150px (plus
+padding/border), small enough to fit beside the preceding sequence at effectively every practical card
+width. Verified two ways: (1) exhaustive `getBoundingClientRect()` comparison — `loopBox.left >
+lastGate.right` (genuinely inline, not merely same-flex-line-by-coincidence) — true at every one of 48
+real width×height combinations swept from 1024×800 to 3440×1080, plus the narrow single-team-column
+band down to 620px; (2) when a card genuinely is too narrow even for the now-much-smaller box (found at
+one specific width, ~700px, for the scaffold/golden studio's own 1–2-team layout), it wraps to its own
+row CLEANLY, with the leading arrow correctly clipped by the pre-existing `.fpair`/`overflow:hidden`
+mechanism (fault 3) — zoomed pixel-level screenshots at that width show no dangling arrow. A regression
+guard (`tests/registry-cards-render-definitions.test.ts`) asserts `.m--loopstage` declares a `max-width`
+at or under 200px, so an edit that drops the cap can't silently reintroduce the always-wraps defect.
+
+**A known, accepted trade-off, not chased further.** With the caption wrapping to multiple lines, the
+enclosure is now taller than a bare avatar/diamond node sharing its line, and `.flowstrip`'s
+`align-items:center` centers the WHOLE box on the line — since the box is the line's tallest item, its
+border-box height always exactly equals the line's own height (proven algebraically: any `align-self`
+value produces the identical position when an item's own height defines the line height it's being
+positioned within), so the avatar row (the box's first, shorter child) ends up sitting above the shared
+line-center rather than exactly on it — by a visible but small amount (~25–29px at typical 2–3 line
+wraps). Reaching exact pixel parity would require either inflating the line's reserved height (fighting
+this whole unit's own "no wasted space" goal) or moving the caption out of normal flow (breaking the
+"caption inside the SAME enclosure as the avatars" requirement). Left as-is: the sequence reads
+correctly left-to-right, connected by a real (non-orphaned) arrow, which was the review's actual ask;
+pixel-identical vertical centering of a taller composite item against single-line siblings was not.
+
+**The Agents grid column-count claim did not reproduce.** Compared the pre-unit commit (56593d5,
+`git worktree`) against this branch, same walkthrough-studio content (scaffold + docs/guide/04-workflow's
+own chapters, pasted in order — corvid, finch, lyra, scribe, wren), same real `levare serve`, at 48
+realistic width×height combinations (16 widths from 1024px to 3440px — covering every common desktop/
+laptop logical resolution — × 3 heights). Every single breakpoint (the exact viewport width where the
+grid gains or loses a column) was byte-identical between the two builds. This matches the CSS mechanism
+directly: `align-items` controls cross-axis (vertical, for a row-based grid) placement/stretching of
+items WITHIN an already-decided set of rows/columns — it has no input into `grid-template-columns`'s own
+track count, which `repeat(auto-fill, minmax(320px,1fr))` computes purely from container width. Also
+ruled out: the `description:` headline (item 1) adding min-content width to a card (tested old-vs-new
+init.ts scaffold content directly, no effect on any breakpoint); a scrollbar-width side-effect from the
+old build's taller stretched rows (row height in CSS Grid is set by the tallest item regardless of
+`align-items`, so total page height is unaffected by this specific change either way). Not disputing the
+observation — reporting that this specific reproduction, built the same way the goal's own review
+described it (scaffold + walkthrough chapters, corvid named explicitly), shows no difference at any
+tested width. No change made to the grid CSS this round; flagged for a follow-up with the specific
+viewport width if the discrepancy persists on a real host.
