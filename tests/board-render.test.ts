@@ -1306,7 +1306,7 @@ describe("the app header carries the wordmark, version chip, orchestrator status
   // — "on" maps to the canonical `done` state (green), "off" to `waiting` (solid neutral gray), never
   // `failed` (red) — this is a configuration state, never an error.
   test("orchestrator: on — the done chip, never the danger colour", () => {
-    const html = renderStudio(repo, root, now, [], { available: true, reason: "The Orchestrator is live.", envVar: "ANTHROPIC_API_KEY" });
+    const html = renderStudio(repo, root, now, [], { available: true, reason: "ANTHROPIC_API_KEY is present — its validity isn't checked until the Orchestrator makes a real request.", envVar: "ANTHROPIC_API_KEY" });
     const header = headerOf(html);
     expect(header).toContain("orchestrator: on");
     expect(header).toContain('class="chip is-done"');
@@ -1756,7 +1756,7 @@ describe("UI4 item 1: the confirm-modal primitive renders on every screen", () =
 // ---------------------------------------------------------------------------
 
 describe("the header status indicator shows the Orchestrator's real state, on every screen", () => {
-  const ON: OrchestratorStatus = { available: true, reason: "The Orchestrator is live.", envVar: "ANTHROPIC_API_KEY" };
+  const ON: OrchestratorStatus = { available: true, reason: "ANTHROPIC_API_KEY is present — its validity isn't checked until the Orchestrator makes a real request.", envVar: "ANTHROPIC_API_KEY" };
   const OFF: OrchestratorStatus = { available: false, reason: "ANTHROPIC_API_KEY is not set", envVar: "ANTHROPIC_API_KEY" };
 
   const screensWith = (status: OrchestratorStatus): Array<[string, string]> => [
