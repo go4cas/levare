@@ -14,7 +14,7 @@
 // shape without updating the renderer (or vice versa) fails here, rather than silently drifting apart.
 
 import { test, expect, describe, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scaffoldStudio } from "../src/init.ts";
@@ -22,6 +22,7 @@ import { loadRepo } from "../src/repo.ts";
 import { loadExtras } from "../src/extra.ts";
 import { renderRegistry } from "../src/board/render.ts";
 import { renderProject } from "../src/board/render/project.ts";
+import { validatePath } from "../src/validate.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -154,6 +155,60 @@ describe("registry cards render each entity's declared body and fields (scaffold
     expect(repo.types.size).toBeGreaterThan(0);
     expect(repo.connectors.size).toBeGreaterThan(0);
     expect(html).not.toContain("<script>");
+  });
+});
+
+// Goal "registry cards legibility", item 1: a card's headline used to be whatever prose the body/
+// charter happened to open with — "Designer" reads faster than "You are Lyra, a flow designer and
+// spec author" at a glance across a grid of cards. `description:` is optional display-only prose
+// (never read by the runner — produces/consumes still carry every real capability fact); it renders
+// as the card's headline ABOVE the existing body-derived lead paragraph, which keeps rendering
+// unconditionally underneath — the description is additive, never a replacement for the charter/body
+// text a Conductor already relies on (kestrel's own "never touches a project's main branch" line).
+describe("goal 'registry cards legibility' item 1: description: renders as an additive card headline", () => {
+  test("team and agent cards with description: render it as the headline, with the charter/body still present below it", () => {
+    const root = scaffoldRoot();
+    const repo = loadRepo(root);
+    // The scaffold itself now declares description: on kestrel/lyra — demonstrating the field, not
+    // just its fallback (goal requirement 1).
+    const kestrel = cardFor(renderRegistry(repo, root, "teams"), "teams", "kestrel");
+    expect(kestrel).toContain("Pitch to approved spec"); // the headline
+    expect(kestrel).toContain("Kestrel takes a pitch to an approved specification"); // the charter, still below it
+    expect(kestrel).toContain("never touches a project's main branch"); // none of the charter may disappear
+
+    const lyra = cardFor(renderRegistry(repo, root, "agents"), "agents", "lyra");
+    expect(lyra).toContain("Designer"); // the headline
+    expect(lyra).toContain("You are Lyra, a flow designer and spec author."); // the body, still below it
+  });
+
+  test("a team/agent with no description: anywhere validates clean and renders exactly as it did before the field existed — no headline element, no duplicated lead text", () => {
+    const root = scaffoldRoot();
+    // Strip the scaffold's own `description:` lines to reproduce "no description: anywhere in the studio".
+    for (const rel of ["teams/kestrel.md", "agents/wren.md", "agents/lyra.md", "agents/finch.md"]) {
+      const file = join(root, rel);
+      writeFileSync(file, readFileSync(file, "utf8").replace(/^description:.*\n/m, ""));
+    }
+    const repo = loadRepo(root);
+    expect(repo.teams.get("kestrel")!.description).toBeUndefined();
+    expect(repo.agents.get("wren")!.description).toBeUndefined();
+
+    const result = validatePath(root);
+    expect(result.errors).toEqual([]);
+
+    const kestrel = cardFor(renderRegistry(repo, root, "teams"), "teams", "kestrel");
+    // No separate headline element — the pre-existing lead paragraph (which already opens with the
+    // charter's own first sentence) is the only thing rendered in that position, unchanged.
+    expect(kestrel).not.toContain('font-weight:600');
+    const firstParaStart = kestrel.indexOf("Kestrel takes a pitch to an approved specification");
+    expect(firstParaStart).toBeGreaterThan(-1);
+    // The same sentence must not appear a second time (no headline duplicating the lead below it).
+    expect(kestrel.indexOf("Kestrel takes a pitch to an approved specification", firstParaStart + 1)).toBe(-1);
+
+    const wren = cardFor(renderRegistry(repo, root, "agents"), "agents", "wren");
+    expect(wren).not.toContain('font-weight:600');
+    // Falls back to the body's own first sentence — the exact behaviour the card already had.
+    expect(wren).toContain("You are Wren, a product framer.");
+    expect((wren.match(/You are Wren, a product framer\./g) || []).length).toBe(1);
   });
 });
 

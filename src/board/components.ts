@@ -87,6 +87,21 @@ export function leadText(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// cardHeadline — the team/agent card's optional `description:` field, rendered as a short, scannable
+// headline (goal "registry cards legibility", item 1). Deliberately EMPTY when no description is
+// declared, rather than falling back to a duplicate of the leadText paragraph immediately below it —
+// that paragraph already opens with the body's own first sentence, so an unconditional fallback
+// headline would echo the exact same words twice on every card that hasn't written one yet. A
+// studio with no `description:` anywhere renders no headline element at all: byte-identical to the
+// card's pre-existing output. Bolder/darker than leadText (which stays the muted body-summary
+// treatment) — a headline reads first, the body still reads in full right below it.
+// ---------------------------------------------------------------------------
+export function cardHeadline(description: string | undefined): string {
+  if (!description) return "";
+  return `<p style="margin:0;font-size:14px;font-weight:600;color:var(--fg)">${esc(description)}</p>`;
+}
+
+// ---------------------------------------------------------------------------
 // callout — NOTES UI12: the ONE way a note/warning/danger message block is produced anywhere on the
 // board (see tests/board-ui12.test.ts's "no board renderer emits a callout-shaped block except
 // through the primitive"). Closes the gap NOTES UI11/C13 found: the design brief previously banned

@@ -40,6 +40,9 @@ export type FlowNode = FlowStep | FlowGate | FlowLoop;
 
 export interface Team {
   name: string;
+  /** Optional card headline (registry cards legibility unit) — display-only, never read by the
+   * runner. Falls back to the charter's own lead when absent; see render/registry.ts. */
+  description?: string;
   consumes: string[];
   produces: string[];
   members: string[];
@@ -59,6 +62,9 @@ export interface Team {
 
 export interface Agent {
   name: string;
+  /** Optional card headline (registry cards legibility unit) — display-only, never read by the
+   * runner. Falls back to the body's own lead when absent; see render/registry.ts. */
+  description?: string;
   kind: "native" | "cli" | "remote";
   /**
    * The artifact kinds this member can produce (§5, NOTES F1). This is the studio's capability

@@ -13,7 +13,7 @@ import { detectSandbox, type SandboxDetection } from "../../sandbox.ts";
 import { remoteAgentImplemented } from "../../env.ts";
 import { resolveStep } from "../../flow.ts";
 import type { Team, FlowNode } from "../../types.ts";
-import { tag, kindTag, editorOverlay, orchTurn, callout, card, leadText } from "../components.ts";
+import { tag, kindTag, editorOverlay, orchTurn, callout, card, leadText, cardHeadline } from "../components.ts";
 import { registryKindIconBody } from "./entity-icons.ts";
 import { deriveTeamStyle } from "../team-color.ts";
 import {
@@ -223,7 +223,7 @@ export function renderRegistry(
         ? `${g.protected_branches?.length ? `<div class="prow"><span class="k">protected_branches</span><span class="v mono">${g.protected_branches.map(esc).join(", ")}</span></div>` : ""}${g.protected_paths?.length ? `<div class="prow"><span class="k">protected_paths</span><span class="v mono">${g.protected_paths.map(esc).join(", ")}</span></div>` : ""}${g.never?.length ? `<div class="prow"><span class="k">never</span><span class="v chiprow">${g.never.map((n) => tag(n, "tag")).join("")}</span></div>` : ""}`
         : "";
       const knowledgeRow = t.knowledge?.length ? `<div class="prow"><span class="k">knowledge</span><span class="v chiprow">${t.knowledge.map((k) => tag(k, "tag")).join("")}</span></div>` : "";
-      const inner = `${leadText(firstParagraph(t.charter))}<div class="card__h">Declared flow</div><div class="flowstrip">${flow}</div>
+      const inner = `${cardHeadline(t.description)}${leadText(firstParagraph(t.charter))}<div class="card__h">Declared flow</div><div class="flowstrip">${flow}</div>
       <div class="card__h">Definition</div>
       <div class="prow"><span class="k">members</span><span class="v chiprow">${memberAvatars}</span></div>
       <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>${guardrailRows}${knowledgeRow}`;
@@ -300,7 +300,7 @@ export function renderRegistry(
       // `result` (required on every cli member) is prose describing what the binary emits — the same
       // muted-lead treatment as the description above, not a cramped one-line `.prow` value.
       const resultHtml = a.result ? leadText(a.result) : "";
-      const inner = `${leadText(firstSentence(a.body ?? ""))}<div class="card__h">Skills &amp; knowledge</div><div class="recipe">${recipe || '<span style="color:var(--fg-mute)">none declared</span>'}</div>
+      const inner = `${cardHeadline(a.description)}${leadText(firstSentence(a.body ?? ""))}<div class="card__h">Skills &amp; knowledge</div><div class="recipe">${recipe || '<span style="color:var(--fg-mute)">none declared</span>'}</div>
       <div class="card__h">Definition</div>
       <div class="prow"><span class="k">kind</span><span class="v">${agentKindBadge(a.kind)}${a.model ? ` <span class="mono">&middot; ${esc(a.model)}</span>` : ""}</span></div>
       <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>${toolsRow}${connectorsRow}${commandRow}${contextViaRow}${contextArtifactsRow}${cwdRow}${timeoutRow}${serverRow}${toolRow}${resultHtml}${remoteWarning}${cliToolsWarning}${sandboxWarning}`;
