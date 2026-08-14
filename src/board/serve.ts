@@ -225,6 +225,13 @@ export interface Fragment {
   /** The rendered persisted-tail HTML for `scope`, sliced from the `<!--orchtail-->`/`<!--/orchtail-->`
    * markers `orchestratorPanel` (render/shell.ts) wraps it in — same mechanism as `main`/`extras`. */
   orchTail: string;
+  /** NOTES ORCH-STALE-CARD: the run view's own gate card (`actionableHtml`, empty on every other
+   * page), sliced from the `<!--orchaction-->`/`<!--/orchaction-->` markers — the region that used to
+   * have no marker at all, so a client refresh had no way to tell it needed resyncing and just left it
+   * showing whatever was true at the last cold GET. Unlike `orchTail`, the client applies this on
+   * EVERY refresh, not just a scope change — a gate's own state carries no "already shown live" case
+   * the way a persisted conversation turn does. */
+  orchAction: string;
 }
 
 const FRAGMENT_HEADER = "x-levare-fragment";
@@ -247,6 +254,7 @@ export function extractFragment(rendered: string): Fragment | null {
   const highlightMatch = /<main[^>]*\sdata-highlight="([^"]*)"/.exec(mainHtml);
   const scopeMatch = /<aside class="orch[^"]*" data-scope="([^"]*)"/.exec(rendered);
   const orchTailMatch = /<!--orchtail-->([\s\S]*?)<!--\/orchtail-->/.exec(rendered);
+  const orchActionMatch = /<!--orchaction-->([\s\S]*?)<!--\/orchaction-->/.exec(rendered);
   return {
     title: titleMatch[1],
     main: mainHtml,
@@ -257,6 +265,7 @@ export function extractFragment(rendered: string): Fragment | null {
     // against the client's own identically-escaped `data-scope` attribute, so no decode step is needed.
     scope: scopeMatch ? scopeMatch[1] : STUDIO_SCOPE,
     orchTail: orchTailMatch ? orchTailMatch[1] : "",
+    orchAction: orchActionMatch ? orchActionMatch[1] : "",
   };
 }
 function serveAsset(name: string): Response {
