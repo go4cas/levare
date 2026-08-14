@@ -121,6 +121,29 @@ Both cards have an **Edit source** button. That's the only write surface in the 
 markdown, a validity check, then save and commit. No forms, no wizards. The file is the truth, so
 the file is what you edit.
 
+## Commit before you dispatch
+
+You just created `agents/scribe.md` and `teams/press.md` with `cat >`, not through the board — so
+they're real on disk, but git doesn't know about them yet. That matters starting next chapter.
+
+Everything a member *produces* commits itself automatically. But levare refuses to dispatch a member
+at all while the registry that **governs** it — `teams/`, `agents/`, `connectors/`, `projects/`,
+`skills/`, `knowledge/`, `types/`, `studio.md` — has uncommitted changes, tracked or untracked. Editing
+through the board's own **Edit source** button already commits for you, so this never bites there; it
+bites exactly the shape you just did — editing the file directly. The reasoning: git is the audit log,
+and a member run under a definition git never saw is a run nothing can reconstruct.
+
+So before [4.4](04-first-gate.md) has you click **Start**:
+
+```sh
+git add teams/ agents/
+git commit -m "add press: scribe drafts the product brief"
+```
+
+Skip this and the start gate will refuse outright, naming the uncommitted files. `work/` — the units
+and artifacts a member actually produces — is never part of this check; only what governs the member
+is.
+
 ---
 
 Next: **[4.4 · Your first gate](04-first-gate.md)** — where a member actually runs.

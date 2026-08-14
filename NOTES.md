@@ -16004,3 +16004,126 @@ mechanical.
 five-consecutive-full-suite-run verification, logged where this goal's acceptance criteria are recorded.
 `bun run typecheck`, `bun run deps:check`, `bun run build` all clean; `levare validate fixtures/golden` →
 valid; `levare replay fixtures/golden --stubs` → oracle match, byte-for-byte.
+
+# NOTES REGISTRY-PROVENANCE (2026-08-14) — git could prove what an artifact said, never what governed it
+
+**The gap, as found.** Everything a member *produces* commits itself automatically: the runner commits
+artifacts, gate resolutions commit as Conductor, and `approved_commit` (NOTES A7) pins an approved
+artifact's content so a later committed tamper is caught. But everything that *governs* a dispatch —
+`teams/`, `agents/`, `connectors/`, `projects/`, `skills/`, `knowledge/`, `types/`, `studio.md` — was
+committed only if the operator happened to do it themselves. Live in a studio built by following the
+workflow guide: `git checkout teams/press.md` failed with "did not match any file(s) known to git" —
+every registry file the walkthrough created was untracked, while every artifact those definitions
+produced was committed. You could prove what an artifact said and who approved it. You could not prove
+what the member was configured to do when it ran — its argv, its connector grants, its model, the
+team's flow and guardrails — because git had never seen the file that said so. A run could not be
+reconstructed, and an operator who edited a registry file by hand had no undo: `git checkout` silently
+did nothing.
+
+**Two parts, both required by the ruling.** Part 1: refuse to dispatch with a dirty registry, fail
+closed. Part 2: stamp the registry's governing state on every produced artifact, so a run answers "what
+definitions produced this" without ambiguity — the half that keeps its value even if Part 1's friction
+later proves too high.
+
+## Part 2 decided first: a content hash, not `HEAD`
+
+`HEAD` at dispatch time was the obvious first candidate — cheap, already computed everywhere else in
+this codebase (`gateops.ts#headRev`). It is not honest. `work/` commits (an artifact landing, a gate
+resolution) land *between* dispatches and advance `HEAD` without touching a single governing file — so
+two artifacts stamped with the same `HEAD` SHA could have run under different registries (a registry
+commit landed in between) and two stamped with different SHAs could have run under the byte-identical
+one (only `work/` moved in between). A reader could never tell which without re-deriving the diff by
+hand — exactly the ambiguity the ruling asked to close.
+
+**Decided: `registry:` is a sha256 content hash over the governing subtree exactly as it stood on disk
+at dispatch time** (`git.ts#registryStateHash` — sorted relpath+content over `teams/`, `agents/`,
+`connectors/`, `projects/`, `skills/`, `knowledge/`, `types/`, `studio.md`). Two artifacts sharing the
+same value ran under byte-identical governing definitions, full stop, independent of how many unrelated
+`work/` commits moved `HEAD` in between. It is computed from disk, not from git at all — which is what
+lets it stand on its own: it stamps something meaningful on every dispatch, whether or not Part 1's
+check ever fires, and whether or not the state it captures happens to be committed at all. Wired into
+the one place every member kind's produced doc is authored — `adapters.ts#author` — so `produce()` and
+`produceAsync()` both get it uniformly, unconditionally (unlike `usage`/`sandbox`, this is not a fact
+about how the spawn ran, so it is never absent the way an unreported receipt or a native member's
+missing `sandbox:` is).
+
+## Part 1: where the check runs, decided by re-reading "consent" literally
+
+The obvious question was scope: which of `resolveGate`'s verbs actually *dispatch* a member as the
+direct result of an explicit Conductor click? Three do — `start` (`doStart`), `request`
+(`doRequest`), and `retry` (`resolveBlockedArtifactGate`'s blocked-artifact path) — `runner.ts`'s own
+`Verb` doc already calls out `retry` as "costed, ledger-recorded, never automatic — only a Conductor's
+explicit click ever takes this path", the identical posture `start` has.
+
+**Decided narrower: only `start`.** The ruling's own text anchors on the word literally — "at **start**
+— the operator's consent point — and not on each subsequent advance" — and 4.4's own constitution
+("No member process ever starts without a Conductor approval in its causal chain... A unit's existence
+is not consent") names `start` as *the* invariant-1 event. Once a unit is started, `request` and `retry`
+are downstream decisions on a walk already consented to, not a second independent "should we spend
+money" moment in the same sense. Concretely, this also resolves the loop question the ruling itself
+poses: **`docs/guide/04-workflow/06-first-loop.md`'s own walkthrough edits `teams/press.md` to add a
+loop to an already-started unit, restarts the daemon, and lets it autonomously dispatch Corvid's review**
+— that dispatch runs through `advanceUnit` from the daemon's own startup walk, never through
+`resolveGate` at all (the unit has no start gate left to click). Gating `request`/`retry` too would not
+have touched this case either way — it is `advanceUnit`/the daemon's own tick, structurally outside
+`resolveGate`, that must stay unchecked, for exactly the reason the ruling gives: refusing an internal
+loop round over a stray editor save would strand a unit halfway through a round it was already consented
+to. The check lives as the very first statement of `board/gateops.ts#doStart`, before the work-branch
+creation and before `advanceUnit` is ever called — `dirtyRegistryFiles(root)` (`git.ts`), scoped to
+exactly the same eight paths `registryStateHash` hashes, so the two halves can never silently diverge on
+what "the registry" means. `git status --porcelain` scoped to those paths; untracked counts as dirty
+(an uncommitted new team is exactly as unauditable as an uncommitted edit to an existing one); not a git
+repo at all returns no dirty files rather than blocking every dispatch a studio with no git history
+could ever make — a separate, pre-existing condition (no founding commit ever ran — `git.ts
+#makeFoundingCommit`), deliberately not conflated with "dirty", the same fail-open posture
+`validateEnvNotTracked`'s own `gitToplevel` check already takes for `ENV_FILE_TRACKED`.
+
+**The board's `Edit source` route was already consistent, and stays that way.** `board/serve.ts`'s
+registry-edit route (PRD §9: "registry — all entity kinds rendered; Edit source → validate → write →
+commit") already commits every registry write it makes — so an operator who only ever edits through the
+board never sees this refusal; it fires only for edits made outside it (a plain editor, a `cat >`, the
+exact shape the workflow guide's own early chapters teach). This closes the asymmetry the ruling named
+rather than deepening it: levare now commits registry edits made through the board *and* requires
+registry edits made outside it to be committed before they can drive a dispatch — one contract either
+way, not two.
+
+## The cost, stated plainly, not minimised
+
+Part 1 turns every registry edit made outside the board into commit-then-dispatch. This is felt most
+during exactly the exploratory work `docs/guide/04-workflow/` walks a reader through — and the daemon
+already requires a restart after a registry edit regardless of git status (NOTES DOCS-WALKTHROUGH-1), so
+the real cycle for a reader editing `teams/press.md` by hand and expecting `levare serve` to react is now
+**edit → commit → restart → dispatch**, not the two-step "edit → restart" the guide taught before this
+goal. `docs/guide/04-workflow/03-first-team-and-member.md` gains a section naming this explicitly, at
+the first point a reader creates a registry file (§4.3) and before they reach the first `Start` click
+(§4.4) — a reader who hits the refusal with no warning would reasonably conclude the product is broken,
+not that they skipped a step. **If Part 1's friction is later judged not worth it and reverted, Part 2
+alone still closes the audit gap, at zero friction** — the stamp is computed from disk, not gated on
+anything Part 1 checks, so nothing about removing the refusal would make a single existing stamp less
+honest; it would only mean future stamps might record a dirty state instead of a guaranteed-clean one.
+
+## Schema, tests
+
+`registry?: string | null` added to `types.ts#Artifact`, `ARTIFACT_SCHEMA` (`validate.ts`, optional/
+nullable — pre-this-ruling artifacts on disk carry none, the same posture `sandbox` already takes), and
+`repo.ts#toArtifact`. `docs/guide/05-reference/cheatsheets/artifact.md` regenerated (`bun run
+docs:generate`) — one row added, no drift elsewhere. `docs/current-gaps.md` gains and closes the entry.
+
+`tests/registry-provenance.test.ts`: a modified TRACKED registry file refuses `start`, naming it; an
+UNTRACKED one refuses too; a dirty `work/` with a clean registry dispatches successfully (the explicit
+non-goal); a dirty `studio.md` refuses (it's in scope alongside the directories); committing the file
+the error names lets a retried `start` through; a freshly-produced artifact's `registry:` matches an
+independently-computed `registryStateHash`; the hash is unaffected by an unrelated `work/` commit that
+moves `HEAD` afterward, and changes when a governing file's content actually changes; a loop started
+clean, then dirtied mid-round via a stray uncommitted `teams/press.md` edit, still lets the daemon's own
+next tick dispatch the critic (not stranded); by contrast a fresh `start` on a *different* unit against
+that same dirty registry is refused, naming `teams/press.md` — proving the exemption is scoped to the
+daemon's own advance, not to dispatch in general. Two pre-existing tests in `tests/capability-cap-a.
+test.ts` seeded a connector, committed, then rewrote `connectors/writer.md` in place (substituting a
+real stub binary path) without committing again before calling `start` — exactly the shape this goal now
+refuses; fixed by committing the substitution, the same remedy the refusal itself names, not by weakening
+the check.
+
+**Verification.** `bun test` → 1441 pass, 0 fail (1450 across 104 files, 9 pre-existing skips). `bun run
+typecheck`, `bun run deps:check`, `bun run build` all clean. `levare validate fixtures/golden` → valid
+(pre-existing warnings only). `levare replay fixtures/golden --stubs` → oracle match, byte-for-byte.

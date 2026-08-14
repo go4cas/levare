@@ -442,6 +442,10 @@ describe("item 4b — proposal round-trip (member drafts → Conductor approves 
     const { path, outFile } = stubScript(root, 0);
     const actionsWriter = WRITE_CONNECTOR.replace('actions:\n  create-issue: ["writer", "--title", "{title}", "--body", "{body}"]', `actions:\n  create-issue: ["${path}", "--title", "{title}", "--body", "{body}"]`);
     writeFileSync(join(root, "connectors/writer.md"), actionsWriter);
+    // REGISTRY-PROVENANCE Part 1: `start` refuses to dispatch with an uncommitted registry edit —
+    // commit the connector substitution above before dispatching, the same remedy the refusal itself names.
+    git(root, ["add", "-A"]);
+    git(root, ["commit", "-q", "-m", "point the writer connector at the stub binary"]);
 
     const doc = proposalArtifact({ connector: "writer", action: "create-issue", params: "  title: Ship it\n  body: now" });
     const runner = scoutRunner(doc);
@@ -490,6 +494,9 @@ describe("item 4b — proposal round-trip (member drafts → Conductor approves 
     const { path } = stubScript(root, 1);
     const actionsWriter = WRITE_CONNECTOR.replace('actions:\n  create-issue: ["writer", "--title", "{title}", "--body", "{body}"]', `actions:\n  create-issue: ["${path}", "--title", "{title}", "--body", "{body}"]`);
     writeFileSync(join(root, "connectors/writer.md"), actionsWriter);
+    // REGISTRY-PROVENANCE Part 1: same remedy as the sibling test above.
+    git(root, ["add", "-A"]);
+    git(root, ["commit", "-q", "-m", "point the writer connector at the stub binary"]);
 
     const doc = proposalArtifact({ connector: "writer", action: "create-issue", params: "  title: Ship it\n  body: now" });
     const runner = scoutRunner(doc);

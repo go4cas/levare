@@ -46,6 +46,7 @@ import { repoCapabilities } from "./repo.ts";
 import { resolveProjectRepoPath, workBranchName, branchExists, createDispatchWorktree } from "./merge.ts";
 import { isSafeHomeDotpath, detectFetchAtDispatchLauncher } from "./validate.ts";
 import { detectSandbox, wrapForSandbox, resolveDarwinUserTempDir, type SandboxDetection, type SandboxLevel, type SandboxPolicy, type WrappedSpawn } from "./sandbox.ts";
+import { registryStateHash } from "./git.ts";
 import type { Pricing } from "./pricing.ts";
 import type { Repo } from "./repo.ts";
 import type { MemberRunner } from "./runner.ts";
@@ -1397,6 +1398,11 @@ export class AdapterRunner implements MemberRunner {
       "approved_by: null",
       `created: ${created}`,
       "files: []",
+      // Goal REGISTRY-PROVENANCE, Part 2: what governed this dispatch — see git.ts#registryStateHash's
+      // own doc for why a content hash, not the repo's HEAD, is what gets stamped here. Unconditional,
+      // unlike usage/sandbox below: every kind of member (native/cli/remote) runs under SOME registry
+      // state, so this is never a "some artifacts have it" fact the way a receipt or a sandbox level is.
+      `registry: ${registryStateHash(this.repo.root)}`,
     ];
     if (!finalReceipt.unreported) {
       lines.push(
