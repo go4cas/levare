@@ -16307,3 +16307,152 @@ load and passed in isolation, unrelated to this change). `bun run typecheck`, `b
 `bun run build`, `bun run docs:generate` (no diff after regeneration) all clean. `levare validate
 fixtures/golden` → valid (pre-existing warnings only — the bare-date fixture artifacts included).
 `levare replay fixtures/golden --stubs` → oracle match, byte-for-byte.
+
+# NOTES "not covered" & "score rail reload" (2026-08-15) — a Conductor ruling on how a rail reads, and a live gap in what actually refreshes it
+
+Two items, verified live against a real dispatch (`corvid` producing `review-purge-command-v1.md`,
+committed `2ab4640`) after yesterday's orchestrator-card fix (NOTES ORCH-STALE-CARD/addendum) — item 4's
+own fix. Unrelated to each other in mechanism, bundled because both surfaced from the same live
+verification pass of the score rail.
+
+## 1 — `unreachable` → `not covered`, and its chip stops reading as an alert
+
+**Conductor ruling, not a bug.** The state is real and correct — `flow.ts#unreachableExpectedKinds`
+genuinely identifies a kind the unit's type expects but its responsible team has no member that can ever
+produce. The word "unreachable" is what reads wrong: three of them stacked down a rail reads as three
+failures, when the truth is closer to "this type has five stages and the assigned team covers two" — a
+fact about the type's shape, not an alert. **Scope, decided explicitly:** rename what a Conductor
+READS, not the internal name of what's being computed — `derive.ts`'s `NodeState` union keeps its
+`"unreachable"` member verbatim (an accurate, internal graph-reachability term, orthogonal to display
+copy), and `flow.ts#unreachableExpectedKinds` keeps its name — only the rendered label, the explanatory
+sub-line, and the chip's own colour change.
+
+`board/render/run.ts`: the chip's label is now "not covered"; the sub-line reads "not covered · no
+member of this team produces this" (was "unreachable · no member produces this" — the ruling's own exact
+wording, which also adds "of this team", named explicitly rather than left implicit). `validate.ts`'s
+`UNCOVERABLE_EXPECTED_KIND` warning message now says "as not covered, never as merely queued" — the
+board and the validator name the same fact the same way — the CODE itself (`UNCOVERABLE_EXPECTED_KIND`)
+is untouched, per the ruling (already shipped, not worth an unrelated rename).
+
+**The chip's colour.** Previously `statusBadge("blocked", "unreachable", "sstep__chip")` — the SAME
+canonical "blocked" treatment a genuinely-stalled, Conductor-decision-away-from-moving artifact gets.
+The ruling: drop to "the same neutral grey the other non-status chips use" — this codebase already
+distinguishes lifecycle-status chips (`statusBadge`, colour from status.ts's seven-state canonical
+palette) from non-status tags (`tag`/`chip` in components.ts, the `.entity__kind` treatment, explicitly
+documented as "never carries lifecycle-state colour") — "not covered" is squarely the second kind, so it
+gets its own colour rather than borrowing "blocked"'s. Not a straight reuse of `.entity__kind`, though:
+that class carries `margin-left:auto` (a registry-card-header positioning rule) which has no place in a
+score-rail row's flex layout. New `.chip.is-neutral` (assets/styles.css) — same fg-mute/panel-2/border
+colours as `.entity__kind`, staying inside the `.chip` family's own box model (padding/radius/font
+shared with every other `.chip.is-*` variant) so it sits correctly in `.sstep__chip`'s existing layout.
+`components.ts#neutralChip` is the second, explicitly-named exception to "`statusBadge` is the only
+function that emits a `.chip`" (`tests/board-components.test.ts`'s own enforcement, checked by source-
+text regex over the whole `render/` tree) — mirrors `statusBadge`'s exact shape, constructs the literal
+`class="chip` string in components.ts (not in any renderer), so that guard still holds.
+
+**Deliberately unchanged, per the ruling's own text:** the score node's DOT stays the "blocked" dimmed
+treatment ("keep the dimmed dot") — `fromNodeState`'s `"unreachable"` → `"blocked"` mapping
+(`board/status.ts`) is untouched, so `snodeClassesOf`'s existing assertions in `tests/board-render.
+test.ts` (`"snode blocked"`) needed no change. The row-level dimming (`.sstep.blocked`) is likewise
+untouched — only named as "the dimmed dot," and the row dimming is the dot's own row-level echo, not a
+second alert-reading surface the ruling asked to quiet.
+
+**Tests.** `tests/board-components.test.ts` gains a direct `neutralChip` unit test (escaping, the
+`extraClass` combination, and an explicit "never `is-blocked`" assertion). `tests/board-render.test.ts`
+gains a CSS-coverage proof (`hasCssRuleFor("chip is-neutral")`, mirroring the existing `scoreNodeClass`
+guard's own discipline) and a live-render assertion against the golden fixture's own uncoverable `code`
+kind, pinning the exact class and text, and that the old `>unreachable<` label is gone outright, not
+just relabeled alongside a leftover reference. `tests/guide-workflow-blocks.test.ts`'s pinned
+`UNCOVERABLE_EXPECTED_KIND` message (the docs walkthrough's own finished-studio regression) updated to
+match. Verified live over a real `levare serve` process, not just unit-tested: `curl`'d
+`/run/storefront/checkout-flow` and confirmed byte-for-byte — `<span class="snode blocked" ...>` (dot,
+unchanged) alongside `<span class="chip is-neutral sstep__chip">not covered</span>` and
+`<span class="sstep__sub">not covered &middot; no member of this team produces this</span>`.
+
+## 2 — the score rail didn't update after a runner-side commit — a real gap in the SSE connection's own durability, not the fs.watch/broadcast mechanism
+
+**The live symptom.** `corvid` (a `kind: cli` member) produced `review-purge-command-v1.md`, the runner
+committed it (`2ab4640`), and the run view kept showing `review · press/corvid · producing… 1/3 · 0m
+00s` — elapsed FROZEN at its dispatch value, never ticking, until a manual refresh showed the completed
+review and its gate. No client-side `setInterval` ticks this label at all (checked `assets/app.js`
+directly) — it is purely server-rendered on each fragment refetch, so a frozen elapsed time means the
+page never received ANY update at all for the whole window, not a stale re-render of fresh data.
+
+**Read yesterday's addendum first, as asked, and it named the right SHAPE of error but not this
+instance.** ORCH-STALE-CARD's addendum: "scoping a fix to 'the region with buttons on it' under-covered
+'every region whose content is derived from the same live gate list.'" The score rail lives in `.main`,
+which `swapFragment` already replaces wholesale on every refresh (ORCH-STALE-CARD's own finding) — so
+this is not a missing-marker problem the way the orchestrator card/briefing were; the region itself was
+never the gap. The addendum's LESSON still applied one level up: **the two propagation paths this
+codebase actually has are "an operator's own write route" (an explicit, synchronous `ctx.broadcast
+("reload")` inside the route handler — `board/serve.ts`'s four write-route call sites) and "the board's
+own `fs.watch`" (the ONLY path for anything the daemon does autonomously, since `daemon.ts` has zero
+reference to `ctx.broadcast` — checked directly, confirmed absent). Every previously-tested/observed
+case went through the first path, which is why "the operator's own actions have always propagated" —
+this is the first live case that depended on the second path ALONE, with no operator request anywhere
+in its causal chain.**
+
+**Established what actually triggers a refresh, empirically, not by re-reading old test output.** Wrote
+a throwaway harness driving a real `Daemon`+`createBoard` pair with a genuinely delayed `memberRunner`
+(1.5s, simulating a real `kind: cli` dispatch's actual wall-clock cost, unlike every existing daemon test
+which uses an instant stub) and a live SSE connection: the daemon-only commit (no operator POST anywhere
+near it) DID produce exactly one `reload` broadcast, ~80ms (the debounce window) after the file landed.
+**The fs.watch/broadcast mechanism itself is sound** — confirms NOTES RELOAD-STORM's own prior proof
+(a real `work/**` edit produces exactly one broadcast) extends to a genuine daemon-driven commit, closing
+the one gap that prior investigation's own "what this fix does NOT claim" section left unstated (it
+proved a MANUAL edit and an in-flight-but-not-yet-committing daemon step; never a daemon commit landing
+mid-session with no operator activity nearby).
+
+**What's actually missing: the CONNECTION's own durability.** `serve()`'s `idleTimeout` (default 180s,
+`Bun.serve`'s own option) resets — silently, `ECONNRESET`, nothing an `EventSource`'s `onerror` can
+distinguish from an ordinary close — a connection Bun has sent zero bytes on for that long. Proved
+directly: drove a REAL `Bun.serve` instance (not the in-process `board.fetch()` every other board/SSE
+test uses, which never touches `Bun.serve` or its `idleTimeout` at all) with a short `idleTimeoutSeconds`
+and an otherwise-idle `/events` connection — reset at `idleTimeoutSeconds + ~1s`, reliably, repeatedly.
+A quiet studio (nothing changing while a real, possibly slow, `kind: cli`/native call is thinking — the
+ordinary case) crosses 180s in minutes. `EventSource` auto-reconnects after any close (standard browser
+behavior, not this codebase's to implement), but this stream has never queued or replayed a missed
+message — a `reload` broadcast landing in the gap between a silent kill and the reconnect completing has
+no subscriber to reach, and if nothing else changes afterward (the unit sitting at its next gate,
+awaiting the Conductor — exactly what was observed live) nothing ever nudges the page again short of a
+manual refresh. This is a real, previously-unnoticed gap in every long-lived board session, not specific
+to the daemon path — it is simply the one path with no OTHER propagation mechanism to mask it, exactly
+the ORCH-STALE-CARD addendum's own lesson recurring one level below the region layer: this time in the
+transport the regions all share, not in which regions get resynced.
+
+**The fix.** `board/serve.ts#sseResponse` now sends a periodic SSE comment line (`: heartbeat\n\n`) on a
+`setInterval`, well inside the idle window (`SSE_HEARTBEAT_MS`, 60s — a 3x margin under the 180s
+default), cleared on the same `cleanup()` path the subscriber's own unsubscribe already runs through. An
+SSE comment line (`:`-prefixed) never fires `EventSource.onmessage` — no client-side change needed at
+all; `assets/app.js`'s `if (e.data === 'reload')` check simply never sees it. Test-only override
+(`BoardCtx.sseHeartbeatMs`, threaded through `createBoard`/`serve()`, mirroring `idleTimeoutSeconds`'s
+own existing precedent) lets a test observe the mechanism in seconds. Verified empirically, not assumed
+from the fix's own logic: with the heartbeat DISABLED (an artificially huge interval), a short
+`idleTimeoutSeconds` still resets on schedule — confirms the reproduction is real, not a pre-existing
+Bun quirk unrelated to idle time; with the heartbeat enabled at the SAME 3x margin ratio as production
+(60s/180s), the connection survived multiple full idle-timeout periods with zero resets, repeatedly.
+Bun's idle-timeout enforcement in this version is empirically unreliable below roughly 5 real seconds
+regardless of heartbeat activity (the same "doesn't behave exactly as documented" caveat `board-serve-
+idletimeout.test.ts`'s own header already names for a POST with a body) — every test below uses values
+comfortably above that floor, proven reliable across repeated runs, not a single lucky pass.
+
+**What this does NOT claim.** Did not implement client-side reconnect logic — browsers already do this
+correctly for `EventSource`, and inventing a second implementation would be redundant, not a fix. Did
+not add message queueing/replay for a broadcast sent while genuinely disconnected (a heartbeat prevents
+the disconnect from happening in the ordinary case; it does not make redelivery possible for the rarer
+case of a real network interruption unrelated to idle time) — out of scope for what was actually
+observed, and a materially bigger change (would need the server to remember "what changed since this
+client's last successful read," not just "is anyone listening right now").
+
+**Tests.** `tests/board-serve-sse-heartbeat.test.ts` (new, real-socket — mirrors `board-serve-
+idletimeout.test.ts`'s own precedent for exactly the same reason: this is invisible to `createBoard`'s
+in-process `board.fetch()` every other SSE test uses): the bug reproduced directly (no heartbeat, a
+quiet connection resets); the fix proven directly (a heartbeat well inside the idle window survives
+crossing it twice with zero resets); and a real `reload` broadcast still arrives as a genuine `data:`
+frame, distinguishable from interleaved `:`-prefixed heartbeat frames, proving the heartbeat never masks
+or delays an actual change.
+
+**Verification.** `bun test` → all pass. `bunx tsc --noEmit`, `bun run deps:check`, `bun run build`,
+`bun run docs:generate` (no diff) all clean. `levare validate fixtures/golden` → valid (pre-existing
+warnings only, now reading "not covered" per item 1). `levare replay fixtures/golden --stubs` → oracle
+match, byte-for-byte. Item 1 additionally verified live over a real `levare serve` process (see above).

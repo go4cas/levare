@@ -1062,3 +1062,48 @@ pricing table's actual, universal job is the KNOWN-MODEL validation gate (`UNKNO
 explicitly, instead of claiming to price every receipt.
 
 See NOTES "receipt cache tokens" for the full field inventory and the worked reconciliation example.
+
+## An uncoverable score-rail stage read as an alert, not as information about the type's shape — closed (NOTES "not covered")
+
+Conductor ruling: `derive.ts`'s "unreachable" state (a kind a unit's type expects but its assigned team
+has no member that can ever produce) is real, correct information — but the word, and its reuse of
+`statusBadge`'s "blocked" canonical colour, made several of them stacked down a rail read as several
+failures rather than as the true fact ("this type has five stages and the team covers two"). Closed by
+relabeling — the score rail's chip now reads "not covered", its sub-line "not covered · no member of
+this team produces this", `validate.ts`'s `UNCOVERABLE_EXPECTED_KIND` warning text matches — and by
+recolouring: a new `.chip.is-neutral` (assets/styles.css), deliberately outside the seven-state
+canonical palette (`components.ts#neutralChip`, the second explicitly-named exception to "`statusBadge`
+is the only function that emits a `.chip`"), the same neutral treatment `tag()`'s `.entity__kind` gives
+every other non-status label. Deliberately unchanged, per the ruling's own text: the internal `NodeState`
+value (`"unreachable"`), `flow.ts#unreachableExpectedKinds`'s name, the `UNCOVERABLE_EXPECTED_KIND` code
+itself, and the score node's own dot (still the dimmed "blocked" treatment) — this was a ruling on what a
+Conductor READS, not a rename of what's being computed.
+
+See NOTES "not covered" for the full before/after and the live-server verification.
+
+## A runner-side commit's only propagation path (the board's own `fs.watch`) was sound, but the SSE connection it travels over silently died on a quiet studio — closed (NOTES "score rail reload")
+
+An operator's own gate resolution has always propagated to the board because its route handler
+broadcasts `reload` directly and synchronously; anything the daemon does autonomously (no operator
+request in its causal chain) has exactly one other path — the board's own separate `fs.watch` on the
+studio root. That mechanism itself was proven sound (a genuinely delayed daemon-only commit, simulating
+a real `kind: cli` dispatch's actual wall-clock cost, still produced exactly one broadcast). What was
+missing: `serve()`'s `idleTimeout` (`Bun.serve`'s own option, default 180s) silently resets a connection
+Bun has sent zero bytes on for that long — proved directly against a real `Bun.serve` instance, not the
+in-process `board.fetch()` every prior SSE test used, which never exercises `idleTimeout` at all. A
+quiet studio (nothing changing while a real member call is thinking) crosses 180s in minutes; a `reload`
+broadcast landing in the gap between that silent kill and the browser's own automatic reconnect has no
+subscriber to reach, and this stream has never queued or replayed a missed message — observed live as a
+run view frozen at its dispatch-time render until a manual refresh, on the third distinct region a
+runner-side change failed to reach (after NOTES ORCH-STALE-CARD's action region and briefing sentence),
+this time at the transport layer those regions all share rather than in which regions get resynced.
+
+Closed with the standard SSE hardening pattern: a periodic comment-line heartbeat (`board/serve.ts
+#sseResponse`, 60s — a 3x margin under the 180s default), well inside the idle window, resetting Bun's
+own idle clock without ever firing a client's `EventSource.onmessage` (SSE comment lines are ignored by
+spec) — no client-side change needed. Does not implement `EventSource` reconnect logic (browsers already
+do this correctly) or message replay for a broadcast sent during a genuine, non-idle-timeout disconnect
+(a materially larger change this instance didn't call for).
+
+See NOTES "score rail reload" for the empirical proof (both the bug and the fix, reproduced directly
+against a real listening server) and the full test list.
