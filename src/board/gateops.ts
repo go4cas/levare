@@ -851,11 +851,34 @@ function titleCase(name: string): string {
   return name.split(/[-_]/).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
 }
 
+// NOTES "runner-authored-commit audit": mirrors git.ts's own HERMETIC_GIT_ENV exactly (NOTES
+// CAP-B-FIX) — every spawn below sets identity via `-c user.name=`/`-c user.email=`, but git gives
+// GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL/GIT_COMMITTER_NAME/GIT_COMMITTER_EMAIL environment variables
+// higher precedence than a `-c` override, so the ambient env must be scrubbed here too, independently
+// — this module never imports git.ts's private copy, mirroring merge.ts's own identical duplication
+// and identical reasoning: this spawns against the new project's freshly-cloned checkout, a THIRD repo
+// distinct from both the studio (git.ts) and an existing project (merge.ts), and must never be
+// confused into sharing one via an accidentally-shared constant. Found by an audit this codebase's own
+// "does any other write path have the same dependency" question asked directly — this was the one
+// commit call anywhere in `src/` that had no env override at all (not even git.ts's original
+// CAP-B-FIX gap, which at least set identity via `-c`; this call didn't even isolate GIT_CONFIG_GLOBAL/
+// SYSTEM), so it was the least defended of the three, not merely the third example of the same thing.
+const HERMETIC_GIT_ENV: NodeJS.ProcessEnv = {
+  ...process.env,
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_SYSTEM: "/dev/null",
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_AUTHOR_NAME: undefined,
+  GIT_AUTHOR_EMAIL: undefined,
+  GIT_COMMITTER_NAME: undefined,
+  GIT_COMMITTER_EMAIL: undefined,
+};
+
 export function runNewProjectSkill(opts: NewProjectOptions): GateOpResult {
   if (!existsSync(opts.remoteDir)) return { ok: false, status: 422, error: `remote '${opts.remoteDir}' does not exist — create-repo step failed` };
   const branch = opts.defaultBranch ?? "main";
 
-  const clone = spawnSync("git", ["-c", "init.defaultBranch=" + branch, "clone", "-q", opts.remoteDir, opts.cloneDir], { encoding: "utf8" });
+  const clone = spawnSync("git", ["-c", "init.defaultBranch=" + branch, "clone", "-q", opts.remoteDir, opts.cloneDir], { encoding: "utf8", env: HERMETIC_GIT_ENV });
   if (clone.status !== 0) return { ok: false, status: 500, error: `clone failed: ${clone.stderr}` };
 
   writeFileSync(join(opts.cloneDir, "README.md"), `# ${opts.name}\n`);
@@ -863,8 +886,8 @@ export function runNewProjectSkill(opts: NewProjectOptions): GateOpResult {
   // into the freshly-cloned PROJECT repo (not the studio, so it can't call conductorCommit directly),
   // but the identity it stamps must never drift from every other Conductor-authored commit.
   const cloneGitArgs = (args: string[]) => ["-C", opts.cloneDir, "-c", `user.name=${CONDUCTOR_NAME}`, "-c", `user.email=${CONDUCTOR_EMAIL}`, "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args];
-  spawnSync("git", cloneGitArgs(["add", "-A"]));
-  spawnSync("git", cloneGitArgs(["commit", "-q", "-m", "initial commit"]));
+  spawnSync("git", cloneGitArgs(["add", "-A"]), { encoding: "utf8", env: HERMETIC_GIT_ENV });
+  spawnSync("git", cloneGitArgs(["commit", "-q", "-m", "initial commit"]), { encoding: "utf8", env: HERMETIC_GIT_ENV });
 
   const projectFile = join(opts.root, "projects", `${opts.name}.md`);
   if (existsSync(projectFile)) return { ok: false, status: 409, error: `project '${opts.name}' already exists` };

@@ -242,6 +242,65 @@ describe("(e) new-project skill", () => {
 
       const log = spawnSync("git", ["-C", root, "log", "-1", "--format=%an|%ae|%s"], { encoding: "utf8" }).stdout.trim();
       expect(log).toBe("cas|cas@levare.local|new-project loyalty");
+
+      // The new project's OWN "initial commit" (in cloneDir, not root) — a real, previously-unasserted
+      // gap: nothing checked this commit's author at all before NOTES "runner-authored-commit audit".
+      const cloneAuthor = spawnSync("git", ["-C", cloneDir, "log", "-1", "--format=%an|%ae|%s"], { encoding: "utf8" }).stdout.trim();
+      expect(cloneAuthor).toBe("cas|cas@levare.local|initial commit");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  // NOTES "runner-authored-commit audit": runNewProjectSkill's three git spawns were the one commit
+  // path anywhere in `src/` with no env override at all — not even git.ts's original CAP-B-FIX gap,
+  // which at least set identity via `-c` (env vars just could have silently overridden it). This
+  // reproduces exactly the scenario CAP-B-FIX's own NOTES entry named as the risk and never had a test
+  // for: git gives GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL/GIT_COMMITTER_NAME/GIT_COMMITTER_EMAIL environment
+  // variables HIGHER precedence than a `-c user.name=`/`-c user.email=` override — confirmed directly
+  // (a raw `git -c user.name=X commit` with those four vars set in ITS OWN env records the ENV values,
+  // not X). A REAL PROCESS SUBPROCESS is required to prove this, not a `process.env` mutation in this
+  // test's own process: confirmed empirically that Bun's `spawnSync`, when its `env` option is
+  // omitted, inherits the env this PARENT process itself started with, not a later runtime mutation to
+  // `process.env` — so a `withEnv`-style mutation here would never reach `runNewProjectSkill`'s
+  // (pre-fix) omitted-env spawns at all, and the test would pass whether or not the product code
+  // actually defended against anything, exactly the "test result depends on something other than the
+  // behaviour it asserts" shape this whole audit exists to catch. Spawning a real nested bun process
+  // with the four vars set as ITS OWN startup env reproduces the actual risk this guards against: a
+  // wrapping shell, a CI runner, or a studio's own loaded `.env` setting these for an unrelated reason
+  // before `levare` ever starts.
+  test("the new project's initial commit resists an ambient GIT_AUTHOR_NAME/EMAIL leak (NOTES CAP-B-FIX's own named, previously-untested risk)", () => {
+    const root = seedScratchRepo();
+    const base = mkdtempSync(join(tmpdir(), "levare-newproj-leak-"));
+    const remoteDir = join(base, "leaktest.git");
+    const cloneDir = join(base, "leaktest-checkout");
+    const driver = join(base, "driver.ts");
+    try {
+      spawnSync("git", ["init", "-q", "--bare", remoteDir]);
+
+      writeFileSync(
+        driver,
+        [
+          `import { runNewProjectSkill } from ${JSON.stringify(join(process.cwd(), "src/board/gateops.ts"))};`,
+          `const result = runNewProjectSkill({ root: ${JSON.stringify(root)}, name: "leaktest", remoteDir: ${JSON.stringify(remoteDir)}, cloneDir: ${JSON.stringify(cloneDir)}, deploy: null, houseRules: "n/a" });`,
+          `if (!result.ok) { console.error(result.error); process.exit(1); }`,
+        ].join("\n"),
+      );
+
+      const leakEnv = {
+        ...process.env,
+        GIT_AUTHOR_NAME: "ambient-leak",
+        GIT_AUTHOR_EMAIL: "leak@example.com",
+        GIT_COMMITTER_NAME: "ambient-leak",
+        GIT_COMMITTER_EMAIL: "leak@example.com",
+      };
+      const run = spawnSync("bun", ["run", driver], { encoding: "utf8", env: leakEnv });
+      expect(run.status).toBe(0);
+
+      const cloneAuthor = spawnSync("git", ["-C", cloneDir, "log", "-1", "--format=%an|%ae"], { encoding: "utf8" }).stdout.trim();
+      expect(cloneAuthor).toBe("cas|cas@levare.local");
+      expect(cloneAuthor).not.toContain("ambient-leak");
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(base, { recursive: true, force: true });
