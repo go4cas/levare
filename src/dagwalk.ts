@@ -226,6 +226,10 @@ export interface AdvanceOptions {
    * which the budget gate does not re-raise. Absent for a unit whose gate has never been touched.
    */
   budget?: { eff?: number | null; ack?: number };
+  /** Injectable clock for a merge-gate or blocked artifact's `created` timestamp — default real
+   * `new Date().toISOString()` (NOTES "created timestamp"); tests inject a fixed value for
+   * deterministic assertions. Named `today` from when `created` was a bare date; never used for
+   * `approved_by` (dagwalk.ts writes no approvals — that's board/gateops.ts's own `today`). */
   today?: string;
   /**
    * Commit identity + verb label for the write this call may make. Defaults to the daemon's own
@@ -369,7 +373,9 @@ function openMergeGate(
   branch: string,
   opts: AdvanceOptions,
 ): AdvanceResult {
-  const today = opts.today ?? new Date().toISOString().slice(0, 10);
+  // Full UTC timestamp (NOTES "created timestamp"), not a bare date — `today` is the pre-existing
+  // option name (kept so every existing test call site's `{ today: "..." }` still works unchanged).
+  const today = opts.today ?? new Date().toISOString();
   const commitFn = opts.commit ?? runnerCommit;
   const trial = trialMerge(projectRepoPath, branch, project.default_branch);
   const violations = trial.error ? [] : checkGuardrailsForMerge(teams, trial.diffFiles, project.default_branch, !!project.remote).map((v) => `${v.rule}: ${v.detail}`);
@@ -440,7 +446,9 @@ async function produceOne(
   opts: AdvanceOptions,
   loop?: { round: number; supersedes?: string; extraConsumes?: string[] },
 ): Promise<AdvanceResult> {
-  const today = opts.today ?? new Date().toISOString().slice(0, 10);
+  // Full UTC timestamp (NOTES "created timestamp"), not a bare date — `today` is the pre-existing
+  // option name (kept so every existing test call site's `{ today: "..." }` still works unchanged).
+  const today = opts.today ?? new Date().toISOString();
   const commitFn = opts.commit ?? runnerCommit;
   const verb = opts.verb ?? "advance";
   // Every daemon-produced artifact gets the deterministic kind-unit-vN slot id (matching the

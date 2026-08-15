@@ -1,11 +1,16 @@
-// levare usage-receipt normalization (§10). Every adapter (native/CLI/remote) funnels its member's
-// reported usage through here, so the receipt shape is identical regardless of who produced it — the
-// normalization lives at the Runner boundary, not in each adapter.
+// levare usage-receipt normalization (§10) for a cli/remote member's own self-reported usage, and for
+// the "nothing reported at all" fallback shared by every member kind. A `kind: native` member's real
+// receipt does NOT flow through here — it comes verbatim from sdk-worker.ts#deriveReceipt (the Claude
+// Agent SDK's own accounting) and adapters.ts#author uses it as-is; `normalizeReceipt(null, ...)` is
+// reached for native only when the boundary reported no receipt at all (NOTES "receipt cache tokens":
+// this file's own USD-is-always-estimated claim below was true for cli/remote but never for native —
+// see types.ts#Receipt's own header for the corrected split).
 //
-// The one rule that matters: silence is recorded as silence. A member that reports nothing at all
-// yields `unreported: true` with every figure null — never a $0 that would read as "ran for free".
-// USD is always the adapter's own estimate from the pricing table (levare prices cost; members
-// report tokens), so an unpriceable model surfaces as `usd: null`.
+// The one rule that matters here: silence is recorded as silence. A member that reports nothing at all
+// yields `unreported: true` with every figure null — never a $0 that would read as "ran for free". For
+// the cli/remote receipts THIS function actually builds, USD is the adapter's own estimate from the
+// pricing table (levare prices cost; those members report tokens), so an unpriceable model surfaces as
+// `usd: null`.
 
 import type { Receipt, Usage } from "./types.ts";
 import { priceUsd, type Pricing } from "./pricing.ts";

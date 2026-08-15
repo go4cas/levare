@@ -9,7 +9,7 @@ import { buildTimeline, type TimelineActor } from "../../timeline.ts";
 import type { DaemonInvocation } from "../../daemon.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
 import { snodeClass, fromNodeState } from "../status.ts";
-import { statusBadge, orchTurn, emptyState } from "../components.ts";
+import { statusBadge, neutralChip, orchTurn, emptyState } from "../components.ts";
 import {
   shell,
   pageBody,
@@ -110,17 +110,32 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
         // colored dot with no label — the reason itself (now including the member's stderr) is a click
         // away via the artifact link already rendered in `sub`, but nothing told the Conductor to click.
         : n.state === "blocked" ? statusBadge("blocked", "blocked", "sstep__chip")
-        // Fault 1: its own chip, distinct from "blocked" — a blocked artifact is a Conductor decision
-        // away from moving; an unreachable stage never is, and the label must say so plainly.
-        : n.state === "unreachable" ? statusBadge("blocked", "unreachable", "sstep__chip")
+        // NOTES "not covered" (Conductor ruling): its own chip, distinct from "blocked" — a blocked
+        // artifact is a Conductor decision away from moving; this stage never is (no member of the
+        // team ever produces it), and stacking several down a rail must read as present-but-inactive
+        // information about the type's shape, not as a run of failures. Neutral (never a lifecycle
+        // colour, including "blocked"'s own) — see neutralChip's own doc.
+        //
+        // NOTES "not covered tooltip": the fuller sentence used to live as a permanently-visible
+        // sub-line, repeating on every uncovered row and wrapping to two lines on a wide type — pure
+        // explanation, not a decision a Conductor makes per row. A reader asks "why is this row greyed
+        // out" once; that's what a tooltip is for (deliberately asymmetric with the loop bounds
+        // tooltip below, which STAYS visible unconditionally — see that tooltip's own doc for why).
+        : n.state === "unreachable"
+          ? neutralChip("not covered", "sstep__chip", {
+              text: "no member of this team produces this",
+              id: `notcovered-${esc(project)}-${esc(unitId)}-${esc(n.kind)}`,
+            })
         : "";
       const sub = n.artifact
         ? `${esc(n.artifact.produced_by)} &middot; ${artifactTokenLink(n.artifact.project, n.artifact.unit, n.artifact.id, artifactFileName(n.artifact))}`
         : n.state === "active" && n.producedBy
           ? `${esc(n.producedBy)} &middot; producing&hellip;`
-          // Fault 1: the whole point — never call this "queued". Nothing arriving ever changes it.
+          // NOTES "not covered tooltip": no sub-line at all here now — the chip alone (with its
+          // on-demand tooltip, above) already says "not covered"; repeating it in prose underneath
+          // would be the exact redundant-explanation the tooltip move exists to remove.
           : n.state === "unreachable"
-            ? "unreachable &middot; no member produces this"
+            ? ""
             : "queued";
       // Tier 3 (amendment 1 §2 R4, 10s+): the live strip — round n/m (only when this kind belongs to
       // a review loop; a plain one-shot step has no round to state), plus real elapsed time. No token

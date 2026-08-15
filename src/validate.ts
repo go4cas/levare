@@ -133,7 +133,12 @@ export const ARTIFACT_SCHEMA: Schema = {
       nullable: true,
       description: "The commit whose content was approved at gate resolution, so the immutability check can diff against that ref rather than HEAD. Absent on pre-A7 artifacts, which fall back to the HEAD diff.",
     },
-    created: { type: "date", required: true, description: "The date this artifact was created." },
+    created: {
+      type: "date",
+      required: true,
+      description:
+        "When this artifact was created — a full UTC ISO timestamp (YYYY-MM-DDTHH:MM:SS.sssZ) on every artifact levare writes now, so age displays and gate-response medians read to the minute; a bare YYYY-MM-DD from before this changed stays permanently valid and reads as that day's UTC midnight.",
+    },
     files: { type: "str[]", required: true, description: "Paths to the files that make up this artifact." },
     usage: {
       type: "map",
@@ -144,7 +149,27 @@ export const ARTIFACT_SCHEMA: Schema = {
         model: { type: "str", nullable: true, description: "The model used, or null if not reported." },
         tokens_in: { type: "num", nullable: true, description: "Input tokens reported, or null if unreported." },
         tokens_out: { type: "num", nullable: true, description: "Output tokens reported, or null if unreported." },
-        usd: { type: "num", nullable: true, description: "Estimated USD cost, or null if unreported or not applicable (e.g. a subscription-authenticated member — see plan below)." },
+        // NOTES "receipt cache tokens": present only on a native (kind: native) member's receipt — a
+        // cli/remote member's boundary has no cache accounting to report, so these are absent, never a
+        // misleading `null`, on any other artifact.
+        tokens_cache_read: {
+          type: "num",
+          required: false,
+          nullable: true,
+          description: "Prompt-cache READ input tokens (priced into usd at a discount vs tokens_in) — native members only; absent for a cli/remote member's receipt, which has no cache accounting to give.",
+        },
+        tokens_cache_write: {
+          type: "num",
+          required: false,
+          nullable: true,
+          description: "Prompt-cache WRITE (cache-creation) input tokens (priced into usd at their own, typically premium, rate) — native members only; absent for a cli/remote member's receipt.",
+        },
+        usd: {
+          type: "num",
+          nullable: true,
+          description:
+            "USD cost, or null if unreported or not applicable (e.g. a subscription-authenticated member — see plan below). For a native member this is the Claude Agent SDK's OWN reported cost (real vendor billing, verbatim) — not derived from tokens_in/tokens_out against knowledge/model-pricing.md, and not reproducible by multiplying them against it, since the SDK's cost also prices tokens_cache_read/tokens_cache_write above at their own separate rates. For a cli/remote member, usd IS an estimate from knowledge/model-pricing.md.",
+        },
         wall_clock_s: { type: "num", nullable: true, description: "Wall-clock seconds the run took, or null if not timed." },
         // NOTES C13: set only when the member's receipt came from an auth: subscription connector —
         // names the plan covering the cost, since usd above is always null for these.
@@ -941,7 +966,7 @@ function checkField(
       break;
     case "date":
       if (typeof value !== "string" || !isIsoDate(value)) {
-        errors.push({ code: "BAD_DATE", message: `field '${key}' must be an ISO date (YYYY-MM-DD) in ${schemaName}`, file });
+        errors.push({ code: "BAD_DATE", message: `field '${key}' must be an ISO date (YYYY-MM-DD) or a UTC ISO timestamp (YYYY-MM-DDTHH:MM:SS[.sss]Z) in ${schemaName}`, file });
       }
       break;
     case "enum":
@@ -1024,12 +1049,25 @@ function checkField(
   }
 }
 
+// `created` (the only "date" field) moved from a bare calendar date to a full UTC timestamp so
+// `ageLabel`/`medianGateResponseDays` (derive.ts) stop reading from a fabricated midnight — see
+// NOTES "created timestamp". Every artifact written before that change carries a bare `YYYY-MM-DD`,
+// and that shape stays permanently valid (not a deprecated fallback): `new Date("2026-08-13")`
+// already parses a date-only ISO string as UTC midnight per spec, which is exactly the honest
+// reading — "some time that day, exact instant unknown" — so old artifacts keep reading correctly
+// forever, they just can't report an age finer than a day.
+const ISO_DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const ISO_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+
 function isIsoDate(s: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
-  const [y, m, d] = s.split("-").map(Number);
-  if (m < 1 || m > 12 || d < 1 || d > 31) return false;
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+  if (ISO_DATE_ONLY_RE.test(s)) {
+    const [y, m, d] = s.split("-").map(Number);
+    if (m < 1 || m > 12 || d < 1 || d > 31) return false;
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+  }
+  if (ISO_DATETIME_RE.test(s)) return !Number.isNaN(new Date(s).getTime());
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -2359,7 +2397,7 @@ function validateUncoverableExpectedKinds(root: string, warnings: ValidationWarn
           `unit '${unitName}' (type '${type}') expects kind(s) [${uncoverable.join(", ")}], but no member of its responsible team ` +
           `(${candidates.join(", ")}) declares producing ${uncoverable.length === 1 ? "it" : "any of them"} — this may be a legitimate ` +
           "configuration (a unit that only ever needs part of its type's shape), but the board's score rail will show these stage(s) " +
-          "as unreachable, never as merely queued",
+          "as not covered, never as merely queued",
         file: unitFile,
       });
     }

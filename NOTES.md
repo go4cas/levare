@@ -16127,3 +16127,401 @@ the check.
 **Verification.** `bun test` → 1441 pass, 0 fail (1450 across 104 files, 9 pre-existing skips). `bun run
 typecheck`, `bun run deps:check`, `bun run build` all clean. `levare validate fixtures/golden` → valid
 (pre-existing warnings only). `levare replay fixtures/golden --stubs` → oracle match, byte-for-byte.
+
+# NOTES "created timestamp" & "receipt cache tokens" (2026-08-15) — an artifact's own numbers stopped explaining themselves
+
+Four faults, all rooted in what the artifact contract records: `created`'s missing time-of-day fed two
+wrong board figures; a native receipt's tokens didn't account for its own cost; a scaffolded doc
+overstated its own role; one more figure was checked and found correct. The first two share this unit
+because they both touch what `levare` writes into an artifact's frontmatter and what it promises about
+those numbers; the last two surfaced investigating the first two honestly rather than assuming the bug
+report's own framing was complete.
+
+## Investigated first: what does the SDK's `modelUsage` actually expose
+
+Before writing anything, the type signature `sdk-worker.ts#deriveReceipt` had — `{ inputTokens?: number;
+outputTokens?: number }` — was checked against the SDK's OWN declared type, not trusted as authoritative
+just because it was the existing code. `node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts`:
+
+```ts
+export declare type ModelUsage = {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadInputTokens: number;
+    cacheCreationInputTokens: number;
+    webSearchRequests: number;
+    costUSD: number;
+    contextWindow: number;
+    maxOutputTokens: number;
+};
+```
+
+The existing signature was narrower than what the SDK actually sends, not narrower because the SDK
+doesn't send more — `cacheReadInputTokens`/`cacheCreationInputTokens` are real, non-optional fields on
+every `modelUsage` entry. This settled the shape of the fix before any code was touched: the receipt CAN
+report a cache breakdown, from data already arriving on every call, previously read and then discarded.
+
+## Fault 1 — `created` was a bare calendar date
+
+**The bug, as filed.** Every write site stamped `created: 2026-08-13` — a date, no time. Two consumers
+measured from it: `derive.ts#ageLabel` (an artifact's displayed age on the orchestrator card) and
+`derive.ts#medianGateResponseDays` (a studio's median gate-response time, `created` to a date extracted
+from `approved_by`). `new Date("2026-08-13")` resolves to that date's UTC midnight — so an artifact
+produced minutes before a render showed hours of fabricated age, and a gate opened and approved hours
+apart but straddling a UTC midnight boundary read a full day's response time.
+
+**Every write site, found before anything changed format.** `created:` is written in exactly four
+places, never a fifth: `adapters.ts#author`'s `AdapterRunnerOptions.now` (the real member-dispatch path
+— native/cli/remote, the vast majority of artifacts); `dagwalk.ts#openMergeGate` and `#writeBlocked`
+(both driven by `AdvanceOptions.today`); `board/gateops.ts#blockedRetryDoc` (driven by `ResolveOpts`).
+A fifth site, `fixtures/stubs/member-stub.ts#render`, hardcodes `created: 2026-07-11` deliberately (its
+own comment: "so replays are byte-for-byte deterministic") — left untouched; the replay oracle
+(`replay.ts#extractStatuses`) only ever compares artifact STATUSES, never `created`'s literal value, so
+nothing about replay determinism depends on this file's date format either way.
+
+**Reading the two consumers before touching them:** both already do `new Date(fromIso)` — full
+precision, zero-code-change-required, ONCE the stored value carried it. `ageLabel` needed no change at
+all. `medianGateResponseDays` needed no arithmetic change either — its existing `(approved - created) /
+86400000` is already a continuous, correct day count; the day-granularity was entirely an INPUT problem,
+never a logic one. Both got doc comments making this now-intentional precision behavior explicit rather
+than leaving it an accident of what the data happened to contain.
+
+**The decision that mattered: what `today` is for, at each site, before touching its format.**
+`AdvanceOptions.today` (dagwalk.ts) turned out to be used SOLELY for `created:` stamps (merge-gate,
+blocked) — dagwalk.ts never writes `approved_by` at all, that's exclusively `board/gateops.ts`'s job —
+so its default was safely changed from `.slice(0, 10)` to a full `.toISOString()` with zero blast radius
+on approval semantics. `ResolveOpts.today` (gateops.ts), by contrast, is genuinely SHARED across
+`stampApproval` (→ `approved_by`), `merge_result.executed_at`, AND (via `resolveBlockedArtifactGate`)
+the blocked-retry path's `created:` stamp — changing its format wholesale would have also reformatted
+`approved_by`, which the goal deliberately does NOT ask for (`medianGateResponseDays` is documented to
+read `approved_by` at day granularity; changing that is a different, unrequested unit of work). Instead,
+`resolveGate` now computes a SEPARATE `createdAt` alongside the unchanged `today`, reusing the existing
+`ResolveOpts.now` (already present for CAP-A's `execution.executed_at`, same "precise instant levare
+itself is writing this record" role) — `today` still feeds every approval/execution-record stamp
+unchanged; `createdAt` feeds only `blockedRetryDoc`'s `created:`. No test asserting `today`'s exact
+string value anywhere in the suite (checked: none does) needed to change.
+
+**Backward compatibility, decided and enforced, not assumed.** A bare `YYYY-MM-DD` `created` is not a
+deprecated shape with a sunset — it stays permanently valid. `validate.ts#isIsoDate` now accepts either
+the original `^\d{4}-\d{2}-\d{2}$` OR a full `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$` UTC
+timestamp; a bare date reads as that day's UTC midnight — the honest interpretation for a value that
+never recorded a time of day, not a fallback approximation. `fixtures/golden/work/storefront/
+checkout-flow/{product-brief-v1,spec-checkout-flow-v1}.md` already carry real bare-date `created` values
+(`2026-07-07`, `2026-07-11`) from before this change — left completely untouched, deliberately, as the
+regression proof: `levare validate fixtures/golden` staying `valid` against them IS the backward-compat
+test, not a fixture that needed regenerating.
+
+## Fault 2 — a native receipt's tokens didn't account for its own cost
+
+`deriveReceipt` summed only `inputTokens`/`outputTokens`; `usd` came from the SDK's own
+`total_cost_usd` — real vendor billing, which already prices prompt-cache read/write tokens at their own
+rates. Those tokens appeared nowhere in the receipt, so `(tokens_in/1e6)*in_per_m +
+(tokens_out/1e6)*out_per_m` against `knowledge/model-pricing.md`'s own rates ran 40–50% under the
+reported `usd` on every real call checked — exactly the arithmetic "levare will show you every cent"
+invites an operator to do.
+
+**Fix.** `deriveReceipt` now also sums `cacheReadInputTokens`/`cacheCreationInputTokens` across every
+`modelUsage` entry (the same "sum every model" rule `tokens_in`/`tokens_out` always followed — NOTES
+F11's own comment on why summing, not picking one entry, is correct). Two new fields on
+`types.ts#Receipt`: `tokens_cache_read?: number | null`, `tokens_cache_write?: number | null` —
+deliberately OPTIONAL (not required-nullable like `tokens_in`), so every existing hand-built `Receipt`
+literal across the test suite (dozens, in `tests/adapters.test.ts` alone) stayed valid with no edits;
+present (a real number, possibly 0) only on a native receipt that reported usage at all, absent for
+cli/remote (no cache accounting to give) and for a fully `unreported` receipt. `adapters.ts#author`
+emits `tokens_cache_read`/`tokens_cache_write` frontmatter lines only when present — never a misleading
+`null` on a non-native artifact. `validate.ts`'s `usage` schema gained matching optional/nullable
+fields. `tokens_in`/`tokens_out` keep their original meaning (fresh, non-cache) — the cache breakdown is
+additive, not folded in, so `costLabel`/`unitSpend`/every other existing consumer of `tokens_in`/
+`tokens_out` is unaffected.
+
+**Worked reconciliation (the actual regression, not a hand-built stand-in).** Using the goal's own
+observed figures for one real dispatch (`product-brief-add-command-v3`): `tokens_in=892`,
+`tokens_out=786`, `usd=$0.020895`. Pricing only in/out at claude-sonnet-5's baseline rate ($3/M in,
+$15/M out) gives $0.014466 — 31% under. Backing the $0.006429 gap out as unpriced input at the SAME flat
+rate gives ≈2143 tokens — `tests/sdk-worker-receipt.test.ts`'s fixture sets
+`cacheReadInputTokens: 2143` and gets EXACT reconciliation (`(892+2143)/1e6*3 + 786/1e6*15 =
+0.020895`), driven from a `modelUsage` object shaped exactly like the SDK's real `ModelUsage` type
+(every field, not a hand-trimmed subset) — not a coincidence, the numbers were chosen to match the
+goal's own worked example. This is a diagnostic-grade reconciliation, not a claim that real Anthropic
+cache pricing is flat: cache reads and cache writes bill at their own, DIFFERENT rates from a fresh
+input token and from each other, which `knowledge/model-pricing.md`'s table doesn't carry — see the
+correction below.
+
+## Fault 3 — `knowledge/model-pricing.md` overstated its own role
+
+Its opening line claimed its rates are "used to price usage receipts (§10)" — true for a `kind: cli`/
+`remote` member (`receipts.ts#normalizeReceipt` is the only caller of `pricing.ts#priceUsd`), false for
+`kind: native` (its `usd` is the SDK's own reported cost, used verbatim, `pricing.ts` never consulted).
+The table's real, universal job — the KNOWN-MODEL set `levare validate` rejects `UNKNOWN_MODEL`
+declarations against — was already true and valuable; the header just also claimed a second job it
+doesn't do for native. Fixed in `src/init.ts` (the scaffold every fresh studio's `knowledge/
+model-pricing.md` is copied from) and `fixtures/golden/knowledge/model-pricing.md` identically: leads
+with the KNOWN-MODEL role, states the cli/remote pricing role second, and names explicitly what prices a
+native receipt instead (the SDK's own cost) and why the table's flat rate won't reproduce it exactly
+even given `tokens_cache_read`/`tokens_cache_write` (real cache tiers this table doesn't carry).
+`receipts.ts`'s and `types.ts#Receipt`'s own header comments carried the identical inaccuracy
+("USD ... estimated from knowledge/model-pricing.md") and got the same correction — the goal's own
+observation that "this was not obvious from reading the artifact" applied to the code's self-description
+just as much as the scaffolded doc's.
+
+## Fault 4 — `Median review rounds` checked, found correct, left alone
+
+The claim: `todo-cli`'s project screen reads `1` even though `list-command` ran six rounds before the
+round-counter fix landed. `derive.ts#medianReviewRounds` counts `kind: review` artifacts (live +
+superseded — a loop's author/companion pair is produced in lockstep each round, so this count already
+equals a unit's own round count) PER UNIT, then takes the MEDIAN of that count ACROSS EVERY UNIT IN THE
+PROJECT — a project-wide statistic, not a per-unit one, rendered on the project page (not scoped to any
+one unit) alongside spend/unit-count/other project-wide figures. A project where most units converge in
+round 1 and one unit runs to six correctly reads a low median: that is precisely what a median is FOR —
+resisting distortion from one outlier, unlike a mean the six-round unit WOULD pull up. Reading `1` says
+"most of this project's units needed one round," which is a true, useful, unrelated fact to
+`list-command`'s own six — visible on `list-command`'s own unit page, not this figure. Not a bug;
+`medianReviewRounds`'s doc comment now says so explicitly, so the next reader doesn't have to re-derive
+this. No code changed.
+
+## Schema, tests
+
+`validate.ts`: `created`'s `isIsoDate` accepts bare date OR full UTC timestamp (permanently, both
+shapes); `usage.tokens_cache_read`/`usage.tokens_cache_write` added, optional/nullable, native-only in
+practice. `types.ts#Receipt` gained the same two optional fields, with a corrected header on what prices
+`usd` for which member kind. `docs/guide/05-reference/cheatsheets/artifact.md` regenerated (`bun run
+docs:generate`) — `created`'s type column and description, and the two new `usage.*` rows.
+`docs/current-gaps.md` gained two closed entries (created-timestamp, receipt-cache-tokens).
+
+`tests/derive-created-timestamp.test.ts` (new): `ageLabel` reports a sub-hour age for an artifact
+created and read within the same minute, and still reads a pre-change bare-date artifact correctly
+(coarser, never wrong); `medianGateResponseDays` does NOT report a full day for a gate opened and
+approved minutes apart straddling a UTC midnight boundary in EITHER direction (the boundary case is the
+bug — a same-day test proves nothing) and still computes a sane delta from a pre-change bare-date
+artifact. `tests/sdk-worker-receipt.test.ts` (extended): `tokens_cache_read`/`tokens_cache_write` are
+summed from a realistic `modelUsage` shape; the receipt's tokens (including cache) reconcile with its
+own cost under `knowledge/model-pricing.md`'s baseline rates while `tokens_in`/`tokens_out` alone do
+not (the actual regression, both directions); zero cache activity reports `0`, not absent; no
+`modelUsage` entries reports `null`, matching `tokens_in`/`tokens_out`'s own convention.
+`tests/adapters.test.ts` (extended): a native receipt's cache breakdown reaches the produced artifact's
+`usage:` frontmatter verbatim and the result still validates; a cli member's `usage:` block carries no
+`tokens_cache_read`/`tokens_cache_write` lines at all (never a misleading `null`).
+
+**Verification.** `bun test` → all pass (one flaky, timing-based SSE test failed once under full-suite
+load and passed in isolation, unrelated to this change). `bun run typecheck`, `bun run deps:check`,
+`bun run build`, `bun run docs:generate` (no diff after regeneration) all clean. `levare validate
+fixtures/golden` → valid (pre-existing warnings only — the bare-date fixture artifacts included).
+`levare replay fixtures/golden --stubs` → oracle match, byte-for-byte.
+
+# NOTES "not covered" & "score rail reload" (2026-08-15) — a Conductor ruling on how a rail reads, and a live gap in what actually refreshes it
+
+Two items, verified live against a real dispatch (`corvid` producing `review-purge-command-v1.md`,
+committed `2ab4640`) after yesterday's orchestrator-card fix (NOTES ORCH-STALE-CARD/addendum) — item 4's
+own fix. Unrelated to each other in mechanism, bundled because both surfaced from the same live
+verification pass of the score rail.
+
+## 1 — `unreachable` → `not covered`, and its chip stops reading as an alert
+
+**Conductor ruling, not a bug.** The state is real and correct — `flow.ts#unreachableExpectedKinds`
+genuinely identifies a kind the unit's type expects but its responsible team has no member that can ever
+produce. The word "unreachable" is what reads wrong: three of them stacked down a rail reads as three
+failures, when the truth is closer to "this type has five stages and the assigned team covers two" — a
+fact about the type's shape, not an alert. **Scope, decided explicitly:** rename what a Conductor
+READS, not the internal name of what's being computed — `derive.ts`'s `NodeState` union keeps its
+`"unreachable"` member verbatim (an accurate, internal graph-reachability term, orthogonal to display
+copy), and `flow.ts#unreachableExpectedKinds` keeps its name — only the rendered label, the explanatory
+sub-line, and the chip's own colour change.
+
+`board/render/run.ts`: the chip's label is now "not covered"; the sub-line reads "not covered · no
+member of this team produces this" (was "unreachable · no member produces this" — the ruling's own exact
+wording, which also adds "of this team", named explicitly rather than left implicit). `validate.ts`'s
+`UNCOVERABLE_EXPECTED_KIND` warning message now says "as not covered, never as merely queued" — the
+board and the validator name the same fact the same way — the CODE itself (`UNCOVERABLE_EXPECTED_KIND`)
+is untouched, per the ruling (already shipped, not worth an unrelated rename).
+
+**The chip's colour.** Previously `statusBadge("blocked", "unreachable", "sstep__chip")` — the SAME
+canonical "blocked" treatment a genuinely-stalled, Conductor-decision-away-from-moving artifact gets.
+The ruling: drop to "the same neutral grey the other non-status chips use" — this codebase already
+distinguishes lifecycle-status chips (`statusBadge`, colour from status.ts's seven-state canonical
+palette) from non-status tags (`tag`/`chip` in components.ts, the `.entity__kind` treatment, explicitly
+documented as "never carries lifecycle-state colour") — "not covered" is squarely the second kind, so it
+gets its own colour rather than borrowing "blocked"'s. Not a straight reuse of `.entity__kind`, though:
+that class carries `margin-left:auto` (a registry-card-header positioning rule) which has no place in a
+score-rail row's flex layout. New `.chip.is-neutral` (assets/styles.css) — same fg-mute/panel-2/border
+colours as `.entity__kind`, staying inside the `.chip` family's own box model (padding/radius/font
+shared with every other `.chip.is-*` variant) so it sits correctly in `.sstep__chip`'s existing layout.
+`components.ts#neutralChip` is the second, explicitly-named exception to "`statusBadge` is the only
+function that emits a `.chip`" (`tests/board-components.test.ts`'s own enforcement, checked by source-
+text regex over the whole `render/` tree) — mirrors `statusBadge`'s exact shape, constructs the literal
+`class="chip` string in components.ts (not in any renderer), so that guard still holds.
+
+**Deliberately unchanged, per the ruling's own text:** the score node's DOT stays the "blocked" dimmed
+treatment ("keep the dimmed dot") — `fromNodeState`'s `"unreachable"` → `"blocked"` mapping
+(`board/status.ts`) is untouched, so `snodeClassesOf`'s existing assertions in `tests/board-render.
+test.ts` (`"snode blocked"`) needed no change. The row-level dimming (`.sstep.blocked`) is likewise
+untouched — only named as "the dimmed dot," and the row dimming is the dot's own row-level echo, not a
+second alert-reading surface the ruling asked to quiet.
+
+**Tests.** `tests/board-components.test.ts` gains a direct `neutralChip` unit test (escaping, the
+`extraClass` combination, and an explicit "never `is-blocked`" assertion). `tests/board-render.test.ts`
+gains a CSS-coverage proof (`hasCssRuleFor("chip is-neutral")`, mirroring the existing `scoreNodeClass`
+guard's own discipline) and a live-render assertion against the golden fixture's own uncoverable `code`
+kind, pinning the exact class and text, and that the old `>unreachable<` label is gone outright, not
+just relabeled alongside a leftover reference. `tests/guide-workflow-blocks.test.ts`'s pinned
+`UNCOVERABLE_EXPECTED_KIND` message (the docs walkthrough's own finished-studio regression) updated to
+match. Verified live over a real `levare serve` process, not just unit-tested: `curl`'d
+`/run/storefront/checkout-flow` and confirmed byte-for-byte — `<span class="snode blocked" ...>` (dot,
+unchanged) alongside `<span class="chip is-neutral sstep__chip">not covered</span>` and
+`<span class="sstep__sub">not covered &middot; no member of this team produces this</span>`.
+
+## 2 — the score rail didn't update after a runner-side commit — a real gap in the SSE connection's own durability, not the fs.watch/broadcast mechanism
+
+**The live symptom.** `corvid` (a `kind: cli` member) produced `review-purge-command-v1.md`, the runner
+committed it (`2ab4640`), and the run view kept showing `review · press/corvid · producing… 1/3 · 0m
+00s` — elapsed FROZEN at its dispatch value, never ticking, until a manual refresh showed the completed
+review and its gate. No client-side `setInterval` ticks this label at all (checked `assets/app.js`
+directly) — it is purely server-rendered on each fragment refetch, so a frozen elapsed time means the
+page never received ANY update at all for the whole window, not a stale re-render of fresh data.
+
+**Read yesterday's addendum first, as asked, and it named the right SHAPE of error but not this
+instance.** ORCH-STALE-CARD's addendum: "scoping a fix to 'the region with buttons on it' under-covered
+'every region whose content is derived from the same live gate list.'" The score rail lives in `.main`,
+which `swapFragment` already replaces wholesale on every refresh (ORCH-STALE-CARD's own finding) — so
+this is not a missing-marker problem the way the orchestrator card/briefing were; the region itself was
+never the gap. The addendum's LESSON still applied one level up: **the two propagation paths this
+codebase actually has are "an operator's own write route" (an explicit, synchronous `ctx.broadcast
+("reload")` inside the route handler — `board/serve.ts`'s four write-route call sites) and "the board's
+own `fs.watch`" (the ONLY path for anything the daemon does autonomously, since `daemon.ts` has zero
+reference to `ctx.broadcast` — checked directly, confirmed absent). Every previously-tested/observed
+case went through the first path, which is why "the operator's own actions have always propagated" —
+this is the first live case that depended on the second path ALONE, with no operator request anywhere
+in its causal chain.**
+
+**Established what actually triggers a refresh, empirically, not by re-reading old test output.** Wrote
+a throwaway harness driving a real `Daemon`+`createBoard` pair with a genuinely delayed `memberRunner`
+(1.5s, simulating a real `kind: cli` dispatch's actual wall-clock cost, unlike every existing daemon test
+which uses an instant stub) and a live SSE connection: the daemon-only commit (no operator POST anywhere
+near it) DID produce exactly one `reload` broadcast, ~80ms (the debounce window) after the file landed.
+**The fs.watch/broadcast mechanism itself is sound** — confirms NOTES RELOAD-STORM's own prior proof
+(a real `work/**` edit produces exactly one broadcast) extends to a genuine daemon-driven commit, closing
+the one gap that prior investigation's own "what this fix does NOT claim" section left unstated (it
+proved a MANUAL edit and an in-flight-but-not-yet-committing daemon step; never a daemon commit landing
+mid-session with no operator activity nearby).
+
+**What's actually missing: the CONNECTION's own durability.** `serve()`'s `idleTimeout` (default 180s,
+`Bun.serve`'s own option) resets — silently, `ECONNRESET`, nothing an `EventSource`'s `onerror` can
+distinguish from an ordinary close — a connection Bun has sent zero bytes on for that long. Proved
+directly: drove a REAL `Bun.serve` instance (not the in-process `board.fetch()` every other board/SSE
+test uses, which never touches `Bun.serve` or its `idleTimeout` at all) with a short `idleTimeoutSeconds`
+and an otherwise-idle `/events` connection — reset at `idleTimeoutSeconds + ~1s`, reliably, repeatedly.
+A quiet studio (nothing changing while a real, possibly slow, `kind: cli`/native call is thinking — the
+ordinary case) crosses 180s in minutes. `EventSource` auto-reconnects after any close (standard browser
+behavior, not this codebase's to implement), but this stream has never queued or replayed a missed
+message — a `reload` broadcast landing in the gap between a silent kill and the reconnect completing has
+no subscriber to reach, and if nothing else changes afterward (the unit sitting at its next gate,
+awaiting the Conductor — exactly what was observed live) nothing ever nudges the page again short of a
+manual refresh. This is a real, previously-unnoticed gap in every long-lived board session, not specific
+to the daemon path — it is simply the one path with no OTHER propagation mechanism to mask it, exactly
+the ORCH-STALE-CARD addendum's own lesson recurring one level below the region layer: this time in the
+transport the regions all share, not in which regions get resynced.
+
+**The fix.** `board/serve.ts#sseResponse` now sends a periodic SSE comment line (`: heartbeat\n\n`) on a
+`setInterval`, well inside the idle window (`SSE_HEARTBEAT_MS`, 60s — a 3x margin under the 180s
+default), cleared on the same `cleanup()` path the subscriber's own unsubscribe already runs through. An
+SSE comment line (`:`-prefixed) never fires `EventSource.onmessage` — no client-side change needed at
+all; `assets/app.js`'s `if (e.data === 'reload')` check simply never sees it. Test-only override
+(`BoardCtx.sseHeartbeatMs`, threaded through `createBoard`/`serve()`, mirroring `idleTimeoutSeconds`'s
+own existing precedent) lets a test observe the mechanism in seconds. Verified empirically, not assumed
+from the fix's own logic: with the heartbeat DISABLED (an artificially huge interval), a short
+`idleTimeoutSeconds` still resets on schedule — confirms the reproduction is real, not a pre-existing
+Bun quirk unrelated to idle time; with the heartbeat enabled at the SAME 3x margin ratio as production
+(60s/180s), the connection survived multiple full idle-timeout periods with zero resets, repeatedly.
+Bun's idle-timeout enforcement in this version is empirically unreliable below roughly 5 real seconds
+regardless of heartbeat activity (the same "doesn't behave exactly as documented" caveat `board-serve-
+idletimeout.test.ts`'s own header already names for a POST with a body) — every test below uses values
+comfortably above that floor, proven reliable across repeated runs, not a single lucky pass.
+
+**What this does NOT claim.** Did not implement client-side reconnect logic — browsers already do this
+correctly for `EventSource`, and inventing a second implementation would be redundant, not a fix. Did
+not add message queueing/replay for a broadcast sent while genuinely disconnected (a heartbeat prevents
+the disconnect from happening in the ordinary case; it does not make redelivery possible for the rarer
+case of a real network interruption unrelated to idle time) — out of scope for what was actually
+observed, and a materially bigger change (would need the server to remember "what changed since this
+client's last successful read," not just "is anyone listening right now").
+
+**Tests.** `tests/board-serve-sse-heartbeat.test.ts` (new, real-socket — mirrors `board-serve-
+idletimeout.test.ts`'s own precedent for exactly the same reason: this is invisible to `createBoard`'s
+in-process `board.fetch()` every other SSE test uses): the bug reproduced directly (no heartbeat, a
+quiet connection resets); the fix proven directly (a heartbeat well inside the idle window survives
+crossing it twice with zero resets); and a real `reload` broadcast still arrives as a genuine `data:`
+frame, distinguishable from interleaved `:`-prefixed heartbeat frames, proving the heartbeat never masks
+or delays an actual change.
+
+**Verification.** `bun test` → all pass. `bunx tsc --noEmit`, `bun run deps:check`, `bun run build`,
+`bun run docs:generate` (no diff) all clean. `levare validate fixtures/golden` → valid (pre-existing
+warnings only, now reading "not covered" per item 1). `levare replay fixtures/golden --stubs` → oracle
+match, byte-for-byte. Item 1 additionally verified live over a real `levare serve` process (see above).
+
+# NOTES "not covered tooltip" (2026-08-15) — a refinement on the same branch, verified after both fixes above landed live
+
+Both "not covered"/"score rail reload" fixes above confirmed live: approving `purge-command`'s gate
+updated the score rail, gate card, briefing, and timeline with no manual refresh, and the "not covered"
+rows read as intended. One refinement followed, on the same branch.
+
+## The problem, as observed
+
+The "not covered" sub-line — `not covered · no member of this team produces this` — repeats under every
+uncovered row and wraps to two lines on a five-stage type. Explanatory text a reader needs once, not a
+permanent fixture: understand it on the first uncovered row, and every subsequent one just repeats it.
+
+## The fix
+
+Moved the fuller sentence off the permanently-visible sub-line onto the chip itself, as a hover/focus
+tooltip — the exact accessible recipe `render/project.ts`'s "cited N" and `render/registry.ts`'s
+loop-bounds tooltip already established (`tabindex="0"` + `aria-describedby` + a nested
+`role="tooltip"` child, wired by `assets/app.js#wireTooltip`, keyboard-reachable as well as hover — no
+`title=""` attribute, which is famously not keyboard-reachable in any browser). `components.ts
+#neutralChip` gained an optional third param (`{ text, id }`); when absent, the function's output is
+byte-for-byte the same plain chip it always was (a pre-existing test proves this explicitly, not just by
+omission). The tooltip's own box is a new class, `.neutraltip` — not a reuse of `.citetip`, following
+the convention `citetip`/`looptip` already set: each trigger gets its own tooltip class even though the
+box recipe (position:fixed, JS-positioned from `getBoundingClientRect()`, dark pill, `is-shown` toggle)
+is identical. `render/run.ts`'s sub-line for this state is now an empty string, not a shorter
+replacement — the chip alone already says "not covered"; a shortened sub-line repeating that word would
+be the exact redundant-explanation problem this move exists to remove.
+
+## The principle, recorded so the next tooltip decision has one to follow
+
+**Deliberately asymmetric with the loop-bounds tooltip, which stays visible unconditionally
+(`registry cards legibility` item 2's own ruling) — and that asymmetry is not an inconsistency to
+reconcile later, it is the correct application of a single test:**
+
+**Is the fact decision-relevant every time it's seen, or does understanding it once retire the
+question?**
+
+The loop bounds (`until`/`max`/`on_exhaust`) answer "what happens if the agents never agree" — a fact a
+Conductor needs freshly in mind at the moment of approving a `start`, not something that stops mattering
+after the first read; it is load-bearing for a decision made repeatedly, on every loop, for as long as
+the loop exists. "Not covered" answers "why is this row inactive" — a fact about the type's shape that,
+once understood, never changes and never needs re-surfacing; a reader who has seen one uncovered row on
+one type has the concept for every uncovered row on every type they'll ever look at. The FIRST kind of
+fact earns permanent visibility because the cost of hiding it is re-asking a question that matters every
+time; the SECOND kind earns a tooltip because the cost of showing it permanently is repeating an answer
+nobody's asking for anymore. Same UI primitive (`wireTooltip`), opposite persistence decisions, both
+correct — the test above is what to apply next time this shape of decision comes up, not "does this
+precedent's specific text look similar enough to copy."
+
+## Tests
+
+`tests/board-components.test.ts`: `neutralChip`'s tooltip param produces the exact wired markup,
+escapes both the label and the tooltip text (two independent untrusted-text sites), and — explicitly,
+not just by the pre-existing tests still passing — confirms the no-tooltip call shape is byte-for-byte
+unaffected by the new parameter's existence. `tests/board-render.test.ts`: the rendered sub-line is now
+empty for the uncovered `code` row (not a shorter replacement); the chip is the tooltip trigger, pinned
+via the same `aria-describedby`↔`id` backreference pattern the existing "cited N" test already checks;
+`.neutraltip` gets the same CSS-non-empty-rule proof `.chip.is-neutral` already has; `assets/app.js`
+actually registers `wireTooltip('.chip.is-neutral', '.neutraltip')` (mirrors `registry-cards-render-
+definitions.test.ts`'s own proof that the loop-bounds trigger is registered, not just markup with
+nothing listening).
+
+**Verification.** `bun test` → 1465 pass, 0 fail. `bunx tsc --noEmit`, `bun run deps:check`, `bun run
+build`, `bun run docs:generate` (no diff) all clean. `levare validate fixtures/golden` → valid.
+`levare replay fixtures/golden --stubs` → oracle match, byte-for-byte. Verified live over a real
+`levare serve` process: the uncovered `code` row's rendered HTML carries an empty `sstep__sub` and the
+full trigger+tooltip markup, exactly as designed — `assets/app.js` confirmed to parse cleanly
+(`new Function(source)`, syntax-only, no behavioral claim beyond "this file still loads").

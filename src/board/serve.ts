@@ -65,6 +65,9 @@ export interface BoardCtx {
    * `levare serve` entry point) attaches a real one, so no existing test gains a background daemon,
    * a second fs.watch handle, or any other side effect it didn't already have. */
   daemon?: Daemon;
+  /** Test-only override of `sseResponse`'s heartbeat interval (default `SSE_HEARTBEAT_MS`) — production
+   * never sets this; a test injects a short value to observe a heartbeat firing without a real 60s wait. */
+  sseHeartbeatMs?: number;
 }
 
 // A demo/screenshot server pointed at a fixtures/ tree must not be able to mutate it, structurally —
@@ -622,8 +625,34 @@ interface SseSubscriber {
   close: () => void;
 }
 
+// NOTES "score rail reload" — a runner-side (daemon-driven, no operator request in its causal chain)
+// commit has exactly ONE path to the browser: this SSE stream's own broadcast, fed by the board's own
+// fs.watch (an operator's own gate resolution ALSO calls `ctx.broadcast` directly from its route
+// handler, which is why that path always propagated — see `serve()`'s write routes). That fs.watch
+// path itself is sound (proven live: a real daemon-only commit, delayed to simulate a genuinely slow
+// `kind: cli` dispatch, still produces exactly one `reload` broadcast). What was missing is durability
+// of the CONNECTION it travels over: `serve()`'s own `idleTimeout` (default 180s) resets — silently,
+// no error surfaced to `EventSource.onerror` in a way the client can distinguish from an ordinary
+// close — a connection Bun has not sent a single byte on for that long. A quiet studio (nothing
+// changing while a real member call — especially a slow local CLI dispatch — is thinking, the ordinary
+// case) crosses that in minutes, not hours: proven directly by driving a real `Bun.serve` instance with
+// a short `idleTimeoutSeconds` and observing `ECONNRESET` on an otherwise-idle `/events` connection.
+// The browser's own `EventSource` reconnects after any close, but a `reload` broadcast that lands in
+// the gap between that silent kill and the reconnect completing has no subscriber to reach — this
+// stream has never queued or replayed missed messages, so that broadcast is gone for good, and if
+// nothing else changes afterward (the unit sitting at its next gate, waiting on the Conductor — exactly
+// what was observed live) nothing ever nudges the page again short of a manual refresh.
+//
+// Fixed the same way every long-lived SSE stream does: a periodic comment line, well inside the idle
+// window, that resets Bun's own idle clock without ever being a `reload` — `EventSource.onmessage`
+// never fires for an SSE line starting with `:` (spec-defined comment syntax), so the client needs no
+// change at all. `SSE_HEARTBEAT_MS` (60s) leaves a 3x safety margin under the 180s default; test-only
+// override via `BoardCtx.sseHeartbeatMs` lets a test observe one firing without a real 60s wait.
+const SSE_HEARTBEAT_MS = 60_000;
+
 function sseResponse(ctx: BoardCtx, req: Request): Response {
   let unsubscribe: (() => void) | undefined;
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
   let cleaned = false;
   // Idempotent: both the stream's own cancel() and the request's abort signal can fire for the same
   // disconnect (belt and suspenders across runtime/version differences in which one actually fires),
@@ -632,6 +661,7 @@ function sseResponse(ctx: BoardCtx, req: Request): Response {
     if (cleaned) return;
     cleaned = true;
     unsubscribe?.();
+    if (heartbeat) clearInterval(heartbeat);
   };
 
   const stream = new ReadableStream({
@@ -655,6 +685,13 @@ function sseResponse(ctx: BoardCtx, req: Request): Response {
       };
       unsubscribe = subscribe(ctx, sub);
       controller.enqueue(enc.encode(`: connected\n\n`));
+      heartbeat = setInterval(() => {
+        try {
+          controller.enqueue(enc.encode(`: heartbeat\n\n`));
+        } catch {
+          cleanup(); // same dead-controller case send() above already guards.
+        }
+      }, ctx.sseHeartbeatMs ?? SSE_HEARTBEAT_MS);
     },
     // Fires when the stream's consumer (Bun, on client disconnect) cancels it.
     cancel() {
@@ -717,6 +754,7 @@ export function createBoard(
     orchestratorSelectOpts?: SelectOrchestratorBoundaryOptions;
     daemon?: Daemon;
     memberRunner?: AsyncMemberRunner;
+    sseHeartbeatMs?: number;
   } = {},
 ): Board {
   const readOnly = opts.readOnly ?? isUnderFixtures(root);
@@ -727,6 +765,7 @@ export function createBoard(
     orchestratorSelectOpts: opts.orchestratorSelectOpts,
     daemon: opts.daemon,
     memberRunner: opts.memberRunner,
+    sseHeartbeatMs: opts.sseHeartbeatMs,
     broadcast: (msg) => {
       for (const sub of subscribersOf(ctx)) sub.send(msg);
     },
@@ -849,6 +888,10 @@ export function serve(
     orchestratorSelectOpts?: SelectOrchestratorBoundaryOptions;
     /** Test-only override — see the default's own rationale below. */
     idleTimeoutSeconds?: number;
+    /** Test-only override of the SSE heartbeat interval (default `SSE_HEARTBEAT_MS`, 60s) — lets a
+     * test observe a heartbeat firing, or prove it keeps a connection alive past a short
+     * `idleTimeoutSeconds`, without a real 60s wait. */
+    sseHeartbeatMs?: number;
     /** Deliverable (a): `--no-daemon` disables the daemon; `levare serve` boots one by default,
      * alongside the board, in the same process. A read-only board (NOTES E14 — a path under
      * fixtures/, or --read-only) never gets a daemon regardless of this flag: the daemon's whole job
@@ -867,6 +910,7 @@ export function serve(
     orchestratorBoundary: opts.orchestratorBoundary,
     orchestratorSelectOpts: opts.orchestratorSelectOpts,
     daemon: daemon ?? undefined,
+    sseHeartbeatMs: opts.sseHeartbeatMs,
   });
   // idleTimeout (NOTES phase-7 K17, a live-gate fix-up — "a request must always produce a reply"):
   // Bun.serve's own default is 10 SECONDS — after that, Bun resets the connection with no HTTP

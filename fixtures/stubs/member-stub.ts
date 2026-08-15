@@ -80,6 +80,10 @@ export function cannedReceipt(
   member: string,
   kind: string,
 ): { model: string | null; tokens_in: number | null; tokens_out: number | null; usd: number | null; wall_clock_s: number | null; unreported: boolean } | undefined {
+  // No `tokens_cache_read`/`tokens_cache_write` here — those are only ever set by the real
+  // sdk-worker.ts#deriveReceipt path (NOTES "receipt cache tokens"); this stub stands in for the
+  // native boundary for `--stubs` replay determinism, not for cache-token accounting, which has its
+  // own dedicated test against a realistic modelUsage shape (tests/sdk-worker-receipt.test.ts).
   const c = CANNED[`${member}:${kind}`];
   if (!c) return undefined;
   if (c.usage === null) return { model: null, tokens_in: null, tokens_out: null, usd: null, wall_clock_s: null, unreported: true };

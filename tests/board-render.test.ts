@@ -794,9 +794,22 @@ describe("run screen — an uncoverable stage never reads as merely queued", () 
     const rows = starts.map((s, i) => score.slice(s, i + 1 < starts.length ? starts[i + 1] : score.length));
     const codeRow = rows.find((r) => r.includes('class="sstep__label">code<'))!;
     const reviewRow = rows.find((r) => r.includes('class="sstep__label">review<'))!;
-    expect(codeRow).toContain("unreachable &middot; no member produces this");
+    // NOTES "not covered tooltip": the fuller sentence moved off a permanently-visible sub-line (which
+    // used to repeat "not covered · no member of this team produces this" under every uncovered row)
+    // onto the chip's own tooltip, disclosed on demand — the sub-line itself is now empty for this row.
+    expect(codeRow).toContain('<span class="sstep__sub"></span>');
+    expect(codeRow).toContain(">not covered<");
     expect(codeRow).not.toContain(">queued<");
     expect(reviewRow).toContain(">queued<");
+  });
+
+  test("the 'not covered' chip is itself the tooltip trigger — the fuller sentence, keyboard-reachable exactly like the loop bounds and cited N", () => {
+    const html = renderRun(repo, "storefront", "checkout-flow", root, now);
+    const score = scoreBlock(html);
+    // Same accessible recipe render/project.ts's "cited N" and render/registry.ts's loop-bounds
+    // tooltips use: a focusable trigger naming its tooltip via aria-describedby, a nested
+    // role="tooltip" child carrying the matching id.
+    expect(score).toMatch(/<span class="chip is-neutral sstep__chip" tabindex="0" aria-describedby="([^"]+)">not covered<span class="neutraltip" role="tooltip" id="\1">no member of this team produces this<\/span><\/span>/);
   });
 });
 
@@ -983,6 +996,39 @@ describe("scoreNodeClass — every canonical-palette state maps to a class asset
     // a fabricated class is absent; and the discipline is that a defined-but-empty rule is NOT a pass.
     expect(hasCssRuleFor("snode")).toBe(true);
     expect(hasCssRuleFor("snode this-class-does-not-exist")).toBe(false);
+  });
+});
+
+// NOTES "not covered" (Conductor ruling): the score rail's "not covered" chip is deliberately OUTSIDE
+// the seven-state canonical palette above (never a matching scoreNodeClass case — its dot stays
+// "blocked", the Conductor ruling's own "keep the dimmed dot" instruction) — so it needs its own,
+// separate CSS-coverage proof rather than falling out of the describe block above for free.
+describe("neutralChip's is-neutral chip — a real, non-empty assets/styles.css rule, never a lifecycle colour", () => {
+  test("'chip is-neutral' has a matching, non-empty assets/styles.css rule", () => {
+    expect(hasCssRuleFor("chip is-neutral")).toBe(true);
+  });
+
+  // NOTES "not covered tooltip": the chip's own tooltip box needs the identical proof `.citetip`/
+  // `.looptip` already get — a renderer class the stylesheet never painted is invisible either way.
+  test("'neutraltip' has a matching, non-empty assets/styles.css rule", () => {
+    expect(hasCssRuleFor("neutraltip")).toBe(true);
+  });
+
+  test("the run view's 'not covered' stage (checkout-flow's uncoverable 'code' kind) renders that exact class", () => {
+    const html = renderRun(repo, "storefront", "checkout-flow", root, now);
+    const score = scoreBlock(html);
+    expect(score).toContain('class="chip is-neutral sstep__chip"');
+    expect(score).toContain(">not covered<");
+    // The old label is gone outright, not just relabeled alongside a leftover reference.
+    expect(score).not.toContain(">unreachable<");
+  });
+
+  // Same wiring proof registry-cards-render-definitions.test.ts already runs for the loop-bounds
+  // tooltip (`appJs.toContain("m--loopstage")`) — the trigger selector must actually be registered
+  // with wireTooltip, not just carry the right markup with nothing listening for it.
+  test("assets/app.js wires the chip as a wireTooltip trigger, keyboard-reachable exactly like the loop bounds and cited N", () => {
+    const appJs = readFileSync("assets/app.js", "utf8");
+    expect(appJs).toContain("wireTooltip('.chip.is-neutral', '.neutraltip')");
   });
 });
 

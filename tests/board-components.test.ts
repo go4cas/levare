@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import {
   statusBadge,
   paceBadge,
+  neutralChip,
   tag,
   chip,
   iconLink,
@@ -50,6 +51,36 @@ describe("components.ts primitives", () => {
     expect(tag("agent")).toBe('<span class="entity__kind">agent</span>');
     expect(chip("team")).toBe('<span class="entity__kind">team</span>');
     expect(tag("<b>")).toBe('<span class="entity__kind">&lt;b&gt;</span>');
+  });
+
+  // NOTES "not covered" (Conductor ruling): neutralChip is the second, explicitly-named exception to
+  // "statusBadge is the only function that emits a `.chip`" — for a row that is present-but-inactive,
+  // never any of the seven lifecycle states (never even "blocked", which implies a Conductor decision
+  // away from moving — this state is not).
+  test("neutralChip emits a .chip with the deliberately-non-canonical is-neutral treatment, escaped", () => {
+    expect(neutralChip("not covered")).toBe('<span class="chip is-neutral">not covered</span>');
+    expect(neutralChip("not covered", "sstep__chip")).toBe('<span class="chip is-neutral sstep__chip">not covered</span>');
+    expect(neutralChip("<b>")).toBe('<span class="chip is-neutral">&lt;b&gt;</span>');
+    // Never borrows a real lifecycle colour — including "blocked"'s, which this state is not.
+    expect(neutralChip("not covered")).not.toContain("is-blocked");
+  });
+
+  // NOTES "not covered tooltip": the optional third param wires the chip as its own hover/focus
+  // tooltip trigger — same accessible recipe statusBadge's siblings never needed (a status is always
+  // visible; this label needs a one-time "why" a Conductor can dismiss forever after reading it once).
+  test("neutralChip's optional tooltip wires the chip as a keyboard-reachable trigger, escaped", () => {
+    expect(neutralChip("not covered", "sstep__chip", { text: "no member of this team produces this", id: "notcovered-acme-widget-code" })).toBe(
+      '<span class="chip is-neutral sstep__chip" tabindex="0" aria-describedby="notcovered-acme-widget-code">not covered' +
+        '<span class="neutraltip" role="tooltip" id="notcovered-acme-widget-code">no member of this team produces this</span></span>',
+    );
+    // The label AND the tooltip's own text are both escaped — two independent untrusted-text sites.
+    expect(neutralChip("<b>", undefined, { text: "<i>", id: "t1" })).toBe(
+      '<span class="chip is-neutral" tabindex="0" aria-describedby="t1">&lt;b&gt;<span class="neutraltip" role="tooltip" id="t1">&lt;i&gt;</span></span>',
+    );
+    // No tooltip param → the original, plain chip shape, byte-for-byte — every pre-existing call site
+    // (and every OTHER neutralChip test above) is unaffected by this parameter's addition.
+    expect(neutralChip("not covered")).not.toContain("tabindex");
+    expect(neutralChip("not covered")).not.toContain("neutraltip");
   });
 
   test("iconLink takes an object param and emits the right vendored icon", () => {

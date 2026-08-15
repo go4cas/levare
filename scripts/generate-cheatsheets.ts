@@ -134,7 +134,7 @@ function humanType(spec: FieldSpec): string {
     case "bool":
       return "boolean";
     case "date":
-      return "date (`YYYY-MM-DD`)";
+      return "date (`YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SS.sssZ`)";
     case "str[]":
       return "string[]";
     case "num[]":

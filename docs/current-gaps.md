@@ -1005,3 +1005,114 @@ friction — the stamp is computed from disk, independent of anything Part 1 che
 
 See NOTES REGISTRY-PROVENANCE for the full decision record (why a content hash over `HEAD`, why `start`
 alone over the broader dispatching-verb set, and the exact test list).
+
+## `created` was a bare calendar date, so age and gate-response numbers lied near a UTC midnight — closed (NOTES "created timestamp")
+
+Every artifact write site stamped `created:` as `YYYY-MM-DD`, no time of day. Two board-facing figures
+read from it: `derive.ts#ageLabel` (an artifact's displayed age) and `derive.ts#medianGateResponseDays`
+(a studio's median gate response time, from `created` to a date extracted from `approved_by`). Both
+parse `created` from that date's UTC midnight — `new Date("2026-08-13")` — so an artifact produced
+minutes before the board rendered showed several hours old, and a gate opened and approved hours apart
+but straddling a UTC midnight boundary read a full day's response time instead of the real, much
+smaller gap.
+
+Closed by making `created` a full UTC ISO timestamp (`YYYY-MM-DDTHH:MM:SS.sssZ`, `.toISOString()`) at
+every write site (`adapters.ts#author`'s `AdapterRunnerOptions.now`; `dagwalk.ts`'s merge-gate and
+blocked-artifact paths; `board/gateops.ts`'s blocked-retry path — `formatMergeArtifact`'s `created`
+param just carries whichever of these it's handed). `ageLabel`/`medianGateResponseDays` needed no logic
+change — both already parsed `created` with `new Date()`, which already resolves full precision
+correctly; only the STORED value was ever imprecise. `validate.ts`'s `created` field (`isIsoDate`)
+accepts the new timestamp shape and keeps accepting the old bare-date shape permanently, not as a
+deprecated fallback — a bare date is read as that day's UTC midnight, the honest interpretation for a
+value that never recorded a time of day, and every artifact written before this change keeps validating
+and rendering (coarser age/response figures, never wrong ones). `approved_by`'s own date stamp
+(`board/gateops.ts`'s `ResolveOpts.today`) is deliberately UNCHANGED — still day-granularity by design,
+so `medianGateResponseDays` keeps reading it exactly as documented.
+
+See NOTES "created timestamp" for the full write-site inventory and the day-granularity residual this
+leaves in `medianGateResponseDays` (bounded by one day, and never inflates a same-day round-trip into
+"1d" the way the old fully-day-floored version did).
+
+## A native member's receipt priced prompt-cache tokens without ever reporting them — closed (NOTES "receipt cache tokens")
+
+`sdk-worker.ts#deriveReceipt` summed only `inputTokens`/`outputTokens` from the Claude Agent SDK's
+`modelUsage`, and set `usd` from the SDK's own `total_cost_usd` — real vendor billing, which already
+prices prompt-cache read and write tokens at their own rates. Those cache tokens never appeared
+anywhere on the receipt, so an operator checking `usd` against `tokens_in`/`tokens_out` priced through
+`knowledge/model-pricing.md`'s flat per-model rate found the two numbers 40–50% apart on every real
+call — the shape of a cached system prompt/tool-definition block, priced but not counted.
+
+Closed by summing the SDK's own `cacheReadInputTokens`/`cacheCreationInputTokens` (real fields on every
+`ModelUsage` entry, confirmed against `node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts`, not a
+speculative addition) into two new receipt fields, `tokens_cache_read`/`tokens_cache_write`
+(`types.ts#Receipt`) — optional, present only on a native receipt that reported usage at all, absent
+for every cli/remote member (which has no cache accounting to give), reported alongside `tokens_in`/
+`tokens_out` on the produced artifact's own `usage:` frontmatter (`adapters.ts#author`,
+`validate.ts`'s `usage` schema). `tokens_in`/`tokens_out` keep their original meaning; the cache
+breakdown is additive, not folded in, so no existing consumer's arithmetic silently changes underneath
+it.
+
+This also corrected a standing inaccuracy in how `usd` was described: it is NOT uniformly "estimated
+from `knowledge/model-pricing.md`" — that estimate is only ever reached for a cli/remote member's
+receipt (`receipts.ts#normalizeReceipt`). A native member's `usd` is the SDK's own reported cost, used
+verbatim, and is not exactly reproducible from `tokens_in`/`tokens_out`/the cache fields against the
+pricing table's flat rate, since real cache pricing has its own tiers this table doesn't carry — the
+pricing table's actual, universal job is the KNOWN-MODEL validation gate (`UNKNOWN_MODEL`), which
+`src/init.ts`'s scaffolded `knowledge/model-pricing.md` (and `fixtures/golden`'s copy) now says
+explicitly, instead of claiming to price every receipt.
+
+See NOTES "receipt cache tokens" for the full field inventory and the worked reconciliation example.
+
+## An uncoverable score-rail stage read as an alert, not as information about the type's shape — closed (NOTES "not covered")
+
+Conductor ruling: `derive.ts`'s "unreachable" state (a kind a unit's type expects but its assigned team
+has no member that can ever produce) is real, correct information — but the word, and its reuse of
+`statusBadge`'s "blocked" canonical colour, made several of them stacked down a rail read as several
+failures rather than as the true fact ("this type has five stages and the team covers two"). Closed by
+relabeling — the score rail's chip now reads "not covered", `validate.ts`'s `UNCOVERABLE_EXPECTED_KIND`
+warning text matches — and by recolouring: a new `.chip.is-neutral` (assets/styles.css), deliberately
+outside the seven-state canonical palette (`components.ts#neutralChip`, the second explicitly-named
+exception to "`statusBadge` is the only function that emits a `.chip`"), the same neutral treatment
+`tag()`'s `.entity__kind` gives every other non-status label. Deliberately unchanged, per the ruling's
+own text: the internal `NodeState` value (`"unreachable"`), `flow.ts#unreachableExpectedKinds`'s name,
+the `UNCOVERABLE_EXPECTED_KIND` code itself, and the score node's own dot (still the dimmed "blocked"
+treatment) — this was a ruling on what a Conductor READS, not a rename of what's being computed.
+
+**Refined the same day (NOTES "not covered tooltip"):** the fuller sentence ("no member of this team
+produces this") started as a permanently-visible sub-line, then moved onto the chip as a hover/focus
+tooltip (`neutralChip`'s new optional param, `.neutraltip`, the same `wireTooltip` recipe "cited N" and
+the loop bounds already use) — a reader asks "why is this row inactive" once, not on every uncovered
+row of every type. Deliberately asymmetric with the loop-bounds tooltip, which stays permanently
+visible: the general test recorded for the next such decision is whether understanding the fact once
+retires the question (tooltip) or the fact is freshly decision-relevant every time it's seen (stays
+visible) — not whether the two look similar enough to copy.
+
+See NOTES "not covered" and its "not covered tooltip" follow-up for the full before/after, the
+asymmetry principle in full, and the live-server verification of both.
+
+## A runner-side commit's only propagation path (the board's own `fs.watch`) was sound, but the SSE connection it travels over silently died on a quiet studio — closed (NOTES "score rail reload")
+
+An operator's own gate resolution has always propagated to the board because its route handler
+broadcasts `reload` directly and synchronously; anything the daemon does autonomously (no operator
+request in its causal chain) has exactly one other path — the board's own separate `fs.watch` on the
+studio root. That mechanism itself was proven sound (a genuinely delayed daemon-only commit, simulating
+a real `kind: cli` dispatch's actual wall-clock cost, still produced exactly one broadcast). What was
+missing: `serve()`'s `idleTimeout` (`Bun.serve`'s own option, default 180s) silently resets a connection
+Bun has sent zero bytes on for that long — proved directly against a real `Bun.serve` instance, not the
+in-process `board.fetch()` every prior SSE test used, which never exercises `idleTimeout` at all. A
+quiet studio (nothing changing while a real member call is thinking) crosses 180s in minutes; a `reload`
+broadcast landing in the gap between that silent kill and the browser's own automatic reconnect has no
+subscriber to reach, and this stream has never queued or replayed a missed message — observed live as a
+run view frozen at its dispatch-time render until a manual refresh, on the third distinct region a
+runner-side change failed to reach (after NOTES ORCH-STALE-CARD's action region and briefing sentence),
+this time at the transport layer those regions all share rather than in which regions get resynced.
+
+Closed with the standard SSE hardening pattern: a periodic comment-line heartbeat (`board/serve.ts
+#sseResponse`, 60s — a 3x margin under the 180s default), well inside the idle window, resetting Bun's
+own idle clock without ever firing a client's `EventSource.onmessage` (SSE comment lines are ignored by
+spec) — no client-side change needed. Does not implement `EventSource` reconnect logic (browsers already
+do this correctly) or message replay for a broadcast sent during a genuine, non-idle-timeout disconnect
+(a materially larger change this instance didn't call for).
+
+See NOTES "score rail reload" for the empirical proof (both the bug and the fix, reproduced directly
+against a real listening server) and the full test list.

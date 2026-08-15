@@ -430,12 +430,19 @@ tags: [cost, reference]
 
 # Model pricing
 
-USD-per-million-token estimates used to price usage receipts (§10). Subscription-plan
-members price at 0 with the plan noted; unpriceable receipts record \`usd: null\`.
+This table is the KNOWN-MODEL set (NOTES F11): \`levare validate\` rejects any agent or
+studio declaration naming a model not listed here (\`UNKNOWN_MODEL\`) — a model absent from
+this table can never be declared in the first place.
 
-This table is also the KNOWN-MODEL set (NOTES F11): \`levare validate\` rejects any agent or
-studio declaration naming a model not listed here (\`UNKNOWN_MODEL\`) — an unpriceable model
-means silently wrong cost accounting, so a model that cannot be priced cannot be declared.
+It also prices a \`kind: cli\`/\`remote\` member's receipt: those members report tokens, and
+levare estimates \`usd\` from these USD-per-million-token rates. Subscription-plan members
+price at 0 with the plan noted instead; unpriceable receipts record \`usd: null\`.
+
+A \`kind: native\` member's receipt prices differently: \`usd\` is the Claude Agent SDK's own
+reported cost (real vendor billing), used verbatim — this table never prices it, and the
+table's flat per-model rate won't exactly reproduce it from \`tokens_in\`/\`tokens_out\` alone,
+since the SDK's cost also accounts for prompt-cache read/write tokens (\`tokens_cache_read\`/
+\`tokens_cache_write\` on the receipt) at their own separate rates this table doesn't carry.
 
 | model             | tokens_in (/M) | tokens_out (/M) |
 | ----------------- | --------------- | --------------- |
