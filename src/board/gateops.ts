@@ -44,7 +44,10 @@ export type GateOpResult = GateOpOk | GateOpErr;
 
 export interface ResolveOpts {
   note?: string;
-  /** ISO date to stamp approved_by / commits with; defaults to today. Injectable for deterministic tests. */
+  /** ISO date to stamp `approved_by`/`merge_result.executed_at` with; defaults to today. Injectable
+   * for deterministic tests. Deliberately a bare date, not the `now` clock below — `created` timestamps
+   * are `now`'s job (NOTES "created timestamp"); this one stays day-granularity because
+   * `medianGateResponseDays` (derive.ts) documents reading `approved_by` at that granularity. */
   today?: string;
   /** The member producer boundary (E4). Defaults to `productionAdapterRunner` (NOTES F4) — the real
    * AdapterRunner, with a CLI member's REAL declared command spawned (native/remote stay behind the
@@ -62,7 +65,10 @@ export interface ResolveOpts {
    * declared argv template. */
   connectorSpawn?: ExecuteProposalOptions["spawn"];
   /** NOTES CAP-A: injectable clock for a proposal's `execution.executed_at` — default real `Date`;
-   * tests inject a fixed value for deterministic assertions, mirroring `today` above. */
+   * tests inject a fixed value for deterministic assertions, mirroring `today` above. Reused (NOTES
+   * "created timestamp") as `resolveGate`'s own clock for a blocked-retry artifact's `created`
+   * timestamp — both are "the precise instant levare itself is writing this record", the same
+   * relationship `AdapterRunnerOptions.now` already has to a real member dispatch's `created`. */
   now?: () => string;
   /** NOTES CAP-A: the environment a proposal's connector execution draws its own vars from (default
    * real `process.env`, mirroring `AdapterRunnerOptions.baseEnv`) — tests inject an isolated map so a
@@ -73,7 +79,15 @@ export interface ResolveOpts {
 /** Resolve one gate verb against `target` (an artifact id, or — for start/notyet, and rescope of a
  * unit's start gate — a unit id). */
 export async function resolveGate(root: string, project: string, target: string, verb: Verb, opts: ResolveOpts = {}): Promise<GateOpResult> {
+  // `today` stamps `approved_by`/`merge_result.executed_at` — a bare date, by design (NOTES "created
+  // timestamp": deliberately unchanged, so `medianGateResponseDays`'s day-granularity read of
+  // `approved_by` stays exactly what it's documented to be). `createdAt` is the separate, precise
+  // clock for a levare-authored artifact's own `created` timestamp (currently only `blockedRetryDoc`,
+  // below — every other `created` stamp is the real member dispatch path's own `AdapterRunnerOptions.
+  // now`) — reuses the same `opts.now` CAP-A already threads for `execution.executed_at`, since both
+  // are "the precise instant levare itself is writing this record".
   const today = opts.today ?? new Date().toISOString().slice(0, 10);
+  const createdAt = (opts.now ?? (() => new Date().toISOString()))();
   const repo = loadRepo(root);
   const memberRunner = opts.memberRunner ?? productionAdapterRunner(repo);
   const unit = repo.units.find((u) => u.project === project && repo.artifacts.get(`${project}/${u.unit}`)?.has(target));
@@ -95,7 +109,7 @@ export async function resolveGate(root: string, project: string, target: string,
   // NOTES F19: a blocked artifact (a member ran and failed) raises its own gate with three verbs —
   // retry/skip/abandon — resolved against `art.status === "blocked"`, never `in-review`.
   if (verb === "retry" || verb === "skip" || verb === "abandon") {
-    return await resolveBlockedArtifactGate(root, repo, unit, art, verb, memberRunner, opts, today);
+    return await resolveBlockedArtifactGate(root, repo, unit, art, verb, memberRunner, opts, createdAt);
   }
   if (verb === "rescope") return doRescopeArtifact(root, unit, art, opts.note);
 
@@ -515,7 +529,7 @@ async function doRequest(
 // time), but a loop member's retry (see the round-accounting note below, at this function's one call
 // site) rewrites its OWN slot in place — `newId === art.id` there, so `supersedes` must carry whatever
 // the artifact being retried already superseded, not self-reference.
-function blockedRetryDoc(art: Artifact, newId: string, msg: string, today: string, supersedes: string | null): string {
+function blockedRetryDoc(art: Artifact, newId: string, msg: string, createdAt: string, supersedes: string | null): string {
   return [
     "---",
     `kind: ${art.kind}`,
@@ -527,7 +541,7 @@ function blockedRetryDoc(art: Artifact, newId: string, msg: string, today: strin
     "consumes: []",
     `supersedes: ${supersedes ?? "null"}`,
     "approved_by: null",
-    `created: ${today}`,
+    `created: ${createdAt}`,
     "files: []",
     "---",
     "",
@@ -555,7 +569,7 @@ async function resolveBlockedArtifactGate(
   verb: "retry" | "skip" | "abandon",
   memberRunner: AsyncMemberRunner,
   opts: ResolveOpts,
-  today: string,
+  createdAt: string,
 ): Promise<GateOpResult> {
   if (art.status !== "blocked") {
     return { ok: false, status: 409, error: `artifact '${art.id}' is not blocked (status: ${art.status})` };
@@ -628,7 +642,7 @@ async function resolveBlockedArtifactGate(
     // supersedes the last one under a fresh id, so the gate stays actionable without losing the chain;
     // a loop member's failure rewrites its own same slot (see above) — never a second file.
     const msg = e instanceof Error ? e.message : String(e);
-    const doc = blockedRetryDoc(art, newId, msg, today, membership ? art.supersedes : art.id);
+    const doc = blockedRetryDoc(art, newId, msg, createdAt, membership ? art.supersedes : art.id);
     const files: TxFile[] = membership
       ? [{ path: located.file, content: doc }]
       : [

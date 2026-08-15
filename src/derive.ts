@@ -53,7 +53,16 @@ export function tokLabel(n: number): string {
   return String(n);
 }
 
-/** "14m", "2h", "3d" — coarse age from an ISO-ish timestamp to `now`. */
+/**
+ * "14m", "2h", "3d" — coarse age from an ISO-ish timestamp to `now`.
+ *
+ * NOTES "created timestamp": every artifact `created` now carries a full UTC timestamp (not a bare
+ * date), so `new Date(fromIso)` here already resolves to the real instant a member was dispatched —
+ * an artifact read a minute after it was produced correctly buckets as "just now", not "Nh" from a
+ * fabricated midnight. A pre-change bare-date artifact (`YYYY-MM-DD`, still permanently valid per
+ * validate.ts) parses as that day's UTC midnight — the honest reading for a value that never recorded
+ * a time of day — so its displayed age is coarser, never wrong.
+ */
 export function ageLabel(fromIso: string, now: Date): string {
   const from = new Date(fromIso);
   if (Number.isNaN(from.getTime())) return "";
@@ -508,7 +517,21 @@ export function citedByOf(repo: Repo, project: string, id: string): Artifact[] {
   return out;
 }
 
-/** Median days from an artifact's `created` to its `approved_by` ISO date, across approved artifacts. */
+/**
+ * Median days from an artifact's `created` to its `approved_by` ISO date, across approved artifacts.
+ *
+ * NOTES "created timestamp": `created` is a full UTC timestamp (or, for a pre-change artifact, a bare
+ * date read as that day's UTC midnight — see `ageLabel`'s own doc); `approved_by`'s date is
+ * deliberately left at day granularity (board/gateops.ts's `ResolveOpts.today`), extracted here via
+ * regex, its time of day never recorded. Interpreting that extracted date as its own UTC midnight and
+ * diffing against `created`'s real precision is what stops a gate opened and approved hours apart, but
+ * straddling a UTC midnight, from reading a full day: previously BOTH sides floored to midnight, so a
+ * gate opened at 23:00 and approved at 00:05 the next day read exactly 1.0 days; now only the
+ * approval side floors, so the same case reads roughly `5/1440` days — correctly near zero, not "1d".
+ * The residual imprecision (approval's own time of day is genuinely unknown) is real but small,
+ * bounded by one day, and never inflates a same-day round-trip into "1d" the way the old day-floored
+ * `created` systematically did.
+ */
 export function medianGateResponseDays(repo: Repo): number | null {
   const deltas: number[] = [];
   for (const unit of repo.units) {

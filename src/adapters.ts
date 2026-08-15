@@ -782,8 +782,9 @@ export interface AdapterRunnerOptions {
    * ({task}/{feature_repo}); replay's --stubs mode overrides this to spawn the stub member CLI.
    */
   cliCommand?: (req: InvokeRequest) => string[];
-  /** Injectable clock for the artifact's `created` date (ruling C12) — default real today; tests
-   * inject a fixed date for deterministic assertions. */
+  /** Injectable clock for the artifact's `created` timestamp (ruling C12) — default real
+   * `new Date().toISOString()` (a full UTC timestamp, not a bare date, since NOTES "created
+   * timestamp"); tests inject a fixed value for deterministic assertions. */
   now?: () => string;
   /** NOTES R4-SANDBOX: test-only override of the OS sandbox primitive detection — default a real,
    * freshly-probed `detectSandbox()` on every cli spawn (never cached across a run, and never assumed
@@ -1384,7 +1385,12 @@ export class AdapterRunner implements MemberRunner {
       .filter((a) => a.status === "approved" || extraSet.has(a.id))
       .map((a) => a.id);
     const id = `${req.kind}-${req.unit}-v1`;
-    const created = (this.opts.now ?? (() => new Date().toISOString().slice(0, 10)))();
+    // Full UTC timestamp, not a bare date (NOTES "created timestamp"): a member dispatched and
+    // approved within the same hour used to stamp midnight either way, which is what made
+    // derive.ts#ageLabel/medianGateResponseDays read hours as "0d"/"1d" depending on which side of
+    // midnight the walk happened to land on. `.toISOString()` already produces the exact
+    // `YYYY-MM-DDTHH:MM:SS.sssZ` shape validate.ts's `isIsoDate` now accepts.
+    const created = (this.opts.now ?? (() => new Date().toISOString()))();
     const lines = [
       "---",
       `kind: ${req.kind}`,

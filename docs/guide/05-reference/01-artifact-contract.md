@@ -50,7 +50,7 @@ The body is the actual document. Its first paragraph is the display summary.
 | `supersedes` | ✅ | ✅ | The id of the version this replaces, or `null` |
 | `approved_by` | ✅ | ✅ | The Conductor who approved it, or `null` |
 | `approved_commit` | — | ✅ | The commit at which it was approved — the immutability anchor |
-| `created` | ✅ | — | A date |
+| `created` | ✅ | — | A UTC timestamp — a bare `YYYY-MM-DD` from before this field carried a time of day stays valid, read as that day's UTC midnight |
 | `files` | ✅ | — | Supplementary files, or `[]` |
 | `usage` | — | ✅ | The cost receipt (see below) |
 

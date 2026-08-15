@@ -133,7 +133,12 @@ export const ARTIFACT_SCHEMA: Schema = {
       nullable: true,
       description: "The commit whose content was approved at gate resolution, so the immutability check can diff against that ref rather than HEAD. Absent on pre-A7 artifacts, which fall back to the HEAD diff.",
     },
-    created: { type: "date", required: true, description: "The date this artifact was created." },
+    created: {
+      type: "date",
+      required: true,
+      description:
+        "When this artifact was created — a full UTC ISO timestamp (YYYY-MM-DDTHH:MM:SS.sssZ) on every artifact levare writes now, so age displays and gate-response medians read to the minute; a bare YYYY-MM-DD from before this changed stays permanently valid and reads as that day's UTC midnight.",
+    },
     files: { type: "str[]", required: true, description: "Paths to the files that make up this artifact." },
     usage: {
       type: "map",
@@ -941,7 +946,7 @@ function checkField(
       break;
     case "date":
       if (typeof value !== "string" || !isIsoDate(value)) {
-        errors.push({ code: "BAD_DATE", message: `field '${key}' must be an ISO date (YYYY-MM-DD) in ${schemaName}`, file });
+        errors.push({ code: "BAD_DATE", message: `field '${key}' must be an ISO date (YYYY-MM-DD) or a UTC ISO timestamp (YYYY-MM-DDTHH:MM:SS[.sss]Z) in ${schemaName}`, file });
       }
       break;
     case "enum":
@@ -1024,12 +1029,25 @@ function checkField(
   }
 }
 
+// `created` (the only "date" field) moved from a bare calendar date to a full UTC timestamp so
+// `ageLabel`/`medianGateResponseDays` (derive.ts) stop reading from a fabricated midnight — see
+// NOTES "created timestamp". Every artifact written before that change carries a bare `YYYY-MM-DD`,
+// and that shape stays permanently valid (not a deprecated fallback): `new Date("2026-08-13")`
+// already parses a date-only ISO string as UTC midnight per spec, which is exactly the honest
+// reading — "some time that day, exact instant unknown" — so old artifacts keep reading correctly
+// forever, they just can't report an age finer than a day.
+const ISO_DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const ISO_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+
 function isIsoDate(s: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
-  const [y, m, d] = s.split("-").map(Number);
-  if (m < 1 || m > 12 || d < 1 || d > 31) return false;
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+  if (ISO_DATE_ONLY_RE.test(s)) {
+    const [y, m, d] = s.split("-").map(Number);
+    if (m < 1 || m > 12 || d < 1 || d > 31) return false;
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+  }
+  if (ISO_DATETIME_RE.test(s)) return !Number.isNaN(new Date(s).getTime());
+  return false;
 }
 
 // ---------------------------------------------------------------------------
