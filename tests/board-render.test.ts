@@ -794,7 +794,7 @@ describe("run screen — an uncoverable stage never reads as merely queued", () 
     const rows = starts.map((s, i) => score.slice(s, i + 1 < starts.length ? starts[i + 1] : score.length));
     const codeRow = rows.find((r) => r.includes('class="sstep__label">code<'))!;
     const reviewRow = rows.find((r) => r.includes('class="sstep__label">review<'))!;
-    expect(codeRow).toContain("unreachable &middot; no member produces this");
+    expect(codeRow).toContain("not covered &middot; no member of this team produces this");
     expect(codeRow).not.toContain(">queued<");
     expect(reviewRow).toContain(">queued<");
   });
@@ -983,6 +983,25 @@ describe("scoreNodeClass — every canonical-palette state maps to a class asset
     // a fabricated class is absent; and the discipline is that a defined-but-empty rule is NOT a pass.
     expect(hasCssRuleFor("snode")).toBe(true);
     expect(hasCssRuleFor("snode this-class-does-not-exist")).toBe(false);
+  });
+});
+
+// NOTES "not covered" (Conductor ruling): the score rail's "not covered" chip is deliberately OUTSIDE
+// the seven-state canonical palette above (never a matching scoreNodeClass case — its dot stays
+// "blocked", the Conductor ruling's own "keep the dimmed dot" instruction) — so it needs its own,
+// separate CSS-coverage proof rather than falling out of the describe block above for free.
+describe("neutralChip's is-neutral chip — a real, non-empty assets/styles.css rule, never a lifecycle colour", () => {
+  test("'chip is-neutral' has a matching, non-empty assets/styles.css rule", () => {
+    expect(hasCssRuleFor("chip is-neutral")).toBe(true);
+  });
+
+  test("the run view's 'not covered' stage (checkout-flow's uncoverable 'code' kind) renders that exact class", () => {
+    const html = renderRun(repo, "storefront", "checkout-flow", root, now);
+    const score = scoreBlock(html);
+    expect(score).toContain('class="chip is-neutral sstep__chip"');
+    expect(score).toContain(">not covered<");
+    // The old label is gone outright, not just relabeled alongside a leftover reference.
+    expect(score).not.toContain(">unreachable<");
   });
 });
 

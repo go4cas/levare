@@ -9,10 +9,12 @@
 // literal any of those call sites could drift on. Every primitive here is a pure function — repo/derived
 // data in, an HTML string out — same discipline as render.ts itself (PRD §9, invariant 2).
 //
-// `statusBadge` is the ONLY function anywhere in the product that may emit a `.chip` element — it
-// wraps status.ts's canonical `CanonicalStatus` map (the ONE status→colour decision, made once,
-// there) into the badge markup. Nothing in render.ts constructs a `.chip` string literal directly;
-// see the "no board renderer emits a status class except through the primitive" test in
+// `statusBadge` and `neutralChip` (NOTES "not covered") are the only functions anywhere in the product
+// that may emit a `.chip` element — `statusBadge` wraps status.ts's canonical `CanonicalStatus` map
+// (the ONE status→colour decision, made once, there) into the badge markup; `neutralChip` is the one
+// explicitly-non-status exception, for a row that is present-but-inactive rather than any of the seven
+// lifecycle states. Nothing in render.ts constructs a `.chip` string literal directly; see the "no
+// board renderer emits a status class except through the primitive" test in
 // tests/board-components.test.ts.
 
 import { esc, captionTime } from "../derive.ts";
@@ -34,6 +36,23 @@ export function statusBadge(status: CanonicalStatus, label?: string, extraClass?
 // existing hues (never brass, which is gate-exclusive) rather than inventing a third colour.
 export function paceBadge(pace: "auto" | "step"): string {
   return pace === "auto" ? statusBadge("active", "auto") : statusBadge("waiting", "step");
+}
+
+// NOTES "not covered" (Conductor ruling): the score rail's "not covered" stage (a kind the unit's
+// assigned team simply doesn't produce — real information about the type's shape, not an alert) reads
+// as breakage stacked three deep down a rail if it borrows a canonical-palette colour, including
+// "blocked"'s own (a Conductor decision away from moving — this never is one). Deliberately NOT
+// `statusBadge` wearing a borrowed hue the way `paceBadge` does above: there is no existing canonical
+// state this should read as, so it gets its own explicitly-non-status colour (`.chip.is-neutral`,
+// assets/styles.css — the same fg-mute/panel-2/border treatment `tag()`'s `.entity__kind` uses,
+// without that class's registry-card-specific `margin-left:auto`, which has no place in a score-rail
+// row). The second, explicitly-named exception to "statusBadge is the only function that emits a
+// `.chip`" (tests/board-components.test.ts) — mirrors its exact shape (chip + one modifier + optional
+// extraClass) so that guard still holds: this module remains the only place a literal `class="chip`
+// string is ever constructed.
+export function neutralChip(label: string, extraClass?: string): string {
+  const cls = extraClass ? `chip is-neutral ${extraClass}` : `chip is-neutral`;
+  return `<span class="${cls}">${esc(label)}</span>`;
 }
 
 // ---------------------------------------------------------------------------

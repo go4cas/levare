@@ -97,7 +97,7 @@ describe("docs/guide/04-workflow's pasteable blocks produce a valid studio", () 
       {
         code: "UNCOVERABLE_EXPECTED_KIND",
         message:
-          "unit 'add-command' (type 'feature') expects kind(s) [design, spec, code], but no member of its responsible team (press) declares producing any of them — this may be a legitimate configuration (a unit that only ever needs part of its type's shape), but the board's score rail will show these stage(s) as unreachable, never as merely queued",
+          "unit 'add-command' (type 'feature') expects kind(s) [design, spec, code], but no member of its responsible team (press) declares producing any of them — this may be a legitimate configuration (a unit that only ever needs part of its type's shape), but the board's score rail will show these stage(s) as not covered, never as merely queued",
         file: join(root, "work", "todo-cli", "add-command", "unit.md"),
       },
     ]);

@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import {
   statusBadge,
   paceBadge,
+  neutralChip,
   tag,
   chip,
   iconLink,
@@ -50,6 +51,18 @@ describe("components.ts primitives", () => {
     expect(tag("agent")).toBe('<span class="entity__kind">agent</span>');
     expect(chip("team")).toBe('<span class="entity__kind">team</span>');
     expect(tag("<b>")).toBe('<span class="entity__kind">&lt;b&gt;</span>');
+  });
+
+  // NOTES "not covered" (Conductor ruling): neutralChip is the second, explicitly-named exception to
+  // "statusBadge is the only function that emits a `.chip`" — for a row that is present-but-inactive,
+  // never any of the seven lifecycle states (never even "blocked", which implies a Conductor decision
+  // away from moving — this state is not).
+  test("neutralChip emits a .chip with the deliberately-non-canonical is-neutral treatment, escaped", () => {
+    expect(neutralChip("not covered")).toBe('<span class="chip is-neutral">not covered</span>');
+    expect(neutralChip("not covered", "sstep__chip")).toBe('<span class="chip is-neutral sstep__chip">not covered</span>');
+    expect(neutralChip("<b>")).toBe('<span class="chip is-neutral">&lt;b&gt;</span>');
+    // Never borrows a real lifecycle colour — including "blocked"'s, which this state is not.
+    expect(neutralChip("not covered")).not.toContain("is-blocked");
   });
 
   test("iconLink takes an object param and emits the right vendored icon", () => {

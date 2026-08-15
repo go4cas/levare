@@ -2397,7 +2397,7 @@ function validateUncoverableExpectedKinds(root: string, warnings: ValidationWarn
           `unit '${unitName}' (type '${type}') expects kind(s) [${uncoverable.join(", ")}], but no member of its responsible team ` +
           `(${candidates.join(", ")}) declares producing ${uncoverable.length === 1 ? "it" : "any of them"} — this may be a legitimate ` +
           "configuration (a unit that only ever needs part of its type's shape), but the board's score rail will show these stage(s) " +
-          "as unreachable, never as merely queued",
+          "as not covered, never as merely queued",
         file: unitFile,
       });
     }
