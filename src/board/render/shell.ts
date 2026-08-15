@@ -15,7 +15,7 @@ import type { RegistryExtras } from "../../extra.ts";
 import { diagnose } from "../../doctor.ts";
 import type { DaemonInvocation } from "../../daemon.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
-import { getVersionInfo } from "../../version.ts";
+import { getVersionInfo, versionChip } from "../../version.ts";
 import { statusLabel } from "../status.ts";
 import { statusBadge, counter, pendingState, card, confirmModal, toastViewport, orchTurn, renderPersistedTurns, tag, callout } from "../components.ts";
 import { loadConversationTail } from "../../conversation.ts";
@@ -27,8 +27,11 @@ import { registryKindIconBody } from "./entity-icons.ts";
 // different concept entirely). `getVersionInfo` reads the version via a static JSON import rather
 // than a resolved-path `readFileSync`, so it stays correct under `bun build --compile` too
 // (NOTES DIST1) — a resolved-path read breaks there, because `import.meta.url` inside a compiled
-// binary points into Bun's virtual `$bunfs`, not the real filesystem.
-const LEVARE_VERSION: string = getVersionInfo().version;
+// binary points into Bun's virtual `$bunfs`, not the real filesystem. `versionChip` (NOTES "tree
+// build version") is what decides "v1.2.3" vs "dev (build <hash>)" — the same decision `--version`'s
+// own fuller sentence makes — already includes its own "v"/no-"v" prefix, so the template below never
+// hardcodes one.
+const LEVARE_VERSION_CHIP: string = versionChip(getVersionInfo());
 
 const ASSETS = `<link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
@@ -49,7 +52,7 @@ function appHeader(status: OrchestratorStatus, railToggleLabel: string): string 
   return `<header class="apphead">
   <button class="togglebtn apphead__railtoggle" data-rail-toggle aria-label="${esc(railToggleLabel)}">&#9776;</button>
   <a class="logo" href="/studio"><span class="logo__mark"><i></i><b></b></span><span class="logo__word">levare</span></a>
-  <span class="apphead__ver mono">v${esc(LEVARE_VERSION)}</span>
+  <span class="apphead__ver mono">${esc(LEVARE_VERSION_CHIP)}</span>
   <span class="sp"></span>
   ${orchestratorIndicator(status)}
   <span class="apphead__divider" aria-hidden="true"></span>

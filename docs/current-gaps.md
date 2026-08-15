@@ -1116,3 +1116,44 @@ do this correctly) or message replay for a broadcast sent during a genuine, non-
 
 See NOTES "score rail reload" for the empirical proof (both the bug and the fix, reproduced directly
 against a real listening server) and the full test list.
+
+## The Release workflow's own clone test failed on a fresh runner, blocking `v0.2.5` for an hour — closed (NOTES "dubious clone ownership")
+
+`tests/guide-workflow-blocks.test.ts`'s clone-survival test (NOTES DOCS-WALKTHROUGH-2) discards the
+ambient system/global gitconfig for hermeticity (`GIT_CONFIG_SYSTEM: "/dev/null"`) — which also
+discards any `safe.directory` entry the runner or `actions/checkout` may have relied on, exposing git's
+real "dubious ownership" refusal (exit 128) whenever a runner instance's scratch-directory ownership
+doesn't line up. Confirmed by direct reproduction (a real root-owned repo, this test's exact env
+shape) before any fix landed, per the report's own "confirm rather than assume" instruction — not
+assumed from the report's own plausible-sounding theory. Closed by declaring the test's own two scratch
+paths `safe.directory` in its own config file, using the `.git`-suffixed form specifically (a
+working-tree-root entry — what the common online example shows — does NOT cover a LOCAL `git clone`,
+confirmed by a first fix attempt that used it and still failed identically). `expect(status).toBe(0)`
+replaced with an explicit check reporting the exit status, signal, and full stderr — the bare status
+check is what turned this into an hour-long, log-already-gone diagnosis instead of an immediate one.
+
+The precise reason ownership diverges on some hosted-runner instances and not others was not, and could
+not be, pinned down — `verify`'s and `ci.yml`'s own steps are byte-identical up to this point, and the
+tag/logs were already gone. The fix doesn't depend on knowing why: declaring the test's own paths safe
+makes its git operations depend on nothing inherited from the runner at all, closing the whole class of
+failure regardless of the specific trigger. 17 other `expect(<spawnSync>.status).toBe(0)` sites across
+the suite carry the same discard-on-failure shape — named, not fixed here (a separate, larger unit).
+
+See NOTES "dubious clone ownership" for the full reproduction record, both directions.
+
+## A tree build reported a fabricated version number — closed (NOTES "tree build version")
+
+`bun run build` off `main` (not a release) reported `levare 0.0.1` in both `--version` and the board
+header — `package.json`'s version is permanently `"0.0.1"` on `main`; `release.yml` stamps the real
+version into an ephemeral, uncommitted checkout right before a release leg's own build, so only a
+genuinely tagged release ever overwrites it. Conductor ruling, applied directly: a tree build reports
+`dev (build <hash>)` — the hash is the real identifier, already shown correctly in `levare doctor`'s
+`run mode:` line — never a version-shaped string. `git describe` was considered and rejected: it would
+produce an equally version-shaped string for something that still isn't a release, the same confusion
+in subtler, easier-to-miss form. `version.ts#isUnstampedTreeBuild` (`build !== null && version ===
+"0.0.1"`) is the one decision both `formatVersion` (`--version`) and the new `versionChip` (the board
+header's own chip) share, so the two surfaces can't independently drift. A real release, and a plain
+uncompiled source run, are both unaffected — this only changes what a compiled, un-released tree build
+reports. Verified live against the real compiled binary, not a synthetic `VersionInfo`.
+
+See NOTES "tree build version" for the full before/after and the live verification.

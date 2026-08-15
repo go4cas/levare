@@ -117,7 +117,35 @@ describe("a freshly-initialized studio's work/ survives a clone (NOTES DOCS-WALK
     const clone = mkdtempSync(join(tmpdir(), "levare-clone-dst-"));
     const configFile = join(tmpdir(), `levare-clone-gitconfig-${Math.random().toString(36).slice(2)}`);
     try {
-      writeFileSync(configFile, "[user]\n\tname = Clone Test\n\temail = clone@example.com\n");
+      // NOTES "dubious clone ownership": v0.2.5's tag sat unpublished for an hour on this exact line
+      // (`git clone` exit 128, "fatal: detected dubious ownership") — confirmed by direct repro (a
+      // root-owned local repo, this exact env shape: GIT_CONFIG_SYSTEM discarded, GIT_CONFIG_GLOBAL
+      // pointed at a config with no safe.directory entry) to be git's real, well-known
+      // ownership-mismatch refusal, not a coincidentally-matching different failure.
+      // `GIT_CONFIG_SYSTEM: "/dev/null"` is deliberate hermeticity (this test must not depend on
+      // whatever the ambient environment's system gitconfig happens to contain) — but that SAME
+      // discard also throws away any `safe.directory` entry the ambient environment (a CI runner
+      // image, actions/checkout, a contributor's own machine) may have been relying on to cover this
+      // test's own scratch paths, which is exactly what makes the ownership check's actual verdict
+      // depend on runner-specific provisioning this test never controls — "environmental either way,
+      // stable in neither": passed on CI's own run of this exact commit, failed on Release's, two
+      // minutes apart, nothing in either workflow's own steps differs up to this point. Declaring
+      // these paths safe IN THIS TEST'S OWN CONFIG closes that gap the same way the rest of this file
+      // already discards ambient config for identity: hermetic all the way, dependent on nothing
+      // inherited, regardless of the exact runner-instance condition that tips the ambient check.
+      //
+      // The `.git`-suffixed form is load-bearing, confirmed by direct repro — NOT the working-tree
+      // root a plain `git config --add safe.directory <path>` example usually shows and what a first
+      // attempt at this fix used, which still failed identically: `git clone` of a local path opens
+      // the SOURCE via its `.git` directory directly (the same code path a bare/object-store access
+      // takes), checking ITS ownership — distinct from every other git.ts command in this codebase,
+      // which uses `-C <root>` against the WORKING TREE root and needs no such entry at all (confirmed
+      // by the fact that only this clone line was ever reported failing, never `initStudio`'s own
+      // `git -C source init/add/commit` calls immediately above it, against the identical directory).
+      writeFileSync(
+        configFile,
+        `[user]\n\tname = Clone Test\n\temail = clone@example.com\n[safe]\n\tdirectory = ${join(source, ".git")}\n\tdirectory = ${join(clone, ".git")}\n`,
+      );
       const env = { ...process.env, GIT_CONFIG_GLOBAL: configFile, GIT_CONFIG_SYSTEM: "/dev/null" };
 
       const result = initStudio(source, env);
@@ -125,7 +153,17 @@ describe("a freshly-initialized studio's work/ survives a clone (NOTES DOCS-WALK
 
       rmSync(clone, { recursive: true, force: true }); // git clone requires the target not exist yet
       const cloneResult = spawnSync("git", ["clone", "-q", source, clone], { encoding: "utf8", env });
-      expect(cloneResult.status).toBe(0);
+      // NOTES "dubious clone ownership" / the eighth instance of a test whose result depended on
+      // something other than the behaviour it asserts: a bare `expect(status).toBe(0)` discarded git's
+      // own stderr, so this exact failure cost a screenshot and an hour to even name, on a run whose
+      // logs are already gone by the time anyone can look. Every failure path below states what
+      // actually happened.
+      if (cloneResult.status !== 0) {
+        throw new Error(
+          `git clone exited ${cloneResult.status ?? "null"}` +
+            `${cloneResult.signal ? ` (signal ${cloneResult.signal})` : ""}: ${cloneResult.stderr || "(no stderr captured)"}`,
+        );
+      }
 
       expect(readdirSync(join(clone, "work"))).toEqual([".gitkeep"]);
       expect(() => readdirSync(join(clone, "evals"))).toThrow();

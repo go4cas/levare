@@ -1,7 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import { readFileSync } from "node:fs";
 import { main } from "../src/cli.ts";
-import { getVersionInfo, formatVersion, isCompiledBuild, versionFromTag } from "../src/version.ts";
+import { getVersionInfo, formatVersion, isCompiledBuild, versionFromTag, versionChip } from "../src/version.ts";
 
 // levare --version / -v (NOTES DIST1). A binary that can't say what it is can't be trusted in the
 // field — running under `bun test` is itself a source run (no `--define`-stamped build commit), so
@@ -44,6 +44,44 @@ describe("version info", () => {
     const info = { version: "1.2.3", build: { commit: "2b0610f" } };
     expect(formatVersion(info)).toBe("levare 1.2.3 (build 2b0610f)");
     expect(isCompiledBuild(info)).toBe(true);
+  });
+});
+
+// NOTES "tree build version" (Conductor ruling): `package.json`'s version on `main` is permanently
+// "0.0.1" — release.yml stamps the real version into an ephemeral checkout only, never committing it
+// back — so a compiled TREE build (`bun run build` off main, not a release) carries a real, correctly
+// stamped commit alongside that never-bumped placeholder, and used to report it as a real version.
+describe("a tree build reports 'dev', never the unbumped package.json placeholder (NOTES 'tree build version')", () => {
+  test("formatVersion (--version's own sentence) prints 'dev', not '0.0.1', when the placeholder is stamped with a build commit", () => {
+    const info = { version: "0.0.1", build: { commit: "2b0610f" } };
+    expect(formatVersion(info)).toBe("levare dev (build 2b0610f)");
+  });
+
+  test("versionChip (the board header's own chip) prints 'dev (build <hash>)' for the identical case", () => {
+    const info = { version: "0.0.1", build: { commit: "2b0610f" } };
+    expect(versionChip(info)).toBe("dev (build 2b0610f)");
+  });
+
+  test("a REAL release's version is never mistaken for the placeholder — '0.0.1' is the exact, only trigger", () => {
+    // Not "any 0.0.x" or "any version starting with 0" — a real early-days release could legitimately
+    // be tagged v0.0.2, v0.1.0, etc., and must report itself normally.
+    const nearby = { version: "0.0.2", build: { commit: "2b0610f" } };
+    expect(formatVersion(nearby)).toBe("levare 0.0.2 (build 2b0610f)");
+    expect(versionChip(nearby)).toBe("v0.0.2");
+    const real = { version: "1.4.0", build: { commit: "2b0610f" } };
+    expect(formatVersion(real)).toBe("levare 1.4.0 (build 2b0610f)");
+    expect(versionChip(real)).toBe("v1.4.0");
+  });
+
+  test("a source run (no build stamp) is out of this ruling's scope — the placeholder still shows, only 'bun run build''s own output changed", () => {
+    const info = { version: "0.0.1", build: null };
+    expect(formatVersion(info)).toBe("levare 0.0.1 (source/dev)");
+    expect(versionChip(info)).toBe("v0.0.1");
+  });
+
+  test("this repo's own committed package.json really is still the placeholder — the regression this guards against is reachable, not hypothetical", () => {
+    const pkg = JSON.parse(readFileSync("package.json", "utf8")) as { version: string };
+    expect(pkg.version).toBe("0.0.1");
   });
 });
 
