@@ -202,9 +202,23 @@ describe("(g) commit authorship reflects who acted, not who triggered (gate-revi
   });
 });
 
+// NOTES "runner-authored-commit audit": the one unhermeticized git call in this whole authorship-
+// testing sequence — every WRITE this test drives (via resolveGate/Daemon, ultimately git.ts#commitAs)
+// already isolates GIT_CONFIG_GLOBAL/SYSTEM and declares no dependency on the ambient environment; this
+// READ never did. `safe.directory` (inline `-c`, not a config file — `root` varies per call, and this
+// is a plain working-tree access via `-C`, not a local `git clone` source, which is the ONE case NOTES
+// "dubious clone ownership" found needs the `.git`-suffixed form instead) closes the identical class of
+// gap that fix closed for `tests/guide-workflow-blocks.test.ts`'s clone test, on the read side this
+// time. Reports git's own stderr on a failure rather than silently returning `{name: "", email:
+// undefined}` — an empty `git show` failure and a genuinely blank commit author used to be
+// indistinguishable from this helper's own output; they no longer are.
 function commitAuthor(root: string, sha: string): { name: string; email: string } {
-  const out = spawnSync("git", ["-C", root, "show", "-s", "--format=%an|%ae", sha], { encoding: "utf8" }).stdout.trim();
-  const [name, email] = out.split("|");
+  const r = spawnSync("git", ["-c", `safe.directory=${root}`, "-C", root, "show", "-s", "--format=%an|%ae", sha], {
+    encoding: "utf8",
+    env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_TERMINAL_PROMPT: "0" },
+  });
+  if (r.status !== 0) throw new Error(`git show ${sha} failed (exit ${r.status ?? "null"}): ${r.stderr || "(no stderr captured)"}`);
+  const [name, email] = r.stdout.trim().split("|");
   return { name, email };
 }
 

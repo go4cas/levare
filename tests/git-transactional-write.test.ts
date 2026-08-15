@@ -206,3 +206,50 @@ describe("NOTES REV2 — byte-identical rollback on a forced commit failure, for
     }
   });
 });
+
+// NOTES CAP-B-FIX closed this gap as hardening ("Reproduction: not achieved... No test in the current
+// suite was found to actually set those four vars, so this is not confirmed as the live mechanism...
+// but it is a real, currently-unguarded gap") — `commitAs` was given a HERMETIC_GIT_ENV that unsets
+// GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL/GIT_COMMITTER_NAME/GIT_COMMITTER_EMAIL unconditionally, but never
+// got the confirming test that entry's own text asked for. NOTES "runner-authored-commit audit" found
+// why a straightforward attempt (mutate `process.env` in this test's own process, then call
+// `conductorCommit`) could never have caught a regression here even if one existed: Bun's `spawnSync`,
+// when its `env` option is omitted, inherits the PARENT PROCESS'S OWN startup environment, not a later
+// runtime mutation to `process.env` — confirmed directly (a `process.env.GIT_AUTHOR_NAME = "x"`
+// mutation right before an omitted-env `spawnSync` call is invisible to the child). A real subprocess,
+// with the four vars set as ITS OWN startup env, is the only way to actually exercise this.
+describe("commitAs's identity override survives a startup-environment GIT_AUTHOR_NAME/EMAIL leak (closes NOTES CAP-B-FIX's own open question)", () => {
+  test("conductorCommit records the Conductor's identity, not a leaked GIT_AUTHOR_NAME/EMAIL present at process startup", () => {
+    const root = seedScratchRepo("levare-capbfix-leak-");
+    const driver = join(tmpdir(), `levare-capbfix-driver-${Math.random().toString(36).slice(2)}.ts`);
+    try {
+      writeFileSync(
+        driver,
+        [
+          `import { conductorCommit } from ${JSON.stringify(join(process.cwd(), "src/git.ts"))};`,
+          `import { writeFileSync } from "node:fs";`,
+          `import { join } from "node:path";`,
+          `const root = ${JSON.stringify(root)};`,
+          `writeFileSync(join(root, "leak-probe.md"), "probe\\n");`,
+          `conductorCommit(root, [join(root, "leak-probe.md")], "leak probe commit");`,
+        ].join("\n"),
+      );
+      const leakEnv = {
+        ...process.env,
+        GIT_AUTHOR_NAME: "ambient-leak",
+        GIT_AUTHOR_EMAIL: "leak@example.com",
+        GIT_COMMITTER_NAME: "ambient-leak",
+        GIT_COMMITTER_EMAIL: "leak@example.com",
+      };
+      const run = spawnSync("bun", ["run", driver], { encoding: "utf8", env: leakEnv });
+      expect(run.status).toBe(0);
+
+      const author = spawnSync("git", ["-C", root, "log", "-1", "--format=%an|%ae"], { encoding: "utf8" }).stdout.trim();
+      expect(author).toBe("cas|cas@levare.local");
+      expect(author).not.toContain("ambient-leak");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(driver, { force: true });
+    }
+  });
+});
