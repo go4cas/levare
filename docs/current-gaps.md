@@ -1157,3 +1157,31 @@ uncompiled source run, are both unaffected — this only changes what a compiled
 reports. Verified live against the real compiled binary, not a synthetic `VersionInfo`.
 
 See NOTES "tree build version" for the full before/after and the live verification.
+
+## `runNewProjectSkill`'s own commit had no environment isolation at all — closed (NOTES "runner-authored-commit audit")
+
+Prompted by a ninth instance of a test whose result depended on something other than the behaviour it
+asserts (`tests/daemon.test.ts`, a member-produced artifact's commit author reading blank on a fresh CI
+runner) — the product question it turned on was answered first: yes, `git.ts#runnerCommit`/
+`commitAs` already sets an explicit author (`-c user.name=`/`-c user.email=`) with a hermetic env that
+unsets `GIT_AUTHOR_*`/`GIT_COMMITTER_*`, confirmed correct by direct reproduction under a fully
+identity-less environment, 15/15. The exact CI mechanism for the specific test failure was not, and
+could not be, pinned down (the runner instance and its logs are gone) — mirroring NOTES CAP-B-FIX's own
+unresolved "reproduction not achieved." The test's own `git show` read-back helper was hermeticized
+regardless, on the same "close the structural gap whether or not it's confirmed to be THE cause"
+reasoning CAP-B-FIX itself used, and now reports stderr on failure.
+
+Auditing every other write path (as the report explicitly asked, "in the same pass") found one real
+gap: `board/gateops.ts#runNewProjectSkill`'s "initial commit" had NO environment isolation at all —
+worse than git.ts's original, already-fixed CAP-B-FIX gap, which at least set identity via `-c`. Closed
+with the module's own `HERMETIC_GIT_ENV` (mirroring `merge.ts`'s existing, deliberate duplication of
+the same constant, rather than importing git.ts's private one — each module spawns against a
+structurally different repo). Verified with a genuinely new technique, not the one first tried: a
+`process.env` mutation in the TEST's own process cannot prove anything about an omitted-env
+`spawnSync` call, since Bun's `spawnSync` inherits the PARENT PROCESS's own startup env, never a later
+runtime mutation — confirmed directly, and now the standing technique for testing this class of risk. A
+real nested subprocess, with the risk variables set as its own startup env, is what both new regression
+tests use, each confirmed to fail without its fix and pass with it.
+
+See NOTES "runner-authored-commit audit" for the full investigation, including the Bun spawnSync
+env-inheritance finding worth knowing before the tenth instance of this pattern.

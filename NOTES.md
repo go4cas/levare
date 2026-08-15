@@ -16636,3 +16636,136 @@ comment already states for the compiled-vs-source split.
 **Verification (both items).** `bun test` → 1470 pass, 0 fail. `bunx tsc --noEmit`, `bun run deps:check`,
 `bun run build`, `bun run docs:generate` (no diff) all clean. `levare validate fixtures/golden` → valid.
 `levare replay fixtures/golden --stubs` → oracle match, byte-for-byte.
+
+# NOTES "runner-authored-commit audit" (2026-08-15) — the ninth instance, the product question it turned on, and a Bun quirk worth knowing for the tenth
+
+The Release verify job failed on a new line after the dubious-clone-ownership fix held:
+`tests/daemon.test.ts:201`, `expect(daemonAuthor).toEqual({ name: "levare-runner", email:
+"runner@levare.local" })`, receiving `{ name: "", email: undefined }`. Passed 13/13 locally.
+
+## The product question, answered first, before touching anything
+
+**Does the daemon set an explicit author when it commits a member-produced artifact, or does it rely
+on the environment having one?** Read `dagwalk.ts#produceOne`'s `commitFn = opts.commit ?? runnerCommit`
+(never overridden by `daemon.ts`, which never passes a `commit` option at all) through to
+`git.ts#runnerCommit` → `commitAs`: every commit passes `-c user.name=levare-runner -c
+user.email=runner@levare.local` directly on the git invocation, PLUS an explicit `HERMETIC_GIT_ENV`
+that unconditionally unsets `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_NAME`/
+`GIT_COMMITTER_EMAIL` and wipes `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` (NOTES CAP-B-FIX). **Yes — this
+is a real, already-documented guarantee (the test's own name: "commit authorship reflects who acted,
+not who triggered"), and the implementation already tries to honor it without relying on the
+environment.** Confirmed by reproduction, not just code-reading: drove the exact three-commit sequence
+this test exercises inside `env -i HOME=<empty> ...` (no git identity anywhere, system or global) 15
+consecutive times — 15/15 correct authorship. The "this machine has a global identity and a fresh
+runner doesn't" theory the report offered as "the obvious difference" does not reproduce the failure
+here; per this project's own recurring lesson, offered and not assumed.
+
+**The strongest evidence the write side isn't the problem: commits #1 and #2 in the SAME failing test,
+using the IDENTICAL `commitAs` mechanism, are read back correctly before commit #3's readback fails.**
+If `commitAs`'s explicit-author guarantee were broken by ANY environmental condition — a genuinely
+dubious `root`, a stray ambient `GIT_AUTHOR_NAME` — commits #1/#2 (an approve, a start-gate production,
+both funneled through the identical `runnerCommit`/`commitAs` `-c` + hermetic-env mechanism) would fail
+identically, and identically to `dagwalk.ts#produceOne`'s OWN commit path for commit #2, which commit
+#3 (the daemon's own autonomous tick) also uses — there is no separate "daemon commit" code path to be
+broken independently of the one `resolveGate("start")` already exercises successfully in the same run.
+
+## What could not be confirmed, stated plainly
+
+The exact reason `tests/daemon.test.ts`'s own `commitAuthor` helper — a bare `git show`, the ONE
+git call in this whole sequence with no `env` override, unlike every write around it — returns empty
+on some runner instances is not established. Fifteen local reproduction attempts under a fully
+identity-less environment never reproduced it; extensive reasoning about ownership, env-var
+precedence, and sequencing did not locate a mechanism that explains why ONLY the third read (never the
+first two, using the same repo) would be affected. This mirrors NOTES CAP-B-FIX's own "Reproduction:
+not achieved" and NOTES "dubious clone ownership"'s own "environmental either way, stable in neither" —
+a third instance of a real fix landing without a fully pinned proximate cause on the specific failing
+runner, because the runner instance itself, and its logs, are already gone by the time anyone can look
+twice. What follows is the fix regardless: `commitAuthor` is the one unhermeticized git call among
+several hermeticized ones doing structurally the same job in the same test, closing it is correct on
+its own terms independent of whether it explains this specific CI run, and it now reports git's own
+stderr on failure rather than silently returning a blank-looking `{name: "", email: undefined}` that
+reads exactly like a real, wrong authorship value — closing this report's own explicit ask ("the
+assertion must report git's own stderr on failure") a second time, this time on a `git show`, not a
+`git clone`.
+
+## A genuinely useful discovery, found while trying to write a regression test for the wrong theory
+
+First attempt at a regression test for the audit finding below (`runNewProjectSkill`) mutated
+`process.env.GIT_AUTHOR_NAME` in the TEST's own process (mirroring `tests/env-helpers.ts#withEnv`),
+then called the product function directly — and the test passed identically whether or not the actual
+fix was applied, which is itself a red flag (a test that can't fail is not a test). Confirmed directly:
+**Bun's `spawnSync`, when its `env` option is omitted, inherits the env the PARENT PROCESS itself
+started with — not a later runtime mutation to `process.env`.**
+
+```
+GIT_AUTHOR_NAME=startup-value bun -e '
+  console.log(spawnSync("env",[],{encoding:"utf8"}).stdout...);      // shows "startup-value"
+  process.env.GIT_AUTHOR_NAME = "runtime-mutated-value";
+  console.log(spawnSync("env",[],{encoding:"utf8"}).stdout...);      // STILL shows "startup-value"
+'
+```
+
+This means EVERY prior belief in this codebase about "a stray `GIT_AUTHOR_NAME` env var leaking into an
+omitted-env `spawnSync` call" (NOTES CAP-B-FIX's own named risk, never confirmed) can only ever manifest
+from a var present at the OUTER PROCESS'S OWN STARTUP (a wrapping shell, a CI runner's job environment,
+a studio's `.env` loaded via `applyStudioEnv` before any command runs) — never from an in-process
+mutation, regardless of how that mutation happens or how late it's restored. `tests/env-helpers.ts
+#withEnv` is safe and correct for what it actually defends against (module-level state, cross-test
+leakage via mutated `process.env` read by CODE, not by a later omitted-env spawn) — it is simply the
+wrong tool for testing an env-var-precedence-in-a-spawned-child concern specifically, and nothing before
+this surfaced this distinction because no test had tried to exercise this specific risk directly until
+now. The correct reproduction technique — a REAL nested subprocess, with the vars set as ITS OWN
+startup env via `spawnSync(["bun", "run", driver], { env: {...leaked vars...} })` — reproduces the real
+risk precisely and is what both new regression tests below use. Worth remembering for the tenth
+instance, whatever it turns out to be: if a test's env manipulation doesn't survive an omitted-env
+child spawn, the test proves nothing about anything downstream of that spawn.
+
+## The audit: does any other write path have the same dependency
+
+Grepped every `spawnSync("git", ...)` call in `src/` (not tests) for a `commit` subcommand: three call
+sites. `git.ts#commitAs` (via `conductorCommit`/`runnerCommit`) — already hermetic, per above.
+`git.ts#makeFoundingCommit` — deliberately, DIFFERENTLY environment-dependent: it reads the OPERATOR'S
+OWN resolved `git config user.name`/`user.email` (`resolveGitIdentity`), by design, because the
+founding commit predates any Conductor action and must be attributed to the human who ran `levare
+init`, never to a fictional levare-owned identity — the scaffolded README's own "configure `git config
+--global user.name`" instruction is precisely this contract, not evidence of a leak. Confirmed
+deliberate, not a bug, and unrelated to the runner's own artifact-authorship guarantee this report asks
+about.
+
+**`board/gateops.ts#runNewProjectSkill`'s "initial commit" — a real, confirmed gap.** All three of its
+spawns (`clone`, `add`, `commit`) had NO `env` override at all — not even git.ts's original CAP-B-FIX
+gap, which at least set identity via `-c` (an env-var leak there could only override, not omit,
+authorship). This one's `-c user.name=cas -c user.email=cas@levare.local` is real and correct on the
+happy path, but with no `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` isolation and no `GIT_AUTHOR_*`/
+`GIT_COMMITTER_*` unsetting, a `GIT_AUTHOR_NAME` present at the LAUNCHING process's own startup (a
+wrapping shell, a CI runner, a studio's own `.env`) would silently override it — the exact CAP-B-FIX
+risk, in a module `git.ts`'s own header comment already claims doesn't exist ("Every write path that
+commits on the Conductor's behalf... funnels through this one function"). Closed by giving
+`board/gateops.ts` its own `HERMETIC_GIT_ENV`, mirroring `merge.ts`'s own existing, deliberate
+duplication (each module owns its copy rather than importing git.ts's private one, since each spawns
+against a structurally different repo — the studio, an existing project, or here, a brand-new project's
+own fresh checkout — and the three must never be confused into sharing one via an accidentally-shared
+constant, per `merge.ts`'s own stated reasoning, which this follows rather than relitigates).
+
+## Tests
+
+`tests/gateops-phase5.test.ts`: a new "(e) new-project skill" case spawns a REAL nested `bun` subprocess
+with `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_NAME`/`GIT_COMMITTER_EMAIL` set as its own
+startup env, calls `runNewProjectSkill` from inside it, and asserts the resulting commit is still `cas`
+— verified in BOTH directions (fails with the fix reverted, showing the literal leaked identity; passes
+restored) before landing, the same discipline "dubious clone ownership" established. The existing "creates
+the remote stand-in..." test also gained an assertion on the clone's own "initial commit" author, a real
+gap nothing checked before this (only the studio-side pointer commit's author was ever asserted).
+
+`tests/git-transactional-write.test.ts` gains a describe block closing NOTES CAP-B-FIX's own explicitly
+left-open question ("No test in the current suite was found to actually set those four vars... not
+confirmed as the live mechanism") — same real-subprocess technique, proving `conductorCommit` resists a
+startup-environment `GIT_AUTHOR_NAME`/`EMAIL` leak. Verified in both directions the same way.
+
+`tests/daemon.test.ts`'s `commitAuthor` helper now hermeticizes its own `git show` (matching every write
+around it) and reports stderr on failure instead of returning an indistinguishable-from-a-real-bug blank
+result.
+
+**Verification.** `bun test` → 1472 pass, 0 fail. `bunx tsc --noEmit`, `bun run deps:check`, `bun run
+build`, `bun run docs:generate` (no diff) all clean. `levare validate fixtures/golden` → valid. `levare
+replay fixtures/golden --stubs` → oracle match, byte-for-byte.
