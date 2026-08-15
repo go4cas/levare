@@ -484,8 +484,24 @@ button{ font-family:inherit; }
    Same neutral treatment `.entity__kind` (tag/chip's own non-status outline) uses — fg-mute text,
    panel-2 background, an ordinary (not -strong) border — kept inside the `.chip` box model (padding/
    radius/font from the base rule above) rather than reusing `.entity__kind` itself, whose own
-   `margin-left:auto` is a registry-card-header positioning rule that has no place in a score-rail row. */
-.chip.is-neutral{ color:var(--fg-mute); background:var(--panel-2); border:1px solid var(--border); }
+   `margin-left:auto` is a registry-card-header positioning rule that has no place in a score-rail row.
+   NOTES "not covered tooltip" (added later): also the tooltip trigger — the identical accessible shape
+   `.cite--count`/`.citetip` established (position:relative + cursor:default on the trigger, a
+   same-recipe-but-own-named `.neutraltip` box below, JS-positioned from `getBoundingClientRect()`,
+   `tabindex="0"` + `aria-describedby` so a keyboard user reaches it exactly like a pointer — never
+   hover-only). Carried unconditionally on the class rather than a second modifier — harmless for a
+   future neutral chip with no tooltip (an inert `position:relative`/default cursor), and the one call
+   site today never needs a separate trigger class of its own. */
+.chip.is-neutral{ color:var(--fg-mute); background:var(--panel-2); border:1px solid var(--border);
+  position:relative; cursor:default; }
+.chip.is-neutral:focus{ outline:2px solid var(--accent); outline-offset:2px; }
+.neutraltip{ position:fixed; left:0; top:0; transform:translate(-50%, 0);
+  z-index:50; background:var(--fg); color:var(--bg); font-family:var(--mono); font-size:11px;
+  line-height:1.5; white-space:normal; max-width:220px; width:max-content; padding:6px 10px;
+  border-radius:7px; box-shadow:var(--shadow); opacity:0; visibility:hidden;
+  transition:opacity var(--motion-fast); pointer-events:none; }
+.neutraltip.is-shown{ opacity:1; visibility:visible; }
+@media (prefers-reduced-motion: reduce){ .neutraltip{ transition:none; } }
 
 /* ---------- pointer / constitution (project view) ---------- */
 .card{ background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:15px 17px;

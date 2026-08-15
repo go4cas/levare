@@ -1179,5 +1179,6 @@
     }
     wireTooltip('.m--loopstage', '.looptip');
     wireTooltip('.cite--count', '.citetip');
+    wireTooltip('.chip.is-neutral', '.neutraltip');
   });
 })();

@@ -1069,17 +1069,26 @@ Conductor ruling: `derive.ts`'s "unreachable" state (a kind a unit's type expect
 has no member that can ever produce) is real, correct information — but the word, and its reuse of
 `statusBadge`'s "blocked" canonical colour, made several of them stacked down a rail read as several
 failures rather than as the true fact ("this type has five stages and the team covers two"). Closed by
-relabeling — the score rail's chip now reads "not covered", its sub-line "not covered · no member of
-this team produces this", `validate.ts`'s `UNCOVERABLE_EXPECTED_KIND` warning text matches — and by
-recolouring: a new `.chip.is-neutral` (assets/styles.css), deliberately outside the seven-state
-canonical palette (`components.ts#neutralChip`, the second explicitly-named exception to "`statusBadge`
-is the only function that emits a `.chip`"), the same neutral treatment `tag()`'s `.entity__kind` gives
-every other non-status label. Deliberately unchanged, per the ruling's own text: the internal `NodeState`
-value (`"unreachable"`), `flow.ts#unreachableExpectedKinds`'s name, the `UNCOVERABLE_EXPECTED_KIND` code
-itself, and the score node's own dot (still the dimmed "blocked" treatment) — this was a ruling on what a
-Conductor READS, not a rename of what's being computed.
+relabeling — the score rail's chip now reads "not covered", `validate.ts`'s `UNCOVERABLE_EXPECTED_KIND`
+warning text matches — and by recolouring: a new `.chip.is-neutral` (assets/styles.css), deliberately
+outside the seven-state canonical palette (`components.ts#neutralChip`, the second explicitly-named
+exception to "`statusBadge` is the only function that emits a `.chip`"), the same neutral treatment
+`tag()`'s `.entity__kind` gives every other non-status label. Deliberately unchanged, per the ruling's
+own text: the internal `NodeState` value (`"unreachable"`), `flow.ts#unreachableExpectedKinds`'s name,
+the `UNCOVERABLE_EXPECTED_KIND` code itself, and the score node's own dot (still the dimmed "blocked"
+treatment) — this was a ruling on what a Conductor READS, not a rename of what's being computed.
 
-See NOTES "not covered" for the full before/after and the live-server verification.
+**Refined the same day (NOTES "not covered tooltip"):** the fuller sentence ("no member of this team
+produces this") started as a permanently-visible sub-line, then moved onto the chip as a hover/focus
+tooltip (`neutralChip`'s new optional param, `.neutraltip`, the same `wireTooltip` recipe "cited N" and
+the loop bounds already use) — a reader asks "why is this row inactive" once, not on every uncovered
+row of every type. Deliberately asymmetric with the loop-bounds tooltip, which stays permanently
+visible: the general test recorded for the next such decision is whether understanding the fact once
+retires the question (tooltip) or the fact is freshly decision-relevant every time it's seen (stays
+visible) — not whether the two look similar enough to copy.
+
+See NOTES "not covered" and its "not covered tooltip" follow-up for the full before/after, the
+asymmetry principle in full, and the live-server verification of both.
 
 ## A runner-side commit's only propagation path (the board's own `fs.watch`) was sound, but the SSE connection it travels over silently died on a quiet studio — closed (NOTES "score rail reload")
 

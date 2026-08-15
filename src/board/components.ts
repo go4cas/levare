@@ -50,9 +50,25 @@ export function paceBadge(pace: "auto" | "step"): string {
 // `.chip`" (tests/board-components.test.ts) — mirrors its exact shape (chip + one modifier + optional
 // extraClass) so that guard still holds: this module remains the only place a literal `class="chip`
 // string is ever constructed.
-export function neutralChip(label: string, extraClass?: string): string {
+//
+// NOTES "not covered tooltip": the optional `tooltip` param moved the fuller explanation ("no member
+// of this team produces this") off a permanently-visible sub-line — repeating on every uncovered row,
+// wrapping to two lines on a five-stage type — onto the chip itself, disclosed on demand. Same
+// hover/focus recipe `render/project.ts`'s "cited N" and `render/registry.ts`'s loop-bounds tooltips
+// already use (`tabindex="0"` + `aria-describedby` + a nested `role="tooltip"` child, wired by
+// `assets/app.js#wireTooltip`) — `.neutraltip` is a new, otherwise-identical box style (own class per
+// the same convention `citetip`/`looptip` already established: each trigger's tooltip is its own
+// class even though the recipe is shared). `tooltip.id` must be unique per instance and is trusted
+// pre-escaped by the caller, exactly like `citecount-.../loopbounds-...` at the existing two call
+// sites — never re-escaped here, so a caller that already ran a dynamic id segment through `esc()`
+// doesn't get it mangled by a second pass.
+export function neutralChip(label: string, extraClass?: string, tooltip?: { text: string; id: string }): string {
   const cls = extraClass ? `chip is-neutral ${extraClass}` : `chip is-neutral`;
-  return `<span class="${cls}">${esc(label)}</span>`;
+  if (!tooltip) return `<span class="${cls}">${esc(label)}</span>`;
+  return (
+    `<span class="${cls}" tabindex="0" aria-describedby="${tooltip.id}">${esc(label)}` +
+    `<span class="neutraltip" role="tooltip" id="${tooltip.id}">${esc(tooltip.text)}</span></span>`
+  );
 }
 
 // ---------------------------------------------------------------------------

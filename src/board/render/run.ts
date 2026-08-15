@@ -115,16 +115,27 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
         // team ever produces it), and stacking several down a rail must read as present-but-inactive
         // information about the type's shape, not as a run of failures. Neutral (never a lifecycle
         // colour, including "blocked"'s own) — see neutralChip's own doc.
-        : n.state === "unreachable" ? neutralChip("not covered", "sstep__chip")
+        //
+        // NOTES "not covered tooltip": the fuller sentence used to live as a permanently-visible
+        // sub-line, repeating on every uncovered row and wrapping to two lines on a wide type — pure
+        // explanation, not a decision a Conductor makes per row. A reader asks "why is this row greyed
+        // out" once; that's what a tooltip is for (deliberately asymmetric with the loop bounds
+        // tooltip below, which STAYS visible unconditionally — see that tooltip's own doc for why).
+        : n.state === "unreachable"
+          ? neutralChip("not covered", "sstep__chip", {
+              text: "no member of this team produces this",
+              id: `notcovered-${esc(project)}-${esc(unitId)}-${esc(n.kind)}`,
+            })
         : "";
       const sub = n.artifact
         ? `${esc(n.artifact.produced_by)} &middot; ${artifactTokenLink(n.artifact.project, n.artifact.unit, n.artifact.id, artifactFileName(n.artifact))}`
         : n.state === "active" && n.producedBy
           ? `${esc(n.producedBy)} &middot; producing&hellip;`
-          // NOTES "not covered": the whole point — never call this "queued". Nothing arriving ever
-          // changes it, and it must never read as an alert either — see the chip above.
+          // NOTES "not covered tooltip": no sub-line at all here now — the chip alone (with its
+          // on-demand tooltip, above) already says "not covered"; repeating it in prose underneath
+          // would be the exact redundant-explanation the tooltip move exists to remove.
           : n.state === "unreachable"
-            ? "not covered &middot; no member of this team produces this"
+            ? ""
             : "queued";
       // Tier 3 (amendment 1 §2 R4, 10s+): the live strip — round n/m (only when this kind belongs to
       // a review loop; a plain one-shot step has no round to state), plus real elapsed time. No token

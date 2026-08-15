@@ -16456,3 +16456,72 @@ or delays an actual change.
 `bun run docs:generate` (no diff) all clean. `levare validate fixtures/golden` → valid (pre-existing
 warnings only, now reading "not covered" per item 1). `levare replay fixtures/golden --stubs` → oracle
 match, byte-for-byte. Item 1 additionally verified live over a real `levare serve` process (see above).
+
+# NOTES "not covered tooltip" (2026-08-15) — a refinement on the same branch, verified after both fixes above landed live
+
+Both "not covered"/"score rail reload" fixes above confirmed live: approving `purge-command`'s gate
+updated the score rail, gate card, briefing, and timeline with no manual refresh, and the "not covered"
+rows read as intended. One refinement followed, on the same branch.
+
+## The problem, as observed
+
+The "not covered" sub-line — `not covered · no member of this team produces this` — repeats under every
+uncovered row and wraps to two lines on a five-stage type. Explanatory text a reader needs once, not a
+permanent fixture: understand it on the first uncovered row, and every subsequent one just repeats it.
+
+## The fix
+
+Moved the fuller sentence off the permanently-visible sub-line onto the chip itself, as a hover/focus
+tooltip — the exact accessible recipe `render/project.ts`'s "cited N" and `render/registry.ts`'s
+loop-bounds tooltip already established (`tabindex="0"` + `aria-describedby` + a nested
+`role="tooltip"` child, wired by `assets/app.js#wireTooltip`, keyboard-reachable as well as hover — no
+`title=""` attribute, which is famously not keyboard-reachable in any browser). `components.ts
+#neutralChip` gained an optional third param (`{ text, id }`); when absent, the function's output is
+byte-for-byte the same plain chip it always was (a pre-existing test proves this explicitly, not just by
+omission). The tooltip's own box is a new class, `.neutraltip` — not a reuse of `.citetip`, following
+the convention `citetip`/`looptip` already set: each trigger gets its own tooltip class even though the
+box recipe (position:fixed, JS-positioned from `getBoundingClientRect()`, dark pill, `is-shown` toggle)
+is identical. `render/run.ts`'s sub-line for this state is now an empty string, not a shorter
+replacement — the chip alone already says "not covered"; a shortened sub-line repeating that word would
+be the exact redundant-explanation problem this move exists to remove.
+
+## The principle, recorded so the next tooltip decision has one to follow
+
+**Deliberately asymmetric with the loop-bounds tooltip, which stays visible unconditionally
+(`registry cards legibility` item 2's own ruling) — and that asymmetry is not an inconsistency to
+reconcile later, it is the correct application of a single test:**
+
+**Is the fact decision-relevant every time it's seen, or does understanding it once retire the
+question?**
+
+The loop bounds (`until`/`max`/`on_exhaust`) answer "what happens if the agents never agree" — a fact a
+Conductor needs freshly in mind at the moment of approving a `start`, not something that stops mattering
+after the first read; it is load-bearing for a decision made repeatedly, on every loop, for as long as
+the loop exists. "Not covered" answers "why is this row inactive" — a fact about the type's shape that,
+once understood, never changes and never needs re-surfacing; a reader who has seen one uncovered row on
+one type has the concept for every uncovered row on every type they'll ever look at. The FIRST kind of
+fact earns permanent visibility because the cost of hiding it is re-asking a question that matters every
+time; the SECOND kind earns a tooltip because the cost of showing it permanently is repeating an answer
+nobody's asking for anymore. Same UI primitive (`wireTooltip`), opposite persistence decisions, both
+correct — the test above is what to apply next time this shape of decision comes up, not "does this
+precedent's specific text look similar enough to copy."
+
+## Tests
+
+`tests/board-components.test.ts`: `neutralChip`'s tooltip param produces the exact wired markup,
+escapes both the label and the tooltip text (two independent untrusted-text sites), and — explicitly,
+not just by the pre-existing tests still passing — confirms the no-tooltip call shape is byte-for-byte
+unaffected by the new parameter's existence. `tests/board-render.test.ts`: the rendered sub-line is now
+empty for the uncovered `code` row (not a shorter replacement); the chip is the tooltip trigger, pinned
+via the same `aria-describedby`↔`id` backreference pattern the existing "cited N" test already checks;
+`.neutraltip` gets the same CSS-non-empty-rule proof `.chip.is-neutral` already has; `assets/app.js`
+actually registers `wireTooltip('.chip.is-neutral', '.neutraltip')` (mirrors `registry-cards-render-
+definitions.test.ts`'s own proof that the loop-bounds trigger is registered, not just markup with
+nothing listening).
+
+**Verification.** `bun test` → 1465 pass, 0 fail. `bunx tsc --noEmit`, `bun run deps:check`, `bun run
+build`, `bun run docs:generate` (no diff) all clean. `levare validate fixtures/golden` → valid.
+`levare replay fixtures/golden --stubs` → oracle match, byte-for-byte. Verified live over a real
+`levare serve` process: the uncovered `code` row's rendered HTML carries an empty `sstep__sub` and the
+full trigger+tooltip markup, exactly as designed — `assets/app.js` confirmed to parse cleanly
+(`new Function(source)`, syntax-only, no behavioral claim beyond "this file still loads").

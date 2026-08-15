@@ -65,6 +65,24 @@ describe("components.ts primitives", () => {
     expect(neutralChip("not covered")).not.toContain("is-blocked");
   });
 
+  // NOTES "not covered tooltip": the optional third param wires the chip as its own hover/focus
+  // tooltip trigger — same accessible recipe statusBadge's siblings never needed (a status is always
+  // visible; this label needs a one-time "why" a Conductor can dismiss forever after reading it once).
+  test("neutralChip's optional tooltip wires the chip as a keyboard-reachable trigger, escaped", () => {
+    expect(neutralChip("not covered", "sstep__chip", { text: "no member of this team produces this", id: "notcovered-acme-widget-code" })).toBe(
+      '<span class="chip is-neutral sstep__chip" tabindex="0" aria-describedby="notcovered-acme-widget-code">not covered' +
+        '<span class="neutraltip" role="tooltip" id="notcovered-acme-widget-code">no member of this team produces this</span></span>',
+    );
+    // The label AND the tooltip's own text are both escaped — two independent untrusted-text sites.
+    expect(neutralChip("<b>", undefined, { text: "<i>", id: "t1" })).toBe(
+      '<span class="chip is-neutral" tabindex="0" aria-describedby="t1">&lt;b&gt;<span class="neutraltip" role="tooltip" id="t1">&lt;i&gt;</span></span>',
+    );
+    // No tooltip param → the original, plain chip shape, byte-for-byte — every pre-existing call site
+    // (and every OTHER neutralChip test above) is unaffected by this parameter's addition.
+    expect(neutralChip("not covered")).not.toContain("tabindex");
+    expect(neutralChip("not covered")).not.toContain("neutraltip");
+  });
+
   test("iconLink takes an object param and emits the right vendored icon", () => {
     const html = iconLink({ icon: "ti-brand-github", href: "https://github.com/acme/storefront", label: "repo" });
     expect(html).toContain('class="iconlink ti-brand-github"');
