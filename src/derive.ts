@@ -409,7 +409,21 @@ export function projectSpend(repo: Repo, project: string): number {
   return Math.round(usd * 100) / 100;
 }
 
-/** Median count of `review`-kind artifacts per unit, across a project's units. Null with no units. */
+/**
+ * Median count of `review`-kind artifacts per unit, across a project's units. Null with no units.
+ *
+ * NOTES "created timestamp" investigation: this is a PROJECT-WIDE statistic — the median, across every
+ * unit in the project, of how many rounds THAT unit's own review loop took (a loop's author and
+ * companion kinds are produced in lockstep each round, so counting one loop-companion kind's live+
+ * superseded artifacts for a unit already equals that unit's own round count) — not a per-unit one. A
+ * project where most units converge in round 1 and a single unit runs long (e.g. six rounds) correctly
+ * reads a low median: that is what a median is FOR, resisting distortion from one outlier, unlike a
+ * mean which the six-round unit would pull up. Reading "1" here while one specific unit ran six rounds
+ * is not a bug — it says most of this project's units needed only one round; the outlier unit's own
+ * round count is a fact about THAT unit, visible on its own project page, not this project-wide figure.
+ * A unit type whose flow has no review step at all contributes 0, same as a unit that converged before
+ * any round completed — both correctly mean "no review rounds recorded for this unit."
+ */
 export function medianReviewRounds(repo: Repo, project: string): number | null {
   const counts: number[] = [];
   for (const unit of repo.units) {
