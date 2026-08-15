@@ -16127,3 +16127,183 @@ the check.
 **Verification.** `bun test` → 1441 pass, 0 fail (1450 across 104 files, 9 pre-existing skips). `bun run
 typecheck`, `bun run deps:check`, `bun run build` all clean. `levare validate fixtures/golden` → valid
 (pre-existing warnings only). `levare replay fixtures/golden --stubs` → oracle match, byte-for-byte.
+
+# NOTES "created timestamp" & "receipt cache tokens" (2026-08-15) — an artifact's own numbers stopped explaining themselves
+
+Four faults, all rooted in what the artifact contract records: `created`'s missing time-of-day fed two
+wrong board figures; a native receipt's tokens didn't account for its own cost; a scaffolded doc
+overstated its own role; one more figure was checked and found correct. The first two share this unit
+because they both touch what `levare` writes into an artifact's frontmatter and what it promises about
+those numbers; the last two surfaced investigating the first two honestly rather than assuming the bug
+report's own framing was complete.
+
+## Investigated first: what does the SDK's `modelUsage` actually expose
+
+Before writing anything, the type signature `sdk-worker.ts#deriveReceipt` had — `{ inputTokens?: number;
+outputTokens?: number }` — was checked against the SDK's OWN declared type, not trusted as authoritative
+just because it was the existing code. `node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts`:
+
+```ts
+export declare type ModelUsage = {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadInputTokens: number;
+    cacheCreationInputTokens: number;
+    webSearchRequests: number;
+    costUSD: number;
+    contextWindow: number;
+    maxOutputTokens: number;
+};
+```
+
+The existing signature was narrower than what the SDK actually sends, not narrower because the SDK
+doesn't send more — `cacheReadInputTokens`/`cacheCreationInputTokens` are real, non-optional fields on
+every `modelUsage` entry. This settled the shape of the fix before any code was touched: the receipt CAN
+report a cache breakdown, from data already arriving on every call, previously read and then discarded.
+
+## Fault 1 — `created` was a bare calendar date
+
+**The bug, as filed.** Every write site stamped `created: 2026-08-13` — a date, no time. Two consumers
+measured from it: `derive.ts#ageLabel` (an artifact's displayed age on the orchestrator card) and
+`derive.ts#medianGateResponseDays` (a studio's median gate-response time, `created` to a date extracted
+from `approved_by`). `new Date("2026-08-13")` resolves to that date's UTC midnight — so an artifact
+produced minutes before a render showed hours of fabricated age, and a gate opened and approved hours
+apart but straddling a UTC midnight boundary read a full day's response time.
+
+**Every write site, found before anything changed format.** `created:` is written in exactly four
+places, never a fifth: `adapters.ts#author`'s `AdapterRunnerOptions.now` (the real member-dispatch path
+— native/cli/remote, the vast majority of artifacts); `dagwalk.ts#openMergeGate` and `#writeBlocked`
+(both driven by `AdvanceOptions.today`); `board/gateops.ts#blockedRetryDoc` (driven by `ResolveOpts`).
+A fifth site, `fixtures/stubs/member-stub.ts#render`, hardcodes `created: 2026-07-11` deliberately (its
+own comment: "so replays are byte-for-byte deterministic") — left untouched; the replay oracle
+(`replay.ts#extractStatuses`) only ever compares artifact STATUSES, never `created`'s literal value, so
+nothing about replay determinism depends on this file's date format either way.
+
+**Reading the two consumers before touching them:** both already do `new Date(fromIso)` — full
+precision, zero-code-change-required, ONCE the stored value carried it. `ageLabel` needed no change at
+all. `medianGateResponseDays` needed no arithmetic change either — its existing `(approved - created) /
+86400000` is already a continuous, correct day count; the day-granularity was entirely an INPUT problem,
+never a logic one. Both got doc comments making this now-intentional precision behavior explicit rather
+than leaving it an accident of what the data happened to contain.
+
+**The decision that mattered: what `today` is for, at each site, before touching its format.**
+`AdvanceOptions.today` (dagwalk.ts) turned out to be used SOLELY for `created:` stamps (merge-gate,
+blocked) — dagwalk.ts never writes `approved_by` at all, that's exclusively `board/gateops.ts`'s job —
+so its default was safely changed from `.slice(0, 10)` to a full `.toISOString()` with zero blast radius
+on approval semantics. `ResolveOpts.today` (gateops.ts), by contrast, is genuinely SHARED across
+`stampApproval` (→ `approved_by`), `merge_result.executed_at`, AND (via `resolveBlockedArtifactGate`)
+the blocked-retry path's `created:` stamp — changing its format wholesale would have also reformatted
+`approved_by`, which the goal deliberately does NOT ask for (`medianGateResponseDays` is documented to
+read `approved_by` at day granularity; changing that is a different, unrequested unit of work). Instead,
+`resolveGate` now computes a SEPARATE `createdAt` alongside the unchanged `today`, reusing the existing
+`ResolveOpts.now` (already present for CAP-A's `execution.executed_at`, same "precise instant levare
+itself is writing this record" role) — `today` still feeds every approval/execution-record stamp
+unchanged; `createdAt` feeds only `blockedRetryDoc`'s `created:`. No test asserting `today`'s exact
+string value anywhere in the suite (checked: none does) needed to change.
+
+**Backward compatibility, decided and enforced, not assumed.** A bare `YYYY-MM-DD` `created` is not a
+deprecated shape with a sunset — it stays permanently valid. `validate.ts#isIsoDate` now accepts either
+the original `^\d{4}-\d{2}-\d{2}$` OR a full `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$` UTC
+timestamp; a bare date reads as that day's UTC midnight — the honest interpretation for a value that
+never recorded a time of day, not a fallback approximation. `fixtures/golden/work/storefront/
+checkout-flow/{product-brief-v1,spec-checkout-flow-v1}.md` already carry real bare-date `created` values
+(`2026-07-07`, `2026-07-11`) from before this change — left completely untouched, deliberately, as the
+regression proof: `levare validate fixtures/golden` staying `valid` against them IS the backward-compat
+test, not a fixture that needed regenerating.
+
+## Fault 2 — a native receipt's tokens didn't account for its own cost
+
+`deriveReceipt` summed only `inputTokens`/`outputTokens`; `usd` came from the SDK's own
+`total_cost_usd` — real vendor billing, which already prices prompt-cache read/write tokens at their own
+rates. Those tokens appeared nowhere in the receipt, so `(tokens_in/1e6)*in_per_m +
+(tokens_out/1e6)*out_per_m` against `knowledge/model-pricing.md`'s own rates ran 40–50% under the
+reported `usd` on every real call checked — exactly the arithmetic "levare will show you every cent"
+invites an operator to do.
+
+**Fix.** `deriveReceipt` now also sums `cacheReadInputTokens`/`cacheCreationInputTokens` across every
+`modelUsage` entry (the same "sum every model" rule `tokens_in`/`tokens_out` always followed — NOTES
+F11's own comment on why summing, not picking one entry, is correct). Two new fields on
+`types.ts#Receipt`: `tokens_cache_read?: number | null`, `tokens_cache_write?: number | null` —
+deliberately OPTIONAL (not required-nullable like `tokens_in`), so every existing hand-built `Receipt`
+literal across the test suite (dozens, in `tests/adapters.test.ts` alone) stayed valid with no edits;
+present (a real number, possibly 0) only on a native receipt that reported usage at all, absent for
+cli/remote (no cache accounting to give) and for a fully `unreported` receipt. `adapters.ts#author`
+emits `tokens_cache_read`/`tokens_cache_write` frontmatter lines only when present — never a misleading
+`null` on a non-native artifact. `validate.ts`'s `usage` schema gained matching optional/nullable
+fields. `tokens_in`/`tokens_out` keep their original meaning (fresh, non-cache) — the cache breakdown is
+additive, not folded in, so `costLabel`/`unitSpend`/every other existing consumer of `tokens_in`/
+`tokens_out` is unaffected.
+
+**Worked reconciliation (the actual regression, not a hand-built stand-in).** Using the goal's own
+observed figures for one real dispatch (`product-brief-add-command-v3`): `tokens_in=892`,
+`tokens_out=786`, `usd=$0.020895`. Pricing only in/out at claude-sonnet-5's baseline rate ($3/M in,
+$15/M out) gives $0.014466 — 31% under. Backing the $0.006429 gap out as unpriced input at the SAME flat
+rate gives ≈2143 tokens — `tests/sdk-worker-receipt.test.ts`'s fixture sets
+`cacheReadInputTokens: 2143` and gets EXACT reconciliation (`(892+2143)/1e6*3 + 786/1e6*15 =
+0.020895`), driven from a `modelUsage` object shaped exactly like the SDK's real `ModelUsage` type
+(every field, not a hand-trimmed subset) — not a coincidence, the numbers were chosen to match the
+goal's own worked example. This is a diagnostic-grade reconciliation, not a claim that real Anthropic
+cache pricing is flat: cache reads and cache writes bill at their own, DIFFERENT rates from a fresh
+input token and from each other, which `knowledge/model-pricing.md`'s table doesn't carry — see the
+correction below.
+
+## Fault 3 — `knowledge/model-pricing.md` overstated its own role
+
+Its opening line claimed its rates are "used to price usage receipts (§10)" — true for a `kind: cli`/
+`remote` member (`receipts.ts#normalizeReceipt` is the only caller of `pricing.ts#priceUsd`), false for
+`kind: native` (its `usd` is the SDK's own reported cost, used verbatim, `pricing.ts` never consulted).
+The table's real, universal job — the KNOWN-MODEL set `levare validate` rejects `UNKNOWN_MODEL`
+declarations against — was already true and valuable; the header just also claimed a second job it
+doesn't do for native. Fixed in `src/init.ts` (the scaffold every fresh studio's `knowledge/
+model-pricing.md` is copied from) and `fixtures/golden/knowledge/model-pricing.md` identically: leads
+with the KNOWN-MODEL role, states the cli/remote pricing role second, and names explicitly what prices a
+native receipt instead (the SDK's own cost) and why the table's flat rate won't reproduce it exactly
+even given `tokens_cache_read`/`tokens_cache_write` (real cache tiers this table doesn't carry).
+`receipts.ts`'s and `types.ts#Receipt`'s own header comments carried the identical inaccuracy
+("USD ... estimated from knowledge/model-pricing.md") and got the same correction — the goal's own
+observation that "this was not obvious from reading the artifact" applied to the code's self-description
+just as much as the scaffolded doc's.
+
+## Fault 4 — `Median review rounds` checked, found correct, left alone
+
+The claim: `todo-cli`'s project screen reads `1` even though `list-command` ran six rounds before the
+round-counter fix landed. `derive.ts#medianReviewRounds` counts `kind: review` artifacts (live +
+superseded — a loop's author/companion pair is produced in lockstep each round, so this count already
+equals a unit's own round count) PER UNIT, then takes the MEDIAN of that count ACROSS EVERY UNIT IN THE
+PROJECT — a project-wide statistic, not a per-unit one, rendered on the project page (not scoped to any
+one unit) alongside spend/unit-count/other project-wide figures. A project where most units converge in
+round 1 and one unit runs to six correctly reads a low median: that is precisely what a median is FOR —
+resisting distortion from one outlier, unlike a mean the six-round unit WOULD pull up. Reading `1` says
+"most of this project's units needed one round," which is a true, useful, unrelated fact to
+`list-command`'s own six — visible on `list-command`'s own unit page, not this figure. Not a bug;
+`medianReviewRounds`'s doc comment now says so explicitly, so the next reader doesn't have to re-derive
+this. No code changed.
+
+## Schema, tests
+
+`validate.ts`: `created`'s `isIsoDate` accepts bare date OR full UTC timestamp (permanently, both
+shapes); `usage.tokens_cache_read`/`usage.tokens_cache_write` added, optional/nullable, native-only in
+practice. `types.ts#Receipt` gained the same two optional fields, with a corrected header on what prices
+`usd` for which member kind. `docs/guide/05-reference/cheatsheets/artifact.md` regenerated (`bun run
+docs:generate`) — `created`'s type column and description, and the two new `usage.*` rows.
+`docs/current-gaps.md` gained two closed entries (created-timestamp, receipt-cache-tokens).
+
+`tests/derive-created-timestamp.test.ts` (new): `ageLabel` reports a sub-hour age for an artifact
+created and read within the same minute, and still reads a pre-change bare-date artifact correctly
+(coarser, never wrong); `medianGateResponseDays` does NOT report a full day for a gate opened and
+approved minutes apart straddling a UTC midnight boundary in EITHER direction (the boundary case is the
+bug — a same-day test proves nothing) and still computes a sane delta from a pre-change bare-date
+artifact. `tests/sdk-worker-receipt.test.ts` (extended): `tokens_cache_read`/`tokens_cache_write` are
+summed from a realistic `modelUsage` shape; the receipt's tokens (including cache) reconcile with its
+own cost under `knowledge/model-pricing.md`'s baseline rates while `tokens_in`/`tokens_out` alone do
+not (the actual regression, both directions); zero cache activity reports `0`, not absent; no
+`modelUsage` entries reports `null`, matching `tokens_in`/`tokens_out`'s own convention.
+`tests/adapters.test.ts` (extended): a native receipt's cache breakdown reaches the produced artifact's
+`usage:` frontmatter verbatim and the result still validates; a cli member's `usage:` block carries no
+`tokens_cache_read`/`tokens_cache_write` lines at all (never a misleading `null`).
+
+**Verification.** `bun test` → all pass (one flaky, timing-based SSE test failed once under full-suite
+load and passed in isolation, unrelated to this change). `bun run typecheck`, `bun run deps:check`,
+`bun run build`, `bun run docs:generate` (no diff after regeneration) all clean. `levare validate
+fixtures/golden` → valid (pre-existing warnings only — the bare-date fixture artifacts included).
+`levare replay fixtures/golden --stubs` → oracle match, byte-for-byte.

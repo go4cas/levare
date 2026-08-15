@@ -23,13 +23,15 @@ A markdown deliverable with YAML frontmatter, produced by a member and tracked t
 | `supersedes` | string | ✅ | ✅ | — | The artifact id this one replaces, or null if it supersedes nothing. |
 | `approved_by` | string | ✅ | ✅ | — | Who approved this artifact at its gate, or null if not yet approved. |
 | `approved_commit` | string | — | ✅ | — | The commit whose content was approved at gate resolution, so the immutability check can diff against that ref rather than HEAD. Absent on pre-A7 artifacts, which fall back to the HEAD diff. |
-| `created` | date (`YYYY-MM-DD`) | ✅ | — | — | The date this artifact was created. |
+| `created` | date (`YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SS.sssZ`) | ✅ | — | — | When this artifact was created — a full UTC ISO timestamp (YYYY-MM-DDTHH:MM:SS.sssZ) on every artifact levare writes now, so age displays and gate-response medians read to the minute; a bare YYYY-MM-DD from before this changed stays permanently valid and reads as that day's UTC midnight. |
 | `files` | string[] | ✅ | — | — | Paths to the files that make up this artifact. |
 | `usage` | map | — | ✅ | — | Cost/usage receipt for the member run that produced this artifact. |
 | `usage.model` | string | — | ✅ | — | The model used, or null if not reported. |
 | `usage.tokens_in` | number | — | ✅ | — | Input tokens reported, or null if unreported. |
 | `usage.tokens_out` | number | — | ✅ | — | Output tokens reported, or null if unreported. |
-| `usage.usd` | number | — | ✅ | — | Estimated USD cost, or null if unreported or not applicable (e.g. a subscription-authenticated member — see plan below). |
+| `usage.tokens_cache_read` | number | — | ✅ | — | Prompt-cache READ input tokens (priced into usd at a discount vs tokens_in) — native members only; absent for a cli/remote member's receipt, which has no cache accounting to give. |
+| `usage.tokens_cache_write` | number | — | ✅ | — | Prompt-cache WRITE (cache-creation) input tokens (priced into usd at their own, typically premium, rate) — native members only; absent for a cli/remote member's receipt. |
+| `usage.usd` | number | — | ✅ | — | USD cost, or null if unreported or not applicable (e.g. a subscription-authenticated member — see plan below). For a native member this is the Claude Agent SDK's OWN reported cost (real vendor billing, verbatim) — not derived from tokens_in/tokens_out against knowledge/model-pricing.md, and not reproducible by multiplying them against it, since the SDK's cost also prices tokens_cache_read/tokens_cache_write above at their own separate rates. For a cli/remote member, usd IS an estimate from knowledge/model-pricing.md. |
 | `usage.wall_clock_s` | number | — | ✅ | — | Wall-clock seconds the run took, or null if not timed. |
 | `usage.plan` | string | — | ✅ | — | The subscription plan covering the cost, set only when the member's receipt came from an auth: subscription connector — usd above is always null for these. |
 | `connector` | string | — | ✅ | — | Reserved for kind: proposal — the connector this proposal targets. |

@@ -1005,3 +1005,60 @@ friction — the stamp is computed from disk, independent of anything Part 1 che
 
 See NOTES REGISTRY-PROVENANCE for the full decision record (why a content hash over `HEAD`, why `start`
 alone over the broader dispatching-verb set, and the exact test list).
+
+## `created` was a bare calendar date, so age and gate-response numbers lied near a UTC midnight — closed (NOTES "created timestamp")
+
+Every artifact write site stamped `created:` as `YYYY-MM-DD`, no time of day. Two board-facing figures
+read from it: `derive.ts#ageLabel` (an artifact's displayed age) and `derive.ts#medianGateResponseDays`
+(a studio's median gate response time, from `created` to a date extracted from `approved_by`). Both
+parse `created` from that date's UTC midnight — `new Date("2026-08-13")` — so an artifact produced
+minutes before the board rendered showed several hours old, and a gate opened and approved hours apart
+but straddling a UTC midnight boundary read a full day's response time instead of the real, much
+smaller gap.
+
+Closed by making `created` a full UTC ISO timestamp (`YYYY-MM-DDTHH:MM:SS.sssZ`, `.toISOString()`) at
+every write site (`adapters.ts#author`'s `AdapterRunnerOptions.now`; `dagwalk.ts`'s merge-gate and
+blocked-artifact paths; `board/gateops.ts`'s blocked-retry path — `formatMergeArtifact`'s `created`
+param just carries whichever of these it's handed). `ageLabel`/`medianGateResponseDays` needed no logic
+change — both already parsed `created` with `new Date()`, which already resolves full precision
+correctly; only the STORED value was ever imprecise. `validate.ts`'s `created` field (`isIsoDate`)
+accepts the new timestamp shape and keeps accepting the old bare-date shape permanently, not as a
+deprecated fallback — a bare date is read as that day's UTC midnight, the honest interpretation for a
+value that never recorded a time of day, and every artifact written before this change keeps validating
+and rendering (coarser age/response figures, never wrong ones). `approved_by`'s own date stamp
+(`board/gateops.ts`'s `ResolveOpts.today`) is deliberately UNCHANGED — still day-granularity by design,
+so `medianGateResponseDays` keeps reading it exactly as documented.
+
+See NOTES "created timestamp" for the full write-site inventory and the day-granularity residual this
+leaves in `medianGateResponseDays` (bounded by one day, and never inflates a same-day round-trip into
+"1d" the way the old fully-day-floored version did).
+
+## A native member's receipt priced prompt-cache tokens without ever reporting them — closed (NOTES "receipt cache tokens")
+
+`sdk-worker.ts#deriveReceipt` summed only `inputTokens`/`outputTokens` from the Claude Agent SDK's
+`modelUsage`, and set `usd` from the SDK's own `total_cost_usd` — real vendor billing, which already
+prices prompt-cache read and write tokens at their own rates. Those cache tokens never appeared
+anywhere on the receipt, so an operator checking `usd` against `tokens_in`/`tokens_out` priced through
+`knowledge/model-pricing.md`'s flat per-model rate found the two numbers 40–50% apart on every real
+call — the shape of a cached system prompt/tool-definition block, priced but not counted.
+
+Closed by summing the SDK's own `cacheReadInputTokens`/`cacheCreationInputTokens` (real fields on every
+`ModelUsage` entry, confirmed against `node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts`, not a
+speculative addition) into two new receipt fields, `tokens_cache_read`/`tokens_cache_write`
+(`types.ts#Receipt`) — optional, present only on a native receipt that reported usage at all, absent
+for every cli/remote member (which has no cache accounting to give), reported alongside `tokens_in`/
+`tokens_out` on the produced artifact's own `usage:` frontmatter (`adapters.ts#author`,
+`validate.ts`'s `usage` schema). `tokens_in`/`tokens_out` keep their original meaning; the cache
+breakdown is additive, not folded in, so no existing consumer's arithmetic silently changes underneath
+it.
+
+This also corrected a standing inaccuracy in how `usd` was described: it is NOT uniformly "estimated
+from `knowledge/model-pricing.md`" — that estimate is only ever reached for a cli/remote member's
+receipt (`receipts.ts#normalizeReceipt`). A native member's `usd` is the SDK's own reported cost, used
+verbatim, and is not exactly reproducible from `tokens_in`/`tokens_out`/the cache fields against the
+pricing table's flat rate, since real cache pricing has its own tiers this table doesn't carry — the
+pricing table's actual, universal job is the KNOWN-MODEL validation gate (`UNKNOWN_MODEL`), which
+`src/init.ts`'s scaffolded `knowledge/model-pricing.md` (and `fixtures/golden`'s copy) now says
+explicitly, instead of claiming to price every receipt.
+
+See NOTES "receipt cache tokens" for the full field inventory and the worked reconciliation example.
