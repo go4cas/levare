@@ -16525,3 +16525,114 @@ build`, `bun run docs:generate` (no diff) all clean. `levare validate fixtures/g
 `levare serve` process: the uncovered `code` row's rendered HTML carries an empty `sstep__sub` and the
 full trigger+tooltip markup, exactly as designed — `assets/app.js` confirmed to parse cleanly
 (`new Function(source)`, syntax-only, no behavioral claim beyond "this file still loads").
+
+# NOTES "dubious clone ownership" & "tree build version" (2026-08-15) — a release that never shipped, and the placeholder that would have shipped inside it
+
+Two small, unrelated fixes, both release-blocking or release-confusing. `v0.2.5` was tagged on `d1c0689`
+and never published: `verify` failed on the clone test below, `build`/`release` never ran, and the tag
+sat with no release behind it while `curl | sh` kept silently serving `v0.2.4`. Tag deleted.
+
+## 1 — `tests/guide-workflow-blocks.test.ts`'s clone test: confirmed, not assumed
+
+**The report's own suspected mechanism, confirmed by direct reproduction before touching any code.**
+Built a real ownership mismatch (`sudo chown root:root` on a real git repo, `chmod` it traversable) and
+ran `git clone` against it with this test's EXACT env shape (`GIT_CONFIG_SYSTEM: "/dev/null"`,
+`GIT_CONFIG_GLOBAL` pointed at a config carrying only `[user]`, no `safe.directory`): reproduced
+`exit 128`, `fatal: detected dubious ownership in repository at '<path>/.git'`, byte-for-byte the
+reported symptom. This is git's real, well-documented ownership-mismatch refusal — not a
+coincidentally-matching different failure the report's own theory could have gotten wrong.
+
+**What confirming it directly caught that assuming it would have missed:** a first fix attempt added
+`safe.directory = <source>` (the working-tree root — what `git config --add safe.directory <path>`'s
+own suggested-remedy text and every common online example shows) to the test's own config file. Still
+failed, identically. Re-ran the repro with that fix applied and read git's own remedy text literally —
+it names `<path>/.git`, not `<path>`. `git clone` of a local path opens the SOURCE through its `.git`
+directory directly (the same access path a bare/object-store read takes), and checks THAT directory's
+ownership — distinct from `git -C <root> ...` (every other git invocation in this codebase, including
+`init.ts#makeFoundingCommit`'s own `git init`/`add`/`commit`/`rev-parse` against this SAME `source`
+directory, immediately above this test's clone call), which treats `<root>` as a working tree and
+checks IT. This is exactly why only the clone line was ever reported failing — `-C`-based commands
+against the identical directory were never at risk — and why a plausible-looking fix using the WRONG
+form would have silently done nothing, passed locally (ownership is never actually dubious for a
+same-user `mkdtempSync`'d directory), and been indistinguishable from the real fix until it next failed
+on a runner where ownership genuinely diverges. Verified the corrected form end to end against the
+REAL project code (`src/init.ts#initStudio`, not a standalone shell reproduction): root-owned `source`,
+`.git`-suffixed `safe.directory` entries in the test's own config → clean exit; the unsuffixed form or
+no entry at all → the identical `dubious ownership` failure, every time.
+
+**What was not, and could not be, fully pinned: the exact reason ownership diverges on some runner
+instances and not others.** `ubuntu-latest`'s `verify` job (release.yml) and `test` job (ci.yml) run the
+byte-identical `actions/checkout@v7` → `setup-bun` → `bun install` → `bun test` sequence — nothing in
+either workflow's own steps differs up to the point this test runs, and CI's own run of the SAME commit
+passed two minutes before Release's failed. This matches the report's own "environmental either way,
+stable in neither" framing: each job gets a fresh, independent hosted-runner instance, and whatever
+tips a `mkdtemp`'d scratch directory into "dubious" on some instances and not others is runner-instance
+provisioning this test (and this fix) has no visibility into and the tag/logs are gone to inspect
+post-hoc. The fix doesn't need to know why — declaring the test's own scratch paths safe, in the test's
+OWN config, makes its git operations depend on nothing inherited from the ambient environment at all,
+closing the entire class of failure regardless of the specific runner-instance trigger. This mirrors
+the file's own pre-existing intent (`GIT_CONFIG_SYSTEM`/`GIT_CONFIG_GLOBAL` were ALREADY overridden for
+hermeticity — discarding ambient config was always the design; this closes the one place that discard
+went further than intended and removed something the test's own operations turned out to still need).
+
+**The assertion now reports what actually happened.** `expect(cloneResult.status).toBe(0)` discarded
+git's own stderr — the failure cost a screenshot and an hour to even name, on a run whose logs were
+already gone by the time anyone could look twice. Replaced with an explicit check that throws the
+status, signal (if any), and full stderr. Grepped the wider suite while here: 17 other
+`expect(<spawnSync result>.status).toBe(0)` sites across 8 files carry the identical discard-on-failure
+shape — noted, not touched; fixing all of them is a separate, larger unit this report didn't ask for
+and conflates two different things (bare status assertions vs. environment-dependent test RESULTS,
+which is the actual pattern this is item eight of). Named here so it isn't rediscovered piecemeal.
+
+**Tests.** The fix IS the test — no new test added; the existing test, corrected, is the regression
+guard. Verified directly against `src/init.ts#initStudio` (not a shell reproduction) in both directions
+(dubious source → clean exit with the fix; dubious source → confirmed `128`/dubious-ownership without
+it) before landing, per the report's own "confirm rather than assume" instruction — see this NOTES
+entry's own record above for the exact repro shape, since the live proof itself isn't committed code.
+
+## 2 — a tree build reported a fabricated version
+
+`bun run build` (off `main`, not a release) produced a binary reporting `levare 0.0.1` in `--version`
+and `v0.0.1` in the board header. `package.json`'s version is permanently `"0.0.1"` on `main` —
+`release.yml`'s "Stamp package.json version from the release tag" step overwrites it only in an
+ephemeral checkout, immediately before that leg's own `bun build --compile`, and never commits the
+change back (its own comment already said so: "nothing is committed back"). A tree build therefore
+always carries a real, correctly `--define`-stamped commit (`__LEVARE_BUILD_COMMIT__`) alongside this
+never-bumped, meaningless number, and reported the two together as if "0.0.1" were a real version
+someone chose.
+
+**Conductor ruling, applied directly: a tree build reports `dev (build <hash>)`, never a version-shaped
+string, in both `--version` and the board header.** `git describe` was considered and explicitly
+rejected — it would produce an equally version-SHAPED string (`0.0.1-14-gabc1234`) for something that
+still isn't a release, the identical confusion in subtler, easier-to-miss form (it LOOKS more
+informative, which makes it easier to mistake for a real, deliberate version). The signal used instead
+needs nothing new: `package.json`'s version is `"0.0.1"` if and only if this build was never
+release.yml's own ephemeral stamp — no separate build-time marker, env var, or `git describe` call
+required, since only a genuinely tagged release ever overwrites it before building.
+
+`version.ts#isUnstampedTreeBuild` is the one decision (`build !== null && version === "0.0.1"`), used by
+both surfaces so they can't independently drift: `formatVersion` (`--version`'s full sentence) prints
+`levare dev (build <hash>)`; the new `versionChip` (the board header's compact chip,
+`board/render/shell.ts`) prints the identical `dev (build <hash>)` fragment, replacing the header's own
+previously-hardcoded `v` prefix (which doesn't belong before the word "dev"). A real release
+(`version !== "0.0.1"`) is completely unaffected in both places — "Released binaries unchanged" — and a
+plain source run (no build stamp at all, `bun run src/cli.ts`/`./levare` uncompiled) is deliberately out
+of this ruling's scope: it already reads unambiguously (`(source/dev)`, no version-shaped build
+identifier attached to confuse), and the ruling named `bun run build`'s own output specifically, not the
+pre-existing source-run case.
+
+**Verified live, not just unit-tested:** `bun run build` on this tree, `./dist/levare --version` →
+`levare dev (build f450296)`; served the compiled binary against a real scratch studio and confirmed the
+board header's own rendered HTML carries `dev (build f450296)` — both surfaces, the real compiled
+artifact, not a synthetic `VersionInfo`.
+
+**Tests.** `tests/version.test.ts` gains a dedicated describe block: `formatVersion`/`versionChip` both
+report `dev (build <hash>)` for the placeholder; a NEARBY-but-real version (`0.0.2`, `1.4.0`) is never
+mistaken for the placeholder — "0.0.1" is the exact, only trigger, not "starts with 0.0"; the source-run
+case is unaffected; and this repo's own committed `package.json` really is still `"0.0.1"` today — the
+regression this guards against is reachable, not hypothetical, the same discipline the file's own header
+comment already states for the compiled-vs-source split.
+
+**Verification (both items).** `bun test` → 1470 pass, 0 fail. `bunx tsc --noEmit`, `bun run deps:check`,
+`bun run build`, `bun run docs:generate` (no diff) all clean. `levare validate fixtures/golden` → valid.
+`levare replay fixtures/golden --stubs` → oracle match, byte-for-byte.
