@@ -149,7 +149,27 @@ export const ARTIFACT_SCHEMA: Schema = {
         model: { type: "str", nullable: true, description: "The model used, or null if not reported." },
         tokens_in: { type: "num", nullable: true, description: "Input tokens reported, or null if unreported." },
         tokens_out: { type: "num", nullable: true, description: "Output tokens reported, or null if unreported." },
-        usd: { type: "num", nullable: true, description: "Estimated USD cost, or null if unreported or not applicable (e.g. a subscription-authenticated member — see plan below)." },
+        // NOTES "receipt cache tokens": present only on a native (kind: native) member's receipt — a
+        // cli/remote member's boundary has no cache accounting to report, so these are absent, never a
+        // misleading `null`, on any other artifact.
+        tokens_cache_read: {
+          type: "num",
+          required: false,
+          nullable: true,
+          description: "Prompt-cache READ input tokens (priced into usd at a discount vs tokens_in) — native members only; absent for a cli/remote member's receipt, which has no cache accounting to give.",
+        },
+        tokens_cache_write: {
+          type: "num",
+          required: false,
+          nullable: true,
+          description: "Prompt-cache WRITE (cache-creation) input tokens (priced into usd at their own, typically premium, rate) — native members only; absent for a cli/remote member's receipt.",
+        },
+        usd: {
+          type: "num",
+          nullable: true,
+          description:
+            "USD cost, or null if unreported or not applicable (e.g. a subscription-authenticated member — see plan below). For a native member this is the Claude Agent SDK's OWN reported cost (real vendor billing, verbatim) — not derived from tokens_in/tokens_out against knowledge/model-pricing.md, and not reproducible by multiplying them against it, since the SDK's cost also prices tokens_cache_read/tokens_cache_write above at their own separate rates. For a cli/remote member, usd IS an estimate from knowledge/model-pricing.md.",
+        },
         wall_clock_s: { type: "num", nullable: true, description: "Wall-clock seconds the run took, or null if not timed." },
         // NOTES C13: set only when the member's receipt came from an auth: subscription connector —
         // names the plan covering the cost, since usd above is always null for these.

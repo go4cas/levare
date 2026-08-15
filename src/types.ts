@@ -407,12 +407,32 @@ export interface Usage {
 
 // A normalized usage receipt (§10), produced at the Runner boundary by every adapter. Three numbers,
 // three reliabilities: wall-clock (always, when the adapter timed the member), tokens (when the
-// member reported them), USD (estimated from knowledge/model-pricing.md, nullable). `unreported` is
-// recorded honestly when the member gave nothing at all — silence is never dressed up as $0.
+// member reported them), USD. `unreported` is recorded honestly when the member gave nothing at all —
+// silence is never dressed up as $0.
+//
+// NOTES "receipt cache tokens": `usd` is NOT uniformly "estimated from knowledge/model-pricing.md" —
+// that estimate (pricing.ts#priceUsd) is only ever reached for a cli/remote member's receipt
+// (receipts.ts#normalizeReceipt, the only caller). A `kind: native` member's `usd` is the Claude Agent
+// SDK's OWN reported `total_cost_usd` (sdk-worker.ts#deriveReceipt), used verbatim — real vendor
+// billing, not a derived figure, and specifically NOT reproducible by multiplying `tokens_in`/
+// `tokens_out` against the pricing table's flat per-model rate: the SDK's cost already prices
+// prompt-cache read/write tokens at their own separate rates, and those tokens are reported nowhere in
+// `tokens_in`/`tokens_out` at all — see `tokens_cache_read`/`tokens_cache_write` below.
 export interface Receipt {
   model: string | null;
   tokens_in: number | null;
   tokens_out: number | null;
+  /** Prompt-cache READ input tokens (the SDK's `ModelUsage.cacheReadInputTokens`, summed across every
+   * model entry) — priced into a native receipt's `usd` at a discount vs a fresh `tokens_in` token,
+   * so folding it into `tokens_in` would misstate what a dollar of `usd` bought. Present (a number,
+   * possibly 0) only on a native receipt that reported usage at all; absent (`undefined`) for every
+   * other member kind and for an `unreported` native receipt — a cli/remote member has no cache
+   * accounting to give. */
+  tokens_cache_read?: number | null;
+  /** Prompt-cache WRITE (cache-creation) input tokens (the SDK's `ModelUsage.cacheCreationInputTokens`)
+   * — `tokens_cache_read`'s write-side counterpart, priced at its own separate (typically premium)
+   * rate. Same presence rule as `tokens_cache_read`. */
+  tokens_cache_write?: number | null;
   wall_clock_s: number | null;
   usd: number | null;
   unreported: boolean;

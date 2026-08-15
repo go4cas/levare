@@ -8,6 +8,7 @@ import type { Repo } from "../src/repo.ts";
 import { assembleContext } from "../src/context.ts";
 import { loadPricing } from "../src/pricing.ts";
 import { AdapterRunner, AdapterError, createAsyncStdioRemoteBoundary, buildRemoteSandboxPolicy, type CliSpawn, type InvokeRequest, type NativeBoundary, type RemoteBoundary, type SpawnResult } from "../src/adapters.ts";
+import { validateArtifactSource } from "../src/validate.ts";
 import { connectStdioMcpServer } from "../src/mcp-client.ts";
 import type { Agent, Connector } from "../src/types.ts";
 import { render } from "../fixtures/stubs/member-stub.ts";
@@ -97,6 +98,42 @@ describe("native adapter (mocked SDK boundary)", () => {
     // Not the pricing-table-derived figure the doc's own canned usage block would produce (0.24, 480s).
     expect(receipt.usd).not.toBe(0.24);
     expect(receipt.wall_clock_s).not.toBe(480);
+  });
+
+  // NOTES "receipt cache tokens": a native receipt carrying prompt-cache token counts (sdk-worker.ts
+  // #deriveReceipt, once it sums them) must reach the produced artifact's own `usage:` frontmatter, not
+  // get dropped at this boundary — the same verbatim-passthrough guarantee the test above proves for
+  // tokens_in/tokens_out/usd now covers the cache breakdown too.
+  test("a native receipt's cache token breakdown reaches the produced artifact's usage: frontmatter", () => {
+    const repo = loadRepo(ROOT);
+    const sdkReceipt = { model: "claude-sonnet-5", tokens_in: 892, tokens_out: 786, tokens_cache_read: 2143, tokens_cache_write: 0, wall_clock_s: 9.5, usd: 0.020895, unreported: false };
+    const native: NativeBoundary = { invoke: (r) => ({ doc: render(r.member, r.kind, r.unit, r.project), receipt: sdkReceipt }) };
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native, remote: remoteMock });
+    const { doc, receipt } = runner.produce("lyra", "spec", "checkout-flow", "storefront");
+    expect(receipt.tokens_cache_read).toBe(2143);
+    expect(receipt.tokens_cache_write).toBe(0);
+    expect(doc).toContain("tokens_cache_read: 2143");
+    expect(doc).toContain("tokens_cache_write: 0");
+    const errs = validateArtifactSource(doc, "lyra:spec", `${ROOT}/work/storefront/checkout-flow`, ROOT);
+    expect(errs).toEqual([]);
+  });
+
+  // A cli/remote member's receipt has no cache accounting at all (the fields are simply never set) —
+  // the produced artifact's usage: block must not gain a misleading `tokens_cache_read: null` line just
+  // because SOME artifacts carry that field now.
+  test("a cli member's usage: frontmatter carries no tokens_cache_read/tokens_cache_write lines at all", () => {
+    const repo = loadRepo(ROOT);
+    const runner = new AdapterRunner(repo, {
+      pricing,
+      capabilities: [{ member: "finch", kind: "review" }],
+      native: nativeMock,
+      remote: remoteMock,
+      spawn: cannedCliSpawn("# Review\n\nLooks solid overall.\n\ntokens used: 2745\n"),
+      cliCommand: stubCliCommand,
+    });
+    const { doc } = runner.produce("finch", "review", "checkout-flow", "storefront");
+    expect(doc).not.toContain("tokens_cache_read");
+    expect(doc).not.toContain("tokens_cache_write");
   });
 
   // NOTES F11: end-to-end — the agent's OWN declared model reaches the native boundary's request, and

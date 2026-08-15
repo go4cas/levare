@@ -1419,6 +1419,11 @@ export class AdapterRunner implements MemberRunner {
         `  usd: ${finalReceipt.usd ?? "null"}`,
         `  wall_clock_s: ${finalReceipt.wall_clock_s ?? "null"}`,
       );
+      // NOTES "receipt cache tokens": present only for a native receipt (sdk-worker.ts#deriveReceipt
+      // always sets both, even to 0) — a cli/remote member has no cache accounting to give, so these
+      // stay absent rather than a misleading `null` on every non-native artifact.
+      if (finalReceipt.tokens_cache_read !== undefined) lines.push(`  tokens_cache_read: ${finalReceipt.tokens_cache_read ?? "null"}`);
+      if (finalReceipt.tokens_cache_write !== undefined) lines.push(`  tokens_cache_write: ${finalReceipt.tokens_cache_write ?? "null"}`);
       if (finalReceipt.plan) lines.push(`  plan: ${finalReceipt.plan}`);
     }
     // NOTES R4-SANDBOX / NOTES MCP-1C: the OS-sandbox enforcement level this member's spawn actually ran

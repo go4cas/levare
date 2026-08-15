@@ -1,5 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import { deriveReceipt } from "../src/sdk-worker.ts";
+import { baselinePricing } from "../src/pricing.ts";
 
 // NOTES F11 — the ACTUAL live defect, proven against the real SDK (not a mocked transport): a native
 // member declaring `model: claude-sonnet-5` produced an artifact whose usage receipt named
@@ -56,5 +57,78 @@ describe("sdk-worker.ts#deriveReceipt — the model that answered, not the first
     // to contain — these should agree in practice, but respondingModel is the more direct signal.
     const message = { modelUsage: { "claude-haiku-4-5-20251001": { inputTokens: 1, outputTokens: 1 } }, duration_ms: 1, total_cost_usd: 0.0001 };
     expect(deriveReceipt(message, "claude-sonnet-5").model).toBe("claude-sonnet-5");
+  });
+});
+
+// NOTES "receipt cache tokens" — the actual live defect: `deriveReceipt` summed only `inputTokens`/
+// `outputTokens` from `modelUsage`, so a receipt's own `tokens_in`/`tokens_out` never accounted for the
+// prompt-cache read/write tokens `total_cost_usd` already priced in — a careful operator checking
+// `(tokens_in/1e6)*in_per_m + (tokens_out/1e6)*out_per_m` against the reported `usd` (exactly what
+// `knowledge/model-pricing.md`'s rates are FOR) found the two off by 40-50%, on every real call, since
+// the system prompt/tool definitions cached per member are large relative to a short brief's own input.
+//
+// The fixture below uses the SDK's real `ModelUsage` shape (agentSdkTypes.d.ts, re-exported from
+// sdk.d.ts: inputTokens/outputTokens/cacheReadInputTokens/cacheCreationInputTokens/webSearchRequests/
+// costUSD/contextWindow/maxOutputTokens) — not a hand-trimmed subset — and its numbers are the actual
+// figures observed for one real dispatch (product-brief-add-command-v3): 892 in / 786 out reported,
+// $0.020895 billed, claude-sonnet-5's baseline rates ($3.00/M in, $15.00/M out). Backing the gap out as
+// unpriced input tokens at that rate gives 2143 — this fixture's `cacheReadInputTokens`.
+describe("sdk-worker.ts#deriveReceipt — prompt-cache tokens are summed and reported (NOTES 'receipt cache tokens')", () => {
+  const REALISTIC_MODEL_USAGE = {
+    "claude-sonnet-5": {
+      inputTokens: 892,
+      outputTokens: 786,
+      cacheReadInputTokens: 2143,
+      cacheCreationInputTokens: 0,
+      webSearchRequests: 0,
+      costUSD: 0.020895,
+      contextWindow: 200_000,
+      maxOutputTokens: 8_192,
+    },
+  };
+
+  test("tokens_cache_read/tokens_cache_write are summed from modelUsage, alongside tokens_in/tokens_out", () => {
+    const message = { modelUsage: REALISTIC_MODEL_USAGE, duration_ms: 9_500, total_cost_usd: 0.020895 };
+    const receipt = deriveReceipt(message, "claude-sonnet-5");
+    expect(receipt.tokens_in).toBe(892);
+    expect(receipt.tokens_out).toBe(786);
+    expect(receipt.tokens_cache_read).toBe(2143);
+    expect(receipt.tokens_cache_write).toBe(0);
+    expect(receipt.usd).toBe(0.020895);
+  });
+
+  test("once cache tokens are included, the receipt's own numbers reconcile with its own cost under knowledge/model-pricing.md's baseline rates — tokens_in/tokens_out alone do not", () => {
+    const message = { modelUsage: REALISTIC_MODEL_USAGE, duration_ms: 9_500, total_cost_usd: 0.020895 };
+    const receipt = deriveReceipt(message, "claude-sonnet-5");
+    const rate = baselinePricing().get(receipt.model!)!;
+
+    const computedFromInOutOnly = (receipt.tokens_in! / 1_000_000) * rate.in_per_m + (receipt.tokens_out! / 1_000_000) * rate.out_per_m;
+    // The pre-fix defect, reproduced: pricing only the reported tokens_in/tokens_out undercounts the
+    // real cost by roughly 30% — exactly the "careful operator does the arithmetic and finds a
+    // discrepancy" scenario this fix closes.
+    expect(computedFromInOutOnly).toBeLessThan(receipt.usd! * 0.75);
+
+    const computedWithCache =
+      ((receipt.tokens_in! + receipt.tokens_cache_read! + receipt.tokens_cache_write!) / 1_000_000) * rate.in_per_m + (receipt.tokens_out! / 1_000_000) * rate.out_per_m;
+    expect(computedWithCache).toBeCloseTo(receipt.usd!, 6);
+  });
+
+  test("no cache activity at all (cacheReadInputTokens/cacheCreationInputTokens both 0) reports zero, not absent — a real number, never a silent gap", () => {
+    const message = {
+      modelUsage: { "claude-opus-4-8": { inputTokens: 50, outputTokens: 10, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } },
+      duration_ms: 100,
+      total_cost_usd: 0.0005,
+    };
+    const receipt = deriveReceipt(message, "claude-opus-4-8");
+    expect(receipt.tokens_cache_read).toBe(0);
+    expect(receipt.tokens_cache_write).toBe(0);
+  });
+
+  test("no modelUsage entries at all → cache fields are null, matching tokens_in/tokens_out's own unreported convention", () => {
+    const message = { modelUsage: {}, duration_ms: 500 };
+    const receipt = deriveReceipt(message, null, "claude-sonnet-5");
+    expect(receipt.unreported).toBe(true);
+    expect(receipt.tokens_cache_read).toBeNull();
+    expect(receipt.tokens_cache_write).toBeNull();
   });
 });

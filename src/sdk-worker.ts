@@ -122,23 +122,45 @@ export function buildQueryOptions(req: SdkWorkerRequest) {
  * content the result message actually reports — is the fix; `modelUsage[0]` stays only as a fallback
  * for the (untested-live, believed impossible) case where no `assistant` message was ever seen.
  *
- * `tokens_in`/`tokens_out`/`usd` still SUM every entry in `modelUsage` — that is correct: the member
- * genuinely cost that much regardless of which internal call spent which tokens. Only the reported
- * MODEL NAME needed fixing, not the cost accounting.
+ * `tokens_in`/`tokens_out`/`tokens_cache_read`/`tokens_cache_write`/`usd` still SUM every entry in
+ * `modelUsage` — that is correct: the member genuinely cost that much regardless of which internal
+ * call spent which tokens. Only the reported MODEL NAME needed fixing, not the cost accounting.
+ *
+ * NOTES "receipt cache tokens": the SDK's own `ModelUsage` (agentSdkTypes.d.ts, re-exported from
+ * sdk.d.ts) carries `cacheReadInputTokens`/`cacheCreationInputTokens` alongside `inputTokens`/
+ * `outputTokens` — real fields on every entry, not a speculative addition. Before this, only
+ * `inputTokens`/`outputTokens` were summed, so `total_cost_usd` (which the SDK prices INCLUDING cache
+ * read/write, each at its own rate) always ran ahead of what `tokens_in`/`tokens_out` could account
+ * for — a receipt whose own numbers didn't reconcile with its own cost, on every call that touched a
+ * cached prompt (i.e. nearly every real one: the system prompt/tool definitions are large and static
+ * per member). Summed here exactly like `inputTokens`/`outputTokens` always were, so the receipt now
+ * reports where the rest of `usd` went instead of leaving it unaccounted for.
  *
  * Factored out (rather than left inline in `main()`'s loop) specifically so a test can feed a
  * synthetic multi-model `modelUsage` object and assert the correct model wins, without spawning a
  * real subprocess or mocking the SDK's own `query()` async generator — see
  * tests/sdk-worker-receipt.test.ts.
  */
-export function deriveReceipt(message: { modelUsage?: Record<string, { inputTokens?: number; outputTokens?: number }>; duration_ms?: number; total_cost_usd?: number }, respondingModel: string | null, reqModel?: string): Receipt {
+export function deriveReceipt(
+  message: {
+    modelUsage?: Record<string, { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number }>;
+    duration_ms?: number;
+    total_cost_usd?: number;
+  },
+  respondingModel: string | null,
+  reqModel?: string,
+): Receipt {
   const modelUsage = Object.entries(message.modelUsage ?? {});
   const tokensIn = modelUsage.length ? modelUsage.reduce((sum, [, u]) => sum + (u.inputTokens ?? 0), 0) : null;
   const tokensOut = modelUsage.length ? modelUsage.reduce((sum, [, u]) => sum + (u.outputTokens ?? 0), 0) : null;
+  const tokensCacheRead = modelUsage.length ? modelUsage.reduce((sum, [, u]) => sum + (u.cacheReadInputTokens ?? 0), 0) : null;
+  const tokensCacheWrite = modelUsage.length ? modelUsage.reduce((sum, [, u]) => sum + (u.cacheCreationInputTokens ?? 0), 0) : null;
   return {
     model: respondingModel ?? modelUsage[0]?.[0] ?? reqModel ?? null,
     tokens_in: tokensIn,
     tokens_out: tokensOut,
+    tokens_cache_read: tokensCacheRead,
+    tokens_cache_write: tokensCacheWrite,
     wall_clock_s: typeof message.duration_ms === "number" ? message.duration_ms / 1000 : null,
     usd: typeof message.total_cost_usd === "number" ? message.total_cost_usd : null,
     unreported: modelUsage.length === 0 && typeof message.total_cost_usd !== "number",
