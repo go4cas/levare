@@ -56,3 +56,33 @@ describe("resolveOrchestratorStatus — reflects the local precondition only, no
     }
   });
 });
+
+// DOCS-WALKTHROUGH-3 item 4: every OTHER credential `levare doctor` reports on already names its source
+// (dotenv.ts#applyStudioEnv's provenance, threaded through diagnose()'s own `env` lines) — the
+// Orchestrator's own ANTHROPIC_API_KEY was the one exception, a gap real enough to cost a debugging
+// session ("a shell export silently outranking the .env a user just edited looks identical to a correct
+// load"). `envSource` closes it: optional, so every board render call site (none of which pass it) keeps
+// the exact reason text it always had.
+describe("resolveOrchestratorStatus — envSource names where ANTHROPIC_API_KEY came from (DOCS-WALKTHROUGH-3 item 4)", () => {
+  test("envSource 'dotenv' is folded into the reason", () => {
+    const status = resolveOrchestratorStatus({ ANTHROPIC_API_KEY: "sk-ant-test" }, {}, "dotenv");
+    expect(status.reason).toBe(`${ORCHESTRATOR_ENV_VAR} is present (dotenv) — its validity isn't checked until the Orchestrator makes a real request.`);
+  });
+
+  test("envSource 'shell' is folded into the reason", () => {
+    const status = resolveOrchestratorStatus({ ANTHROPIC_API_KEY: "sk-ant-test" }, {}, "shell");
+    expect(status.reason).toBe(`${ORCHESTRATOR_ENV_VAR} is present (shell) — its validity isn't checked until the Orchestrator makes a real request.`);
+  });
+
+  test("no envSource given (every board render call site) — reason is exactly as before, no empty parens", () => {
+    const status = resolveOrchestratorStatus({ ANTHROPIC_API_KEY: "sk-ant-test" });
+    expect(status.reason).toBe(`${ORCHESTRATOR_ENV_VAR} is present — its validity isn't checked until the Orchestrator makes a real request.`);
+    expect(status.reason).not.toContain("()");
+  });
+
+  test("envSource is ignored when the key is absent — never claims a source for a credential that isn't there", () => {
+    const status = resolveOrchestratorStatus({}, {}, "dotenv");
+    expect(status.available).toBe(false);
+    expect(status.reason).not.toContain("dotenv");
+  });
+});
