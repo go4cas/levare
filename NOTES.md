@@ -16834,3 +16834,92 @@ source touched. `bun test` → 1472 pass, 0 fail. `bunx tsc --noEmit`, `bun run 
 `bun run docs:generate` (no diff) all clean. `levare validate fixtures/golden` → valid. `levare replay
 fixtures/golden --stubs` → oracle match, byte-for-byte. Grepped every page under `docs/guide/` for `until`/
 `satisf`/`Corvid` to confirm no other page claims an agent's own output satisfies a loop's `until`.
+
+# NOTES "subprocess assertion failures" (2026-08-16) — closing the "17 other sites" note in bulk, and finding it undercounted
+
+The "dubious clone ownership" entry (NOTES, 2026-08-15) fixed one bare `expect(cloneResult.status).toBe(0)`
+and named "17 other `expect(<spawnSync>.status).toBe(0)` sites across the suite" as a separate, larger
+unit — deliberately deferred, not fixed there. `tests/daemon.test.ts`'s `commitAuthor` read-back helper
+(NOTES "runner-authored-commit audit") had the same defect in a different shape: no status check at
+all, just a blind `.stdout` read that came back blank on failure, indistinguishable from a genuinely
+blank commit author. Both cost roughly an hour to diagnose this week, both times requiring a screenshot
+of a CI log to learn what a captured stderr would have said in the assertion message itself.
+
+## Find first, don't trust the inherited count
+
+The goal was explicit: 17 is what a previous session reported, not what to build toward. A fresh grep
+across every `spawnSync`/`Bun.spawnSync`/`Bun.spawn` call site in `tests/` found far more than 17, in
+three distinct shapes:
+
+1. **A 41-file, byte-identical `git()` test helper.** `if (r.status !== 0) throw new Error(\`git
+   ${args.join(" ")} failed: ${r.stderr}${r.stdout}\`);` — already better than a bare `expect()` (it
+   does report stderr), but missing the exit status and signal the two reference fixes both include.
+2. **~35 bare `expect(p.exitCode).toBe(N)` / `expect(result.status).toBe(N)` assertions, no message at
+   all** — the exact `cloneResult` shape, spread across `validate.test.ts`, `version.test.ts`,
+   `doctor.test.ts`, `env-tracked.test.ts`, `cli-context-artifacts.test.ts`, `init.test.ts`,
+   `cli-no-sdk.test.ts`, `install-script.test.ts`, `native-binary-embed.test.ts`,
+   `orchestrator-compiled-smoke.test.ts`, `gateops-phase5.test.ts`, `board-serve.test.ts`,
+   `git-transactional-write.test.ts`, `serve-real-cli-e2e.test.ts`,
+   `repro-r4-sandbox-securityserver.test.ts`, and `board-serve-e2e.test.ts`'s SIGINT exit-code check.
+3. **~20 sites reading `spawnSync(...).stdout` straight off the result with no status check first** —
+   the exact `commitAuthor` shape, in `gateops-phase5.test.ts`, `registry-provenance.test.ts`,
+   `board-serve.test.ts`, `conversation.test.ts`, `orchestrator.test.ts`, `multiteam.test.ts`,
+   `board-serve-daemon.test.ts`, `orchestrator-daemon-transactional.test.ts`, `merge.test.ts`,
+   `merge-gate.test.ts`, `orchestrator-compiled-smoke.test.ts`, and `daemon.test.ts`'s own separate `log`
+   read (distinct from the already-fixed `commitAuthor`).
+
+Excluded, confirmed by reading each site's context rather than assumed from the field name: `res.status`
+(an HTTP `fetch`/`Response` status code, unrelated to a spawned process) and domain `.status` fields
+(`artifact.status`, `unit.status`, a merge gate's own `.status`, a doctor check's own `{status: "ok"}`)
+— none of these come from a subprocess.
+
+## The fix: one shared helper, per-site labels
+
+`tests/spawn-helpers.ts` — `assertSpawnOk`/`assertExitCode`/`assertSpawnFailed`/`spawnStdout` — accepts
+either a `node:child_process#spawnSync` result (`.status`/`.signal`) or a `Bun.spawnSync` result
+(`.exitCode`/`.signalCode`) and, on failure, throws `` `${command} exited ${status} (signal ${signal}):
+${stderr}` ``. A helper was the right call at this count (duplicated near-identically across 40+ files),
+but only because every call site still passes its own command label — `` `git ${args.join(" ")}` ``,
+`` `./levare validate <root>` ``, `` `finch's real command (${argv.join(" ")})` `` — so a failure still
+names exactly which spawn failed, not just "a subprocess failed somewhere" the way a fully generic
+shared message would have. The 41-file `git()` helper's one-liner was replaced mechanically (the line
+was byte-identical in every file, so a scripted substitution was safe); every bare `expect()` and blind
+`.stdout` read was converted by hand, reading each site's context first since neither the expected exit
+code nor the right label can be inferred mechanically.
+
+No assertion's *condition* changed anywhere — a `.not.toBe(0)` (expecting failure) became
+`assertSpawnFailed`, an exact-code check became `assertExitCode(cmd, r, N)`, a bare `toBe(0)` became
+`assertSpawnOk`. Same pass/fail outcome, richer failure message.
+
+**Proven, not just inspected.** Per the goal's own requirement, one converted assertion was forced to
+fail for real before landing: a throwaway test spawning `git not-a-real-subcommand` through
+`assertSpawnOk` produced `git not-a-real-subcommand exited 1: git: 'not-a-real-subcommand' is not a git
+command. See 'git --help'.` — status and stderr, no signal (git exited normally), legible without
+re-running anything. Deleted after confirming.
+
+## Scope discipline — nothing here changed what a test asserts
+
+Three sites already reported stderr and were left structurally as-is, only gaining a signal field for
+consistency (`immutability.test.ts`'s own `git()` helper, `board-serve-sse-leak.test.ts`'s `lsof`
+probe). No site was found asserting the wrong thing or silently passing for an environmental reason —
+had one turned up, per the goal's own scope line, it would have been named here and left alone, not
+folded into this fix.
+
+## The practice, for the tenth instance
+
+An assertion on a subprocess's exit status without its stderr is a defect in the TEST regardless of
+whether it has ever actually fired — it sits there costing nothing until the one day it does, and then
+it costs an hour and a screenshot instead of a glance at the failure message, exactly as it did twice
+this week (`cloneResult`, `commitAuthor`) before either had a fix. This is the ninth consecutive
+week-long instance of the broader pattern this project keeps re-discovering: a test whose failure told
+you less than the system already knew at the moment it failed. The fix is never to make the test more
+lenient — it's to make the failure say what the system already tried to say.
+
+## Verification
+
+`bun test` → 1472 pass, 9 skip, 0 fail — identical counts to before this change. `bunx tsc --noEmit`,
+`bun run deps:check`, `bun run build` all clean. `levare validate fixtures/golden` → valid (same 4
+environmental `SANDBOX_UNAVAILABLE`/`UNCOVERABLE_EXPECTED_KIND` warnings as before, unrelated to this
+change). `levare replay fixtures/golden --stubs` → oracle match, byte-for-byte. `docs/current-gaps.md`
+gains a closing entry cross-referencing this one and closes the "17 other sites" note the "dubious clone
+ownership" entry left open.

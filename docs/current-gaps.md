@@ -1206,3 +1206,28 @@ Two findings closed as not-bugs in the same pass, so neither gets re-opened:
   `review-purge-command-v1.md` (ends `CHANGES REQUESTED`).
 - **`approved_commit` naming.** Already recorded above as investigated and correct, unchanged (the "Ten
   cold-start-walkthrough findings" entry) — named again only so both closures land together.
+
+## The suite's other subprocess-status assertions discarded stderr too — closed (NOTES "subprocess assertion failures")
+
+The "dubious clone ownership" entry above named "17 other `expect(<spawnSync>.status).toBe(0)` sites"
+as a separate, larger unit, deliberately deferred. A fresh search (not the inherited count — the goal
+this closes explicitly required re-deriving it) found substantially more than 17, in three distinct
+shapes across roughly 50 files: a 41-file byte-identical `git()` test helper that reported stderr but
+never the exit status or signal; ~35 bare `expect(p.exitCode).toBe(N)`/`expect(result.status).toBe(N)`
+assertions with no message at all (the same shape as the clone bug); and ~20 sites reading
+`spawnSync(...).stdout` straight off a result with no status check first (the same shape as
+`daemon.test.ts`'s pre-fix `commitAuthor`). `res.status` (HTTP `fetch` responses) and domain `.status`
+fields (`artifact.status`, `unit.status`, a doctor check's own `{status: "ok"}`) are not subprocess
+results and were left alone.
+
+Closed with one shared module, `tests/spawn-helpers.ts` (`assertSpawnOk`/`assertExitCode`/
+`assertSpawnFailed`/`spawnStdout`), rather than 90-odd independent per-site messages — the duplication
+count made a helper the right call, but every call site still passes its own command label (`` `git
+${args.join(" ")}` ``, `` `./levare validate <root>` ``, `` `finch's real command (${argv.join(" "
+)})` ``), so a failure still names exactly which spawn failed, not just "a subprocess failed
+somewhere." Every fixed assertion now reports exit status, signal (when present), and stderr — verified
+failing exactly this way on a forced `git not-a-real-subcommand` before landing. No assertion's
+condition changed — `bun test` reports the same 1472 pass / 9 skip both before and after.
+
+See NOTES "subprocess assertion failures" for the full site inventory and the fix-by-category
+breakdown.
