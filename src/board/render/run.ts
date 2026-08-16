@@ -86,7 +86,7 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
   const gates = openGates(repo).filter((g) => g.project === project && g.unit === unitId);
 
   const scoreSteps = nodes
-    .map((n) => {
+    .map((n, nodeIndex) => {
       const isGate = n.shape === "diamond";
       // Row-level modifier classes: "done"/"upcoming"/"blocked" dim/style the whole step (fixes a
       // dormant rule — assets/styles.css's `.sstep.upcoming`/`.sstep.blocked` label-dimming was never
@@ -97,7 +97,12 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
       const rowLiveCls = n.state === "active" ? "is-live" : n.state === "gate" ? "is-open" : "";
       const rowCls = ["sstep", rowStateCls, rowLiveCls].filter(Boolean).join(" ");
       const snodeCls = scoreNodeClass(n, isGate);
-      const av = n.producedBy ? `<div class="sstep__av">${memberAvatar(repo, n.producedBy)}</div>` : `<div class="sstep__av"></div>`;
+      // DOCS-WALKTHROUGH-3 item 3: the score rail's own avatar names its member on hover/focus, not
+      // just by two letters — `nodeIndex` makes the tooltip id unique even when the same member
+      // produces more than one node in this unit's flow.
+      const av = n.producedBy
+        ? `<div class="sstep__av">${memberAvatar(repo, n.producedBy, { tooltipId: `scorerail-${esc(project)}-${esc(unitId)}-${nodeIndex}` })}</div>`
+        : `<div class="sstep__av"></div>`;
       // NOTES UI1: "blocked" used to render with the SAME red inline style as "rejected" — a direct
       // violation of the design brief's canonical palette ("blocked = solid neutral gray ... never
       // orange [or red]; failed = red" are two different states). Routed through the canonical map:

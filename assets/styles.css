@@ -322,6 +322,20 @@ button{ font-family:inherit; }
 .avatar.lg{ width:34px; height:34px; font-size:12.5px; }
 .avatar--conductor{ background:var(--fg); color:var(--bg); }
 .avatar--runner{ background:transparent; border:1.5px solid var(--fg-mute); color:var(--fg-mute); font-size:9px; }
+/* DOCS-WALKTHROUGH-3 item 3: a member avatar carrying a name tooltip (avatar()'s own doc comment,
+   render/shell.ts) is a trigger, not just a swatch — `position:relative` anchors `.avatartip` below it,
+   the identical accessible shape `.cite--count`/`.citetip` established (`tabindex="0"` +
+   `aria-describedby`, JS-positioned from `getBoundingClientRect()`, never hover-only). Scoped to
+   `[tabindex]` so a plain decorative avatar (Conductor/Runner, or one with no tooltip) is untouched. */
+.avatar[tabindex]{ position:relative; cursor:default; }
+.avatar[tabindex]:focus{ outline:2px solid var(--accent); outline-offset:2px; }
+.avatartip{ position:fixed; left:0; top:0; transform:translate(-50%, 0);
+  z-index:50; background:var(--fg); color:var(--bg); font-family:var(--mono); font-size:11px;
+  line-height:1.5; white-space:normal; max-width:220px; width:max-content; padding:6px 10px;
+  border-radius:7px; box-shadow:var(--shadow); opacity:0; visibility:hidden;
+  transition:opacity var(--motion-fast); pointer-events:none; }
+.avatartip.is-shown{ opacity:1; visibility:visible; }
+@media (prefers-reduced-motion: reduce){ .avatartip{ transition:none; } }
 
 /* ---------- project cards + mini-score ---------- */
 .pcards{ display:grid; grid-template-columns:repeat(auto-fill, minmax(220px,1fr)); gap:12px; }

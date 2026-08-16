@@ -227,20 +227,35 @@ function teamAvatarStyle(color: string | undefined): string {
   return `background:${hue};color:${avatarText}`;
 }
 
-export function avatar(initials: string, color: string | undefined, opts: { size?: "sm" | "lg"; blink?: boolean; title?: string } = {}): string {
+// DOCS-WALKTHROUGH-3 item 3: a bare two-letter avatar (`wr`, `ly`, ...) names no one on its own — the
+// same accessible tooltip recipe `cited N`/loop-bounds/`not covered` already established (`tabindex="0"`
+// + `aria-describedby` + a nested `role="tooltip"` child, wired by `assets/app.js#wireTooltip`), so a
+// keyboard user reaches the member's name exactly like a pointer user, never hover-only. `tooltip.id`
+// must be unique per rendered instance (the same member can appear more than once on one page — a team
+// card's member list, a score rail) — the caller supplies it, exactly like `citecount-.../loopbounds-...`
+// at the existing two call sites.
+export function avatar(initials: string, color: string | undefined, opts: { size?: "sm" | "lg"; blink?: boolean; title?: string; tooltip?: { text: string; id: string } } = {}): string {
   const size = opts.size ?? "sm";
   const blinkCls = opts.blink ? " blink" : "";
+  const style = teamAvatarStyle(color);
+  if (opts.tooltip) {
+    return (
+      `<span class="avatar ${size}${blinkCls}" tabindex="0" aria-describedby="${opts.tooltip.id}" style="${style}">${esc(initials.toLowerCase())}` +
+      `<span class="avatartip" role="tooltip" id="${opts.tooltip.id}">${esc(opts.tooltip.text)}</span></span>`
+    );
+  }
   const titleAttr = opts.title ? ` title="${esc(opts.title)}"` : "";
-  return `<span class="avatar ${size}${blinkCls}"${titleAttr} style="${teamAvatarStyle(color)}">${esc(initials.toLowerCase())}</span>`;
+  return `<span class="avatar ${size}${blinkCls}"${titleAttr} style="${style}">${esc(initials.toLowerCase())}</span>`;
 }
 
-export function memberAvatar(repo: Repo, producedBy: string, opts: { size?: "sm" | "lg"; blink?: boolean } = {}): string {
+export function memberAvatar(repo: Repo, producedBy: string, opts: { size?: "sm" | "lg"; blink?: boolean; tooltipId?: string } = {}): string {
   const [teamName, memberName] = producedBy.split("/");
   if (memberName === undefined) return `<span class="avatar avatar--conductor sm">C</span>`;
   const agent = repo.agents.get(memberName);
   const team = repo.teams.get(teamName);
   const initials = agent?.style.avatar || memberName.slice(0, 2);
-  return avatar(initials, team?.style.color, opts);
+  const tooltip = opts.tooltipId ? { text: memberName, id: opts.tooltipId } : undefined;
+  return avatar(initials, team?.style.color, { size: opts.size, blink: opts.blink, tooltip });
 }
 
 // RULE B: an agent's kind (native/cli/remote) is never coloured from the status palette; the badge's

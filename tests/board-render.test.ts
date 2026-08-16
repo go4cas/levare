@@ -465,7 +465,9 @@ describe("run screen", () => {
     // derivation (dev/foundation/team-color.js, ported) — #2E6FB0 is already inside the safe band, so
     // the derived hue is unchanged; the markup gains an explicit `color` (white text) alongside it,
     // since text colour is no longer a single hard-coded `.avatar{color:#fff}` CSS rule.
-    expect(html).toMatch(/class="sstep__av"><span class="avatar sm" style="background:#2E6FB0;color:#FFFFFF">/);
+    // DOCS-WALKTHROUGH-3 item 3: the avatar is now also a name-on-focus tooltip trigger (tabindex +
+    // aria-describedby), not a bare swatch.
+    expect(html).toMatch(/class="sstep__av"><span class="avatar sm" tabindex="0" aria-describedby="[^"]+" style="background:#2E6FB0;color:#FFFFFF">/);
   });
 
   test("open gate renders as a full gate card with origin, consumes, age, and cost", () => {
@@ -1497,8 +1499,12 @@ describe("breadcrumbs are consistent across all screens", () => {
     );
   });
 
-  test("registry: studio(link) / registry(current)", () => {
-    expect(renderRegistry(repo, root)).toContain('<div class="crumb"><a href="/studio">studio</a><span>/</span><span>registry</span></div>');
+  // DOCS-WALKTHROUGH-3 item 3: the crumb used to stop at "registry", omitting the current page (h1
+  // reads "Teams" here) — now three segments, "registry" itself a link, the active kind current.
+  test("registry: studio(link) / registry(link) / kind(current)", () => {
+    expect(renderRegistry(repo, root)).toContain(
+      '<div class="crumb"><a href="/studio">studio</a><span>/</span><a href="/registry">registry</a><span>/</span><span>teams</span></div>',
+    );
   });
 
   // Idea has no project to nest under and no real `/ideas` route — its crumb is two segments
@@ -1713,8 +1719,12 @@ describe("UI7: team cards show colour as identity (border), not as a printed val
     expect(card).not.toMatch(/<span class="k">color<\/span>/);
   });
 
-  test("members render as avatars with the member's name on hover, not a plain name list", () => {
-    expect(card).toMatch(/<span class="k">members<\/span><span class="v chiprow">(<span class="avatar[^>]*title="[a-z]+"[^>]*>[a-z]{2}<\/span>)+<\/span>/);
+  // DOCS-WALKTHROUGH-3 item 3: the member's name is now an accessible tooltip (tabindex +
+  // aria-describedby + a nested role="tooltip" span), not a plain hover-only `title` attribute.
+  test("members render as avatars with the member's name in an accessible tooltip, not a plain name list", () => {
+    expect(card).toMatch(
+      /<span class="k">members<\/span><span class="v chiprow">(<span class="avatar[^>]*tabindex="0" aria-describedby="[^"]+"[^>]*>[a-z]{2}<span class="avatartip" role="tooltip" id="[^"]+">[a-z]+<\/span><\/span>)+<\/span>/,
+    );
     // No plain comma-joined name list survives in the rendered body (the raw markdown source, kept
     // verbatim in the hidden edit-source textarea, legitimately still contains prose naming members).
     const rendered = card.replace(/<textarea class="rawmd-source"[\s\S]*?<\/textarea>/, "");
@@ -1858,9 +1868,11 @@ describe("NOTES UI5: the registry H1 is the entity kind, not the section", () =>
     });
   }
 
-  test("the breadcrumb above the H1 still reads studio / registry", () => {
+  // DOCS-WALKTHROUGH-3 item 3: the crumb now names the current page, so it tracks the active kind —
+  // "studio / registry / agents" here, not a fixed "studio / registry" no matter which kind is active.
+  test("the breadcrumb above the H1 ends on the active kind, not a fixed 'registry'", () => {
     const html = renderRegistry(repo, root, "agents");
-    expect(html).toContain('<div class="crumb"><a href="/studio">studio</a><span>/</span><span>registry</span></div>');
+    expect(html).toContain('<div class="crumb"><a href="/studio">studio</a><span>/</span><a href="/registry">registry</a><span>/</span><span>agents</span></div>');
   });
 });
 
