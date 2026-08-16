@@ -1,6 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import { mkdtempSync, rmSync, cpSync, readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { assertSpawnOk, spawnStdout } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendExchange, loadConversationTail, parseConversation, sanitizeScope, conversationPath, STUDIO_SCOPE, TAIL_EXCHANGES } from "../src/conversation.ts";
@@ -31,7 +32,7 @@ function git(repoRoot: string, args: string[]): ReturnType<typeof spawnSync> {
     ["-C", repoRoot, "-c", "user.name=seed", "-c", "user.email=seed@levare.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main", ...args],
     { encoding: "utf8", env: HERMETIC_ENV },
   );
-  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+  assertSpawnOk(`git ${args.join(" ")}`, r);
   return r;
 }
 
@@ -49,7 +50,7 @@ function req(url: string, init?: RequestInit): Request {
 }
 
 function gitLog1(root: string): { author: string; email: string; subject: string } {
-  const out = spawnSync("git", ["-C", root, "log", "-1", "--format=%an|%ae|%s"], { encoding: "utf8" }).stdout.trim();
+  const out = spawnStdout("git " + (["-C", root, "log", "-1", "--format=%an|%ae|%s"]).join(" "), spawnSync("git", ["-C", root, "log", "-1", "--format=%an|%ae|%s"], { encoding: "utf8" })).trim();
   const [author, email, ...rest] = out.split("|");
   return { author, email, subject: rest.join("|") };
 }
@@ -289,7 +290,7 @@ describe("POST /orchestrator/message — persists the completed exchange (NOTES 
       expect(log.email).toBe("runner@levare.local");
       expect(log.subject).toContain("storefront");
 
-      const show = spawnSync("git", ["-C", root, "show", "--stat", "-1", "--format="], { encoding: "utf8" }).stdout;
+      const show = spawnStdout("git " + (["-C", root, "show", "--stat", "-1", "--format="]).join(" "), spawnSync("git", ["-C", root, "show", "--stat", "-1", "--format="], { encoding: "utf8" }));
       expect(show).toContain(`conversations/storefront/${monthKey}.md`);
     } finally {
       board.close();
@@ -321,10 +322,10 @@ describe("POST /orchestrator/message — persists the completed exchange (NOTES 
     const root = seedScratchRepo();
     const board = createBoard(root, { orchestratorBoundary: fakeBoundary("reply") });
     try {
-      const before = spawnSync("git", ["-C", root, "rev-list", "--count", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      const before = spawnStdout("git " + (["-C", root, "rev-list", "--count", "HEAD"]).join(" "), spawnSync("git", ["-C", root, "rev-list", "--count", "HEAD"], { encoding: "utf8" })).trim();
       await board.fetch(req("/orchestrator/message", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "one", scope: "studio" }) }));
       await board.fetch(req("/orchestrator/message", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "two", scope: "studio" }) }));
-      const after = spawnSync("git", ["-C", root, "rev-list", "--count", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      const after = spawnStdout("git " + (["-C", root, "rev-list", "--count", "HEAD"]).join(" "), spawnSync("git", ["-C", root, "rev-list", "--count", "HEAD"], { encoding: "utf8" })).trim();
       expect(Number(after) - Number(before)).toBe(2);
     } finally {
       board.close();
@@ -338,7 +339,7 @@ describe("POST /orchestrator/message — a failed or errored reply is never pers
     const root = seedScratchRepo();
     const board = createBoard(root);
     try {
-      const before = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      const before = spawnStdout("git " + (["-C", root, "rev-parse", "HEAD"]).join(" "), spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" })).trim();
       const res = await board.fetch(
         req("/orchestrator/message", {
           method: "POST",
@@ -347,7 +348,7 @@ describe("POST /orchestrator/message — a failed or errored reply is never pers
         }),
       );
       expect(res.status).toBe(503);
-      const after = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      const after = spawnStdout("git " + (["-C", root, "rev-parse", "HEAD"]).join(" "), spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" })).trim();
       expect(after).toBe(before);
       expect(existsSync(join(root, "conversations"))).toBe(false);
     } finally {
@@ -366,7 +367,7 @@ describe("POST /orchestrator/message — a failed or errored reply is never pers
     const brokenBoundary = createSdkOrchestratorBoundary({ transport: brokenTransport, env: { ANTHROPIC_API_KEY: "sk-ant-test-not-real" } });
     const board = createBoard(root, { orchestratorBoundary: brokenBoundary });
     try {
-      const before = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      const before = spawnStdout("git " + (["-C", root, "rev-parse", "HEAD"]).join(" "), spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" })).trim();
       const res = await board.fetch(
         req("/orchestrator/message", {
           method: "POST",
@@ -375,7 +376,7 @@ describe("POST /orchestrator/message — a failed or errored reply is never pers
         }),
       );
       expect(res.status).toBe(502);
-      const after = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      const after = spawnStdout("git " + (["-C", root, "rev-parse", "HEAD"]).join(" "), spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" })).trim();
       expect(after).toBe(before);
       expect(existsSync(join(root, "conversations"))).toBe(false);
     } finally {

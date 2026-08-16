@@ -3,6 +3,7 @@ import { readFileSync, rmSync, mkdtempSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnLevareServe, COMPILED_BINARY_BIND_TIMEOUT_MS } from "./serve-subprocess.ts";
+import { assertExitCode, spawnStdout } from "./spawn-helpers.ts";
 import { DEFAULT_INTERPRET_TIMEOUT_MS } from "../src/orchestrator-boundary.ts";
 
 // NOTES DIST4/DIST5: proof against the ACTUAL compiled binary, not just the source shim, of two
@@ -31,9 +32,7 @@ const scratchOut = join(mkdtempSync(join(tmpdir(), "levare-dist-smoke-")), "leva
 
 function buildScratchBinary(): void {
   const p = Bun.spawnSync(["bash", "scripts/build.sh", scratchOut], { cwd: process.cwd() });
-  if (p.exitCode !== 0) {
-    throw new Error(`scripts/build.sh failed: ${p.stderr.toString()}${p.stdout.toString()}`);
-  }
+  assertExitCode("scripts/build.sh", p, 0);
 }
 
 buildScratchBinary();
@@ -57,7 +56,7 @@ describe("the compiled binary can load the orchestrator prompt (NOTES DIST4)", (
     const expectedBytes = Buffer.byteLength(onDisk, "utf8");
 
     const p = Bun.spawnSync([scratchOut, "doctor", "fixtures/golden"], { env: { ...process.env, ANTHROPIC_API_KEY: "" } });
-    expect(p.exitCode).toBe(0);
+    assertExitCode("<compiled> doctor fixtures/golden (no credential)", p, 0);
     const out = p.stdout.toString();
 
     expect(out).toContain("run mode: compiled");
@@ -73,7 +72,7 @@ describe("the compiled binary can load the orchestrator prompt (NOTES DIST4)", (
   // reports "on", exactly like a source run does. Under DIST4 this always said "off" regardless.
   test("`<compiled> doctor` reports 'orchestrator: on' when a credential is present", () => {
     const p = Bun.spawnSync([scratchOut, "doctor", "fixtures/golden"], { env: { ...process.env, ANTHROPIC_API_KEY: "sk-ant-test-not-real" } });
-    expect(p.exitCode).toBe(0);
+    assertExitCode("<compiled> doctor fixtures/golden (with credential)", p, 0);
     const out = p.stdout.toString();
     expect(out).toContain("run mode: compiled");
     expect(out).toContain("orchestrator: on");
@@ -95,7 +94,7 @@ describe("the compiled binary's hidden `__worker` subcommand reaches the real wo
     // credential. Before DIST5, this exact invocation printed `unknown command: __worker` and the
     // CLI's usage text instead — `main()`'s default case, not the worker at all.
     const p = Bun.spawnSync([scratchOut, "__worker"], { env: process.env, stdin: Buffer.from("") });
-    expect(p.exitCode).toBe(0);
+    assertExitCode("<compiled> __worker", p, 0);
     const out = p.stdout.toString().trim();
     expect(out).not.toContain("unknown command");
     expect(out).not.toContain("usage: levare");
@@ -225,7 +224,7 @@ describe("a compiled `serve` dispatches a real Orchestrator turn through the rea
       if (typeof body.reply === "string") {
         expect(existsSync(convFile)).toBe(true);
         expect(readFileSync(convFile, "utf8")).toContain("hello");
-        const log = Bun.spawnSync(["git", "-C", root, "log", "-1", "--format=%an|%ae"]).stdout.toString().trim();
+        const log = spawnStdout("git log -1", Bun.spawnSync(["git", "-C", root, "log", "-1", "--format=%an|%ae"])).trim();
         expect(log).toBe("levare-runner|runner@levare.local");
       } else {
         expect(existsSync(join(root, "conversations"))).toBe(false);

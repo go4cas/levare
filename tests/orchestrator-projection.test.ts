@@ -11,6 +11,7 @@
 import { test, expect, describe } from "bun:test";
 import { mkdtempSync, rmSync, cpSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { assertSpawnOk } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRepo } from "../src/repo.ts";
@@ -25,7 +26,7 @@ function git(repoRoot: string, args: string[]): void {
     encoding: "utf8",
     env: HERMETIC_ENV,
   });
-  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+  assertSpawnOk(`git ${args.join(" ")}`, r);
 }
 function seedScratchRepo(prefix = "levare-proj-"): string {
   const root = mkdtempSync(join(tmpdir(), prefix));

@@ -1,5 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import { readFileSync, mkdtempSync, writeFileSync, rmSync, cpSync } from "node:fs";
+import { assertExitCode } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRepo } from "../src/repo.ts";
@@ -110,7 +111,7 @@ describe("doctor: reports the Orchestrator boundary (NOTES C11)", () => {
 
   test("`levare doctor` prints the Orchestrator's boundary state on the real CLI", () => {
     const p = Bun.spawnSync(["./levare", "doctor", "fixtures/golden"], { env: { ...process.env, ANTHROPIC_API_KEY: "" } });
-    expect(p.exitCode).toBe(0);
+    assertExitCode("./levare doctor fixtures/golden", p, 0);
     const out = p.stdout.toString();
     expect(out).toContain("orchestrator: off");
     expect(out).toContain("ANTHROPIC_API_KEY");
@@ -143,7 +144,7 @@ describe("doctor: reports its own run mode — compiled vs source (NOTES DIST1)"
 
   test("`levare doctor` reports source/dev on the real (unbuilt) CLI", () => {
     const p = Bun.spawnSync(["./levare", "doctor", "fixtures/golden"]);
-    expect(p.exitCode).toBe(0);
+    assertExitCode("./levare doctor fixtures/golden", p, 0);
     expect(p.stdout.toString()).toContain("run mode: source/dev");
   });
 });
@@ -177,7 +178,7 @@ describe("doctor: reports whether the orchestrator prompt actually loaded (NOTES
     const onDisk = readFileSync("docs/orchestrator-prompt.md", "utf8");
     const bytes = Buffer.byteLength(onDisk, "utf8");
     const p = Bun.spawnSync(["./levare", "doctor", "fixtures/golden"]);
-    expect(p.exitCode).toBe(0);
+    assertExitCode("./levare doctor fixtures/golden", p, 0);
     expect(p.stdout.toString()).toContain(`orchestrator prompt: readable (${bytes} bytes)`);
   });
 });
@@ -374,7 +375,7 @@ describe("doctor: the guardrails-not-yet-enforced notice is retired (NOTES MERGE
 
   test("`levare doctor fixtures/golden` (whose kestrel team declares guardrails) names no such gap", () => {
     const p = Bun.spawnSync(["./levare", "doctor", "fixtures/golden"], { env: { ...process.env, ANTHROPIC_API_KEY: "" } });
-    expect(p.exitCode).toBe(0);
+    assertExitCode("./levare doctor fixtures/golden", p, 0);
     const out = p.stdout.toString();
     expect(out).not.toContain("not yet enforced");
     expect(out).not.toContain("merge phase (v1.1)");
@@ -410,7 +411,7 @@ describe("doctor: remote-member-not-implemented telling (NOTES MCP-1B)", () => {
         ["---", "name: echo", "kind: remote", "produces: [report]", "server: echo-mcp", "tool: echo", "style:", "  avatar: Ec", "---", "", "A remote member.", ""].join("\n"),
       );
       const p = Bun.spawnSync(["./levare", "doctor", dir], { env: { ...process.env, ANTHROPIC_API_KEY: "" } });
-      expect(p.exitCode).toBe(0);
+      assertExitCode("./levare doctor <dir>", p, 0);
       const out = p.stdout.toString();
       expect(out).toContain("remote members without a real, granted, stdio MCP connector are not yet implemented");
       expect(out).toContain("echo");
@@ -435,7 +436,7 @@ describe("doctor: bare `[root]` defaults to the current directory (NOTES DOCS-WA
       const levareBin = join(process.cwd(), "levare");
       const p = Bun.spawnSync([levareBin, "doctor"], { cwd: dir, env: { ...process.env, ANTHROPIC_API_KEY: "" } });
       const out = p.stdout.toString();
-      expect(p.exitCode).toBe(0);
+      assertExitCode("<compiled> doctor (cwd outside repo)", p, 0);
       expect(out).not.toContain("NOT_FOUND");
       expect(out).not.toContain("fixtures/golden: path does not exist");
       expect(out).toContain("levare doctor ·");

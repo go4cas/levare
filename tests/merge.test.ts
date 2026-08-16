@@ -5,6 +5,7 @@
 
 import { test, expect, describe } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { assertSpawnOk, spawnStdout } from "./spawn-helpers.ts";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,7 +32,7 @@ function git(repoRoot: string, args: string[]): string {
     encoding: "utf8",
     env: HERMETIC_ENV,
   });
-  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+  assertSpawnOk(`git ${args.join(" ")}`, r);
   return r.stdout;
 }
 
@@ -294,7 +295,7 @@ describe("executeMerge (M4/M5)", () => {
       if (!result.ok) return;
       expect(result.pushed).toBe(true);
 
-      const remoteHead = spawnSync("git", ["-C", remote, "rev-parse", "refs/heads/main"], { encoding: "utf8" }).stdout.trim();
+      const remoteHead = spawnStdout("git rev-parse refs/heads/main (remote)", spawnSync("git", ["-C", remote, "rev-parse", "refs/heads/main"], { encoding: "utf8" })).trim();
       expect(remoteHead).toBe(result.mergeCommit);
     } finally {
       rmrf(repo);

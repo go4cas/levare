@@ -1,6 +1,7 @@
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, rmSync, cpSync, readFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { assertSpawnOk, spawnStdout } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBoard } from "../src/board/serve.ts";
@@ -57,7 +58,7 @@ function git(repoRoot: string, args: string[]): ReturnType<typeof spawnSync> {
     ["-C", repoRoot, "-c", "user.name=seed", "-c", "user.email=seed@levare.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main", ...args],
     { encoding: "utf8", env: HERMETIC_ENV },
   );
-  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+  assertSpawnOk(`git ${args.join(" ")}`, r);
   return r;
 }
 
@@ -191,8 +192,8 @@ describe("(b) one gate-resolution path: chat vs POST /gates", () => {
       expect(chatFile).toMatch(/^approved_commit: [0-9a-f]{40}$/m);
       expect(routeFile).toMatch(/^approved_commit: [0-9a-f]{40}$/m);
 
-      const chatLog = spawnSync("git", ["-C", viaChat, "log", "-1", "--format=%an|%ae|%s"], { encoding: "utf8" }).stdout.trim();
-      const routeLog = spawnSync("git", ["-C", viaRoute, "log", "-1", "--format=%an|%ae|%s"], { encoding: "utf8" }).stdout.trim();
+      const chatLog = spawnStdout("git " + (["-C", viaChat, "log", "-1", "--format=%an|%ae|%s"]).join(" "), spawnSync("git", ["-C", viaChat, "log", "-1", "--format=%an|%ae|%s"], { encoding: "utf8" })).trim();
+      const routeLog = spawnStdout("git " + (["-C", viaRoute, "log", "-1", "--format=%an|%ae|%s"]).join(" "), spawnSync("git", ["-C", viaRoute, "log", "-1", "--format=%an|%ae|%s"], { encoding: "utf8" })).trim();
       expect(chatLog).toBe(routeLog);
       expect(chatLog).toContain("cas|cas@levare.local|approve spec-checkout-flow-v1");
     } finally {
@@ -213,14 +214,14 @@ describe("(b) one gate-resolution path: chat vs POST /gates", () => {
   test("a chat gate-decision on an unknown target replies without touching the repo", async () => {
     const root = seedScratchRepo();
     try {
-      const before = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      const before = spawnStdout("git " + (["-C", root, "rev-parse", "HEAD"]).join(" "), spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" })).trim();
       const r = await handle(
         "approve does-not-exist",
         { root, by: CAS_TODAY },
         intentBoundary({ kind: "gate-decision", target: "does-not-exist", verb: "approve" }),
       );
       expect(r.result).toBeNull();
-      const after = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      const after = spawnStdout("git " + (["-C", root, "rev-parse", "HEAD"]).join(" "), spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" })).trim();
       expect(after).toBe(before);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -387,7 +388,7 @@ describe("(c) retro / knowledge-promotion proposals are gates, not direct writes
       expect(after).toContain("Name the idempotency field up front next time.");
       expect(after.startsWith(before)).toBe(true);
       if (approved.ok) {
-        const log = spawnSync("git", ["-C", root, "log", "-1", "--format=%an|%s"], { encoding: "utf8" }).stdout.trim();
+        const log = spawnStdout("git " + (["-C", root, "log", "-1", "--format=%an|%s"]).join(" "), spawnSync("git", ["-C", root, "log", "-1", "--format=%an|%s"], { encoding: "utf8" })).trim();
         expect(log).toContain("cas|retro: kestrel learnings");
       }
     } finally {
@@ -428,7 +429,7 @@ describe("(d) intent-to-unit operations", () => {
       const unitFile = join(root, "work/storefront/perf-spike/unit.md");
       expect(existsSync(unitFile)).toBe(true);
       expect(readFileSync(unitFile, "utf8")).toContain("type: spike");
-      const status = spawnSync("git", ["-C", root, "status", "--porcelain"], { encoding: "utf8" }).stdout;
+      const status = spawnStdout("git " + (["-C", root, "status", "--porcelain"]).join(" "), spawnSync("git", ["-C", root, "status", "--porcelain"], { encoding: "utf8" }));
       expect(status.trim()).toBe(""); // committed, working tree clean
     } finally {
       rmSync(root, { recursive: true, force: true });

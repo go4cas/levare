@@ -1,6 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import { mkdtempSync, rmSync, cpSync, mkdirSync, writeFileSync, readFileSync, appendFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { assertSpawnOk, spawnStdout } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveGate } from "../src/board/gateops.ts";
@@ -26,7 +27,7 @@ function git(root: string, args: string[]): ReturnType<typeof spawnSync> {
     ["-C", root, "-c", "user.name=seed", "-c", "user.email=seed@levare.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main", ...args],
     { encoding: "utf8", env: HERMETIC_ENV },
   );
-  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+  assertSpawnOk(`git ${args.join(" ")}`, r);
   return r;
 }
 
@@ -155,12 +156,12 @@ describe("Part 2: produced artifacts are stamped with the registry state that go
     const root = seedGoldenScratch("levare-provenance-content-hash-");
     try {
       const before = registryStateHash(root);
-      const headBefore = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      const headBefore = spawnStdout("git rev-parse HEAD (before)", spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" })).trim();
 
       writeFileSync(join(root, "work/storefront/cart-icon-fix/note.md"), "unrelated work/ note\n");
       git(root, ["add", "-A"]);
       git(root, ["commit", "-q", "-m", "an unrelated work/ commit"]);
-      const headAfter = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      const headAfter = spawnStdout("git rev-parse HEAD (after)", spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" })).trim();
 
       expect(headAfter).not.toBe(headBefore); // HEAD moved...
       expect(registryStateHash(root)).toBe(before); // ...but nothing that governs a dispatch did.

@@ -1,6 +1,7 @@
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, rmSync, cpSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { assertSpawnOk } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBoard, debugSubscriberCount } from "../src/board/serve.ts";
@@ -40,7 +41,7 @@ function git(repoRoot: string, args: string[]): void {
     ["-C", repoRoot, "-c", "user.name=seed", "-c", "user.email=seed@levare.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main", ...args],
     { encoding: "utf8", env: HERMETIC_ENV },
   );
-  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+  assertSpawnOk(`git ${args.join(" ")}`, r);
 }
 
 function seedScratchRepo(prefix: string): string {
@@ -175,7 +176,9 @@ function countOpenHandles(pid: number, mechanism: HandleMechanism): number {
   // error) — anything else (a bad flag, lsof itself missing despite the earlier probe, permission
   // trouble) is a real failure and must surface loudly rather than being silently read as "0 handles".
   const r = spawnSync("lsof", ["-p", String(pid)], { encoding: "utf8" });
-  if (r.status !== 0 && r.status !== 1) throw new Error(`lsof -p ${pid} failed (status ${r.status}): ${r.stderr}`);
+  if (r.status !== 0 && r.status !== 1) {
+    throw new Error(`lsof -p ${pid} exited ${r.status ?? "null"}${r.signal ? ` (signal ${r.signal})` : ""}: ${r.stderr || "(no stderr captured)"}`);
+  }
   const lines = r.stdout.split("\n").filter((l) => l.trim().length > 0);
   return Math.max(0, lines.length - 1); // minus the header row
 }

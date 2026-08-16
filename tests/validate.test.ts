@@ -2,6 +2,7 @@ import { test, expect, describe } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { assertExitCode } from "./spawn-helpers.ts";
 import { validatePath } from "../src/validate.ts";
 import { loadPricing } from "../src/pricing.ts";
 import { loadRepo } from "../src/repo.ts";
@@ -33,13 +34,13 @@ describe("levare validate CLI", () => {
   // legitimately prints no warning at all here.
   test("`levare validate fixtures/golden` prints 'valid' and exits 0", () => {
     const p = Bun.spawnSync(["./levare", "validate", "fixtures/golden"]);
-    expect(p.exitCode).toBe(0);
+    assertExitCode("./levare validate fixtures/golden", p, 0);
     expect(p.stdout.toString().split("\n")[0]).toBe("valid");
   });
 
   test("a rejection fixture exits 1 and reports the error code", () => {
     const p = Bun.spawnSync(["./levare", "validate", "fixtures/rejections/unknown-key"]);
-    expect(p.exitCode).toBe(1);
+    assertExitCode("./levare validate fixtures/rejections/unknown-key", p, 1);
     expect(p.stderr.toString()).toContain("UNKNOWN_KEY");
   });
 
@@ -50,7 +51,7 @@ describe("levare validate CLI", () => {
   // rule set, two presentations rather than a second, quietly-diverging implementation.
   test("`levare validate` output is unchanged: it still prints the error CODE and a file:line locator, not just the message", () => {
     const p = Bun.spawnSync(["./levare", "validate", "fixtures/rejections/malformed-frontmatter"]);
-    expect(p.exitCode).toBe(1);
+    assertExitCode("./levare validate fixtures/rejections/malformed-frontmatter", p, 1);
     const stderr = p.stderr.toString();
     expect(stderr).toContain("PARSE_ERROR");
     expect(stderr).toContain("fixtures/rejections/malformed-frontmatter/work/storefront/checkout-flow/bad.md:7");
@@ -1050,7 +1051,7 @@ describe("kind: remote — legal, valid, and warned about (NOTES MCP-1B)", () =>
       mkdirSync(join(dir, "agents"), { recursive: true });
       writeFileSync(join(dir, "agents", "echo.md"), remoteAgentDoc());
       const p = Bun.spawnSync(["./levare", "validate", dir], { env: process.env });
-      expect(p.exitCode).toBe(0);
+      assertExitCode("./levare validate <dir>", p, 0);
       const out = p.stdout.toString();
       expect(out).toContain("valid");
       expect(out).toContain("warning");

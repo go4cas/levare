@@ -1,6 +1,7 @@
 import { test, expect, describe, beforeEach } from "bun:test";
 import { readFileSync, mkdtempSync, rmSync, cpSync, writeFileSync, mkdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { assertSpawnOk } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -40,7 +41,7 @@ function git(repoRoot: string, args: string[]): void {
     encoding: "utf8",
     env: HERMETIC_ENV,
   });
-  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+  assertSpawnOk(`git ${args.join(" ")}`, r);
 }
 function seedScratchRepo(): string {
   const root = mkdtempSync(join(tmpdir(), "levare-orch-sdk-"));

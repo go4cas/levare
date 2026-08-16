@@ -4,6 +4,7 @@
 import { test, expect, describe } from "bun:test";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { assertSpawnOk } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendExchange, parseConversation, conversationPath, STUDIO_SCOPE } from "../src/conversation.ts";
@@ -17,7 +18,7 @@ describe("F3 — a header-shaped body line round-trips as body, not a forged tur
 
   function git(repoRoot: string, args: string[]): void {
     const r = spawnSync("git", ["-C", repoRoot, ...args], { encoding: "utf8", env: HERMETIC_ENV });
-    if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+    assertSpawnOk(`git ${args.join(" ")}`, r);
   }
 
   function seedRepo(): string {

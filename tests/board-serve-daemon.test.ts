@@ -1,6 +1,7 @@
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, cpSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { assertSpawnOk, spawnStdout } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBoard } from "../src/board/serve.ts";
@@ -21,7 +22,7 @@ function git(root: string, args: string[]) {
     ["-C", root, "-c", "user.name=seed", "-c", "user.email=seed@levare.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main", ...args],
     { encoding: "utf8", env: HERMETIC_ENV },
   );
-  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+  assertSpawnOk(`git ${args.join(" ")}`, r);
 }
 function seedScratchRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "levare-board-daemon-"));
@@ -116,7 +117,7 @@ describe("board with a daemon attached projects its real in-flight/completed sta
     await daemon.tick();
     expect(existsSync(designFile)).toBe(true);
     // And the daemon — not the Conductor — authored it (invariant-2 audit trail; see daemon.test.ts).
-    const author = spawnSync("git", ["-C", root, "log", "-1", "--format=%an|%ae", "--", designFile], { encoding: "utf8" }).stdout.trim();
+    const author = spawnStdout("git log -1 -- designFile", spawnSync("git", ["-C", root, "log", "-1", "--format=%an|%ae", "--", designFile], { encoding: "utf8" })).trim();
     expect(author).toBe("levare-runner|runner@levare.local");
     board.close();
   });

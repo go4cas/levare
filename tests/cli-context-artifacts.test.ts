@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, cpSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRepo } from "../src/repo.ts";
+import { assertExitCode } from "./spawn-helpers.ts";
 import { AdapterRunner, bunSpawn, type NativeBoundary, type RemoteBoundary } from "../src/adapters.ts";
 import { loadPricing } from "../src/pricing.ts";
 import { render } from "../fixtures/stubs/member-stub.ts";
@@ -62,7 +63,7 @@ describe("ruling C9: `levare context --dry-run` matches a REAL spawned member, i
 
   function dryRun(root: string): string {
     const p = Bun.spawnSync(["./levare", "context", "finch", "--unit", "checkout-flow", "--root", root, "--dry-run"], { cwd: REPO_ROOT });
-    expect(p.exitCode).toBe(0);
+    assertExitCode("./levare context finch --dry-run", p, 0);
     return p.stdout.toString();
   }
 

@@ -2,6 +2,7 @@ import { test, expect, describe, afterAll } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { assertExitCode } from "./spawn-helpers.ts";
 
 // NOTES DIST7: proof against a REAL `scripts/build.sh` output, run from a REAL foreign cwd — the one
 // variable that makes this bug real and that `tests/orchestrator-compiled-smoke.test.ts` (NOTES
@@ -19,9 +20,7 @@ const scratchOut = join(mkdtempSync(join(tmpdir(), "levare-native-embed-")), "le
 
 function buildScratchBinary(): void {
   const p = Bun.spawnSync(["bash", "scripts/build.sh", scratchOut], { cwd: process.cwd() });
-  if (p.exitCode !== 0) {
-    throw new Error(`scripts/build.sh failed: ${p.stderr.toString()}${p.stdout.toString()}`);
-  }
+  assertExitCode("scripts/build.sh", p, 0);
 }
 
 buildScratchBinary();
@@ -53,7 +52,7 @@ describe("a compiled binary resolves its embedded native SDK binary from a real 
         cwd: studio,
         env: { ...process.env, ANTHROPIC_API_KEY: "sk-ant-test-not-real" },
       });
-      expect(p.exitCode).toBe(0);
+      assertExitCode("<compiled> doctor . (cwd outside repo)", p, 0);
       const out = p.stdout.toString();
       expect(out).toContain("run mode: compiled");
       expect(out).toContain("orchestrator: on");
@@ -70,7 +69,7 @@ describe("a compiled binary resolves its embedded native SDK binary from a real 
     const platformArch = `${process.platform}-${process.arch}`;
     const p = Bun.spawnSync(["bun", "scripts/verify-embedded-binary.ts", scratchOut, platformArch], { cwd: process.cwd() });
     const out = p.stdout.toString() + p.stderr.toString();
-    expect(p.exitCode).toBe(0);
+    assertExitCode("bun scripts/verify-embedded-binary.ts", p, 0);
     expect(out).toContain("OK —");
   }, 30_000);
 });

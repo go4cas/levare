@@ -1,6 +1,7 @@
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, cpSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { assertSpawnOk, spawnStdout } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRepo } from "../src/repo.ts";
@@ -24,7 +25,7 @@ function git(root: string, args: string[]) {
     ["-C", root, "-c", "user.name=seed", "-c", "user.email=seed@levare.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main", ...args],
     { encoding: "utf8", env: HERMETIC_ENV },
   );
-  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+  assertSpawnOk(`git ${args.join(" ")}`, r);
 }
 
 const FORGE_TEAM = `---
@@ -179,7 +180,7 @@ describe("[ruling C4] a unit hands from a shaping team to a build team (per-kind
     expect(written).toContain("kind: code");
     expect(written).toContain("produced_by: forge/smith");
     // And the daemon (runner identity) authored the commit, not the Conductor.
-    const author = spawnSync("git", ["-C", root, "log", "-1", "--format=%an|%ae", "--", codeFile], { encoding: "utf8" }).stdout.trim();
+    const author = spawnStdout("git log -1 -- codeFile", spawnSync("git", ["-C", root, "log", "-1", "--format=%an|%ae", "--", codeFile], { encoding: "utf8" })).trim();
     expect(author).toBe("levare-runner|runner@levare.local");
   });
 });

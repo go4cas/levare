@@ -1,6 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import { mkdtempSync, rmSync, cpSync, readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { assertSpawnOk, assertExitCode, spawnStdout } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { transactionalWrite, conductorCommit } from "../src/git.ts";
@@ -24,7 +25,7 @@ function git(root: string, args: string[]): ReturnType<typeof spawnSync> {
     ["-C", root, "-c", "user.name=seed", "-c", "user.email=seed@levare.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main", ...args],
     { encoding: "utf8", env: HERMETIC_ENV },
   );
-  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+  assertSpawnOk(`git ${args.join(" ")}`, r);
   return r;
 }
 
@@ -38,7 +39,7 @@ function seedScratchRepo(prefix: string): string {
 }
 
 function headRev(root: string): string {
-  return spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+  return spawnStdout("git rev-parse HEAD", spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" })).trim();
 }
 
 // `commitAs` (git.ts) always overrides identity/hooks explicitly (`-c user.name=...`, `-c
@@ -242,9 +243,9 @@ describe("commitAs's identity override survives a startup-environment GIT_AUTHOR
         GIT_COMMITTER_EMAIL: "leak@example.com",
       };
       const run = spawnSync("bun", ["run", driver], { encoding: "utf8", env: leakEnv });
-      expect(run.status).toBe(0);
+      assertExitCode("bun run driver.ts (leak-env)", run, 0);
 
-      const author = spawnSync("git", ["-C", root, "log", "-1", "--format=%an|%ae"], { encoding: "utf8" }).stdout.trim();
+      const author = spawnStdout("git log -1 (leak-env)", spawnSync("git", ["-C", root, "log", "-1", "--format=%an|%ae"], { encoding: "utf8" })).trim();
       expect(author).toBe("cas|cas@levare.local");
       expect(author).not.toContain("ambient-leak");
     } finally {
