@@ -16769,3 +16769,68 @@ result.
 **Verification.** `bun test` → 1472 pass, 0 fail. `bunx tsc --noEmit`, `bun run deps:check`, `bun run
 build`, `bun run docs:generate` (no diff) all clean. `levare validate fixtures/golden` → valid. `levare
 replay fixtures/golden --stubs` → oracle match, byte-for-byte.
+
+# NOTES "loop until semantics" (2026-08-16) — chapter 4.6 had the loop's exit condition backwards, and two findings closed as not-bugs
+
+A docs-only unit, prompted by a report that chapter 4.6 (`docs/guide/04-workflow/06-first-loop.md`)
+described Corvid's own review as what ends a loop round. Read the mechanism from the code first, before
+touching any prose, because the whole unit rests on it.
+
+## The mechanism, read directly from `flow.ts`/`runner.ts`, not assumed
+
+`flow.ts#untilSatisfied` splits an `until` string (e.g. `review.approved`) on `.` into a kind and a wanted
+status, then checks whether ANY artifact of that kind, for that unit, currently has that literal frontmatter
+`status`. It never reads a member's own output text — there is no code path from a member's prose (a
+`CHANGES REQUESTED`/`APPROVED` line, or anything else Corvid writes) into this function at all.
+
+`runner.ts#runLoop` confirms why: each round dispatches both loop members (author, then critic), then
+raises a Conductor gate on the round's AUTHOR artifact (verbs `approve`/`request`/`reject`) — every round,
+regardless of what the critic wrote. Only on `approve` does the round's companion review get marked
+`approved` (unconditionally, alongside the author artifact, per ruling C2) — and that is the one and only
+way `review.approved` (or any `<kind>.approved` `until`) becomes true. A critic's verdict line is advisory
+prose for the Conductor to read before deciding; the runner itself never parses it. `dagwalk.ts`'s live-path
+walk (the daemon's own dispatch engine, distinct from `runner.ts`'s batch-simulation walk) works the same
+way — it halts once both members of a round sit `in-review`, and `board/gateops.ts#applyLoopCompanionApproval`
+is the one place a companion review's status actually changes, driven by the Conductor's own gate
+resolution, never by re-reading the critic's text.
+
+## The docs fix
+
+Chapter 4.6 said the opposite twice: "They go round until Corvid is satisfied or three rounds are up — and
+then it comes to you either way" (implying Corvid's satisfaction, not the Conductor's approval, ends a
+round), and "If Corvid's review satisfies `until`, the loop ends and the walk continues" (Corvid's review,
+sitting at `status: in-review`, can never satisfy an `until: review.approved` condition — only a Conductor's
+`approve` can). Both fixed to say what actually happens: every round ends at the Conductor's gate on the
+round's author artifact, regardless of what the critic wrote, and approving is what marks the round's review
+`approved` and satisfies `until`. This also fixes the chapter's own internal contradiction — its closing
+argument is "bound the argument, and make a human the judge," which the two corrected lines now agree with
+instead of contradicting.
+
+**Checked for the same inversion elsewhere in the guide** — `03-concepts.md`'s loop example, the registry-
+entities cheatsheet's `until` row, and the constitution's own invariant 4 ("A loop ends only by a
+Conductor's approval, or by exhaustion") all already describe this correctly and needed no change. Only
+`06-first-loop.md` had the inversion.
+
+## Two findings investigated and closed as not-bugs, not left to be re-opened
+
+**Corvid's missing verdict line (reviews produced 2026-08-13 ended on prose with no
+`APPROVED`/`CHANGES REQUESTED` line, contrary to Corvid's own agent definition).** Investigated and found
+to be a downstream symptom of the empty-consumed-set bug closed by the NOTES R4-SANDBOX-TLS goal (faults
+2+3, `docs/current-gaps.md`'s "A loop's live-path dispatch and its retry path used to disagree" entry): the
+retry path's missing `extraConsumes` meant a retried Corvid reviewed nothing, so it had nothing to render a
+verdict on. No separate product change was needed — once that bug closed, the verdict line returned on its
+own, confirmed on a real dispatch: `review-purge-command-v1.md` ends `CHANGES REQUESTED`.
+
+**`approved_commit` naming.** Already investigated and confirmed correct in NOTES DOCS-WALKTHROUGH-2
+(`docs/current-gaps.md`'s "Ten cold-start-walkthrough findings" entry) — no action here; named only so both
+closures from this pass are recorded together.
+
+`docs/current-gaps.md` gains a matching entry for both closures, cross-referencing this one.
+
+## Verification
+
+Docs-only change (`docs/guide/04-workflow/06-first-loop.md`, `docs/current-gaps.md`, this entry) — no
+source touched. `bun test` → 1472 pass, 0 fail. `bunx tsc --noEmit`, `bun run deps:check`, `bun run build`,
+`bun run docs:generate` (no diff) all clean. `levare validate fixtures/golden` → valid. `levare replay
+fixtures/golden --stubs` → oracle match, byte-for-byte. Grepped every page under `docs/guide/` for `until`/
+`satisf`/`Corvid` to confirm no other page claims an agent's own output satisfies a loop's `until`.

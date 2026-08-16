@@ -32,8 +32,8 @@ style:
 
 # Press — the framing team
 
-Scribe writes the brief. Corvid, a Codex agent, reviews it. They go round until Corvid is
-satisfied or three rounds are up — and then it comes to you either way.
+Scribe writes the brief. Corvid, a Codex agent, reviews it. Every round ends at your gate — approve,
+request changes, or reject — and they keep going until you approve or three rounds are up.
 EOF
 
 levare validate .
@@ -48,9 +48,11 @@ raise a gate.
 1. **Scribe** produces a `product-brief`.
 2. levare **immediately dispatches Corvid** — the member who produces the loop's other kind — with the
    brief in its context. No gate, no click. This is a round.
-3. If Corvid's review satisfies `until`, the loop ends and the walk continues.
-4. If not, **you** decide: request changes (Scribe reworks, with the review in context — round two),
-   approve over the critic's objection, or reject.
+3. Once both artifacts exist, levare raises a gate on the round's `product-brief` — regardless of what
+   Corvid wrote. **You** decide: approve, request changes (Scribe reworks, with the review in context —
+   round two), or reject.
+4. Approve, and the round's review is marked approved alongside it — satisfying `until: review.approved`.
+   The loop ends and the walk continues.
 5. After `max_rounds`, `on_exhaust: gate` escalates to you regardless.
 
 **The gate is at the loop's outcome, never on each internal turn.** You consented at the start gate;
