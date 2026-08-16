@@ -214,7 +214,12 @@ export function renderRegistry(
           return `<div class="${pairCls}"><span class="arr">&rarr;</span>${node}</div>`;
         })
         .join("");
-      const memberAvatars = t.members.map((m) => avatar(repo.agents.get(m)?.style.avatar ?? m.slice(0, 2), t.style.color, { title: m })).join("");
+      // DOCS-WALKTHROUGH-3 item 3: a member's own name, on hover/focus — the same accessible tooltip
+      // recipe as `cited N`/loop-bounds (avatar()'s own doc comment, shell.ts), not the plain `title`
+      // attribute this used to carry (mouse-hover only, unreachable by keyboard).
+      const memberAvatars = t.members
+        .map((m) => avatar(repo.agents.get(m)?.style.avatar ?? m.slice(0, 2), t.style.color, { tooltip: { text: m, id: `memberav-${esc(t.name)}-${esc(m)}` } }))
+        .join("");
       const producesChips = t.produces.map((p) => tag(p, "tag")).join("");
       // NOTES MERGE-1: the REV1 "declared but not yet enforced" notice is retired — `checkGuardrails`
       // acquired its production call site (board/gateops.ts's merge-gate execution, PRD Amendment 2
@@ -314,7 +319,11 @@ export function renderRegistry(
       <div class="card__h">Definition</div>
       <div class="prow"><span class="k">kind</span><span class="v">${agentKindBadge(a.kind)}${a.model ? ` <span class="mono">&middot; ${esc(a.model)}</span>` : ""}</span></div>
       <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>${toolsRow}${connectorsRow}${commandRow}${contextViaRow}${contextArtifactsRow}${cwdRow}${timeoutRow}${serverRow}${toolRow}${resultHtml}${remoteWarning}${cliToolsWarning}${sandboxWarning}`;
-      return entityBlock("agents", `${avatar(a.style.avatar || a.name.slice(0, 2), team?.style.color, { size: "lg" })} ${esc(a.name)}`, "agent", inner, `agents/${a.name}.md`, rawFor(root, "agents", a.name), a.name, active === "agents");
+      // DOCS-WALKTHROUGH-3 item 3: the card header avatar gets the same accessible name-on-focus
+      // treatment as every other member avatar, even though the name sits in plain text right beside
+      // it here — the avatar itself still carries no name of its own without it.
+      const headerAvatar = avatar(a.style.avatar || a.name.slice(0, 2), team?.style.color, { size: "lg", tooltip: { text: a.name, id: `memberav-agent-${esc(a.name)}` } });
+      return entityBlock("agents", `${headerAvatar} ${esc(a.name)}`, "agent", inner, `agents/${a.name}.md`, rawFor(root, "agents", a.name), a.name, active === "agents");
     })
     .join("\n");
 
@@ -419,9 +428,14 @@ export function renderRegistry(
       ? `<input type="text" class="registry-filter" placeholder="Filter ${esc(title.toLowerCase())}&hellip;" aria-label="Filter ${esc(title.toLowerCase())}" data-registry-filter/>`
       : "";
 
+  // DOCS-WALKTHROUGH-3 item 3: the trail used to stop at "registry", omitting the current page (the
+  // h1 right below it reads "Teams"/"Agents"/... — the exact page the crumb should end on). "registry"
+  // becomes a link to the bare index (/registry, REGISTRY_KINDS' own default) now that it's no longer
+  // the last segment; the active kind slug (already the URL's own /registry/:entity segment,
+  // REGISTRY_KIND-validated above) is the new, un-linked current-page segment.
   const main = `<main class="main"${highlightId ? ` data-highlight="${esc(highlightId)}"` : ""}>
     <header class="phead">
-      <div class="crumb"><a href="/studio">studio</a><span>/</span><span>registry</span></div>
+      <div class="crumb"><a href="/studio">studio</a><span>/</span><a href="/registry">registry</a><span>/</span><span>${esc(active)}</span></div>
       <h1>${title}</h1>
     </header>
     ${filterHtml}

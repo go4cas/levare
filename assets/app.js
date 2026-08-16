@@ -1180,5 +1180,7 @@
     wireTooltip('.m--loopstage', '.looptip');
     wireTooltip('.cite--count', '.citetip');
     wireTooltip('.chip.is-neutral', '.neutraltip');
+    // DOCS-WALKTHROUGH-3 item 3: a member avatar's name-on-hover/focus, same recipe as the three above.
+    wireTooltip('.avatar[tabindex]', '.avatartip');
   });
 })();

@@ -143,8 +143,9 @@ button{ font-family:inherit; }
 .orchind__pop-foot p{ margin:0; font-size:11.5px; line-height:1.5; color:var(--fg-mute); }
 
 /* ---------- dashed chip — env/secret reference (ported from dev/foundation/components.css) ----------
-   A reference to something the repo doesn't itself hold (an env var, a secret) reuses the same
-   dashed-outline vocabulary `.kindbadge--remote` already draws on for "not fully present here". */
+   A reference to something the repo doesn't itself hold (an env var, a secret) — dashed for "not
+   fully present here". DOCS-WALKTHROUGH-3 item 2 retired `.kindbadge--remote`'s own former dashed
+   treatment (see the `.kindbadge` comment below), so this is now the only dashed-outline chip left. */
 .chip-dashed{ display:inline-flex; align-items:center; gap:6px; font-size:10.5px; color:var(--fg-mute);
   background:transparent; border:1px dashed var(--border-strong); padding:3px 8px; border-radius:var(--radius-sm); }
 
@@ -321,6 +322,20 @@ button{ font-family:inherit; }
 .avatar.lg{ width:34px; height:34px; font-size:12.5px; }
 .avatar--conductor{ background:var(--fg); color:var(--bg); }
 .avatar--runner{ background:transparent; border:1.5px solid var(--fg-mute); color:var(--fg-mute); font-size:9px; }
+/* DOCS-WALKTHROUGH-3 item 3: a member avatar carrying a name tooltip (avatar()'s own doc comment,
+   render/shell.ts) is a trigger, not just a swatch — `position:relative` anchors `.avatartip` below it,
+   the identical accessible shape `.cite--count`/`.citetip` established (`tabindex="0"` +
+   `aria-describedby`, JS-positioned from `getBoundingClientRect()`, never hover-only). Scoped to
+   `[tabindex]` so a plain decorative avatar (Conductor/Runner, or one with no tooltip) is untouched. */
+.avatar[tabindex]{ position:relative; cursor:default; }
+.avatar[tabindex]:focus{ outline:2px solid var(--accent); outline-offset:2px; }
+.avatartip{ position:fixed; left:0; top:0; transform:translate(-50%, 0);
+  z-index:50; background:var(--fg); color:var(--bg); font-family:var(--mono); font-size:11px;
+  line-height:1.5; white-space:normal; max-width:220px; width:max-content; padding:6px 10px;
+  border-radius:7px; box-shadow:var(--shadow); opacity:0; visibility:hidden;
+  transition:opacity var(--motion-fast); pointer-events:none; }
+.avatartip.is-shown{ opacity:1; visibility:visible; }
+@media (prefers-reduced-motion: reduce){ .avatartip{ transition:none; } }
 
 /* ---------- project cards + mini-score ---------- */
 .pcards{ display:grid; grid-template-columns:repeat(auto-fill, minmax(220px,1fr)); gap:12px; }
@@ -710,16 +725,20 @@ button{ font-family:inherit; }
    avatars) — the same gap/wrap rhythm `.recipe` already established, under its own name since it's a
    generic layout wrapper, not specific to the agent context-recipe pills. */
 .chiprow{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-/* UI7 (RULE B): an agent's kind (native/cli/remote) is distinguished by badge TREATMENT — filled,
-   outlined, dashed — never by colour; every variant below draws only from the neutral ink scale. */
-.kindbadge{ display:inline-flex; align-items:center; font-family:var(--mono); font-size:10.5px; letter-spacing:.02em; padding:2px 8px; border-radius:5px; }
-.kindbadge--native{ background:var(--fg); color:var(--bg); border:1px solid var(--fg); }
-.kindbadge--cli{ background:transparent; color:var(--fg-dim); border:1px solid var(--border-strong); }
-.kindbadge--remote{ background:transparent; color:var(--fg-mute); border:1px dashed var(--border-strong); }
-/* NOTES UI11: a connector's kind (cli/mcp) reuses this same shape-treatment system — `cli` shares the
-   agent kind's own outlined `--cli` variant (same concept, same treatment); `mcp` is filled, like
-   `--native`, so the two connector kinds read as a clear filled/outlined pair. */
-.kindbadge--mcp{ background:var(--fg); color:var(--bg); border:1px solid var(--fg); }
+/* UI7 (RULE B): an agent's kind (native/cli/remote) — and, since NOTES UI11, a connector's kind
+   (cli/mcp) — is never coloured from the status palette. DOCS-WALKTHROUGH-3 item 2 retired the
+   filled/outlined/dashed TREATMENT split this comment used to describe: it was real, deliberate
+   signal (filled — `native`, `mcp` — meant "runs in-process, fully present here"; dashed — `remote` —
+   meant "not fully present here, best-effort"; outlined — `cli`, both fields — meant "spawns an
+   external process"), not a styling default that happened to miss some values. But nothing in the
+   rendered page ever explained that legend; a reader saw an unexplained bold-vs-outlined-vs-dashed
+   split with no key, on top of a badge whose own text already names the kind directly ("native",
+   "cli", "remote", "mcp"). The shape was decoration duplicating the text, inconsistently applied
+   (`native`/`mcp` filled but not `remote`, itself a third treatment) — so every kind value, on both
+   fields, now renders through this one shared treatment. No field renders more than one chip
+   treatment; the per-kind modifier classes (`kindbadge--native` etc.) stay in the markup as a
+   selector hook, just carrying no rule of their own anymore. */
+.kindbadge{ display:inline-flex; align-items:center; font-family:var(--mono); font-size:10.5px; letter-spacing:.02em; padding:2px 8px; border-radius:5px; background:transparent; color:var(--fg-dim); border:1px solid var(--border-strong); }
 .editbar{ display:flex; align-items:center; gap:10px; padding-top:var(--space-3);
   border-top:1px solid var(--border); }
 .togglebtn{ background:var(--panel); border:1px solid var(--border-strong); color:var(--fg-dim);

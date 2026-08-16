@@ -344,7 +344,14 @@ const TEAM_SCHEMA: Schema = {
       type: "map",
       required: true,
       description: "Display settings for this team.",
-      fields: { color: { type: "str", required: true, description: "The team's display color." } },
+      fields: {
+        color: {
+          type: "str",
+          required: true,
+          description:
+            "The team's declared brand color. Not rendered verbatim: shifted to the nearest hue that clears the WCAG AA contrast floor for avatar text and stays visually distinct from Podium's accent and gate-brass system colors (a hue that collides with either — e.g. a saturated red landing near Podium's own red-orange — is pushed off it). A color already clear of both constraints renders essentially as declared. See src/board/team-color.ts for the exact transform.",
+        },
+      },
     },
     guardrails: {
       type: "map",

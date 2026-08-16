@@ -11,7 +11,7 @@ import { remoteAgentImplemented } from "./env.ts";
 import { serve } from "./board/serve.ts";
 import { initStudio, GIT_IDENTITY_NOTE } from "./init.ts";
 import { applyStudioEnv } from "./dotenv.ts";
-import { resolveOrchestratorStatus } from "./orchestrator-status.ts";
+import { resolveOrchestratorStatus, ORCHESTRATOR_ENV_VAR } from "./orchestrator-status.ts";
 import { loadOrchestratorPromptSource, ORCHESTRATOR_PROMPT_PATH } from "./orchestrator-boundary.ts";
 import { getVersionInfo, formatVersion } from "./version.ts";
 import { WORKER_COMMAND } from "./sdk-transport.ts";
@@ -126,7 +126,13 @@ export function runDoctorCmd(rest: string[]): number {
     const repo = loadRepo(root);
     const env = { has: (name: string) => typeof process.env[name] === "string" && process.env[name] !== "" };
     const probe = (command: string): "found" | "not-found" => (Bun.which(command) ? "found" : "not-found");
-    const orchestrator = resolveOrchestratorStatus(process.env);
+    // DOCS-WALKTHROUGH-3 item 4: the Orchestrator's own credential is the one doctor reports on that
+    // never named its source — every connector's env line already does (provenance, right above). Same
+    // present-check-then-lookup as diagnose()'s own env line (doctor.ts): fall back to 'shell' only when
+    // the var is actually present but wasn't set by `.env` (declared in the shell, or in `.env` but
+    // already present so applyStudioEnv left it alone either way — both are genuinely 'shell').
+    const orchestratorEnvSource = env.has(ORCHESTRATOR_ENV_VAR) ? (provenance.get(ORCHESTRATOR_ENV_VAR) ?? "shell") : undefined;
+    const orchestrator = resolveOrchestratorStatus(process.env, {}, orchestratorEnvSource);
     // NOTES MCP-1B (PRD Amendment 3, ruling R5): every `kind: remote` agent that is NOT yet backed by
     // a real, granted, stdio `kind: mcp` connector — narrowed from REV1's original "every remote agent"
     // now that the stdio case is a real dispatch path (adapters.ts#createAsyncStdioRemoteBoundary); see

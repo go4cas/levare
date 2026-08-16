@@ -5,6 +5,7 @@
 // — so "the badge says on" and "the route actually answers" can never disagree.
 
 import { checkSdkPreconditionsCached, type SdkPreconditionOptions } from "./sdk-transport.ts";
+import type { EnvProvenance } from "./dotenv.ts";
 
 export interface OrchestratorStatus {
   available: boolean;
@@ -26,8 +27,21 @@ export const ORCHESTRATOR_ENV_VAR = "ANTHROPIC_API_KEY";
 // determines availability, compiled or not.
 
 /** Resolve the Orchestrator's current boundary status — cached (30s TTL, see sdk-transport.ts) so a
- * page render or a doctor run never re-walks node_modules resolution on every call. */
-export function resolveOrchestratorStatus(env: Record<string, string | undefined> = process.env, opts: SdkPreconditionOptions = {}): OrchestratorStatus {
+ * page render or a doctor run never re-walks node_modules resolution on every call.
+ *
+ * `envSource`, when given (DOCS-WALKTHROUGH-3 item 4): where `ANTHROPIC_API_KEY` actually came from —
+ * '.env' or the shell — folded into `reason` exactly like a connector's own `env NAME present (source)`
+ * line (doctor.ts). Every OTHER credential `levare doctor` reports on already names its source
+ * (dotenv.ts#applyStudioEnv's provenance map, NOTES C11 part 4); this was the one doctor reports on
+ * that didn't — a shell-exported key silently outranking a freshly-edited `.env` looked identical to a
+ * correct load. Omitted by every board render call site (they have no provenance map handy and don't
+ * need one — this is a `levare doctor`-only enhancement, threaded in by cli.ts alone), so the shared
+ * `reason` text everywhere else is unchanged. */
+export function resolveOrchestratorStatus(
+  env: Record<string, string | undefined> = process.env,
+  opts: SdkPreconditionOptions = {},
+  envSource?: EnvProvenance,
+): OrchestratorStatus {
   const check = checkSdkPreconditionsCached(env, opts);
   return {
     available: check.viable,
@@ -39,7 +53,7 @@ export function resolveOrchestratorStatus(env: Record<string, string | undefined
     // implying a check that never ran. See docs/current-gaps.md for why a real round-trip check was
     // rejected rather than added.
     reason: check.viable
-      ? `${ORCHESTRATOR_ENV_VAR} is present — its validity isn't checked until the Orchestrator makes a real request.`
+      ? `${ORCHESTRATOR_ENV_VAR} is present${envSource ? ` (${envSource})` : ""} — its validity isn't checked until the Orchestrator makes a real request.`
       : (check.reason ?? `${ORCHESTRATOR_ENV_VAR} is not set`),
     envVar: ORCHESTRATOR_ENV_VAR,
   };

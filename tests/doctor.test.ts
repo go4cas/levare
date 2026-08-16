@@ -118,6 +118,45 @@ describe("doctor: reports the Orchestrator boundary (NOTES C11)", () => {
   });
 });
 
+// DOCS-WALKTHROUGH-3 item 4: every connector's own env line already named its source (the describe
+// block above) — the Orchestrator's own ANTHROPIC_API_KEY was the one credential `levare doctor` reports
+// on that didn't, closed via `resolveOrchestratorStatus`'s new `envSource` parameter (orchestrator-
+// status.test.ts covers that function directly; this proves the real CLI actually threads it —
+// cli.ts#runDoctorCmd computing `orchestratorEnvSource` from the SAME provenance map it already builds
+// for the connector report). A real subprocess run, not `formatDoctor` called directly, because the gap
+// was in the wiring (cli.ts), not the formatting function.
+describe("doctor: the real CLI names ANTHROPIC_API_KEY's own source, same as every connector's (DOCS-WALKTHROUGH-3 item 4)", () => {
+  function scratchGolden(): string {
+    const dir = mkdtempSync(join(tmpdir(), "levare-doctor-envsource-"));
+    cpSync("fixtures/golden", dir, { recursive: true });
+    return dir;
+  }
+
+  test("ANTHROPIC_API_KEY set only in .env → doctor names it '(dotenv)'", () => {
+    const root = scratchGolden();
+    try {
+      writeFileSync(join(root, ".env"), "ANTHROPIC_API_KEY=sk-ant-from-dotenv\n");
+      const p = Bun.spawnSync(["./levare", "doctor", root], { env: { ...process.env, ANTHROPIC_API_KEY: "" } });
+      assertExitCode(`./levare doctor ${root}`, p, 0);
+      expect(p.stdout.toString()).toContain("orchestrator: on · ANTHROPIC_API_KEY is present (dotenv)");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("ANTHROPIC_API_KEY exported in the shell, shadowing an .env value → doctor names it '(shell)', the exact confusion this closes", () => {
+    const root = scratchGolden();
+    try {
+      writeFileSync(join(root, ".env"), "ANTHROPIC_API_KEY=sk-ant-stale-dotenv-value\n");
+      const p = Bun.spawnSync(["./levare", "doctor", root], { env: { ...process.env, ANTHROPIC_API_KEY: "sk-ant-real-shell-value" } });
+      assertExitCode(`./levare doctor ${root}`, p, 0);
+      expect(p.stdout.toString()).toContain("orchestrator: on · ANTHROPIC_API_KEY is present (shell)");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 // NOTES DIST1: a compiled binary and the source tree it was built from can drift, so `levare
 // doctor` states its own run mode up front — compiled (with the build commit) or source/dev — so
 // "is this the code I think it is?" has a visible answer. A full staleness check (comparing the

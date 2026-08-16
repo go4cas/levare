@@ -20,7 +20,7 @@ A group with a job — what it consumes, what it produces, its members, and its 
 | `members` | string[] | ✅ | — | — | The agents (members) that belong to this team. |
 | `flow` | flow list (`step` / `gate` / `loop` entries) | ✅ | — | — | The declarative sequence of step/gate/loop entries the Runner executes. |
 | `style` | map | ✅ | — | — | Display settings for this team. |
-| `style.color` | string | ✅ | — | — | The team's display color. |
+| `style.color` | string | ✅ | — | — | The team's declared brand color. Not rendered verbatim: shifted to the nearest hue that clears the WCAG AA contrast floor for avatar text and stays visually distinct from Podium's accent and gate-brass system colors (a hue that collides with either — e.g. a saturated red landing near Podium's own red-orange — is pushed off it). A color already clear of both constraints renders essentially as declared. See src/board/team-color.ts for the exact transform. |
 | `guardrails` | map | — | — | — | Guardrails constraining this team's diffs and branches. |
 | `guardrails.protected_paths` | string[] | — | — | — | File paths (matched against diff contents) this team must never touch — a different namespace from protected_branches, never cross-matched. |
 | `guardrails.protected_branches` | string[] | — | — | — | Branch refs this team must never touch — a different namespace from protected_paths, never cross-matched. |
