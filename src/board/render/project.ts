@@ -216,8 +216,21 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
       ${pheadLinks ? `<div class="phead__links">${pheadLinks}</div>` : ""}
     </header>
     ${statStrip([
-      { value: `${units.filter((u) => u.status === "shipped").length}`, label: "Shipped units" },
-      { value: `${units.filter((u) => u.status === "active").length}`, label: "Active" },
+      // DOCS-WALKTHROUGH-3 item 1: "Units shipped" — the Studio page's own name for this exact
+      // measure (all-time shipped-unit count), scoped here to this project instead of the whole repo.
+      // Previously "Shipped units" — same count, gratuitously reworded, so a reader had to know which
+      // screen they were on to recognise it as the same number.
+      { value: `${units.filter((u) => u.status === "shipped").length}`, label: "Units shipped" },
+      // DOCS-WALKTHROUGH-3 item 1: this cell used to read unit *lifecycle* status ("Active" — how many
+      // units are in the active state, whether or not anyone is working on them right now) under a
+      // label ("Active") that looked like the Studio page's "Members running" — a live *invocation*
+      // count. They were never the same measure. Rather than leave two different numbers sharing
+      // look-alike names, this cell now reports the actual same measure "Members running" names:
+      // `membersRunningHere`, the project-scoped twin of Studio's `running.length`, already computed
+      // above for the header status chip. A reader who knows what Studio's number means now knows what
+      // this one means too, on both screens, with no separate "how many units are active" number lost
+      // — each unit row already carries its own lifecycle status chip.
+      { value: `${membersRunningHere}`, label: "Members running", attr: { name: "data-runningstat", value: membersRunningHere } },
       // Amendment 1 §3, review F13: a stat tints only when actionable, gate-brass only — the same
       // rule the Studio page's own "Gates on you" stat already gets (Phase 2 cluster 3 part 3: this
       // page's identical stat was the one holdout, never actually tinted).

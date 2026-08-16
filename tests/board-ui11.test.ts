@@ -173,7 +173,7 @@ describe("UI11 item 3: connector kind renders as a shape-treatment badge, never 
   const github = /<article class="entity card" id="connectors-github"[\s\S]*?<\/article>/.exec(html)![0];
   const linear = /<article class="entity card" id="connectors-linear"[\s\S]*?<\/article>/.exec(html)![0];
 
-  test("cli renders with the (shared, agent-kind) outlined badge; mcp gets its own filled badge", () => {
+  test("cli and mcp both render the shared kindbadge, class hooks intact", () => {
     expect(github).toContain('<span class="kindbadge kindbadge--cli">cli</span>');
     expect(linear).toContain('<span class="kindbadge kindbadge--mcp">mcp</span>');
     expect(github).not.toContain('<span class="v mono">cli</span>');
@@ -188,6 +188,21 @@ describe("UI11 item 3: connector kind renders as a shape-treatment badge, never 
         expect(rule).not.toContain(forbidden);
       }
     }
+  });
+
+  // DOCS-WALKTHROUGH-3 item 2: `native`/`mcp` used to render filled while `cli` rendered outlined —
+  // one enum field (agent kind, or connector kind), two chip treatments. Both fields now share exactly
+  // one treatment across every value: no lone `kindbadge--*` selector carries its own `background`/
+  // `border-style` override, and the base rule (the only place any of them CAN differ) is not dashed.
+  test("every kind value — agent and connector — shares one chip treatment, not a filled/outlined/dashed split", () => {
+    const css = readFileSync("assets/styles.css", "utf8");
+    const modifierRules = css.match(/\.kindbadge--[a-z]+\s*\{[^}]*\}/g) || [];
+    for (const rule of modifierRules) {
+      expect(rule).not.toMatch(/background\s*:\s*(?!transparent)/);
+      expect(rule).not.toMatch(/border-style\s*:\s*dashed/);
+    }
+    const baseRule = (css.match(/\.kindbadge\s*\{[^}]*\}/) || [])[0] ?? "";
+    expect(baseRule).not.toMatch(/border\s*:\s*1px\s+dashed/);
   });
 });
 

@@ -139,6 +139,40 @@ describe("the studio 'Gates on you' stat tints only when actionable, matching th
   });
 });
 
+// DOCS-WALKTHROUGH-3 item 1: the studio and project stat rails used to name the same measure two ways
+// ("Units shipped" vs "Shipped units"; a live members-running count vs a unit lifecycle-status tally
+// mislabeled to look like the same thing) — a reader had to know which screen they were on to know what
+// a number meant. Every measure genuinely shared between the two screens now carries one label; the
+// project's own "Members running" reuses the exact live-invocation count (`membersRunningHere`,
+// render/project.ts) already computed for its header status chip, not a different measure in a matching
+// coat of paint.
+describe("a measure shared between the studio and project stat rails carries the same label on both", () => {
+  const studioHtml = renderStudio(repo, root, now);
+  const projectHtml = renderProject(repo, "storefront", root, now);
+
+  test("'Units shipped' — not 'Shipped units' — on both screens", () => {
+    expect(studioHtml).toContain('<div class="l">Units shipped &middot; 30d</div>');
+    expect(projectHtml).toContain('<div class="l">Units shipped</div>');
+    expect(projectHtml).not.toContain(">Shipped units<");
+  });
+
+  test("'Members running' — not 'Active' — on both screens, each scoped to its own live-invocation count", () => {
+    expect(studioHtml).toMatch(/<div class="n"[^>]*data-runningstat="\d+"[^>]*>\d+<\/div><div class="l">Members running<\/div>/);
+    expect(projectHtml).toMatch(/<div class="n"[^>]*data-runningstat="\d+"[^>]*>\d+<\/div><div class="l">Members running<\/div>/);
+    expect(projectHtml).not.toContain(">Active<");
+  });
+
+  // Genuinely different measures keep genuinely different names — "Gates on you" (studio, this repo's
+  // one Conductor) and "Gates open" (project, this project's own open-gate count) are never merged, nor
+  // is "Median gate response" (a duration) with "Median review rounds" (a count).
+  test("genuinely different measures stay distinctly named, not collapsed into a shared label", () => {
+    expect(studioHtml).toContain('<div class="l">Gates on you</div>');
+    expect(projectHtml).toContain('<div class="l">Gates open</div>');
+    expect(studioHtml).toContain('<div class="l">Median gate response</div>');
+    expect(projectHtml).toContain('<div class="l">Median review rounds</div>');
+  });
+});
+
 // NOTES F10 defect 3: clicking Start left the board completely static for however long a real model
 // call takes — "Members running" only ever populated from the daemon's OWN autonomous tick, which a
 // Conductor-triggered start never went through. The board must acknowledge the click immediately: the

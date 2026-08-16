@@ -243,15 +243,18 @@ export function memberAvatar(repo: Repo, producedBy: string, opts: { size?: "sm"
   return avatar(initials, team?.style.color, opts);
 }
 
-// RULE B: an agent's kind (native/cli/remote) is distinguished by badge TREATMENT — filled, outlined,
-// dashed-outlined — never by colour; `.kindbadge--*` (assets/styles.css) only ever draws from the
-// neutral ink scale (--fg/--fg-dim/--fg-mute/--border-strong), none of which is a status-palette hue.
+// RULE B: an agent's kind (native/cli/remote) is never coloured from the status palette; the badge's
+// own text names the kind. DOCS-WALKTHROUGH-3 item 2: this used to also carry a filled/outlined/dashed
+// TREATMENT split per value — real signal, but unexplained anywhere in the UI itself and inconsistently
+// applied — retired in favour of one shared outlined treatment for every kind value (`.kindbadge`,
+// assets/styles.css). `kindbadge--${kind}` stays as a class hook; it carries no CSS rule of its own now.
 export function agentKindBadge(kind: "native" | "cli" | "remote"): string {
   return `<span class="kindbadge kindbadge--${kind}">${esc(kind)}</span>`;
 }
 
-// NOTES UI11: a connector's kind (cli/mcp) gets the identical shape-treatment badge system as an
-// agent's kind — filled vs. outlined, never colour (RULE B, same reasoning as agentKindBadge above).
+// NOTES UI11 / DOCS-WALKTHROUGH-3 item 2: a connector's kind (cli/mcp) shares the identical badge
+// system as an agent's kind — same reasoning as agentKindBadge above, including the now-uniform
+// outlined treatment.
 export function connectorKindBadge(kind: "cli" | "mcp"): string {
   return `<span class="kindbadge kindbadge--${kind}">${esc(kind)}</span>`;
 }
