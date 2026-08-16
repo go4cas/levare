@@ -1231,3 +1231,61 @@ condition changed — `bun test` reports the same 1472 pass / 9 skip both before
 
 See NOTES "subprocess assertion failures" for the full site inventory and the fix-by-category
 breakdown.
+
+## Five small cold-start-walkthrough findings — closed (NOTES DOCS-WALKTHROUGH-3); two were rulings
+
+A third live cold-start walkthrough found three board consistency defects, one doctor gap, and one
+under-documented design decision. Two needed a real ruling, not just an edit — both carried out and
+recorded; read NOTES DOCS-WALKTHROUGH-3 for the full reasoning behind each, not the summary here.
+
+**A team's declared `style.color` is deliberately not rendered verbatim — ruling: keep the transform,
+document it.** `team-color.ts#deriveTeamStyle` shifts a declared hex to the nearest hue that clears the
+WCAG AA contrast floor for avatar text and stays visually distinct from Podium's accent and gate-brass
+system colours — a pure red lands near pink specifically because pure red collides with Podium's own
+red-orange accent (anti-impersonation, not an accessibility side-effect). The transform was already
+correct and already commented in the source; what was missing was any telling AT THE POINT someone
+declares the field. `style.color`'s schema description (`src/validate.ts`, surfaced verbatim in the
+generated [team cheatsheet](guide/05-reference/cheatsheets/team.md)) now says so.
+
+**The studio and project stat rails named the same measure two different ways — ruling: one label per
+measure, kept distinct only where the measure genuinely differs.** `Units shipped`/`Shipped units` was
+pure drift (the same all-time shipped-unit count, studio-wide vs. project-scoped) — both now read "Units
+shipped". `Members running`/`Active` looked like drift but wasn't quite: "Active" was a work-unit
+lifecycle tally (`status: active`, with no live invocation implied), a genuinely different measure from
+Studio's own live-invocation count. Rather than rename a mismatched measure into a matching coat of
+paint, `render/project.ts`'s stat now reports the SAME measure Studio's "Members running" does —
+`membersRunningHere`, the project-scoped live-invocation count already computed for the page's own
+header status chip — so the label and the number finally agree. `Gates on you`/`Gates open` and `Median
+gate response`/`Median review rounds` were left alone: genuinely different measures (Conductor-directed
+vs. project-wide; a duration vs. a count) whose distinct names were already legible on their own.
+
+**`native`/`mcp` rendered as filled dark chips, `cli` rendered outlined, on both the agent-kind and
+connector-kind fields — ruling: one treatment for every kind value.** The split was real, deliberate
+signal (RULE B's own comment): filled meant "runs in-process, fully present here", dashed (`remote`)
+meant "not fully present here", outlined meant "spawns an external process" — not a styling default that
+happened to miss some values. But nothing in the rendered page ever explained that legend, on top of a
+badge whose own text already names the kind directly. `.kindbadge` (`assets/styles.css`) now carries one
+shared outlined treatment for every value on both fields; the per-kind modifier classes stay in the
+markup as selector hooks, carrying no rule of their own.
+
+**Avatar chips (`wr`, `ly`, ...) named no one, and the registry breadcrumb dropped its own current
+page.** Every avatar built from `avatar()`/`memberAvatar()` (team-card member lists, the agent-card
+header avatar, the run view's score rail) can now carry an accessible name-on-hover/focus tooltip — the
+same `tabindex`/`aria-describedby`/`role="tooltip"` recipe as the loop-bounds tooltip, `cited N`, and
+`not covered`, wired through the same `wireTooltip` helper — replacing a plain, mouse-only `title`
+attribute where one existed, and adding a name where none did. Separately, `/registry/<kind>`'s
+breadcrumb read `studio / registry` on every kind — now `studio / registry / <kind>`, "registry" itself
+a link now that it's no longer the last segment.
+
+**`levare doctor` named where a connector's own credential came from (`.env` vs. shell) but not where
+the Orchestrator's own `ANTHROPIC_API_KEY` did** — the one credential doctor reports on that was still
+silent, and a shell export silently outranking a freshly-edited `.env` looks identical to a correct load
+either way. `resolveOrchestratorStatus` (`orchestrator-status.ts`) takes an optional `envSource`
+parameter now, folded into its `reason` text exactly like a connector's own `env NAME present (source)`
+line; every board render call site omits it (unchanged reason text), and `cli.ts#runDoctorCmd` is the
+one caller that threads it, computed from the exact same provenance map it already builds for the
+connector report.
+
+See NOTES DOCS-WALKTHROUGH-3 for the full investigation behind each finding — including how the `style.
+color` transform's actual behaviour was established before ruling on it, and why `Members running`/
+`Active` turned out not to be the drift it first looked like.

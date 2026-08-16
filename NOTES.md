@@ -16923,3 +16923,150 @@ environmental `SANDBOX_UNAVAILABLE`/`UNCOVERABLE_EXPECTED_KIND` warnings as befo
 change). `levare replay fixtures/golden --stubs` → oracle match, byte-for-byte. `docs/current-gaps.md`
 gains a closing entry cross-referencing this one and closes the "17 other sites" note the "dubious clone
 ownership" entry left open.
+
+## NOTES DOCS-WALKTHROUGH-3 (2026-08-16) — five findings from a cold-start walkthrough, closed; two
+## needed a real ruling (`style.color`, chip treatment), not just an edit
+
+A third live cold-start walkthrough found three board consistency defects, one doctor gap, and one
+under-documented design decision (a field whose declared value is silently transformed before it
+renders). Per the goal's own ordering — the field-transform question first, since its answer determines
+what the team cheatsheet says either way — that's where the investigation started.
+
+**1 — `style.color` is transformed, not rendered as declared: established what the transform does before
+ruling on it.** A team declaring `color: "#FF0000"` renders pinkish crimson; `#2E6FB0` renders almost
+exactly as declared. Read `team-color.ts#deriveTeamStyle` (already carrying its own header comment
+naming the intent) and proved the two live outcomes directly rather than trusting the comment alone:
+
+```
+FF0000 -> { hue: "#FF066C", avatarText: "#191B21", contrastRatio: 4.5,  meetsContrastFloor: true }
+2E6FB0 -> { hue: "#2E6FB0", avatarText: "#FFFFFF", contrastRatio: 5.23, meetsContrastFloor: true }
+```
+
+Two independent mechanisms are at work, not one: a WCAG-AA contrast floor for avatar text (clamps
+lightness/chroma into a legible band), and a minimum OKLab perceptual distance from Podium's own accent
+(`#C2402A`/`#E56A50`) and gate brass (`#8A6414`/`#C99A3C`) — so a declared hue can't impersonate a system
+colour. `#FF0000` gets pushed hardest not because red is special to the contrast floor, but because pure
+red sits close to Podium's own red-orange accent — the anti-impersonation rule, not the contrast rule, is
+what moves it to pink. `#2E6FB0` clears both constraints already, so it passes through nearly unchanged.
+This is deliberate, correct, already-reasoned code (the base brief's own "a contrast floor... so
+user-declared hues cannot impersonate system colors") — never accidentally hue-dependent, and never
+undocumented in the SOURCE.
+
+**Ruling: keep the transform, document it where a studio author would actually see it before this
+session, not just in `team-color.ts`'s own comment.** The gap wasn't the transform's correctness — it
+was that nothing told a studio author matching a brand palette that their declared hex would be adjusted,
+or why. `TEAM_SCHEMA`'s `style.color` field description (`src/validate.ts`) now states the transform,
+its two triggers, and points at the exact file — surfaced verbatim in the GENERATED team cheatsheet
+(`scripts/generate-cheatsheets.ts` reads `FieldSpec.description` directly; no separate doc to keep in
+sync), at exactly the point someone would set the field.
+
+**2 — Studio and project stat rails named the same measure two ways, except one pair that only looked
+that way.** `Units shipped` (studio) / `Shipped units` (project) is pure wording drift — both are
+`units.filter(status === "shipped").length`, computed identically, scoped studio-wide vs. per-project.
+Fixed by picking one label ("Units shipped", studio's own phrasing) for both.
+
+`Members running` (studio) / `Active` (project) looked like the same drift but investigation proved
+otherwise: `running.length` (studio) is `daemon.running()`'s live-invocation projection — a snapshot of
+what's executing RIGHT NOW, confirmed by `tests/daemon.test.ts`'s own describe block, "'Members running'
+is a true projection of in-flight invocations." `units.filter(status === "active").length` (project) is
+a work-unit LIFECYCLE tally — a unit stays `active` for its whole span, including time waiting at an
+unapproved gate or between dispatches, with no live invocation implied. These are genuinely different
+measures that happened to occupy the same stat-rail slot on their two screens, not the same fact
+mislabeled — merging their NAMES without merging their COMPUTATIONS would have made the inconsistency
+worse (one label, two different underlying facts, depending on which screen you're reading). Fixed the
+other way: `render/project.ts`'s stat now computes the SAME measure Studio's own does —
+`membersRunningHere`, the project-scoped live-invocation count already sitting in that file, computed for
+the page's own header status chip (`projectStatusChip`) but never surfaced as a stat itself. No
+information is lost — each unit row already carries its own lifecycle-status chip; the aggregate active-
+count number simply wasn't uniquely informative next to that.
+
+`Gates on you` (studio) / `Gates open` (project) and `Median gate response` (studio, a duration) /
+`Median review rounds` (project, a count) were left untouched — genuinely different measures (Conductor-
+directed attention vs. a project-wide tally; a duration vs. a count) whose existing distinct names were
+already legible without cross-screen context.
+
+**Aside, NOT fixed here, scope discipline:** both `Units shipped` (studio) and `Spend` (studio) carry an
+unconditional `&middot; 30d` /`&middot; 30d` caption suggesting a rolling 30-day window — but
+`studio.ts`'s own `shippedUnits`/`repoSpend` are both all-time, unfiltered by date, same as their project
+counterparts. The caption has been inaccurate since before this session; fixing label-vs-measure drift is
+this goal's scope, fixing measure accuracy is a different, larger question (does "shipped" need a real
+30-day filter, or should the caption just be dropped) that a future goal should rule on explicitly, not
+something this fix silently changed one way or the other.
+
+**3 — `native`/`mcp` filled, `cli` outlined: established the treatment carried real meaning, then
+overrode it anyway.** `assets/styles.css`'s own `.kindbadge` rules, before this fix, were NOT a styling
+default that happened to miss some enum values — every one of the four kind values (`native`, `cli`,
+`remote` on the agent-kind field; `cli`, `mcp` on the connector-kind field) had an explicit, intentional
+rule (UI7 RULE B's own comment: "distinguished by badge TREATMENT — filled, outlined, dashed — never by
+colour"). Filled meant "runs in-process, fully present here" (`native`, and `mcp` by NOTES UI11's own
+explicit reuse of that same rule); dashed meant "not fully present here" (`remote`); outlined meant
+"spawns an external process" (`cli`, on both fields). Also confirmed: `agent.kind` and `connector.kind`
+are two DIFFERENT schema fields (not literally "the same field" the walkthrough's own wording suggested)
+that happen to share one visual badge system and one enum value name (`cli`) — worth naming precisely
+even though the fix (one treatment, applied to every value on both fields) turns out the same either way.
+
+**Ruling: override anyway — one treatment for every kind value, on both fields.** The shape was real
+signal, but signal nobody could actually read: nothing in the rendered page ever explained the legend
+(no key, no tooltip, no adjacent text), and the badge's own visible TEXT already names the kind directly
+("native", "cli", "remote", "mcp") — the shape was decoration duplicating information already present,
+inconsistently applied (`native`/`mcp` filled but not `remote`, itself a third, unmentioned treatment).
+`.kindbadge` (`assets/styles.css`) now carries one shared outlined rule; the four `.kindbadge--*`
+modifier rules are deleted, their classes kept in the markup as selector hooks carrying no rule of their
+own. `.chip-dashed`'s own comment (env/secret-reference chips, a genuinely separate dashed vocabulary)
+updated — it no longer cross-references `.kindbadge--remote`'s now-retired dashed treatment.
+
+**4 — Avatar chips named no one; the registry breadcrumb dropped its own current page.** Every avatar
+built through `avatar()`/`memberAvatar()` (`render/shell.ts`) can now carry an accessible tooltip — the
+same `tabindex="0"` + `aria-describedby` + nested `role="tooltip"` recipe as the loop-bounds tooltip,
+`cited N`, and `not covered`, wired through the SAME `wireTooltip` helper (`assets/app.js`) rather than a
+fourth copy of the same machinery. Applied at the team card's member-avatar list (replacing a plain,
+mouse-only `title` attribute), the agent card's own header avatar (previously no tooltip at all), and the
+run view's score rail (previously no tooltip at all) — `nodeIndex`/team+member/agent-name give each
+occurrence a unique tooltip id, since the same member can appear more than once on one page. Left
+untouched deliberately: the flow-strip's own step/loop avatars (`registry.ts#flowStepAvatar`), which
+already sit inside an outer `tabindex="0"` tooltip container of their own (`.m--loopstage`) — nesting a
+second interactive nested tabindex/tooltip inside that would conflict with, not extend, the existing
+accessible pattern.
+
+Separately: `/registry/<kind>`'s breadcrumb read `studio / registry` on every kind, while the H1 below it
+read "Teams"/"Agents"/"Skills"/etc. — the current page was missing from its own trail, the one screen
+whose breadcrumb didn't end on itself (studio/project/run/artifact/idea all already did). Now `studio /
+registry / <kind>`, "registry" itself a link (`/registry`, the bare index route) now that it's no longer
+the last segment.
+
+**5 — Doctor named a connector's credential source (`.env` vs. shell) but not the Orchestrator's own.**
+Read `doctor.ts`/`cli.ts` before assuming the gap was real: `applyStudioEnv`'s provenance map (NOTES C11
+part 4, already landed) IS threaded into `diagnose()`'s own `env NAME present (source)` lines, proven
+live —
+
+```
+env GITHUB_TOKEN present (dotenv)   # .env only
+env GITHUB_TOKEN present (shell)    # shell export shadowing .env
+```
+
+— exactly the "shell export silently outranking `.env`" scenario the goal named, already solved for every
+CONNECTOR credential. The actual gap was narrower and one line away: `orchestrator-status.ts#resolveOrchestratorStatus`'s
+own `reason` string ("ANTHROPIC_API_KEY is present — its validity isn't checked...", NOTES
+DOCS-WALKTHROUGH-2's own recent "don't overclaim validity" fix, cited almost verbatim in the goal) never
+named a source at all — the ONE credential doctor reports on that didn't. Fixed with a new optional
+`envSource` parameter, folded into the same reason string exactly like a connector's own line; every
+board render call site (studio/project/run/artifact/idea, all defaulting `status =
+resolveOrchestratorStatus()`) omits it, so their reason text is byte-identical to before — only
+`cli.ts#runDoctorCmd` threads it, computed from the exact same provenance map it already builds for the
+connector report (`env.has(ORCHESTRATOR_ENV_VAR) ? (provenance.get(ORCHESTRATOR_ENV_VAR) ?? "shell") :
+undefined`, the same present-then-lookup shape `diagnose()` itself uses). Proven against the real
+subprocess, not just the pure function, since the gap was in the WIRING (cli.ts) rather than the
+formatting: a scratch copy of `fixtures/golden` with `ANTHROPIC_API_KEY` set only in `.env` reports `(dotenv)`;
+the same scratch dir with the shell also exporting a different value reports `(shell)` — the exact
+confusion named in the goal, reproduced and then closed.
+
+## Verification
+
+`bun test` → 1482 pass, 9 skip, 0 fail (1472 pass/9 skip before this goal — 10 net new tests: 3 label-
+consistency assertions, 1 uniform-chip-treatment assertion, 4 `envSource` unit tests, 2 real-subprocess
+doctor tests). `bunx tsc --noEmit`, `bun run deps:check`, `bun run build` all clean. `bun run
+docs:generate` — the only diff is the `style.color` description this goal itself changed (`team.md`),
+byte-identical on a second run. `levare validate fixtures/golden` → valid (same 4 environmental
+`SANDBOX_UNAVAILABLE`/`UNCOVERABLE_EXPECTED_KIND` warnings as every prior entry in this file, unrelated to
+this change). `levare replay fixtures/golden --stubs` → oracle match, byte-for-byte. `docs/current-gaps.md`
+gains a closing entry naming all five findings and both rulings.
