@@ -1185,3 +1185,24 @@ tests use, each confirmed to fail without its fix and pass with it.
 
 See NOTES "runner-authored-commit audit" for the full investigation, including the Bun spawnSync
 env-inheritance finding worth knowing before the tenth instance of this pattern.
+
+## Chapter 4.6 said Corvid's review ends a loop round — it doesn't, the Conductor does — fixed (NOTES "loop until semantics")
+
+`docs/guide/04-workflow/06-first-loop.md` twice described the critic's own review as what satisfies a
+loop's `until`. It doesn't: `flow.ts#untilSatisfied` reads only an artifact's frontmatter `status`, never a
+member's prose, and `runner.ts#runLoop` raises a Conductor gate on the round's AUTHOR artifact every round
+— the critic's `APPROVED`/`CHANGES REQUESTED` line is advisory context for that decision, never an input the
+runner reads. `status` becomes `approved` (and `until: review.approved` becomes true) only when the
+Conductor approves. Both lines fixed; the rest of the guide — `03-concepts.md`, the registry-entities
+cheatsheet, the constitution's own invariant 4 — already had this right and needed no change. See NOTES
+"loop until semantics" for the full mechanism read.
+
+Two findings closed as not-bugs in the same pass, so neither gets re-opened:
+
+- **Corvid's missing verdict line (reviews produced 2026-08-13 ended on prose with no `APPROVED`/`CHANGES
+  REQUESTED` line).** A downstream symptom of the empty-consumed-set bug closed above ("A loop's live-path
+  dispatch and its retry path used to disagree") — a retried Corvid had nothing to review, so nothing to
+  render a verdict on. No fix needed; the verdict line returned once that bug closed, confirmed on
+  `review-purge-command-v1.md` (ends `CHANGES REQUESTED`).
+- **`approved_commit` naming.** Already recorded above as investigated and correct, unchanged (the "Ten
+  cold-start-walkthrough findings" entry) — named again only so both closures land together.
