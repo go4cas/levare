@@ -1,6 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import { mkdtempSync, writeFileSync, mkdirSync, chmodSync, existsSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { assertExitCode, assertSpawnFailed, spawnStdout } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -81,9 +82,9 @@ describe("platform mapping (NOTES DIST6)", () => {
 
       const result = runInstall(baseEnv(unameDir, { LEVARE_RELEASE_BASE_URL: `file://${fixture}`, LEVARE_BIN_DIR: binDir }));
 
-      expect(result.status).toBe(0);
+      assertExitCode("scripts/install.sh", result, 0);
       const bin = spawnSync(join(binDir, "levare"), ["--version"], { encoding: "utf8" });
-      expect(bin.stdout).toContain(platform);
+      expect(spawnStdout("installed levare --version", bin)).toContain(platform);
     });
   }
 
@@ -93,7 +94,7 @@ describe("platform mapping (NOTES DIST6)", () => {
       baseEnv(unameDir, { LEVARE_RELEASE_BASE_URL: `file://${makeFixtureRoot()}`, LEVARE_BIN_DIR: join(scratchDir("bin"), "bin") }),
     );
 
-    expect(result.status).not.toBe(0);
+    assertSpawnFailed("scripts/install.sh", result);
     expect(result.stderr).toContain("unsupported platform");
     expect(result.stderr).toContain("SunOS");
     expect(result.stderr).toContain("sun4u");
@@ -111,9 +112,9 @@ describe("version resolution (NOTES DIST6)", () => {
 
     const result = runInstall(baseEnv(unameDir, { LEVARE_RELEASE_BASE_URL: `file://${fixture}`, LEVARE_BIN_DIR: binDir }));
 
-    expect(result.status).toBe(0);
+    assertExitCode("scripts/install.sh", result, 0);
     const bin = spawnSync(join(binDir, "levare"), ["--version"], { encoding: "utf8" });
-    expect(bin.stdout).toContain("latest-marker");
+    expect(spawnStdout("installed levare --version", bin)).toContain("latest-marker");
   });
 
   test("LEVARE_VERSION=vX.Y.Z pins to that release's download path instead of latest", () => {
@@ -128,9 +129,9 @@ describe("version resolution (NOTES DIST6)", () => {
       baseEnv(unameDir, { LEVARE_RELEASE_BASE_URL: `file://${fixture}`, LEVARE_BIN_DIR: binDir, LEVARE_VERSION: "v9.9.9" }),
     );
 
-    expect(result.status).toBe(0);
+    assertExitCode("scripts/install.sh", result, 0);
     const bin = spawnSync(join(binDir, "levare"), ["--version"], { encoding: "utf8" });
-    expect(bin.stdout).toContain("pinned-marker");
+    expect(spawnStdout("installed levare --version", bin)).toContain("pinned-marker");
   });
 
   test("a pinned version that doesn't exist in the fixture fails cleanly", () => {
@@ -144,7 +145,7 @@ describe("version resolution (NOTES DIST6)", () => {
       baseEnv(unameDir, { LEVARE_RELEASE_BASE_URL: `file://${fixture}`, LEVARE_BIN_DIR: binDir, LEVARE_VERSION: "v0.0.1-missing" }),
     );
 
-    expect(result.status).not.toBe(0);
+    assertSpawnFailed("scripts/install.sh", result);
     expect(existsSync(binDir)).toBe(false);
   });
 });
@@ -159,7 +160,7 @@ describe("LEVARE_BIN_DIR override and default (NOTES DIST6)", () => {
 
     const result = runInstall(baseEnv(unameDir, { LEVARE_RELEASE_BASE_URL: `file://${fixture}`, LEVARE_BIN_DIR: customBin }));
 
-    expect(result.status).toBe(0);
+    assertExitCode("scripts/install.sh", result, 0);
     expect(existsSync(join(customBin, "levare"))).toBe(true);
   });
 
@@ -177,7 +178,7 @@ describe("LEVARE_BIN_DIR override and default (NOTES DIST6)", () => {
       LEVARE_RELEASE_BASE_URL: `file://${fixture}`,
     });
 
-    expect(result.status).toBe(0);
+    assertExitCode("scripts/install.sh", result, 0);
     expect(existsSync(join(home, ".local", "bin", "levare"))).toBe(true);
   });
 });
@@ -197,7 +198,7 @@ describe("checksum verification and failure behavior (NOTES DIST6)", () => {
 
     const result = runInstall(baseEnv(unameDir, { LEVARE_RELEASE_BASE_URL: `file://${fixture}`, LEVARE_BIN_DIR: binDir }));
 
-    expect(result.status).not.toBe(0);
+    assertSpawnFailed("scripts/install.sh", result);
     expect(result.stderr).toContain("checksum verification failed");
     expect(existsSync(binDir)).toBe(false);
   });
@@ -221,7 +222,7 @@ describe("checksum verification and failure behavior (NOTES DIST6)", () => {
       LEVARE_BIN_DIR: join(scratchDir("bin"), "bin"),
     });
 
-    expect(result.status).not.toBe(0);
+    assertSpawnFailed("scripts/install.sh", result);
     const leftovers = readdirSync(tmp).filter((name) => name.startsWith("levare-install."));
     expect(leftovers).toEqual([]);
   });
@@ -242,7 +243,7 @@ describe("checksum verification and failure behavior (NOTES DIST6)", () => {
       baseEnv(unameDir, { LEVARE_RELEASE_BASE_URL: `file://${fixture}`, LEVARE_BIN_DIR: join(scratchDir("bin"), "bin") }),
     );
 
-    expect(result.status).not.toBe(0);
+    assertSpawnFailed("scripts/install.sh", result);
     expect(result.stderr).toContain("does not list");
     expect(result.stderr).toContain(asset);
   });
@@ -260,10 +261,10 @@ describe("idempotency and PATH warning (NOTES DIST6)", () => {
     const first = runInstall(env);
     const second = runInstall(env);
 
-    expect(first.status).toBe(0);
-    expect(second.status).toBe(0);
+    assertExitCode("scripts/install.sh (1st run)", first, 0);
+    assertExitCode("scripts/install.sh (2nd run)", second, 0);
     const bin = spawnSync(join(binDir, "levare"), ["--version"], { encoding: "utf8" });
-    expect(bin.stdout).toContain("ok");
+    expect(spawnStdout("installed levare --version", bin)).toContain("ok");
   });
 
   test("warns on stderr, without failing, when the install dir is off PATH", () => {
@@ -275,7 +276,7 @@ describe("idempotency and PATH warning (NOTES DIST6)", () => {
 
     const result = runInstall(baseEnv(unameDir, { LEVARE_RELEASE_BASE_URL: `file://${fixture}`, LEVARE_BIN_DIR: binDir }));
 
-    expect(result.status).toBe(0);
+    assertExitCode("scripts/install.sh", result, 0);
     expect(result.stderr).toContain("not on PATH");
   });
 
@@ -295,7 +296,7 @@ describe("idempotency and PATH warning (NOTES DIST6)", () => {
       }),
     );
 
-    expect(result.status).toBe(0);
+    assertExitCode("scripts/install.sh", result, 0);
     expect(result.stderr).not.toContain("not on PATH");
   });
 });
@@ -313,7 +314,7 @@ describe("next-step pointer (NOTES DOCS-WALKTHROUGH-2)", () => {
 
     const result = runInstall(baseEnv(unameDir, { LEVARE_RELEASE_BASE_URL: `file://${fixture}`, LEVARE_BIN_DIR: binDir }));
 
-    expect(result.status).toBe(0);
+    assertExitCode("scripts/install.sh", result, 0);
     expect(result.stdout).toContain("levare init");
   });
 });

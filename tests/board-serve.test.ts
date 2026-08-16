@@ -1,6 +1,7 @@
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, cpSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { assertSpawnOk, assertExitCode, spawnStdout } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBoard } from "../src/board/serve.ts";
@@ -27,7 +28,7 @@ function git(repoRoot: string, args: string[]): ReturnType<typeof spawnSync> {
     ["-C", repoRoot, "-c", "user.name=seed", "-c", "user.email=seed@levare.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main", ...args],
     { encoding: "utf8", env: HERMETIC_ENV },
   );
-  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+  assertSpawnOk(`git ${args.join(" ")}`, r);
   return r;
 }
 
@@ -213,7 +214,7 @@ describe("levare serve — POST /gates approve round trip", () => {
     expect(after).toMatch(/approved_by: "cas \d{4}-\d{2}-\d{2}"/);
 
     const log = spawnSync("git", ["-C", root, "log", "-1", "--format=%H|%an|%ae|%s"], { encoding: "utf8" });
-    expect(log.status).toBe(0);
+    assertExitCode("git log -1", log, 0);
     const [sha, author, email, subject] = log.stdout.trim().split("|");
     expect(sha).toBe(body.commit);
     expect(author).toBe("cas");
@@ -566,7 +567,7 @@ describe("levare serve — POST /orchestrator/message", () => {
     const root = seedScratchRepo();
     const board = createBoard(root);
     try {
-      const before = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      const before = spawnStdout("git rev-parse HEAD (before)", spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" })).trim();
       const res = await board.fetch(
         req("/orchestrator/message", {
           method: "POST",
@@ -581,7 +582,7 @@ describe("levare serve — POST /orchestrator/message", () => {
       expect(body.reply).toBeUndefined(); // never a fabricated reply
       expect(typeof body.reason).toBe("string");
       expect(body.envVar).toBe("ANTHROPIC_API_KEY");
-      const after = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      const after = spawnStdout("git rev-parse HEAD (after)", spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" })).trim();
       expect(after).toBe(before);
     } finally {
       board.close();

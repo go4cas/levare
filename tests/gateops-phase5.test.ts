@@ -1,6 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import { mkdtempSync, rmSync, cpSync, readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { assertSpawnOk, assertExitCode, spawnStdout } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBoard } from "../src/board/serve.ts";
@@ -20,7 +21,7 @@ function git(repoRoot: string, args: string[]): ReturnType<typeof spawnSync> {
     ["-C", repoRoot, "-c", "user.name=seed", "-c", "user.email=seed@levare.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main", ...args],
     { encoding: "utf8", env: HERMETIC_ENV },
   );
-  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+  assertSpawnOk(`git ${args.join(" ")}`, r);
   return r;
 }
 
@@ -77,7 +78,7 @@ describe("(f) POST /gates/:project/:unit/start invokes the flow", () => {
       // (wren's product brief) — the Conductor's start click made the invocation legal, but authorship
       // reflects who wrote the file, not who triggered the write, so this is the runner identity, not
       // the Conductor's.
-      const log = spawnSync("git", ["-C", root, "log", "-1", "--format=%an|%ae|%s"], { encoding: "utf8" }).stdout.trim();
+      const log = spawnStdout("git log -1", spawnSync("git", ["-C", root, "log", "-1", "--format=%an|%ae|%s"], { encoding: "utf8" })).trim();
       expect(log).toContain("levare-runner|runner@levare.local|start loyalty-flow");
 
       // The whole repo — including checkout-flow's own, separately-created product-brief-v1 — still
@@ -162,7 +163,7 @@ describe("C2/C7: board approval of a loop-first artifact also resolves its live 
       git(root, ["add", "-A"]);
       git(root, ["commit", "-q", "-m", "seed a live loop round's review artifact"]);
 
-      const before = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      const before = spawnStdout("git rev-parse HEAD (before)", spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" })).trim();
       const result = await resolveGate(root, "storefront", "spec-checkout-flow-v1", "approve", { today: "2026-07-11" });
       expect(result.ok).toBe(true);
       if (!result.ok) return;
@@ -175,9 +176,9 @@ describe("C2/C7: board approval of a loop-first artifact also resolves its live 
       expect(reviewDoc).toMatch(/approved_by: "cas 2026-07-11"/);
 
       // Same commit — the companion is not a second, separate commit.
-      const after = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      const after = spawnStdout("git rev-parse HEAD (after)", spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" })).trim();
       expect(after).toBe(result.commit);
-      const parents = spawnSync("git", ["-C", root, "log", "-1", "--format=%P"], { encoding: "utf8" }).stdout.trim().split(/\s+/);
+      const parents = spawnStdout("git log -1 --format=%P", spawnSync("git", ["-C", root, "log", "-1", "--format=%P"], { encoding: "utf8" })).trim().split(/\s+/);
       expect(parents.length).toBe(1); // one new commit on top of the seeded baseline, not two
       expect(before).not.toBe(after);
     } finally {
@@ -210,7 +211,7 @@ describe("(e) new-project skill", () => {
     try {
       // Stand-in for `gh repo create`: a bare local repo, never a real GitHub call.
       const init = spawnSync("git", ["init", "-q", "--bare", remoteDir]);
-      expect(init.status).toBe(0);
+      assertExitCode("git init --bare", init, 0);
       expect(existsSync(join(root, "projects/loyalty.md"))).toBe(false);
 
       const result = runNewProjectSkill({
@@ -228,7 +229,7 @@ describe("(e) new-project skill", () => {
       // The clone step was real, not mocked: an actual .git dir and working tree exist.
       expect(existsSync(join(cloneDir, ".git"))).toBe(true);
       expect(existsSync(join(cloneDir, "README.md"))).toBe(true);
-      const cloneLog = spawnSync("git", ["-C", cloneDir, "log", "--oneline"], { encoding: "utf8" }).stdout.trim();
+      const cloneLog = spawnStdout("git log --oneline (clone)", spawnSync("git", ["-C", cloneDir, "log", "--oneline"], { encoding: "utf8" })).trim();
       expect(cloneLog).not.toBe("");
 
       const pointer = join(root, "projects/loyalty.md");
@@ -240,12 +241,12 @@ describe("(e) new-project skill", () => {
       expect(content).toContain("deploy: https://loyalty.acme.dev");
       expect(content).toContain("Keep the redemption flow under two taps.");
 
-      const log = spawnSync("git", ["-C", root, "log", "-1", "--format=%an|%ae|%s"], { encoding: "utf8" }).stdout.trim();
+      const log = spawnStdout("git log -1 (root)", spawnSync("git", ["-C", root, "log", "-1", "--format=%an|%ae|%s"], { encoding: "utf8" })).trim();
       expect(log).toBe("cas|cas@levare.local|new-project loyalty");
 
       // The new project's OWN "initial commit" (in cloneDir, not root) — a real, previously-unasserted
       // gap: nothing checked this commit's author at all before NOTES "runner-authored-commit audit".
-      const cloneAuthor = spawnSync("git", ["-C", cloneDir, "log", "-1", "--format=%an|%ae|%s"], { encoding: "utf8" }).stdout.trim();
+      const cloneAuthor = spawnStdout("git log -1 (clone)", spawnSync("git", ["-C", cloneDir, "log", "-1", "--format=%an|%ae|%s"], { encoding: "utf8" })).trim();
       expect(cloneAuthor).toBe("cas|cas@levare.local|initial commit");
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -296,9 +297,9 @@ describe("(e) new-project skill", () => {
         GIT_COMMITTER_EMAIL: "leak@example.com",
       };
       const run = spawnSync("bun", ["run", driver], { encoding: "utf8", env: leakEnv });
-      expect(run.status).toBe(0);
+      assertExitCode("bun run driver.ts (leak-env)", run, 0);
 
-      const cloneAuthor = spawnSync("git", ["-C", cloneDir, "log", "-1", "--format=%an|%ae"], { encoding: "utf8" }).stdout.trim();
+      const cloneAuthor = spawnStdout("git log -1 (leak-env clone)", spawnSync("git", ["-C", cloneDir, "log", "-1", "--format=%an|%ae"], { encoding: "utf8" })).trim();
       expect(cloneAuthor).toBe("cas|cas@levare.local");
       expect(cloneAuthor).not.toContain("ambient-leak");
     } finally {

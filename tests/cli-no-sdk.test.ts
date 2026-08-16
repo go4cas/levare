@@ -2,6 +2,7 @@ import { test, expect, describe, afterAll } from "bun:test";
 import { mkdtempSync, cpSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { assertExitCode, assertSpawnFailed } from "./spawn-helpers.ts";
 
 // NOTES REV1 finding 1 — CRITICAL: every CLI command used to require @anthropic-ai/claude-agent-sdk
 // to be installed, even commands (`validate`, `doctor`, `context`) that never touch a model. Root
@@ -52,32 +53,32 @@ function run(argv: string[]) {
     env: { PATH: process.env.PATH }, // deliberately minimal — no NODE_PATH, no inherited node_modules hint
     stdin: Buffer.from(""),
   });
-  return { exitCode: p.exitCode, stdout: p.stdout.toString(), stderr: p.stderr.toString() };
+  return { exitCode: p.exitCode, signal: p.signalCode, stdout: p.stdout.toString(), stderr: p.stderr.toString() };
 }
 
 describe("offline commands run with the SDK genuinely unresolvable (NOTES REV1 finding 1)", () => {
   test("`levare validate` succeeds and never mentions the SDK package", () => {
-    const { exitCode, stdout, stderr } = run(["validate", "fixtures/golden"]);
-    expect(stderr).not.toContain("claude-agent-sdk");
-    expect(stderr).not.toContain("Cannot find module");
-    expect(stdout).toContain("valid");
-    expect(exitCode).toBe(0);
+    const r = run(["validate", "fixtures/golden"]);
+    expect(r.stderr).not.toContain("claude-agent-sdk");
+    expect(r.stderr).not.toContain("Cannot find module");
+    expect(r.stdout).toContain("valid");
+    assertExitCode("levare validate (no SDK)", { status: r.exitCode, signal: r.signal, stderr: r.stderr, stdout: r.stdout }, 0);
   });
 
   test("`levare doctor` succeeds and never mentions the SDK package", () => {
-    const { exitCode, stdout, stderr } = run(["doctor", "fixtures/golden"]);
-    expect(stderr).not.toContain("claude-agent-sdk");
-    expect(stderr).not.toContain("Cannot find module");
-    expect(stdout).toContain("levare doctor");
-    expect(exitCode).toBe(0);
+    const r = run(["doctor", "fixtures/golden"]);
+    expect(r.stderr).not.toContain("claude-agent-sdk");
+    expect(r.stderr).not.toContain("Cannot find module");
+    expect(r.stdout).toContain("levare doctor");
+    assertExitCode("levare doctor (no SDK)", { status: r.exitCode, signal: r.signal, stderr: r.stderr, stdout: r.stdout }, 0);
   });
 
   test("`levare context <agent> --unit <unit> --dry-run` succeeds and never mentions the SDK package", () => {
-    const { exitCode, stdout, stderr } = run(["context", "lyra", "--unit", "checkout-flow", "--dry-run"]);
-    expect(stderr).not.toContain("claude-agent-sdk");
-    expect(stderr).not.toContain("Cannot find module");
-    expect(stdout.length).toBeGreaterThan(0);
-    expect(exitCode).toBe(0);
+    const r = run(["context", "lyra", "--unit", "checkout-flow", "--dry-run"]);
+    expect(r.stderr).not.toContain("claude-agent-sdk");
+    expect(r.stderr).not.toContain("Cannot find module");
+    expect(r.stdout.length).toBeGreaterThan(0);
+    assertExitCode("levare context lyra --dry-run (no SDK)", { status: r.exitCode, signal: r.signal, stderr: r.stderr, stdout: r.stdout }, 0);
   });
 
   // Proves the premise: this scratch checkout genuinely cannot resolve the SDK — so the three passes
@@ -87,11 +88,11 @@ describe("offline commands run with the SDK genuinely unresolvable (NOTES REV1 f
   // dispatch itself broke) and never a silent success (that would mean the SDK was found some other
   // way, invalidating the whole premise of this test file).
   test("`levare __worker` (the one command that DOES need the SDK) fails with a module-resolution error, proving the premise", () => {
-    const { exitCode, stderr } = run(["__worker"]);
-    expect(exitCode).not.toBe(0);
-    expect(stderr).not.toContain("unknown command");
-    expect(stderr.toLowerCase()).toMatch(/cannot find (package|module)/);
-    expect(stderr).toContain("claude-agent-sdk");
+    const r = run(["__worker"]);
+    assertSpawnFailed("levare __worker (no SDK)", { status: r.exitCode, signal: r.signal, stderr: r.stderr, stdout: r.stdout });
+    expect(r.stderr).not.toContain("unknown command");
+    expect(r.stderr.toLowerCase()).toMatch(/cannot find (package|module)/);
+    expect(r.stderr).toContain("claude-agent-sdk");
   });
 });
 
@@ -107,7 +108,7 @@ describe("`__worker` still dispatches correctly in source mode when the SDK IS i
       env: process.env,
       stdin: Buffer.from(""),
     });
-    expect(p.exitCode).toBe(0);
+    assertExitCode("bun src/cli.ts __worker (SDK installed)", p, 0);
     const out = p.stdout.toString().trim();
     expect(out).not.toContain("unknown command");
     const parsed = JSON.parse(out);

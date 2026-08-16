@@ -1,6 +1,7 @@
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, rmSync, cpSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { assertSpawnOk } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnLevareServe } from "./serve-subprocess.ts";
@@ -28,7 +29,7 @@ function git(repoRoot: string, args: string[]): void {
     ["-C", repoRoot, "-c", "user.name=seed", "-c", "user.email=seed@levare.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main", ...args],
     { encoding: "utf8", env: HERMETIC_ENV },
   );
-  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+  assertSpawnOk(`git ${args.join(" ")}`, r);
 }
 
 function seedScratchRepo(): string {
@@ -154,7 +155,10 @@ describe("`./levare serve` — real subprocess over a real socket", () => {
       proc.exited,
       new Promise<number>((_, rej) => setTimeout(() => rej(new Error("process did not exit within 5s of SIGINT")), 5000)),
     ]);
-    expect(exitCode).toBe(0);
+    if (exitCode !== 0) {
+      const stderr = await new Response(proc.stderr as ReadableStream).text().catch(() => "(stderr unavailable)");
+      throw new Error(`./levare serve exited ${exitCode} (signal ${proc.signalCode ?? "none"}) after SIGINT: ${stderr || "(no stderr captured)"}`);
+    }
     await waitUntilDown(`${base}/`, 3000);
   });
 });

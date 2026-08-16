@@ -1,6 +1,7 @@
 import { test, expect, describe, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { assertSpawnOk, assertSpawnFailed, assertExitCode } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scaffoldStudio, initStudio } from "../src/init.ts";
@@ -119,7 +120,7 @@ describe("scaffoldStudio", () => {
     expect(Bun.which(argv[0])).toBeTruthy();
 
     const result = spawnSync(argv[0], argv.slice(1), { cwd: root, encoding: "utf8" });
-    expect(result.status).toBe(0);
+    assertExitCode(`finch's real command (${argv.join(" ")})`, result, 0);
     expect(result.stdout.trim().length).toBeGreaterThan(0);
   });
 
@@ -199,9 +200,9 @@ function envWithNoIdentity(): NodeJS.ProcessEnv {
   return { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", HOME: tmpdir() };
 }
 
-function git(root: string, args: string[], env: NodeJS.ProcessEnv): { status: number | null; stdout: string } {
+function git(root: string, args: string[], env: NodeJS.ProcessEnv): { status: number | null; signal: string | null; stdout: string; stderr: string } {
   const r = spawnSync("git", ["-C", root, ...args], { encoding: "utf8", env });
-  return { status: r.status, stdout: r.stdout };
+  return { status: r.status, signal: r.signal, stdout: r.stdout, stderr: r.stderr };
 }
 
 describe("initStudio — git init + the founding commit", () => {
@@ -219,6 +220,7 @@ describe("initStudio — git init + the founding commit", () => {
     expect(existsSync(join(root, ".git"))).toBe(true);
 
     const log = git(root, ["log", "--format=%H %an <%ae> %s"], env);
+    assertSpawnOk("git log", log);
     const lines = log.stdout.trim().split("\n").filter(Boolean);
     expect(lines.length).toBe(1);
     expect(lines[0]).toContain("Ada Studio <ada@example.com> levare init");
@@ -226,6 +228,7 @@ describe("initStudio — git init + the founding commit", () => {
 
     // The commit actually captured the scaffold — nothing left uncommitted.
     const status = git(root, ["status", "--porcelain"], env);
+    assertSpawnOk("git status --porcelain", status);
     expect(status.stdout.trim()).toBe("");
 
     rmSync(configFile, { force: true });
@@ -245,7 +248,7 @@ describe("initStudio — git init + the founding commit", () => {
     expect(existsSync(join(root, ".git"))).toBe(true);
 
     const log = git(root, ["log"], env);
-    expect(log.status).not.toBe(0); // no commits exist yet — `git log` fails on an empty history
+    assertSpawnFailed("git log (no commits yet)", log); // `git log` must fail on an empty history
   });
 
   test("re-running init after a successful founding commit makes no second commit (nothing new to add)", () => {
@@ -262,6 +265,7 @@ describe("initStudio — git init + the founding commit", () => {
     expect(second.git.commit).toBeNull();
 
     const log = git(root, ["log", "--format=%H"], env);
+    assertSpawnOk("git log", log);
     expect(log.stdout.trim().split("\n").filter(Boolean).length).toBe(1); // still exactly one commit
 
     rmSync(configFile, { force: true });
@@ -333,7 +337,7 @@ describe("D10/D11: a fresh `levare init` passes the real `levare validate` comma
   test("./levare init then ./levare validate against the same subprocess binary exits 0 and prints 'valid'", () => {
     const root = tmpRoot();
     const init = spawnSync("./levare", ["init", root], { cwd: REPO_ROOT, encoding: "utf8" });
-    expect(init.status).toBe(0);
+    assertExitCode("./levare init <root>", init, 0);
 
     const validate = spawnSync("./levare", ["validate", root], { cwd: REPO_ROOT, encoding: "utf8" });
     // NOTES R4-SANDBOX: the scaffold declares real `kind: cli` agents — on a host with no working
@@ -341,7 +345,7 @@ describe("D10/D11: a fresh `levare init` passes the real `levare validate` comma
     // SANDBOX_UNAVAILABLE warnings after "valid", same "warnings never flip ok" shape every other
     // validate warning takes; asserting the first line + exit code, not exact whole-output equality.
     expect(validate.stdout.trim().split("\n")[0]).toBe("valid");
-    expect(validate.status).toBe(0);
+    assertExitCode("./levare validate <root>", validate, 0);
   });
 
   test("the scaffolded projects/studio.md pointer declares pace: auto", () => {
@@ -416,7 +420,7 @@ describe("D10/D11: a fresh `levare init` passes the real `levare validate` comma
 
     // And the real CLI subprocess agrees — not just the internal function.
     const validate = spawnSync("./levare", ["validate", root], { cwd: REPO_ROOT, encoding: "utf8" });
-    expect(validate.status).toBe(1);
+    assertExitCode("./levare validate <root> (EMPTY_PRODUCES)", validate, 1);
     expect(validate.stderr).toContain("EMPTY_PRODUCES");
   });
 });

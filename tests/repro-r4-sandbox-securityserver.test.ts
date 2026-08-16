@@ -11,6 +11,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { assertExitCode } from "./spawn-helpers.ts";
 
 const IS_DARWIN = process.platform === "darwin";
 // Generous: on darwin this spawns TWO real `sandbox-exec`-wrapped `security list-keychains` calls (up
@@ -30,7 +31,7 @@ describe("scripts/repro-r4-sandbox-securityserver.ts", () => {
       : "degrades honestly on this non-darwin host: exits 0, names the platform, attempts no real sandbox-exec spawn",
     () => {
       const r = spawnSync("bun", ["run", "scripts/repro-r4-sandbox-securityserver.ts"], { encoding: "utf8", timeout: IS_DARWIN ? DARWIN_SPAWN_TIMEOUT_MS : 15000 });
-      expect(r.status).toBe(0);
+      assertExitCode("bun run scripts/repro-r4-sandbox-securityserver.ts", r, 0);
       if (!IS_DARWIN) {
         expect(r.stdout).toContain("darwin-only");
         expect(r.stdout).toContain(process.platform);

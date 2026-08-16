@@ -1,5 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import { readFileSync } from "node:fs";
+import { assertExitCode } from "./spawn-helpers.ts";
 import { main } from "../src/cli.ts";
 import { getVersionInfo, formatVersion, isCompiledBuild, versionFromTag, versionChip } from "../src/version.ts";
 
@@ -126,20 +127,20 @@ describe("CLI dispatch: --version / -v", () => {
 describe("the real `./levare` shim (source run)", () => {
   test("`./levare --version` prints a version and indicates source/dev, never a fabricated commit", () => {
     const p = Bun.spawnSync(["./levare", "--version"]);
-    expect(p.exitCode).toBe(0);
+    assertExitCode("./levare --version", p, 0);
     const out = p.stdout.toString().trim();
     expect(out).toMatch(/^levare \d+\.\d+\.\d+ \(source\/dev\)$/);
   });
 
   test("`./levare -v` behaves the same as --version", () => {
     const p = Bun.spawnSync(["./levare", "-v"]);
-    expect(p.exitCode).toBe(0);
+    assertExitCode("./levare -v", p, 0);
     expect(p.stdout.toString().trim()).toMatch(/^levare \d+\.\d+\.\d+ \(source\/dev\)$/);
   });
 
   test("every other command still runs unchanged (the shim adds a build path, it doesn't replace this one)", () => {
     const p = Bun.spawnSync(["./levare", "validate", "fixtures/golden"]);
-    expect(p.exitCode).toBe(0);
+    assertExitCode("./levare validate fixtures/golden", p, 0);
     // NOTES R4-SANDBOX: on a host with no working sandbox primitive, fixtures/golden's real `kind: cli`
     // agents (finch, rook) now print SANDBOX_UNAVAILABLE warnings after "valid" — asserting the first
     // line, not exact whole-output equality (see tests/validate.test.ts's identical fix for the reasoning).

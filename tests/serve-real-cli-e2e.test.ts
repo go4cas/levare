@@ -1,6 +1,7 @@
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, rmSync, cpSync, writeFileSync, readFileSync, chmodSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { assertSpawnOk, assertExitCode } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRepo, repoCapabilities } from "../src/repo.ts";
@@ -38,7 +39,7 @@ function git(repoRoot: string, args: string[]): void {
     ["-C", repoRoot, "-c", "user.name=seed", "-c", "user.email=seed@levare.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main", ...args],
     { encoding: "utf8", env: HERMETIC_ENV },
   );
-  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+  assertSpawnOk(`git ${args.join(" ")}`, r);
 }
 
 async function waitUntilUp(url: string, timeoutMs: number): Promise<void> {
@@ -190,7 +191,7 @@ describe("`./levare serve` spawns a CLI member's REAL command, never the fixture
     // (2) `levare context wren --unit loyalty-flow --dry-run` must print EXACTLY what the real CLI
     // member actually received — the same invariant already held for native members.
     const dryRun = spawnSync("./levare", ["context", "wren", "--unit", "loyalty-flow", "--root", root, "--dry-run"], { cwd: REPO_ROOT, encoding: "utf8" });
-    expect(dryRun.status).toBe(0);
+    assertExitCode("./levare context wren --dry-run", dryRun, 0);
     expect(dryRun.stdout).toBe(captured);
 
     // (3) The artifact actually landed on disk is byte-for-byte what the real script emitted.

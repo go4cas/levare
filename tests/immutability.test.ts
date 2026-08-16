@@ -51,7 +51,9 @@ function git(repoRoot: string, args: string[], opts: { allowFail?: boolean } = {
     { encoding: "utf8", env: HERMETIC_ENV },
   );
   if (!opts.allowFail && r.status !== 0) {
-    throw new Error(`git ${args.join(" ")} failed (status ${r.status}):\n${r.stderr ?? ""}${r.stdout ?? ""}`);
+    throw new Error(
+      `git ${args.join(" ")} exited ${r.status ?? "null"}${r.signal ? ` (signal ${r.signal})` : ""}: ${r.stderr || "(no stderr captured)"}${r.stdout ?? ""}`,
+    );
   }
   return r;
 }

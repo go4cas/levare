@@ -1,6 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { assertSpawnOk, assertExitCode } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validatePath } from "../src/validate.ts";
@@ -19,7 +20,7 @@ function git(repoRoot: string, args: string[]): ReturnType<typeof spawnSync> {
     ["-C", repoRoot, "-c", "user.name=levare-test", "-c", "user.email=test@levare.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main", ...args],
     { encoding: "utf8", env: HERMETIC_ENV },
   );
-  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+  assertSpawnOk(`git ${args.join(" ")}`, r);
   return r;
 }
 
@@ -58,7 +59,7 @@ describe("NOTES C11 part 4: levare validate fails closed on a tracked .env", () 
       git(root, ["commit", "-q", "-m", "oops"]);
 
       const p = Bun.spawnSync(["./levare", "validate", root]);
-      expect(p.exitCode).toBe(1);
+      assertExitCode("./levare validate <root>", p, 1);
       expect(p.stderr.toString()).toContain("ENV_FILE_TRACKED");
     } finally {
       rmSync(root, { recursive: true, force: true });

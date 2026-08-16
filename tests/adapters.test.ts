@@ -1,6 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, realpathSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { assertSpawnOk } from "./spawn-helpers.ts";
 import { tmpdir, homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { loadRepo } from "../src/repo.ts";
@@ -1672,7 +1673,7 @@ function git(repoRoot: string, args: string[]): string {
     encoding: "utf8",
     env: GIT_ENV,
   });
-  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+  assertSpawnOk(`git ${args.join(" ")}`, r);
   return r.stdout;
 }
 

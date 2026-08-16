@@ -8,6 +8,7 @@
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { assertSpawnOk, spawnStdout } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveGate } from "../src/board/gateops.ts";
@@ -24,7 +25,7 @@ function git(root: string, args: string[]): string {
     ["-C", root, "-c", "user.name=seed", "-c", "user.email=seed@levare.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main", ...args],
     { encoding: "utf8", env: HERMETIC_ENV },
   );
-  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+  assertSpawnOk(`git ${args.join(" ")}`, r);
   return r.stdout;
 }
 
@@ -404,7 +405,7 @@ describe("M4/M5: a clean approval merges, preserves history, and closes the unit
     expect(approve.ok).toBe(true);
 
     const mainSha = git(dirs.projectRepo, ["rev-parse", "main"]).trim();
-    const remoteSha = spawnSync("git", ["-C", dirs.remoteRepo!, "rev-parse", "refs/heads/main"], { encoding: "utf8" }).stdout.trim();
+    const remoteSha = spawnStdout("git rev-parse refs/heads/main (remote)", spawnSync("git", ["-C", dirs.remoteRepo!, "rev-parse", "refs/heads/main"], { encoding: "utf8" })).trim();
     expect(remoteSha).toBe(mainSha);
 
     const repoAfter = loadRepo(dirs.root, { validate: false });

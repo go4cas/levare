@@ -1,6 +1,7 @@
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, cpSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { assertSpawnOk, spawnStdout } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Daemon } from "../src/daemon.ts";
@@ -26,7 +27,7 @@ function git(root: string, args: string[]) {
     ["-C", root, "-c", "user.name=seed", "-c", "user.email=seed@levare.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main", ...args],
     { encoding: "utf8", env: HERMETIC_ENV },
   );
-  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}${r.stdout}`);
+  assertSpawnOk(`git ${args.join(" ")}`, r);
   return r;
 }
 
@@ -162,7 +163,7 @@ describe("(a) the daemon walks between gates and halts at every gate", () => {
     // (NOTES.md's phase-8 O6 gate-review fix). Conductor decisions (approve/reject/start's own
     // authorization click) stay "cas" — this is exactly the mixed sequence the gate finding's own
     // live evidence showed, reproduced deterministically here.
-    const log = spawnSync("git", ["-C", root, "log", "--format=%an|%ae|%s"], { encoding: "utf8" }).stdout;
+    const log = spawnStdout("git log", spawnSync("git", ["-C", root, "log", "--format=%an|%ae|%s"], { encoding: "utf8" }));
     expect(log).toContain("levare-runner|runner@levare.local|start loyalty-flow → kestrel/wren produced product-brief product-brief-loyalty-flow-v1");
     expect(log).toContain("levare-runner|runner@levare.local|advance loyalty-flow → kestrel/lyra produced design");
     expect(log).toContain("levare-runner|runner@levare.local|advance loyalty-flow → kestrel/lyra produced spec");
