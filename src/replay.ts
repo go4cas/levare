@@ -136,8 +136,11 @@ export interface ProductionAdapterOverrides {
 export function productionAdapterRunner(repo: Repo, overrides: ProductionAdapterOverrides = {}): AsyncMemberRunner {
   const runner = new AdapterRunner(repo, {
     pricing: loadPricing(repo.root),
-    native: overrides.native ?? createSdkNativeBoundary(),
-    asyncNative: overrides.asyncNative ?? createAsyncSdkNativeBoundary(),
+    // NOTES DISPATCH-TRACE: `studioRoot` is what makes a real dispatch write a trace at all — every
+    // test double/override skips this constructor entirely, so this is the one, real production wiring
+    // point.
+    native: overrides.native ?? createSdkNativeBoundary({ studioRoot: repo.root }),
+    asyncNative: overrides.asyncNative ?? createAsyncSdkNativeBoundary({ studioRoot: repo.root }),
     remote: stubRemote,
     asyncRemote: overrides.asyncRemote ?? createAsyncStdioRemoteBoundary(repo),
     spawn: bunSpawn,

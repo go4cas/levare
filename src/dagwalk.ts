@@ -46,6 +46,7 @@ import { RunnerError, responsibleTeamsFor, resolveStep, unmetAfter, untilSatisfi
 import { patchFrontmatter, upsertFrontmatterField } from "./gates.ts";
 import { runnerCommit, transactionalWrite, type TxFile } from "./git.ts";
 import { locateArtifactFile } from "./locate.ts";
+import { unitArtifactPaths } from "./context.ts";
 import { resolveProjectRepoPath, workBranchName, branchExists, trialMerge, checkGuardrailsForMerge, formatMergeArtifact } from "./merge.ts";
 import type { Artifact, FlowLoop, Receipt, Team, WorkUnit } from "./types.ts";
 
@@ -463,6 +464,17 @@ async function produceOne(
   const round = loop?.round ?? 1;
   const newId = bumpVersion(`${kind}-${unit.unit}`, round);
 
+  // NOTES DISPATCH-TRACE (blocked-artifact consumes defect): the SAME consumed-artifact set
+  // `AdapterRunner#author` computes for a SUCCESSFUL artifact (adapters.ts:1436) — approved artifacts
+  // plus a loop companion's own `extraConsumes` — computed here too so a `blocked` artifact records what
+  // this attempt actually had available, instead of the previous hardcoded `consumes: []`. This is a
+  // fact about the unit's own current state at the moment of the attempt, not something the member
+  // boundary reports, so it's available even when the member never got far enough to report anything.
+  const extraSet = new Set(loop?.extraConsumes ?? []);
+  const consumes = unitArtifactPaths(root, unit.project, unit.unit)
+    .filter((a) => a.status === "approved" || extraSet.has(a.id))
+    .map((a) => a.id);
+
   let baseDoc: string;
   try {
     // NOTES F5: awaits either a plain result (every sync test double/stub) or a genuine, non-blocking
@@ -471,7 +483,7 @@ async function produceOne(
     // author artifact, even though it is still in-review — see runner.ts's `MemberRunner.produce` doc.
     ({ doc: baseDoc } = await memberRunner.produce(member, kind, unit.unit, unit.project, loop?.extraConsumes));
   } catch (e) {
-    return writeBlocked(root, unit, team, member, kind, newId, e, today, commitFn, verb);
+    return writeBlocked(root, unit, team, member, kind, newId, e, today, commitFn, verb, consumes);
   }
 
   let doc: string;
@@ -480,14 +492,14 @@ async function produceOne(
     if (loop?.supersedes) patches.supersedes = loop.supersedes;
     doc = patchFrontmatter(baseDoc, patches);
   } catch (e) {
-    return writeBlocked(root, unit, team, member, kind, newId, e, today, commitFn, verb);
+    return writeBlocked(root, unit, team, member, kind, newId, e, today, commitFn, verb, consumes);
   }
 
   const errs = validateArtifactSource(doc, `${member}:${kind}`, unit.dir, root);
   if (errs.length > 0) {
     // NOTES F22: every accumulated error, not just the first — a Conductor fixing a produced
     // artifact's off-contract shape must see every problem in one blocked_reason, not one per retry.
-    return writeBlocked(root, unit, team, member, kind, newId, new Error(formatValidationErrors(errs)), today, commitFn, verb);
+    return writeBlocked(root, unit, team, member, kind, newId, new Error(formatValidationErrors(errs)), today, commitFn, verb, consumes);
   }
 
   const art = parseArtifactDoc(doc);
@@ -534,6 +546,7 @@ function writeBlocked(
   today: string,
   commitFn: (root: string, files: string[], message: string) => string,
   verb: string,
+  consumes: string[] = [],
 ): AdvanceResult {
   const msg = error instanceof Error ? error.message : String(error);
   const doc = [
@@ -544,7 +557,7 @@ function writeBlocked(
     `project: ${unit.project}`,
     "status: blocked",
     `produced_by: ${team.name}/${member}`,
-    "consumes: []",
+    `consumes: [${consumes.join(", ")}]`,
     "supersedes: null",
     "approved_by: null",
     `created: ${today}`,

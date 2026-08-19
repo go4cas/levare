@@ -132,8 +132,40 @@ export type SdkWorkerResponse =
   | { ok: true; result: string; structuredOutput?: unknown; receipt?: Receipt }
   | { ok: false; error: string };
 
+/**
+ * NOTES DISPATCH-TRACE (native-dispatch-hang investigation, 2026-08-19): what `run()` actually returns,
+ * on EVERY exit path including a timeout — the worker's own captured stdout/stderr text and how long the
+ * spawn ran for. Before this, the timeout branch of both transports read `proc.stdout`/`proc.stderr` (or,
+ * for the async transport, fully awaited and decoded them) and then discarded them unconditionally in the
+ * returned error — the diagnostic text a hung/slow worker printed (elapsed time, `api_retry` messages,
+ * sdk-worker.ts's own always-on exit-path logging) existed in memory and was thrown away before any
+ * caller ever saw it. `SdkWorkerResponse` itself stays the worker's own wire contract (what it printed as
+ * its one line of JSON); this wraps it with what the TRANSPORT observed spawning it — the caller
+ * (adapters.ts's dispatch-trace wiring) is the one place that needs both together. */
+export type SdkTransportResult = SdkWorkerResponse & {
+  /** The worker's full captured stdout, trimmed — on success this is exactly the one JSON line
+   * `sdk-worker.ts#respond` printed; on any failure/timeout it may carry non-JSON diagnostic text. */
+  stdout: string;
+  /** The worker's full captured stderr, trimmed — `sdk-worker.ts`'s own always-on exit-path logging
+   * (elapsed time, `api_retry` messages) lives here, on every exit path, timeout included. */
+  stderr: string;
+  /** Wall-clock time this transport call spent spawned, in ms — measured by the transport, independent
+   * of whatever the worker itself may or may not have reported. */
+  durationMs: number;
+  /** Whether THIS transport killed the process tree itself after `timeoutMs` elapsed — distinct from
+   * `!ok`, which also covers a normal non-zero exit or malformed output. */
+  timedOut: boolean;
+};
+
 /** The synchronous transport boundary (adapters.ts's NativeBoundary only — see the module note above
- * for why this must never be called from a `levare serve` request path). */
+ * for why this must never be called from a `levare serve` request path). Declared return type stays
+ * `SdkWorkerResponse` deliberately — every test double across this repo implementing this interface
+ * returns exactly that shape, and widening the declared contract would force-edit every one of them for
+ * a fact only the two REAL implementations below actually produce. The real implementations return the
+ * strictly wider `SdkTransportResult` (structurally assignable to `SdkWorkerResponse`, so no cast is
+ * needed on the producing side); a caller that specifically wants the diagnostic fields (adapters.ts's
+ * dispatch-trace wiring — the only caller that does) narrows via `asSdkTransportResult` below, which
+ * degrades to empty/zero defaults for an injected test double that never populated them. */
 export interface SdkTransport {
   run(req: SdkWorkerRequest, opts: { env: Record<string, string | undefined>; timeoutMs: number }): SdkWorkerResponse;
 }
@@ -142,6 +174,16 @@ export interface SdkTransport {
  * `levare serve`'s request path). Same request/response shape as `SdkTransport`, Promise-returning. */
 export interface AsyncSdkTransport {
   run(req: SdkWorkerRequest, opts: { env: Record<string, string | undefined>; timeoutMs: number }): Promise<SdkWorkerResponse>;
+}
+
+/** Narrows a transport's return value to `SdkTransportResult`, defaulting the diagnostic fields when
+ * they're absent — true for every test double in this repo (none of them populate `stdout`/`stderr`/
+ * `durationMs`/`timedOut`; only `createBunSdkTransport`/`createAsyncSdkTransport` below do), so a
+ * dispatch trace built from a mocked/stub boundary records honest "nothing captured" defaults rather
+ * than throwing on an undefined field. */
+export function asSdkTransportResult(res: SdkWorkerResponse): SdkTransportResult {
+  const r = res as Partial<SdkTransportResult>;
+  return { ...res, stdout: r.stdout ?? "", stderr: r.stderr ?? "", durationMs: r.durationMs ?? 0, timedOut: r.timedOut ?? false };
 }
 
 // `Bun.fileURLToPath` (not raw `URL.pathname`), matching the pattern already established in
@@ -507,9 +549,10 @@ function killProcessTree(pid: number): void {
  * unaffected by this change, it never goes through self-invocation. */
 export function createBunSdkTransport(workerPath?: string): SdkTransport {
   return {
-    run(req, opts) {
+    run(req, opts): SdkTransportResult {
+      const startedAt = Date.now();
       if (workerPath !== undefined && !existsSync(workerPath)) {
-        return { ok: false, error: `sdk worker script not found at ${workerPath}` };
+        return { ok: false, error: `sdk worker script not found at ${workerPath}`, stdout: "", stderr: "", durationMs: Date.now() - startedAt, timedOut: false };
       }
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       const argv = workerPath !== undefined ? [process.execPath, workerPath] : workerSpawnArgv();
@@ -523,21 +566,26 @@ export function createBunSdkTransport(workerPath?: string): SdkTransport {
         killSignal: "SIGKILL",
         detached: true,
       });
+      const durationMs = Date.now() - startedAt;
+      // NOTES DISPATCH-TRACE: decoded UNCONDITIONALLY, before branching on the exit reason —
+      // `spawnSync` buffers whatever the child wrote before a timeout-kill same as any other exit, so
+      // this is the one place both variables exist regardless of which return below fires.
+      const stdout = proc.stdout ? new TextDecoder().decode(proc.stdout).trim() : "";
+      const stderr = proc.stderr ? new TextDecoder().decode(proc.stderr).trim() : "";
       if (proc.exitedDueToTimeout) {
         // spawnSync's own timeout+killSignal only reached the direct child (confirmed empirically —
         // see killProcessTree's own comment); reap any surviving grandchildren explicitly.
         if (proc.pid) killProcessTree(proc.pid);
-        return { ok: false, error: `sdk worker timed out after ${timeoutMs}ms` };
+        return { ok: false, error: `sdk worker timed out after ${timeoutMs}ms`, stdout, stderr, durationMs, timedOut: true };
       }
-      const stdout = proc.stdout ? new TextDecoder().decode(proc.stdout).trim() : "";
       if (proc.exitCode !== 0) {
-        const stderr = proc.stderr ? new TextDecoder().decode(proc.stderr).trim() : "";
-        return { ok: false, error: `sdk worker exited ${proc.exitCode}: ${stderr || stdout || "(no output)"}` };
+        return { ok: false, error: `sdk worker exited ${proc.exitCode}: ${stderr || stdout || "(no output)"}`, stdout, stderr, durationMs, timedOut: false };
       }
       try {
-        return JSON.parse(stdout) as SdkWorkerResponse;
+        const parsed = JSON.parse(stdout) as SdkWorkerResponse;
+        return { ...parsed, stdout, stderr, durationMs, timedOut: false };
       } catch {
-        return { ok: false, error: `sdk worker produced non-JSON output: ${stdout.slice(0, 200)}` };
+        return { ok: false, error: `sdk worker produced non-JSON output: ${stdout.slice(0, 200)}`, stdout, stderr, durationMs, timedOut: false };
       }
     },
   };
@@ -560,9 +608,10 @@ export const bunSdkTransport: SdkTransport = createBunSdkTransport();
  */
 export function createAsyncSdkTransport(workerPath?: string): AsyncSdkTransport {
   return {
-    async run(req, opts) {
+    async run(req, opts): Promise<SdkTransportResult> {
+      const startedAt = Date.now();
       if (workerPath !== undefined && !existsSync(workerPath)) {
-        return { ok: false, error: `sdk worker script not found at ${workerPath}` };
+        return { ok: false, error: `sdk worker script not found at ${workerPath}`, stdout: "", stderr: "", durationMs: Date.now() - startedAt, timedOut: false };
       }
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       const argv = workerPath !== undefined ? [process.execPath, workerPath] : workerSpawnArgv();
@@ -582,19 +631,28 @@ export function createAsyncSdkTransport(workerPath?: string): AsyncSdkTransport 
         killProcessTree(proc.pid);
       }, timeoutMs);
       try {
-        const [stdout, stderr] = await Promise.all([
+        const [stdoutRaw, stderrRaw] = await Promise.all([
           new Response(proc.stdout).text(),
           new Response(proc.stderr).text(),
           proc.exited,
         ]);
-        if (timedOut) return { ok: false, error: `sdk worker timed out after ${timeoutMs}ms` };
+        const stdout = stdoutRaw.trim();
+        const stderr = stderrRaw.trim();
+        const durationMs = Date.now() - startedAt;
+        // NOTES DISPATCH-TRACE (native-dispatch-hang investigation): this is the exact branch that used
+        // to discard `stdout`/`stderr` — both are fully captured above regardless of `timedOut`
+        // (`killProcessTree` fired already; awaiting the now-closing pipes just drains what was written
+        // before the kill), so a hung worker's own diagnostic lines (sdk-worker.ts's always-on
+        // elapsed-time/api_retry logging) are now returned to the caller instead of thrown away.
+        if (timedOut) return { ok: false, error: `sdk worker timed out after ${timeoutMs}ms`, stdout, stderr, durationMs, timedOut: true };
         if (proc.exitCode !== 0) {
-          return { ok: false, error: `sdk worker exited ${proc.exitCode}: ${stderr.trim() || stdout.trim() || "(no output)"}` };
+          return { ok: false, error: `sdk worker exited ${proc.exitCode}: ${stderr || stdout || "(no output)"}`, stdout, stderr, durationMs, timedOut: false };
         }
         try {
-          return JSON.parse(stdout.trim()) as SdkWorkerResponse;
+          const parsed = JSON.parse(stdout) as SdkWorkerResponse;
+          return { ...parsed, stdout, stderr, durationMs, timedOut: false };
         } catch {
-          return { ok: false, error: `sdk worker produced non-JSON output: ${stdout.trim().slice(0, 200)}` };
+          return { ok: false, error: `sdk worker produced non-JSON output: ${stdout.slice(0, 200)}`, stdout, stderr, durationMs, timedOut: false };
         }
       } finally {
         clearTimeout(timer);

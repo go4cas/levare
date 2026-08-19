@@ -21,6 +21,7 @@ import { bumpVersion, roundOf, type Verb } from "../runner.ts";
 import { productionAdapterRunner } from "../replay.ts";
 import { loopMembershipFor, isLoopCompanionKind, loopUntilKind, resolveStep, responsibleTeamFor, responsibleTeamsFor, unmetAfter, patchFrontmatter, upsertFrontmatterField, upsertFrontmatterMap } from "../gates.ts";
 import { locateArtifactFile } from "../locate.ts";
+import { unitArtifactPaths } from "../context.ts";
 import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL, transactionalWrite, dirtyRegistryFiles, type TxFile } from "../git.ts";
 import { advanceUnit, latestLiveArtifact, type AsyncMemberRunner } from "../dagwalk.ts";
 import { executeProposal, type ExecuteProposalOptions } from "../execution.ts";
@@ -529,7 +530,7 @@ async function doRequest(
 // time), but a loop member's retry (see the round-accounting note below, at this function's one call
 // site) rewrites its OWN slot in place — `newId === art.id` there, so `supersedes` must carry whatever
 // the artifact being retried already superseded, not self-reference.
-function blockedRetryDoc(art: Artifact, newId: string, msg: string, createdAt: string, supersedes: string | null): string {
+function blockedRetryDoc(art: Artifact, newId: string, msg: string, createdAt: string, supersedes: string | null, consumes: string[] = []): string {
   return [
     "---",
     `kind: ${art.kind}`,
@@ -538,7 +539,7 @@ function blockedRetryDoc(art: Artifact, newId: string, msg: string, createdAt: s
     `project: ${art.project}`,
     "status: blocked",
     `produced_by: ${art.produced_by}`,
-    "consumes: []",
+    `consumes: [${consumes.join(", ")}]`,
     `supersedes: ${supersedes ?? "null"}`,
     "approved_by: null",
     `created: ${createdAt}`,
@@ -642,7 +643,14 @@ async function resolveBlockedArtifactGate(
     // supersedes the last one under a fresh id, so the gate stays actionable without losing the chain;
     // a loop member's failure rewrites its own same slot (see above) — never a second file.
     const msg = e instanceof Error ? e.message : String(e);
-    const doc = blockedRetryDoc(art, newId, msg, createdAt, membership ? art.supersedes : art.id);
+    // NOTES DISPATCH-TRACE (blocked-artifact consumes defect): same computation as dagwalk.ts#produceOne
+    // and AdapterRunner#author — approved artifacts plus this retry's own `extraConsumes` — so a retry
+    // that fails again records what it actually had available instead of the previous hardcoded `[]`.
+    const extraSet = new Set(extraConsumes);
+    const consumes = unitArtifactPaths(root, art.project, art.unit)
+      .filter((a) => a.status === "approved" || extraSet.has(a.id))
+      .map((a) => a.id);
+    const doc = blockedRetryDoc(art, newId, msg, createdAt, membership ? art.supersedes : art.id, consumes);
     const files: TxFile[] = membership
       ? [{ path: located.file, content: doc }]
       : [

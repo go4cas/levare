@@ -355,12 +355,15 @@ describe("D10/D11: a fresh `levare init` passes the real `levare validate` comma
     expect(pointer).toMatch(/^pace: auto\b/m);
   });
 
-  test("the scaffolded .gitignore exists with .DS_Store, node_modules/, and .env", () => {
+  test("the scaffolded .gitignore exists with .DS_Store, node_modules/, .env, and .levare/", () => {
     const root = tmpRoot();
     scaffoldStudio(root);
     const gitignore = readFileSync(join(root, ".gitignore"), "utf8");
     const entries = gitignore.split("\n").map((l) => l.trim()).filter(Boolean);
-    expect(entries).toEqual([".DS_Store", "node_modules/", ".env"]);
+    // NOTES DISPATCH-TRACE: `.levare/` (dispatch-trace.ts's own `.levare/dispatch-logs/`) is scratch/
+    // diagnostic output, gitignored by construction exactly like `.env` — never authored content a
+    // fresh studio would want committed.
+    expect(entries).toEqual([".DS_Store", "node_modules/", ".env", ".levare/"]);
   });
 
   // NOTES F23: a fresh studio scaffolds `.env.example` — never a live `.env` (a real secret in a

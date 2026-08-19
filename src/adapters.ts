@@ -41,7 +41,8 @@ import { buildMemberEnv, teamOf, subscriptionConnector, scopeHome, scopeHomeForC
 import { connectStdioMcpServer, type McpToolCallResult } from "./mcp-client.ts";
 import { allowedTools } from "./guardrails.ts";
 import { assembleContext, unitArtifactPaths } from "./context.ts";
-import { asyncSdkTransport, bunSdkTransport, resolveNativeBinary, type AsyncSdkTransport, type SdkTransport } from "./sdk-transport.ts";
+import { asyncSdkTransport, bunSdkTransport, resolveNativeBinary, asSdkTransportResult, type AsyncSdkTransport, type SdkTransport, type SdkWorkerResponse } from "./sdk-transport.ts";
+import { buildDispatchTrace, writeDispatchTrace } from "./dispatch-trace.ts";
 import { repoCapabilities } from "./repo.ts";
 import { resolveProjectRepoPath, workBranchName, branchExists, createDispatchWorktree } from "./merge.ts";
 import { isSafeHomeDotpath, detectFetchAtDispatchLauncher } from "./validate.ts";
@@ -112,6 +113,15 @@ export interface InvokeRequest {
    * double), exactly `dispatchGitWriteGrant`'s own no-worktree case.
    */
   cliVendorScratchDir?: string;
+  /**
+   * NOTES DISPATCH-TRACE: set by `AdapterRunner#withHomeScope`/`withHomeScopeAsync` — whether
+   * `env.ts#scopeHome` actually swapped in a scratch HOME for this dispatch (`true`) or left `env.HOME`
+   * as the real, unscoped operator directory because the member holds no `home:`-declaring connector
+   * (`false`, the common case). A boolean fact about which code path ran, never the literal directory —
+   * read by `createSdkNativeBoundary`/`createAsyncSdkNativeBoundary` to record "was HOME scoped" on a
+   * dispatch trace without the trace ever carrying a real filesystem path.
+   */
+  homeScoped?: boolean;
 }
 
 /** The native SDK boundary — synchronous, used by the phase-2 batch `Runner` (`levare replay`) and by
@@ -156,6 +166,12 @@ export interface SdkNativeBoundaryOptions {
   timeoutMs?: number;
   /** Test-only override for the resolved native-binary path — see `resolveNativeBinary` default below. */
   pathToClaudeCodeExecutable?: string;
+  /** NOTES DISPATCH-TRACE: the studio root a dispatch trace is written under (`<studioRoot>/.levare/
+   * dispatch-logs/`) — absent (the default for every test double, and for `stubAdapterRunner`, which
+   * never constructs this boundary at all) means no trace is written; `productionAdapterRunner`
+   * (replay.ts) passes `repo.root` on every real construction, so a live `levare serve` dispatch always
+   * gets one. */
+  studioRoot?: string;
 }
 
 export interface AsyncSdkNativeBoundaryOptions {
@@ -164,6 +180,8 @@ export interface AsyncSdkNativeBoundaryOptions {
   timeoutMs?: number;
   /** Test-only override for the resolved native-binary path — see `resolveNativeBinary` default below. */
   pathToClaudeCodeExecutable?: string;
+  /** See `SdkNativeBoundaryOptions.studioRoot` — identical role, async boundary. */
+  studioRoot?: string;
 }
 
 // Shared by both the sync and async native boundary constructors: the worker request built from an
@@ -348,8 +366,10 @@ export function createSdkNativeBoundary(opts: SdkNativeBoundaryOptions = {}): Na
   const pathToClaudeCodeExecutable = opts.pathToClaudeCodeExecutable ?? resolveNativeBinary() ?? undefined;
   return {
     invoke(req: InvokeRequest): { doc: string; receipt?: Receipt } {
+      const startedAt = new Date().toISOString();
       const env = nativeSpawnEnv(req, baseEnv);
       const res = transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable), { env, timeoutMs });
+      traceNativeDispatch(opts.studioRoot, req, res, { startedAt, timeoutMs, baseEnv, pathToClaudeCodeExecutable });
       if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`);
       return { doc: res.result, receipt: res.receipt };
     },
@@ -372,12 +392,41 @@ export function createAsyncSdkNativeBoundary(opts: AsyncSdkNativeBoundaryOptions
   const pathToClaudeCodeExecutable = opts.pathToClaudeCodeExecutable ?? resolveNativeBinary() ?? undefined;
   return {
     async invoke(req: InvokeRequest): Promise<{ doc: string; receipt?: Receipt }> {
+      const startedAt = new Date().toISOString();
       const env = nativeSpawnEnv(req, baseEnv);
       const res = await transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable), { env, timeoutMs });
+      traceNativeDispatch(opts.studioRoot, req, res, { startedAt, timeoutMs, baseEnv, pathToClaudeCodeExecutable });
       if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`);
       return { doc: res.result, receipt: res.receipt };
     },
   };
+}
+
+// NOTES DISPATCH-TRACE: shared by both the sync and async native boundary — writes one trace per
+// dispatch attempt, success or failure alike, so a Conductor debugging a live studio has a consistent
+// record either way (not only on failure — a trace that only ever appears when something breaks is one
+// more thing to keep remembering to check for). A no-op when `studioRoot` was never supplied (every test
+// double, and `stubAdapterRunner`, which never constructs this boundary at all).
+function traceNativeDispatch(
+  studioRoot: string | undefined,
+  req: InvokeRequest,
+  res: SdkWorkerResponse,
+  ctx: { startedAt: string; timeoutMs: number; baseEnv: Record<string, string | undefined>; pathToClaudeCodeExecutable: string | undefined },
+): void {
+  if (!studioRoot) return;
+  const wide = asSdkTransportResult(res);
+  const record = buildDispatchTrace(
+    req,
+    { ok: res.ok, error: res.ok ? undefined : res.error, timedOut: wide.timedOut, durationMs: wide.durationMs, stdout: wide.stdout, stderr: wide.stderr, receipt: res.ok ? res.receipt : undefined },
+    {
+      homeScoped: req.homeScoped ?? false,
+      anthropicApiKeyPresent: typeof ctx.baseEnv.ANTHROPIC_API_KEY === "string",
+      nativeBinaryResolved: ctx.pathToClaudeCodeExecutable !== undefined,
+      startedAt: ctx.startedAt,
+      timeoutMs: ctx.timeoutMs,
+    },
+  );
+  writeDispatchTrace(studioRoot, record);
 }
 
 export interface StdioRemoteBoundaryOptions {
@@ -1199,8 +1248,11 @@ export class AdapterRunner implements MemberRunner {
   // mkdtemp/rm pair for no isolation benefit.
   private withHomeScope<T>(member: string, req: InvokeRequest, fn: (req: InvokeRequest) => T): T {
     const scoped = scopeHome(this.repo, member, req.env);
+    // NOTES DISPATCH-TRACE: `scopeHomeForConnector` returns the SAME `env` reference, unchanged, when
+    // scoping was a no-op (env.ts:213) — reference inequality is therefore a real, cheap signal for
+    // "did HOME actually get scoped", not a heuristic.
     try {
-      return fn({ ...req, env: scoped.env });
+      return fn({ ...req, env: scoped.env, homeScoped: scoped.env !== req.env });
     } finally {
       scoped.cleanup();
     }
@@ -1209,7 +1261,7 @@ export class AdapterRunner implements MemberRunner {
   private async withHomeScopeAsync<T>(member: string, req: InvokeRequest, fn: (req: InvokeRequest) => Promise<T>): Promise<T> {
     const scoped = scopeHome(this.repo, member, req.env);
     try {
-      return await fn({ ...req, env: scoped.env });
+      return await fn({ ...req, env: scoped.env, homeScoped: scoped.env !== req.env });
     } finally {
       scoped.cleanup();
     }
