@@ -46,9 +46,16 @@ export const DISPATCH_TRACE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 export const DISPATCH_LOG_DIR_NAME = join(".levare", "dispatch-logs");
 
-function truncate(text: string): { value: string; truncated: boolean } {
+// `fromEnd` keeps the TAIL instead of the head. `context`/the default keep the head — a Conductor
+// reading a member's assembled context wants to see it from the start. `worker_stdout`/`worker_stderr`
+// (NOTES DISPATCH-TRACE phase 1 recovery) keep the tail instead: on a killed-mid-stream dispatch, the
+// stderr now carries a running transcript (assistantContentLogLines, sdk-worker.ts) that only GROWS
+// as the call runs, so the head is always the earliest, least-relevant turns — keeping it would silently
+// cut off exactly the moments right before the kill, which is the part a Conductor debugging a timeout
+// actually needs.
+function truncate(text: string, opts: { fromEnd?: boolean } = {}): { value: string; truncated: boolean } {
   if (text.length <= MAX_FIELD_CHARS) return { value: text, truncated: false };
-  return { value: text.slice(0, MAX_FIELD_CHARS), truncated: true };
+  return { value: opts.fromEnd ? text.slice(-MAX_FIELD_CHARS) : text.slice(0, MAX_FIELD_CHARS), truncated: true };
 }
 
 export interface DispatchTraceEnvEntry {
@@ -112,8 +119,8 @@ export function buildDispatchTrace(
   opts: { homeScoped: boolean; anthropicApiKeyPresent: boolean; nativeBinaryResolved: boolean; startedAt: string; timeoutMs: number },
 ): DispatchTraceRecord {
   const context = truncate(req.context);
-  const stdout = truncate(outcome.stdout);
-  const stderr = truncate(outcome.stderr);
+  const stdout = truncate(outcome.stdout, { fromEnd: true });
+  const stderr = truncate(outcome.stderr, { fromEnd: true });
   return {
     unit: req.unit,
     project: req.project,

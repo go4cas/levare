@@ -127,6 +127,30 @@ describe("buildDispatchTrace — outcome/timing/truncation shape", () => {
     expect(record.worker_stderr_truncated).toBe(true);
     expect(record.worker_stdout_truncated).toBe(false);
   });
+
+  test("worker_stdout/worker_stderr truncation keeps the TAIL, not the head — the moments right before a kill matter most", () => {
+    // A running stream transcript only grows — the head is always the oldest, least-relevant turns.
+    // context, by contrast, keeps its head (a Conductor reads the assembled context from the start).
+    const req = baseReq({ context: `START${"c".repeat(300_000)}END` });
+    const record = buildDispatchTrace(req, okOutcome({ stdout: `START${"o".repeat(300_000)}END`, stderr: `START${"e".repeat(300_000)}END` }), {
+      homeScoped: false,
+      anthropicApiKeyPresent: false,
+      nativeBinaryResolved: false,
+      startedAt: "2026-08-19T00:00:00.000Z",
+      timeoutMs: 600_000,
+    });
+    expect(record.context_truncated).toBe(true);
+    expect(record.context.startsWith("START")).toBe(true);
+    expect(record.context.endsWith("END")).toBe(false);
+
+    expect(record.worker_stdout_truncated).toBe(true);
+    expect(record.worker_stdout.endsWith("END")).toBe(true);
+    expect(record.worker_stdout.startsWith("START")).toBe(false);
+
+    expect(record.worker_stderr_truncated).toBe(true);
+    expect(record.worker_stderr.endsWith("END")).toBe(true);
+    expect(record.worker_stderr.startsWith("START")).toBe(false);
+  });
 });
 
 describe("writeDispatchTrace — lands under <studioRoot>/.levare/dispatch-logs/, valid JSON, matches the record", () => {

@@ -167,6 +167,40 @@ export function deriveReceipt(
   };
 }
 
+/**
+ * NOTES DISPATCH-TRACE (native-dispatch-hang investigation, phase 1 recovery): renders one streamed
+ * `assistant` message's own content blocks — the member's own text and tool calls, `Write` included —
+ * into stderr log lines. Phase 1 established that this worker previously retained NOTHING from the
+ * stream except two narrow signals (`api_retry`, the responding model) plus whatever the terminal
+ * `result` message's own `.result` text held; every intermediate block, including a `Write` tool call's
+ * full input, was inspected only for those two signals and then discarded — the same mechanism behind
+ * both the empty `worker_stdout`/`worker_stderr` on a killed dispatch AND the standing Finding 70 (a
+ * `Write`-heavy member's real output never reaching `resultText`, because `resultText` is only ever the
+ * final text turn, never a superset of prior tool_use content).
+ *
+ * Factored out as a pure function — mirrors `deriveReceipt`'s own precedent — so a test can feed a
+ * synthetic content array and assert the rendered lines without spawning the real SDK. The caller below
+ * logs each returned line to stderr AS THE MESSAGE ARRIVES, not buffered until the end: `sdk-transport.ts`
+ * already captures a worker's full stderr unconditionally on every exit path, timeout included (NOTES
+ * DISPATCH-TRACE), so a kill mid-stream — the timeout path, where this matters most — now leaves
+ * everything streamed before the kill fired sitting in the trace, not only the final line this worker
+ * never got the chance to print.
+ */
+export function assistantContentLogLines(content: unknown): string[] {
+  if (!Array.isArray(content)) return [];
+  const lines: string[] = [];
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const b = block as Record<string, unknown>;
+    if (b.type === "text" && typeof b.text === "string") {
+      lines.push(`levare: sdk worker assistant text: ${b.text}`);
+    } else if (b.type === "tool_use" && typeof b.name === "string") {
+      lines.push(`levare: sdk worker tool_use ${b.name}: ${JSON.stringify(b.input ?? null)}`);
+    }
+  }
+  return lines;
+}
+
 /** Read one `SdkWorkerRequest` from stdin, run it through the real SDK, print one `SdkWorkerResponse`
  * line of JSON to stdout. Never throws — every failure path (malformed input, transport/SDK error) is
  * reported via `respond({ ok: false, ... })` instead, so a caller awaiting this can always exit 0. */
@@ -219,8 +253,9 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
             `retry_delay_ms=${message.retry_delay_ms}) — ${Date.now() - startedAt}ms elapsed so far`,
         );
       }
-      if (message.type === "assistant" && typeof message.message?.model === "string") {
-        respondingModel = message.message.model;
+      if (message.type === "assistant") {
+        if (typeof message.message?.model === "string") respondingModel = message.message.model;
+        for (const line of assistantContentLogLines(message.message?.content)) console.error(line);
       }
       if (message.type === "result") {
         if (message.subtype === "success") {
