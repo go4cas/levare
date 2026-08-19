@@ -489,7 +489,12 @@ you'd rather nod the Conductor through each team run individually before it fire
 const GITIGNORE = `.DS_Store
 node_modules/
 .env
+.levare/
 `;
+
+// NOTES DISPATCH-TRACE: `.levare/dispatch-logs/` (dispatch-trace.ts) is levare's own scratch/diagnostic
+// output for this studio — a per-dispatch trace file, never authored content — so it's gitignored by
+// construction exactly like `.env`, never something a Conductor commits or a merge gate inspects.
 
 // NOTES F23: a fresh studio scaffolds `.env.example` — never a live `.env` (that's a loaded gun: a
 // real secret in a freshly-`init`'d, about-to-be-pushed repo). Copy it to `.env` yourself and fill in
