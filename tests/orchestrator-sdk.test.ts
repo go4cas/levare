@@ -20,6 +20,7 @@ import {
   checkSdkPreconditions,
   checkSdkPreconditionsCached,
   resetSdkPreconditionCache,
+  asSdkTransportResult,
 } from "../src/sdk-transport.ts";
 import type { AsyncSdkTransport, SdkWorkerRequest, SdkWorkerResponse } from "../src/sdk-transport.ts";
 
@@ -547,7 +548,11 @@ describe("the async transport does not block the event loop while a call is in f
       await unrelatedTimer;
       expect(timerResolvedAt! - start).toBeLessThan(150);
       const res = await slowCall; // let the slow call finish so nothing leaks past the test
-      expect(res).toEqual({ ok: true, result: "slow but done" });
+      // NOTES DISPATCH-TRACE: the real transport now also returns stdout/stderr/durationMs/timedOut
+      // alongside the worker's own reported result.
+      expect(res.ok).toBe(true);
+      expect((res as { result: string }).result).toBe("slow but done");
+      expect(asSdkTransportResult(res).timedOut).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -565,7 +570,9 @@ describe("the async transport does not block the event loop while a call is in f
       const start = Date.now();
       const res = await transport.run({ prompt: "hi" }, { env: {}, timeoutMs: 200 });
       expect(Date.now() - start).toBeLessThan(2000); // killed well short of "forever"
-      expect(res).toEqual({ ok: false, error: "sdk worker timed out after 200ms" });
+      expect(res.ok).toBe(false);
+      expect((res as { error: string }).error).toBe("sdk worker timed out after 200ms");
+      expect(asSdkTransportResult(res).timedOut).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

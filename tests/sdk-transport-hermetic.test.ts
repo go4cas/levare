@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildQueryOptions } from "../src/sdk-worker.ts";
-import { createAsyncSdkTransport, hermeticSpawnEnv, LEVARE_CLAUDE_CONFIG_DIR } from "../src/sdk-transport.ts";
+import { createAsyncSdkTransport, hermeticSpawnEnv, LEVARE_CLAUDE_CONFIG_DIR, asSdkTransportResult } from "../src/sdk-transport.ts";
 
 // Phase-7 live-gate fix-up (NOTES K15): a real host hung indefinitely on every call because the
 // spawned CLI inherited the operator's personal Claude Code configuration — a user-installed
@@ -116,7 +116,14 @@ describe("a hung worker (with a hanging grandchild) is fully reaped on timeout",
       // never anywhere near a caller's much longer outer timeout (the original bug: the transport's
       // internal kill never fired before a 60s outer test timeout did).
       expect(elapsed).toBeLessThan(timeoutMs + 1500);
-      expect(res).toEqual({ ok: false, error: `sdk worker timed out after ${timeoutMs}ms` });
+      // NOTES DISPATCH-TRACE: the transport now also reports diagnostic fields alongside the error —
+      // `timedOut: true` and a `durationMs` in the right ballpark are what a caller building a dispatch
+      // trace reads to distinguish this from an ordinary spawn failure.
+      expect(res.ok).toBe(false);
+      expect((res as { error: string }).error).toBe(`sdk worker timed out after ${timeoutMs}ms`);
+      const wide = asSdkTransportResult(res);
+      expect(wide.timedOut).toBe(true);
+      expect(wide.durationMs).toBeGreaterThanOrEqual(timeoutMs);
 
       // The grandchild must have gotten far enough to record its own PID before the tree was killed —
       // wait briefly for that file to appear (spawn + one writeFileSync, well under our margin).
