@@ -15,6 +15,8 @@ import { readOverlaid, type OverlayFile } from "./overlay.ts";
 import { kindMatches } from "./flow.ts";
 import { SDK_TOOL_NAMES } from "./sdk-transport.ts";
 import type { SandboxDetection } from "./sandbox.ts";
+import { approvalExemptFields } from "./approval-fields.ts";
+import { formatCheckoutSyncNotice } from "./merge.ts";
 export type { OverlayFile } from "./overlay.ts";
 
 export interface ValidationError {
@@ -254,10 +256,16 @@ export const ARTIFACT_SCHEMA: Schema = {
         executed_at: { type: "str", required: true, description: "When the merge executed." },
         merge_commit: { type: "str", required: true, description: "The resulting merge commit SHA." },
         pushed: { type: "bool", required: true, nullable: true, description: "Whether the merge also landed on the project's remote — null when the project declares no remote:." },
+        // Optional/nullable, same convention as `merge.branch_sha` above: a `merge_result` written
+        // before the 2026-08-20 checkout-sync ruling carries no `checkout_behind` at all (the field
+        // didn't exist yet), and that must stay a valid, already-approved artifact — not a schema
+        // break the first time this studio is validated after upgrading. Absence is meaningful
+        // (predates the ruling), never fabricated as false for old data.
         checkout_behind: {
           type: "bool",
-          required: true,
-          description: "True when the project repo's own primary checkout had default_branch checked out at execution time — M4's own deliberate never-checkout guarantee (merge.ts) leaves that checkout staging every merged file for deletion until synced by hand.",
+          required: false,
+          nullable: true,
+          description: "True when the project repo's own primary checkout had default_branch checked out at execution time — M4's own deliberate never-checkout guarantee (merge.ts) leaves that checkout staging every merged file for deletion until synced by hand. Absent on a merge_result written before this field existed.",
         },
       },
     },
@@ -2604,7 +2612,18 @@ function gitImmutabilityCheck(
         checks.push({ file: a.file, state: "S2e" });
         continue;
       }
-      if (stripApprovalStamp(baseline.stdout) === stripApprovalStamp(current)) {
+      const kind = typeof a.data.kind === "string" ? a.data.kind : "";
+      // `merge.target` (the branch approval merged into) is itself NOT approval-exempt — it's part of
+      // the gate-open `merge:` block, so it's guaranteed identical between baseline and current here
+      // regardless of which side we read it from. Reading it lets the checkout-sync notice be
+      // reconstructed and matched exactly, never pattern-matched (see stripCheckoutSyncNotice's doc).
+      const mergeTarget =
+        kind === "merge" && a.data.merge && typeof a.data.merge === "object" && !Array.isArray(a.data.merge) && typeof (a.data.merge as Record<string, YamlValue>).target === "string"
+          ? ((a.data.merge as Record<string, YamlValue>).target as string)
+          : null;
+      const baselineStripped = stripApprovalStamp(stripCheckoutSyncNotice(baseline.stdout, mergeTarget), kind);
+      const currentStripped = stripApprovalStamp(stripCheckoutSyncNotice(current, mergeTarget), kind);
+      if (baselineStripped === currentStripped) {
         checks.push({ file: a.file, state: "S2a" });
       } else {
         checks.push({ file: a.file, state: "S2c" });
@@ -2644,12 +2663,16 @@ function gitImmutabilityCheck(
   return checks;
 }
 
-// Remove the frontmatter lines the approval legitimately introduces/changes (status, approved_by,
-// approved_commit) so an approved artifact can be compared to its pre-approval-baseline content: what
-// remains (every other frontmatter field + the whole body) must be byte-identical, or the content was
-// mutated after approval. Only lines inside the leading `---`/`---` fence are stripped, so a body that
-// happens to contain such a token is never touched.
-function stripApprovalStamp(src: string): string {
+// Remove the frontmatter lines `kind`'s approval path legitimately writes (approval-fields.ts's
+// registry: the universal stamp — status/approved_by/approved_commit — plus whatever extra MAP field
+// that kind's own approve verb adds, e.g. `merge_result` for kind: merge) so an approved artifact can
+// be compared to its pre-approval-baseline content: what remains (every other frontmatter field + the
+// whole body) must be byte-identical, or the content was mutated after approval. Only lines inside the
+// leading `---`/`---` fence are touched, so a body that happens to contain a field-like token is never
+// affected. A stamp field is a single scalar line; a kind-specific field is a block (its own `key:`
+// line plus every indented continuation line that follows, same shape `upsertFrontmatterMap` writes)
+// — both are recognized by the same loop, so a newly-registered map field needs no new stripping logic.
+function stripApprovalStamp(src: string, kind: string): string {
   const lines = src.split("\n");
   if (lines[0]?.trim() !== "---") return src;
   let end = -1;
@@ -2660,12 +2683,50 @@ function stripApprovalStamp(src: string): string {
     }
   }
   if (end === -1) return src;
+  const exempt = new Set(approvalExemptFields(kind));
   const out: string[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (i > 0 && i < end && /^(status|approved_by|approved_commit):/.test(lines[i])) continue;
+  let i = 0;
+  while (i < lines.length) {
+    if (i > 0 && i < end) {
+      const m = /^([A-Za-z_][A-Za-z0-9_]*):/.exec(lines[i]);
+      if (m && exempt.has(m[1])) {
+        i++;
+        while (i < end && /^[ \t]/.test(lines[i])) i++; // skip that field's own indented continuation lines, if any.
+        continue;
+      }
+    }
     out.push(lines[i]);
+    i++;
   }
   return out.join("\n");
+}
+
+// Remove the `formatCheckoutSyncNotice` suffix `doApproveMerge` conditionally appends to a merge
+// artifact's body — the ONE piece of body content any approval path writes (every other approval-time
+// write is frontmatter, handled by `stripApprovalStamp` above). SECURITY: this must never become a
+// substring/marker search. A search-and-drop-everything-after approach would let a post-approval
+// mutation hide arbitrary content behind a forged copy of the marker text — insert
+// "**Checkout out of sync:**<payload>" at the end of an approved body, and a naive stripper would
+// treat everything from that point on as "the sanctioned notice" and silently exclude it from the
+// comparison, exactly the "body mutation hiding behind that marker" this function exists to rule out.
+// Instead this RECONSTRUCTS the exact expected suffix from `defaultBranch` (read from the artifact's
+// own `merge.target`, itself immutable-checked since it's outside the exempt set) via the SAME
+// `formatCheckoutSyncNotice` the writer uses, and only strips it when `src` ends with that exact
+// string, byte for byte. Any deviation — a different branch name, extra trailing text, a truncated
+// copy — fails the exact match, so nothing is stripped and the forged content surfaces as a real
+// comparison mismatch (MODIFIED_AFTER_APPROVAL) instead of being laundered through. Called identically
+// on both baseline and current: the baseline (pre-approval) never legitimately ends with this exact
+// text, so it's always a no-op there.
+function stripCheckoutSyncNotice(src: string, defaultBranch: string | null): string {
+  if (!defaultBranch) return src;
+  const suffix = `\n\n${formatCheckoutSyncNotice(defaultBranch)}\n`;
+  if (!src.endsWith(suffix)) return src;
+  // The writer builds this suffix onto `body.trimEnd()` (gateops.ts#doApproveMerge), consuming the
+  // single trailing newline every `kind: merge` body carries (formatMergeArtifact's own convention —
+  // this notice is the only body content ANY approval writes, and only for this kind). Re-add that one
+  // newline so the reconstructed content matches the pre-notice baseline exactly, not merely up to
+  // trailing whitespace.
+  return src.slice(0, -suffix.length) + "\n";
 }
 
 // realpath, tolerant of a path that does not resolve (returns the input unchanged).

@@ -488,6 +488,41 @@ describe("item 4b — proposal round-trip (member drafts → Conductor approves 
     // Unit was never blocked — a successful execution leaves it exactly as it was.
     const unitSrc = readFileSync(join(root, "work/acme/work/unit.md"), "utf8");
     expect(unitSrc).toContain("status: active");
+
+    // Regression: `execution` is an approval-time write exactly like `merge_result` for kind: merge
+    // (approval-fields.ts's shared registry) — a studio that just approved a proposal must validate
+    // clean, not flag its own approval record as a post-approval mutation of itself.
+    expect(validatePath(root).errors.map((e) => e.code)).not.toContain("MODIFIED_AFTER_APPROVAL");
+  });
+
+  test("a post-approval edit to a proposal's execution record is still caught (the exemption doesn't disable the check)", async () => {
+    const root = seedGitProposalStudio(WRITE_CONNECTOR, ["writer"]);
+    const { path } = stubScript(root, 0);
+    const actionsWriter = WRITE_CONNECTOR.replace('actions:\n  create-issue: ["writer", "--title", "{title}", "--body", "{body}"]', `actions:\n  create-issue: ["${path}", "--title", "{title}", "--body", "{body}"]`);
+    writeFileSync(join(root, "connectors/writer.md"), actionsWriter);
+    git(root, ["add", "-A"]);
+    git(root, ["commit", "-q", "-m", "point the writer connector at the stub binary"]);
+
+    const doc = proposalArtifact({ connector: "writer", action: "create-issue", params: "  title: Ship it\n  body: now" });
+    const runner = scoutRunner(doc);
+    await resolveGate(root, "acme", "work", "start", { memberRunner: runner, today: "2026-07-17" });
+    const approved = await resolveGate(root, "acme", "proposal-work-v1", "approve", {
+      memberRunner: runner,
+      today: "2026-07-17",
+      connectorBaseEnv: { PATH: process.env.PATH },
+    });
+    expect(approved.ok).toBe(true);
+    expect(validatePath(root).errors.map((e) => e.code)).not.toContain("MODIFIED_AFTER_APPROVAL");
+
+    // Tamper with the artifact's non-exempt body after approval, and commit it — the exemption covers
+    // exactly `execution`'s own field name, not a blanket pass on the rest of the file.
+    const artFile = join(root, "work/acme/work/proposal-work-v1.md");
+    writeFileSync(artFile, `${readFileSync(artFile, "utf8").trimEnd()}\nSmuggled paragraph.\n`);
+    git(root, ["add", "-A"]);
+    git(root, ["commit", "-q", "-m", "tamper after approval"]);
+
+    const r = validatePath(root);
+    expect(r.errors.some((e) => e.code === "MODIFIED_AFTER_APPROVAL" && e.file === artFile)).toBe(true);
   });
 
   test("a failed execution never un-approves the proposal, but blocks the unit with a named reason", async () => {

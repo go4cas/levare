@@ -354,9 +354,11 @@ export interface MergeResultRecord {
   // `default_branch` checked out at execution time — M4's "never a checkout" guarantee (merge.ts's own
   // header) is deliberate and stays load-bearing, but it leaves that ONE checkout staging every merged
   // file for deletion until synced by hand (merge.ts#checkoutBehindMerge's own doc has the mechanism).
-  // Always present (never omitted) so a merge_result silent on this can only mean it predates the
-  // ruling, never that the check was skipped.
-  checkout_behind: boolean;
+  // Always written by every merge approval from this ruling forward (never omitted) — but optional and
+  // nullable here, same convention as `MergeInfo.branch_sha`, so a `merge_result` committed BEFORE this
+  // field existed stays a valid, already-approved artifact rather than a schema break the moment this
+  // studio is next validated. Absence means "predates the ruling", never "the check was skipped".
+  checkout_behind?: boolean | null;
 }
 
 export interface Artifact {

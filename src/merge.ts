@@ -472,6 +472,18 @@ export function checkoutBehindMerge(repoPath: string, defaultBranch: string): bo
  * whether or not the checkout happened to be dirty for unrelated reasons at merge time. */
 export const CHECKOUT_SYNC_COMMAND = "git stash -u && git reset --hard HEAD";
 
+/** The exact notice `doApproveMerge` appends to a merge artifact's body when `checkoutBehindMerge`
+ * found the operator's checkout behind (board/gateops.ts). Exported as a pure function of
+ * `defaultBranch` — not inlined at the write site — so validate.ts's immutability check can
+ * independently RECOMPUTE the same text and require an exact match, rather than pattern-matching a
+ * marker inside untrusted post-approval content (see validate.ts#stripCheckoutSyncNotice's own doc
+ * for why that distinction is load-bearing). One function, called from both the write side and the
+ * read side — the text can't drift between them, and there is nothing here for member-authored
+ * content to imitate: a match requires reproducing this exact string, which is not a mutation. */
+export function formatCheckoutSyncNotice(defaultBranch: string): string {
+  return `**Checkout out of sync:** \`${defaultBranch}\` was checked out in the project repo's own working tree when this merge landed. This merge never touches that working tree by design (M4) — \`git status\` there will show every file it introduced staged for deletion until synced. Run \`${CHECKOUT_SYNC_COMMAND}\` in the project repo to bring it back in line. The \`stash -u\` preserves any uncommitted work of your own there.`;
+}
+
 // ---------------------------------------------------------------------------
 // The merge gate artifact itself — levare's own synthetic content (never a member's), same posture
 // dagwalk.ts#writeBlocked/blockedRetryDoc already take for their own levare-authored records.

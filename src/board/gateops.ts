@@ -20,12 +20,13 @@ import { validateArtifactSource, validatePath, formatValidationErrors } from "..
 import { bumpVersion, roundOf, type Verb } from "../runner.ts";
 import { productionAdapterRunner } from "../replay.ts";
 import { loopMembershipFor, isLoopCompanionKind, loopUntilKind, resolveStep, responsibleTeamFor, responsibleTeamsFor, unmetAfter, patchFrontmatter, upsertFrontmatterField, upsertFrontmatterMap } from "../gates.ts";
+import { writeApprovalField } from "../approval-fields.ts";
 import { locateArtifactFile } from "../locate.ts";
 import { unitArtifactPaths } from "../context.ts";
 import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL, transactionalWrite, dirtyRegistryFiles, type TxFile } from "../git.ts";
 import { advanceUnit, latestLiveArtifact, type AsyncMemberRunner } from "../dagwalk.ts";
 import { executeProposal, type ExecuteProposalOptions } from "../execution.ts";
-import { resolveProjectRepoPath, workBranchName, trialMerge, checkGuardrailsForMerge, executeMerge, createWorkBranch, checkoutBehindMerge, CHECKOUT_SYNC_COMMAND } from "../merge.ts";
+import { resolveProjectRepoPath, workBranchName, trialMerge, checkGuardrailsForMerge, executeMerge, createWorkBranch, checkoutBehindMerge, formatCheckoutSyncNotice } from "../merge.ts";
 import { violationLine } from "../guardrails.ts";
 import type { Daemon } from "../daemon.ts";
 import type { Artifact, WorkUnit } from "../types.ts";
@@ -222,7 +223,7 @@ async function doApprove(
     const connector = repo.connectors.get(art.connector);
     if (!connector) return { ok: false, status: 422, error: `proposal '${id}' references unknown connector '${art.connector}'` };
     const record = await executeProposal(connector, art.action, art.params, { spawn: connectorSpawn, now, baseEnv: connectorBaseEnv });
-    patched = upsertFrontmatterMap(patched, "execution", {
+    patched = writeApprovalField("proposal", patched, "execution", {
       executed_at: record.executed_at,
       status: record.status,
       exit: record.exit,
@@ -315,9 +316,9 @@ async function doApproveMerge(root: string, repo: Repo, unit: WorkUnit, file: st
 
   const src = readFileSync(file, "utf8");
   let patched = stampApproval(src, today, root);
-  patched = upsertFrontmatterMap(patched, "merge_result", { executed_at: today, merge_commit: exec.mergeCommit, pushed: exec.pushed, checkout_behind: checkoutBehind });
+  patched = writeApprovalField("merge", patched, "merge_result", { executed_at: today, merge_commit: exec.mergeCommit, pushed: exec.pushed, checkout_behind: checkoutBehind });
   if (checkoutBehind) {
-        patched = `${patched.trimEnd()}\n\n**Checkout out of sync:** \`${project.default_branch}\` was checked out in the project repo's own working tree when this merge landed. This merge never touches that working tree by design (M4) — \`git status\` there will show every file it introduced staged for deletion until synced. Run \`${CHECKOUT_SYNC_COMMAND}\` in the project repo to bring it back in line. The \`stash -u\` preserves any uncommitted work of your own there.\n`;
+    patched = `${patched.trimEnd()}\n\n${formatCheckoutSyncNotice(project.default_branch)}\n`;
   }
   const errs = validateArtifactSource(patched, file, dirname(file), root);
   if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
