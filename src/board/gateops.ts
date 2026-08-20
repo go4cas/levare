@@ -26,6 +26,7 @@ import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL, transactionalWrite, d
 import { advanceUnit, latestLiveArtifact, type AsyncMemberRunner } from "../dagwalk.ts";
 import { executeProposal, type ExecuteProposalOptions } from "../execution.ts";
 import { resolveProjectRepoPath, workBranchName, trialMerge, checkGuardrailsForMerge, executeMerge, createWorkBranch } from "../merge.ts";
+import { violationLine } from "../guardrails.ts";
 import type { Daemon } from "../daemon.ts";
 import type { Artifact, WorkUnit } from "../types.ts";
 
@@ -249,8 +250,18 @@ async function doApprove(
 // NOTES MERGE-1 (M3, M4, M5): approving a `merge` gate is execution-on-approval at repository scale —
 // "the members drafted, the Conductor approved, levare merges" (PRD Amendment 2, M1). Guardrails
 // re-check HERE, at execution time, against a FRESH trial merge (never the possibly-stale `merge:`
-// block the gate opened with — M3: "the actual diff", not the diff as of gate-open) — a violation
-// fails the execution even though the Conductor already clicked approve (the law outranks the wish).
+// block the gate opened with — M3: "the actual diff", not the diff as of gate-open) — a `protected-path`
+// or `never` violation still fails the execution even though the Conductor already clicked approve (the
+// law outranks the wish, unaffected by the ruling below).
+//
+// Actor-aware ruling (2026-08-20): `protected-branch` is the exception. THIS call is the approved merge
+// gate itself executing — the Conductor's click is the authority to land on a protected branch (Team
+// charters that read "nothing reaches main except through the merge gate" say exactly this) — so the
+// check below is told so via `approvedGate`, carrying who approved and the exact `branch_sha` the trial
+// just evaluated (guardrails.ts's own header has the full reasoning). No other call site in this app
+// ever passes it — a preview/recheck, or any future write that isn't this exact approved execution,
+// stays blocked exactly as before.
+//
 // A clean merge lands as a real merge commit (never squash/rebase — M4), and where the project declares
 // `remote:`, the push is part of this same call (M5) — a push failure means NOTHING is written here at
 // all: the artifact stays `in-review`, the unit stays whatever it was, exactly as if approval had never
@@ -273,9 +284,14 @@ async function doApproveMerge(root: string, repo: Repo, unit: WorkUnit, file: st
     };
   }
   const teams = responsibleTeamsFor(repo, unit);
-  const violations = checkGuardrailsForMerge(teams, trial.diffFiles, project.default_branch, !!project.remote);
+  // `trial.branchSha` is always set here (the conflict/error returns above already ruled out the only
+  // cases where `trialMerge` leaves it undefined) — falls back to leaving `approvedGate` unset in the
+  // one theoretical case it isn't, so `protected-branch` fails closed (still blocks) rather than ever
+  // exempting a write it can't actually pin a commit to.
+  const approvedGate = trial.branchSha ? { approvedBy: `${CONDUCTOR_NAME} ${today}`, branchSha: trial.branchSha } : undefined;
+  const violations = checkGuardrailsForMerge(teams, trial.diffFiles, project.default_branch, !!project.remote, approvedGate);
   if (violations.length > 0) {
-    return { ok: false, status: 409, error: `merge gate '${id}' blocked by guardrail: ${violations.map((v) => `${v.rule}: ${v.detail}`).join("; ")}` };
+    return { ok: false, status: 409, error: `merge gate '${id}' blocked by guardrail: ${violations.map(violationLine).join("; ")}` };
   }
 
   const message = `merge ${branch} -> ${project.default_branch}: unit ${unit.unit} (gate ${id})`;
@@ -337,7 +353,7 @@ function doRecheckMerge(root: string, repo: Repo, unit: WorkUnit, file: string, 
     diffstat: trial.diffstat,
     conflicted: trial.conflicted,
     conflicts: trial.conflicts,
-    guardrail_violations: violations.map((v) => `${v.rule}: ${v.detail}`),
+    guardrail_violations: violations.map(violationLine),
     // NOTES SEC-V11 F2: recheck recomputes the pinned SHA fresh, same as gate-open — the NEXT approve
     // call pins to whatever this recheck just observed, never a round-trip-stale value.
     branch_sha: trial.branchSha ?? null,

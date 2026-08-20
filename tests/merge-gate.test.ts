@@ -341,8 +341,8 @@ describe("M3: guardrails enforce at execution time, on the actual diff", () => {
     expect(unitAfter.status).toBe("active");
   });
 
-  test("a protected_branches violation on the target also fails the execution", async () => {
-    dirs = buildStudio({ guardrails: { protected_branches: ["main"] } });
+  test("a `never` action still fails the execution regardless of actor", async () => {
+    dirs = buildStudio({ guardrails: { never: ["merge"] } });
     await startAndApproveTask(dirs.root);
     commitToWorkBranch(dirs.projectRepo, "levare/widget-1", "feature.txt", "x\n");
     await advanceOnce(dirs.root);
@@ -350,7 +350,45 @@ describe("M3: guardrails enforce at execution time, on the actual diff", () => {
     const merge = [...repo.artifacts.get("acme/widget-1")!.values()].find((a) => a.kind === "merge")!;
     const approve = await resolveGate(dirs.root, "acme", merge.id, "approve", { today: TODAY });
     expect(approve.ok).toBe(false);
-    if (!approve.ok) expect(approve.error).toContain("protected-branch");
+    if (!approve.ok) expect(approve.error).toContain("never");
+  });
+});
+
+// Actor-aware ruling (2026-08-20): Conductor approval AT THE MERGE GATE is itself the authority to
+// write to a protected branch — "nothing reaches main except through the merge gate" is the POINT of
+// protecting it, not a wall against the gate's own sanctioned write. `protected-branch` is the only
+// rule this affects; `protected_paths` and `never` (covered above) stay absolute regardless of actor.
+describe("actor-aware guardrails: an approved merge gate may write to a protected branch", () => {
+  test("a protected_branches match on the merge's own target no longer blocks approval", async () => {
+    dirs = buildStudio({ guardrails: { protected_branches: ["main"] } });
+    await startAndApproveTask(dirs.root);
+    commitToWorkBranch(dirs.projectRepo, "levare/widget-1", "feature.txt", "x\n");
+    await advanceOnce(dirs.root);
+    const repo = loadRepo(dirs.root, { validate: false });
+    const merge = [...repo.artifacts.get("acme/widget-1")!.values()].find((a) => a.kind === "merge")!;
+    // Gate-open time (before any approval) still reports it — nothing has authorized the write yet.
+    expect(merge.merge?.guardrail_violations.some((v) => v.startsWith("protected-branch:"))).toBe(true);
+
+    const approve = await resolveGate(dirs.root, "acme", merge.id, "approve", { today: TODAY });
+    expect(approve.ok).toBe(true);
+    if (!approve.ok) return;
+    const mainSha = git(dirs.projectRepo, ["rev-parse", "main"]).trim();
+    expect(mainSha).not.toBe("");
+  });
+
+  test("a protected_paths violation still blocks even when protected_branches also names the target", async () => {
+    dirs = buildStudio({ guardrails: { protected_paths: ["deploy/"], protected_branches: ["main"] } });
+    await startAndApproveTask(dirs.root);
+    commitToWorkBranch(dirs.projectRepo, "levare/widget-1", "deploy/config.yml", "secret: true\n");
+    await advanceOnce(dirs.root);
+    const repo = loadRepo(dirs.root, { validate: false });
+    const merge = [...repo.artifacts.get("acme/widget-1")!.values()].find((a) => a.kind === "merge")!;
+    const approve = await resolveGate(dirs.root, "acme", merge.id, "approve", { today: TODAY });
+    expect(approve.ok).toBe(false);
+    if (!approve.ok) {
+      expect(approve.error).toContain("protected-path");
+      // The exempt protected-branch finding must not be what's reported as the blocker.
+    }
   });
 });
 

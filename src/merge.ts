@@ -26,7 +26,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, existsSync, realpathSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { checkGuardrails, type DiffEntry, type GuardrailViolation } from "./guardrails.ts";
+import { checkGuardrails, violationLine, type DiffEntry, type GuardrailViolation } from "./guardrails.ts";
 import { RUNNER_NAME, RUNNER_EMAIL } from "./git.ts";
 import type { Project, Team } from "./types.ts";
 
@@ -334,18 +334,22 @@ export function trialMerge(repoPath: string, branch: string, defaultBranch: stri
 
 /** M3: `protected_paths` against the files the merge touches, `protected_branches` against the target
  * — never against the operations performed (ruling C6's namespace split, applied here). A `never`
- * action names the merge/push operations THIS execution would perform, not an arbitrary vocabulary. */
-export function mergeDiffEntries(diffFiles: string[], defaultBranch: string, willPush: boolean): DiffEntry[] {
+ * action names the merge/push operations THIS execution would perform, not an arbitrary vocabulary.
+ * `approvedGate`, when given, is stamped onto every branch entry — this is only ever supplied by
+ * board/gateops.ts#doApproveMerge, at the one moment it IS the approved gate executing (see
+ * guardrails.ts's own header); a preview/recheck call passes nothing, so `protected-branch` still
+ * reports honestly ahead of approval. */
+export function mergeDiffEntries(diffFiles: string[], defaultBranch: string, willPush: boolean, approvedGate?: DiffEntry["approvedGate"]): DiffEntry[] {
   const entries: DiffEntry[] = diffFiles.map((path) => ({ path }));
-  entries.push({ branch: defaultBranch, action: "merge" });
-  if (willPush) entries.push({ branch: defaultBranch, action: "push" });
+  entries.push({ branch: defaultBranch, action: "merge", approvedGate });
+  if (willPush) entries.push({ branch: defaultBranch, action: "push", approvedGate });
   return entries;
 }
 
 /** Every responsible team's guardrails apply to one merge — a unit can have more than one responsible
  * team (ruling C4, the per-kind walk), and the merge is one landing for all of their work together. */
-export function checkGuardrailsForMerge(teams: Team[], diffFiles: string[], defaultBranch: string, willPush: boolean): GuardrailViolation[] {
-  const entries = mergeDiffEntries(diffFiles, defaultBranch, willPush);
+export function checkGuardrailsForMerge(teams: Team[], diffFiles: string[], defaultBranch: string, willPush: boolean, approvedGate?: DiffEntry["approvedGate"]): GuardrailViolation[] {
+  const entries = mergeDiffEntries(diffFiles, defaultBranch, willPush, approvedGate);
   const out: GuardrailViolation[] = [];
   for (const team of teams) out.push(...checkGuardrails(team, entries));
   return out;
@@ -451,12 +455,33 @@ function q(s: string): string {
   return /^[A-Za-z0-9._/-]+$/.test(s) ? s : JSON.stringify(s);
 }
 
+// Phase 3 (2026-08-20 ruling): `# merge — clean`/`CONFLICTED`/`ERROR` names the trial merge's own git
+// MECHANICS only — exactly what `trial.conflicted`/`trial.error` say happened when the diff was
+// attempted — and must stay honest about that regardless of what guardrails found; conflating it with
+// the gate's DISPOSITION (would approval succeed right now) is what made the pre-fix artifact read
+// "clean" as if that meant "approved" next to a non-empty `guardrail_violations`. This body sentence is
+// the disposition half: it names blocking findings (`protected-path`, `never` — unaffected by the
+// actor-aware ruling, still fail approval) separately from a `protected-branch` note, which the SAME
+// approval that would be clicked next is what resolves it, not a separate fix.
+function mechanicsCleanDisposition(trial: TrialMergeResult, violations: GuardrailViolation[]): string {
+  const base = `${trial.commitsAhead} commit(s) on \`${trial.branch}\` ahead of \`${trial.target}\`, merges cleanly.`;
+  const blocking = violations.filter((v) => v.rule !== "protected-branch");
+  const gateExempt = violations.filter((v) => v.rule === "protected-branch");
+  if (blocking.length > 0) return `${base} Blocked by guardrail: ${blocking.map((v) => v.detail).join("; ")}.`;
+  if (gateExempt.length > 0) return `${base} ${gateExempt.map((v) => v.detail).join("; ")} — approving this gate is the authorization to land here.`;
+  return base;
+}
+
 /** Build the initial `kind: merge` artifact a merge gate opens with — always `status: in-review`,
  * `approved_by: null` (board/gateops.ts's `doApproveMerge`/`doRecheckMerge` own everything that
  * happens to this artifact after it exists, via the same patchFrontmatter/upsertFrontmatterMap
  * primitives every other gate resolution in this app already uses — this function is only ever called
- * once, at gate-open time). */
-export function formatMergeArtifact(unit: string, project: string, id: string, created: string, trial: TrialMergeResult, guardrailViolations: string[]): string {
+ * once, at gate-open time). `violations` is the structured guardrail result (never carries
+ * `approvedGate` — gate-open is never itself an approval), so this can tell a real blocker from a
+ * `protected-branch` note the next approval resolves; the on-disk `guardrail_violations` field still
+ * records every finding, flattened, for the full advisory record types.ts documents. */
+export function formatMergeArtifact(unit: string, project: string, id: string, created: string, trial: TrialMergeResult, violations: GuardrailViolation[]): string {
+  const guardrailViolations = violations.map(violationLine);
   const lines = [
     "---",
     "kind: merge",
@@ -487,7 +512,7 @@ export function formatMergeArtifact(unit: string, project: string, id: string, c
       ? `The trial merge could not run: ${trial.error}`
       : trial.conflicted
         ? `${trial.commitsAhead} commit(s) on \`${trial.branch}\` ahead of \`${trial.target}\`. The trial merge conflicts on: ${trial.conflicts.join(", ")}. Resolve by hand on \`${trial.branch}\` in the project repo, then use the recheck verb.`
-        : `${trial.commitsAhead} commit(s) on \`${trial.branch}\` ahead of \`${trial.target}\`, merges cleanly.${guardrailViolations.length ? ` Guardrail check found: ${guardrailViolations.join("; ")}` : ""}`,
+        : mechanicsCleanDisposition(trial, violations),
     "",
   ];
   return lines.join("\n");

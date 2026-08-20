@@ -21,6 +21,7 @@ import { statusBadge, counter, pendingState, card, confirmModal, toastViewport, 
 import { loadConversationTail } from "../../conversation.ts";
 import { deriveTeamStyle } from "../team-color.ts";
 import { registryKindIconBody } from "./entity-icons.ts";
+import { isBlockingViolationLine } from "../../guardrails.ts";
 
 // levare's own release version (item 3: "the release version as a quiet muted mono chip" beside the
 // wordmark) — never from a project's data (that's the `pace`/`deploy`/release vocabulary, a
@@ -659,9 +660,13 @@ function mergeGateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: 
 
   const conflicted = merge.conflicted;
   const violations = merge.guardrail_violations ?? [];
-  const guardrailsPass = violations.length === 0;
-  // Never render approve/merge when the server would refuse it (409): conflicted, or a guardrail
-  // violation the SAME execution-time re-check (M3) would re-discover and fail on anyway.
+  // Actor-aware ruling (2026-08-20): a `protected-branch` line is what approval itself resolves —
+  // clicking Merge IS the authorization (guardrails.ts's own header) — so it must not withhold the
+  // button the same way a real blocker does. `protected-path`/`never` lines are unaffected: the SAME
+  // execution-time re-check (M3) still fails on those regardless of who clicks approve.
+  const blockingViolations = violations.filter(isBlockingViolationLine);
+  const gateExemptViolations = violations.filter((v) => !isBlockingViolationLine(v));
+  const guardrailsPass = blockingViolations.length === 0;
   const canApprove = !conflicted && guardrailsPass;
 
   // NOTES SEC-V11 F2: surfaces the exact commit `executeMerge` pins to (merge.ts's own TOCTOU-closing
@@ -677,9 +682,12 @@ function mergeGateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: 
   const conflictDetail = conflicted
     ? `<p class="gate__ctx">Conflicts on: ${merge.conflicts.map((f) => `<span class="mono">${esc(f)}</span>`).join(", ")}. Resolve by hand on <span class="mono">${esc(merge.branch)}</span> in the project repo, then re-check.</p>`
     : "";
-  const guardrailHtml = guardrailsPass
-    ? `<p class="gate__ctx" style="color:var(--fg-mute)">guardrails pass</p>`
-    : callout("danger", `blocked by guardrail: ${violations.map(esc).join("; ")}`);
+  const guardrailHtml =
+    blockingViolations.length > 0
+      ? callout("danger", `blocked by guardrail: ${blockingViolations.map(esc).join("; ")}`)
+      : gateExemptViolations.length > 0
+        ? `<p class="gate__ctx" style="color:var(--fg-mute)">${gateExemptViolations.map(esc).join("; ")} &mdash; approving this gate is the authorization to land here.</p>`
+        : `<p class="gate__ctx" style="color:var(--fg-mute)">guardrails pass</p>`;
   const meta = `<div class="gate__meta"><span>opened ${esc(age)}</span></div>`;
 
   const project = repo.projects.get(gate.project);

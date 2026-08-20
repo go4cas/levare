@@ -379,7 +379,9 @@ function openMergeGate(
   const today = opts.today ?? new Date().toISOString();
   const commitFn = opts.commit ?? runnerCommit;
   const trial = trialMerge(projectRepoPath, branch, project.default_branch);
-  const violations = trial.error ? [] : checkGuardrailsForMerge(teams, trial.diffFiles, project.default_branch, !!project.remote).map((v) => `${v.rule}: ${v.detail}`);
+  // Gate-open is never itself an approval — no `approvedGate` here, so `protected-branch` reports
+  // honestly ahead of any Conductor decision (M3's binding check still re-runs at doApproveMerge).
+  const violations = trial.error ? [] : checkGuardrailsForMerge(teams, trial.diffFiles, project.default_branch, !!project.remote);
   const id = `merge-${unit.unit}-v1`;
   const doc = formatMergeArtifact(unit.unit, unit.project, id, today, trial, violations);
   const file = join(unit.dir, `${id}.md`);

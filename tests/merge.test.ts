@@ -562,6 +562,27 @@ describe("checkGuardrailsForMerge / mergeDiffEntries (M3 namespace shape)", () =
     expect(violations.some((v) => v.rule === "protected-branch")).toBe(true);
   });
 
+  test("the violation names the actual action ('merge', or 'push' only when willPush) rather than a hardcoded 'push'", () => {
+    const merged = checkGuardrailsForMerge([team({ protected_branches: ["main"] })], [], "main", false);
+    expect(merged.find((v) => v.rule === "protected-branch")!.detail).toContain("merge to protected branch");
+    const pushed = checkGuardrailsForMerge([team({ protected_branches: ["main"] })], [], "main", true);
+    // Both entries (merge AND push) match the same protected branch — one violation per action.
+    expect(pushed.filter((v) => v.rule === "protected-branch").map((v) => v.detail).join(" | ")).toContain("push to protected branch");
+  });
+
+  // Actor-aware ruling (2026-08-20): Conductor approval at the merge gate is itself the authority to
+  // land on a protected branch — `approvedGate` is board/gateops.ts#doApproveMerge's own proof of that,
+  // never supplied by a preview/recheck call. `protected_paths` is a different namespace and untouched.
+  test("approvedGate exempts protected_branches on the merge target, but never protected_paths", () => {
+    const approvedGate = { approvedBy: "cas 2026-08-20", branchSha: "deadbeef" };
+    const branchOnly = checkGuardrailsForMerge([team({ protected_branches: ["main"] })], ["readme.md"], "main", false, approvedGate);
+    expect(branchOnly).toEqual([]);
+
+    const both = checkGuardrailsForMerge([team({ protected_paths: ["payments/"], protected_branches: ["main"] })], ["payments/x.ts"], "main", false, approvedGate);
+    expect(both.length).toBe(1);
+    expect(both[0].rule).toBe("protected-path");
+  });
+
   test("a clean diff against a team with no matching guardrail produces zero violations", () => {
     const violations = checkGuardrailsForMerge([team({ protected_paths: ["payments/"] })], ["readme.md"], "main", false);
     expect(violations).toEqual([]);
@@ -609,7 +630,9 @@ describe("formatMergeArtifact — schema-valid, round-trips through repo.ts's ow
 
   test("a conflicted gate's doc names every conflicting file, quoted safely", () => {
     const trial = { branch: "levare/unit-b", target: "main", commitsAhead: 1, diffstat: "", diffFiles: ["a b.txt"], conflicted: true, conflicts: ["a b.txt", "src/x.ts"] };
-    const doc = formatMergeArtifact("unit-b", "storefront", "merge-unit-b-v1", "2026-07-17", trial, ["protected-path: 'a b.txt' touches protected path 'a b.txt' (team 'kestrel')"]);
+    const doc = formatMergeArtifact("unit-b", "storefront", "merge-unit-b-v1", "2026-07-17", trial, [
+      { rule: "protected-path", detail: "'a b.txt' touches protected path 'a b.txt' (team 'kestrel')" },
+    ]);
     const errs = validateArtifactSource(doc);
     expect(errs).toEqual([]);
     const art = parseArtifactDoc(doc);
@@ -617,5 +640,36 @@ describe("formatMergeArtifact — schema-valid, round-trips through repo.ts's ow
     expect(art.merge?.conflicts).toEqual(["a b.txt", "src/x.ts"]);
     expect(art.merge?.guardrail_violations.length).toBe(1);
     expect(art.body).toContain("CONFLICTED");
+  });
+
+  // Phase 3 (2026-08-20 ruling): the heading is trial-merge MECHANICS only (never conflated with the
+  // gate's disposition) — a `protected-path`/`never` violation still reads as blocked in the body, but
+  // a `protected-branch` finding reads as "approval resolves this", never as a generic block.
+  describe("heading vs. disposition are separate facts", () => {
+    const trial = { branch: "levare/unit-c", target: "main", commitsAhead: 1, diffstat: "", diffFiles: [], conflicted: false, conflicts: [] };
+
+    test("a real blocker (protected-path) still reads as blocked, even though the trial itself is clean", () => {
+      const doc = formatMergeArtifact("unit-c", "storefront", "merge-unit-c-v1", "2026-07-17", trial, [{ rule: "protected-path", detail: "'x' touches protected path 'x' (team 'kestrel')" }]);
+      const art = parseArtifactDoc(doc);
+      expect(art.body).toContain("# merge — clean");
+      expect(art.body).toContain("Blocked by guardrail");
+      expect(art.body).not.toContain("clean.\n\nBlocked"); // sanity: the mechanics sentence and the disposition sentence are distinct, not merged into one claim
+    });
+
+    test("a protected-branch finding (gate-exempt) never reads as a generic block", () => {
+      const doc = formatMergeArtifact("unit-c", "storefront", "merge-unit-c-v1", "2026-07-17", trial, [{ rule: "protected-branch", detail: "merge to protected branch 'main' (team 'quill')" }]);
+      const art = parseArtifactDoc(doc);
+      expect(art.body).toContain("# merge — clean");
+      expect(art.body).not.toContain("Blocked by guardrail");
+      expect(art.body).toContain("approving this gate is the authorization to land here");
+    });
+
+    test("no violations reads as a plain clean merge", () => {
+      const doc = formatMergeArtifact("unit-c", "storefront", "merge-unit-c-v1", "2026-07-17", trial, []);
+      const art = parseArtifactDoc(doc);
+      expect(art.body).toContain("merges cleanly.");
+      expect(art.body).not.toContain("Blocked by guardrail");
+      expect(art.body).not.toContain("authorization to land here");
+    });
   });
 });
