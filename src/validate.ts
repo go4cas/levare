@@ -254,6 +254,11 @@ export const ARTIFACT_SCHEMA: Schema = {
         executed_at: { type: "str", required: true, description: "When the merge executed." },
         merge_commit: { type: "str", required: true, description: "The resulting merge commit SHA." },
         pushed: { type: "bool", required: true, nullable: true, description: "Whether the merge also landed on the project's remote — null when the project declares no remote:." },
+        checkout_behind: {
+          type: "bool",
+          required: true,
+          description: "True when the project repo's own primary checkout had default_branch checked out at execution time — M4's own deliberate never-checkout guarantee (merge.ts) leaves that checkout staging every merged file for deletion until synced by hand.",
+        },
       },
     },
     // NOTES R4-SANDBOX (v2, Ruling 2): the OS-sandbox enforcement level a `kind: cli` member's spawn

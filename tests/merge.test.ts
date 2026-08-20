@@ -21,6 +21,7 @@ import {
   formatMergeArtifact,
   createDispatchWorktree,
   commitDispatchWorktree,
+  checkoutBehindMerge,
 } from "../src/merge.ts";
 import { parseArtifactDoc } from "../src/repo.ts";
 import { validateArtifactSource } from "../src/validate.ts";
@@ -278,6 +279,16 @@ describe("executeMerge (M4/M5)", () => {
       // update-ref moves the ref, never the working tree/index (M4's own "never a checkout" guarantee).
       expect(git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]).trim()).toBe("main");
       expect(existsSync(join(repo, "feature.txt"))).toBe(false);
+      // 2026-08-20 checkout-sync ruling: this fixture's primary checkout has `main` (the target)
+      // checked out — `plantWorkBranch` always returns to it — which is exactly the one case where
+      // "never touched" above is NOT "unaffected": `main`'s ref now points past a commit the index
+      // still doesn't know about, so `git status` reads the merge's own new file as staged for
+      // DELETION, and `git diff --cached` shows the merge as a pure deletion. Previously this test
+      // stopped at "file absent on disk" as if that alone proved safety — asserted here explicitly so
+      // this known, deliberate consequence of M4's guarantee can never regress back into silence.
+      expect(git(repo, ["status", "--porcelain"]).trim()).toBe("D  feature.txt");
+      expect(git(repo, ["diff", "--cached", "--stat"]).trim()).toContain("1 file changed, 1 deletion(-)");
+      expect(checkoutBehindMerge(repo, "main")).toBe(true);
     } finally {
       rmrf(repo);
     }
@@ -333,6 +344,41 @@ describe("executeMerge (M4/M5)", () => {
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.error).toContain("levare/ghost");
+    } finally {
+      rmrf(repo);
+    }
+  });
+});
+
+// 2026-08-20 checkout-sync ruling: `executeMerge`'s never-checkout guarantee (M4) is deliberate and
+// stays exactly as-is — this only detects the one case it leaves behind, so `doApproveMerge` can
+// report it instead of staying silent (the live `jot` incident this ruling responds to).
+describe("checkoutBehindMerge (checkout-sync ruling)", () => {
+  test("true when the primary checkout has default_branch checked out — the exact case M4 leaves stale", () => {
+    const repo = makeProjectRepo();
+    try {
+      expect(git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]).trim()).toBe("main");
+      expect(checkoutBehindMerge(repo, "main")).toBe(true);
+    } finally {
+      rmrf(repo);
+    }
+  });
+
+  test("false when the primary checkout has a different branch checked out", () => {
+    const repo = makeProjectRepo();
+    try {
+      git(repo, ["checkout", "-q", "-b", "other-branch"]);
+      expect(checkoutBehindMerge(repo, "main")).toBe(false);
+    } finally {
+      rmrf(repo);
+    }
+  });
+
+  test("false when the primary checkout is detached", () => {
+    const repo = makeProjectRepo();
+    try {
+      git(repo, ["checkout", "-q", "--detach", "main"]);
+      expect(checkoutBehindMerge(repo, "main")).toBe(false);
     } finally {
       rmrf(repo);
     }

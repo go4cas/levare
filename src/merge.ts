@@ -446,6 +446,32 @@ export function executeMerge(repoPath: string, branch: string, defaultBranch: st
   return { ok: true, mergeCommit: mergeSha, pushed: true };
 }
 
+/**
+ * Ruling (2026-08-20, live incident against `jot`): M4's "never a checkout" guarantee is deliberate
+ * and stays load-bearing — `executeMerge` must keep working correctly regardless of what the project
+ * repo's own primary checkout has checked out, or how dirty it is, and a conditional checkout would
+ * re-introduce exactly the hazard `update-ref` was chosen to avoid. But that guarantee has exactly one
+ * blind spot: when the primary checkout's `HEAD` symbolically resolves to `default_branch` itself —
+ * the ordinary state right after `doStart` opens a work branch off it — `update-ref` moves the ref
+ * `HEAD` points at without touching the index or working tree, so the checkout is left staging every
+ * file the merge introduced for DELETION (`git status` diffs the index against the now-advanced HEAD
+ * tree) until the operator syncs it by hand. This function detects exactly that condition. Read-only,
+ * and called strictly AFTER `executeMerge`'s own transaction has already concluded (success or
+ * failure) — it never gates, influences, or rolls back the merge itself; it only reports on what a
+ * successful one left behind, so the caller can say so instead of staying silent about it.
+ */
+export function checkoutBehindMerge(repoPath: string, defaultBranch: string): boolean {
+  const head = git(repoPath, ["symbolic-ref", "--quiet", "HEAD"]);
+  return head.status === 0 && head.stdout.trim() === `refs/heads/${defaultBranch}`;
+}
+
+/** The exact recovery command named in the merge artifact/board notice when `checkoutBehindMerge`
+ * finds the operator's checkout behind: `stash -u` first so any of the operator's OWN real
+ * uncommitted work on that checkout is preserved rather than discarded, THEN a hard reset to bring
+ * the index/working tree in line with the ref `executeMerge` already moved — safe unconditionally,
+ * whether or not the checkout happened to be dirty for unrelated reasons at merge time. */
+export const CHECKOUT_SYNC_COMMAND = "git stash -u && git reset --hard HEAD";
+
 // ---------------------------------------------------------------------------
 // The merge gate artifact itself — levare's own synthetic content (never a member's), same posture
 // dagwalk.ts#writeBlocked/blockedRetryDoc already take for their own levare-authored records.

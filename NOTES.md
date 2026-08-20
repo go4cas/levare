@@ -17070,3 +17070,80 @@ byte-identical on a second run. `levare validate fixtures/golden` → valid (sam
 `SANDBOX_UNAVAILABLE`/`UNCOVERABLE_EXPECTED_KIND` warnings as every prior entry in this file, unrelated to
 this change). `levare replay fixtures/golden --stubs` → oracle match, byte-for-byte. `docs/current-gaps.md`
 gains a closing entry naming all five findings and both rulings.
+
+# NOTES CHECKOUT-SYNC — executeMerge leaves a same-branch checkout staging its own result for deletion
+
+Live evidence, 2026-08-20: unit `jot/find-entries` merged cleanly to `main` in a real project repo
+(`~/source/jot`, never touched by this investigation or its tests). Immediately after, that repo's
+primary checkout showed all five merged files `D` (staged for deletion), `git diff --cached --stat`
+read as a pure deletion of the whole merge, and the working tree held none of the merged files — the
+next `git commit -a` there would have deleted the feature the merge had just landed. Reflog: `HEAD@{0}`
+the merge commit with an EMPTY reason (an `update-ref` signature, never a porcelain op) preceded by
+`HEAD@{1}: reset: moving to HEAD`.
+
+**Phase 1 (read before writing).** Traced every git call `executeMerge` (`src/merge.ts`) makes: build
+the merge commit in a scratch worktree detached at `default_branch`'s pre-merge SHA, then land it with
+one plumbing call — `git update-ref refs/heads/<default_branch> <new> <old>` — a compare-and-swap ref
+write against the REAL repo, never a checkout. Confirmed this is deliberate, not incidental, three ways:
+the module's own header/doc comments say so explicitly; this file's own MERGE-1 entry above states the
+working tree is "NEVER touched by execution" as the intended M4 guarantee; and `tests/merge.test.ts`
+already had a dedicated assertion certifying it (`existsSync(...feature.txt) === false` after a
+successful merge). That certification was the blind spot: it proves no checkout happened, but never
+checks `git status`, so it never notices that a primary checkout sitting ON `default_branch` (the
+ordinary post-`doStart` state) is left with its index at the pre-merge tip while `HEAD` now resolves
+past it — every file the merge introduced reads as staged for deletion. Reproduced byte-for-bit in a
+disposable sandbox repo (`D  feature.txt`, all-deletions `--cached` diff, empty-reason `HEAD@{0}`
+reflog entry, identical to the live evidence) — never against `~/source/jot`. Traced every `git reset`
+call in this codebase (`src/git.ts`'s own, path-scoped, studio-repo-only) and confirmed by reproduction
+that a scoped reset writes no `HEAD` reflog entry at all — only a bare `git reset` does, and nothing in
+this codebase issues one against a project repo. `HEAD@{1}: reset: moving to HEAD` is therefore not
+part of `executeMerge`'s own mechanism; its origin is outside this code path and isn't needed to
+explain the reported symptom, which the ref/checkout divergence alone fully reproduces.
+
+**Ruling: keep M4's never-checkout guarantee — it is correct and load-bearing.** A conditional checkout
+re-introduces exactly the hazard `update-ref` was chosen to avoid (an operator's dirty tree, a different
+branch checked out, untracked files colliding with merged paths). Fix the SILENCE instead: report the
+divergence, never act on it.
+
+**Phase 2 (implemented).** `merge.ts#checkoutBehindMerge(repoPath, defaultBranch)` — read-only,
+`git symbolic-ref --quiet HEAD` compared against `refs/heads/<default_branch>` — called from
+`doApproveMerge` strictly AFTER `executeMerge`'s own transaction has already concluded, so it can never
+gate, influence, or roll back the merge itself (the transaction property this goal was told to preserve).
+When true: `merge_result.checkout_behind: true` (new required field, `types.ts`/`validate.ts`'s
+`ARTIFACT_SCHEMA`) is the durable record, and the merge artifact's own body gains a paragraph naming the
+exact recovery command — `git stash -u && git reset --hard HEAD` (stash first so any of the operator's
+OWN real uncommitted work survives, whether or not the checkout happened to be dirty for unrelated
+reasons) — surfaced on the board wherever that artifact renders (`board/render/artifact.ts`'s body card
+reads `art.body` verbatim). `checkout_behind` is always present on a fresh `merge_result`, never omitted,
+so silence on it can only mean an artifact predates this ruling. Fixed the blind spot in
+`tests/merge.test.ts`'s existing clean-merge test directly: added the `git status --porcelain`/`git diff
+--cached --stat` assertions it always should have had, now asserting the known, deliberate consequence
+explicitly rather than stopping at "file absent on disk". Added a `checkoutBehindMerge` describe block
+(true on `default_branch`, false on another branch, false detached) and, in `tests/merge-gate.test.ts`
+(the live `doApproveMerge` path, whose own fixture already leaves the project repo on `main` throughout
+via `commitToWorkBranch`), asserted `checkout_behind: true` plus the body note and command land on a real
+approval, and a companion test proves `checkout_behind: false` when the operator's checkout is on a
+different branch at approval time.
+
+**Phase 3 — verification against a fresh unit (to be run by the Conductor, not this goal).** Open and
+approve a merge gate for a unit whose project repo's primary checkout is left on `default_branch`
+(the ordinary state). Immediately after `approve` reports success: `git status --short` in the project
+repo must be empty — no `D` entries, nothing staged; `git reflog -2` must show the merge commit at
+`HEAD@{0}` (empty reason, from `update-ref` — unchanged, since this ruling never touches the checkout)
+preceded by whatever the prior entry legitimately was, with no new `reset` entry introduced by this
+path; the working tree must NOT contain the merged files (M4's guarantee, unchanged — this was never
+about adding a checkout). The merge artifact's `merge_result.checkout_behind` must read `true`, its
+body must contain the sync note and the exact command `git stash -u && git reset --hard HEAD`, and
+running that command in the project repo must leave `git status --short` clean with the merged files
+present on disk. A second run against a unit whose project repo checkout is on some OTHER branch at
+approval time must show `merge_result.checkout_behind: false` and no sync note in the body.
+
+## Verification
+
+`bun test` → 1529 pass, 9 skip, 0 fail (1528 pass/9 skip before this goal — 9 net new tests: 3
+`checkoutBehindMerge` unit tests, 2 new assertions folded into the existing clean-merge unit test, 1 new
+`checkout_behind: false` integration test, 2 new assertions folded into the existing live-approval
+integration test, plus the extended clean-merge assertions). `bunx tsc --noEmit` clean. `bun run
+docs:generate` — regenerated `docs/guide/05-reference/cheatsheets/artifact.md` to add the new
+`merge_result.checkout_behind` row; committed as part of this change, byte-identical on a second run.
+No change to `sandbox.ts`.

@@ -422,6 +422,15 @@ describe("M4/M5: a clean approval merges, preserves history, and closes the unit
     expect(mergeAfter.merge_result?.merge_commit).toBe(mainSha);
     expect(mergeAfter.merge_result?.pushed).toBeNull();
 
+    // 2026-08-20 checkout-sync ruling: `commitToWorkBranch` always returns the project repo's primary
+    // checkout to `main` — the exact case M4's never-checkout guarantee leaves stale (`git status`
+    // there now reads `feature.txt` as staged for deletion). The gate must say so, in the record AND
+    // in the artifact body the board renders, naming the recovery command — never silence over it.
+    expect(mergeAfter.merge_result?.checkout_behind).toBe(true);
+    expect(git(dirs.projectRepo, ["status", "--porcelain"]).trim()).toBe("D  feature.txt");
+    expect(mergeAfter.body).toContain("Checkout out of sync");
+    expect(mergeAfter.body).toContain("git stash -u && git reset --hard HEAD");
+
     // The studio's own resolution commit references the project merge SHA (goal: "the studio commit
     // references the project merge SHA for the audit trail").
     const studioLog = git(dirs.root, ["log", "-1", "--pretty=%s"]);
@@ -477,6 +486,27 @@ describe("M4/M5: a clean approval merges, preserves history, and closes the unit
     expect(mergeAfter.merge_result).toBeNull();
     const unitAfter = repoAfter.units.find((u) => u.unit === "widget-1")!;
     expect(unitAfter.status).toBe("active");
+  });
+
+  test("checkout_behind is false when the project repo's primary checkout is not on default_branch at approval time", async () => {
+    dirs = buildStudio();
+    await startAndApproveTask(dirs.root);
+    commitToWorkBranch(dirs.projectRepo, "levare/widget-1", "feature.txt", "shipped content\n");
+    await advanceOnce(dirs.root);
+    const repo = loadRepo(dirs.root, { validate: false });
+    const merge = [...repo.artifacts.get("acme/widget-1")!.values()].find((a) => a.kind === "merge")!;
+
+    // The operator has something OTHER than default_branch checked out when approval executes.
+    git(dirs.projectRepo, ["checkout", "-q", "-b", "operator-scratch"]);
+
+    const approve = await resolveGate(dirs.root, "acme", merge.id, "approve", { today: TODAY });
+    expect(approve.ok).toBe(true);
+    if (!approve.ok) return;
+
+    const repoAfter = loadRepo(dirs.root, { validate: false });
+    const mergeAfter = [...repoAfter.artifacts.get("acme/widget-1")!.values()].find((a) => a.kind === "merge")!;
+    expect(mergeAfter.merge_result?.checkout_behind).toBe(false);
+    expect(mergeAfter.body).not.toContain("Checkout out of sync");
   });
 });
 

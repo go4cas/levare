@@ -25,7 +25,7 @@ import { unitArtifactPaths } from "../context.ts";
 import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL, transactionalWrite, dirtyRegistryFiles, type TxFile } from "../git.ts";
 import { advanceUnit, latestLiveArtifact, type AsyncMemberRunner } from "../dagwalk.ts";
 import { executeProposal, type ExecuteProposalOptions } from "../execution.ts";
-import { resolveProjectRepoPath, workBranchName, trialMerge, checkGuardrailsForMerge, executeMerge, createWorkBranch } from "../merge.ts";
+import { resolveProjectRepoPath, workBranchName, trialMerge, checkGuardrailsForMerge, executeMerge, createWorkBranch, checkoutBehindMerge, CHECKOUT_SYNC_COMMAND } from "../merge.ts";
 import { violationLine } from "../guardrails.ts";
 import type { Daemon } from "../daemon.ts";
 import type { Artifact, WorkUnit } from "../types.ts";
@@ -308,9 +308,17 @@ async function doApproveMerge(root: string, repo: Repo, unit: WorkUnit, file: st
     return { ok: false, status, error: `merge gate '${id}' execution FAILED (${exec.stage}): ${exec.error}${hint}` };
   }
 
+  // 2026-08-20 checkout-sync ruling: read-only, and deliberately AFTER `executeMerge`'s own transaction
+  // has already concluded — M4's never-checkout guarantee (merge.ts's own header) stays exactly as it
+  // was, this only reports the one state it can leave behind rather than staying silent about it.
+  const checkoutBehind = checkoutBehindMerge(projectRepoPath, project.default_branch);
+
   const src = readFileSync(file, "utf8");
   let patched = stampApproval(src, today, root);
-  patched = upsertFrontmatterMap(patched, "merge_result", { executed_at: today, merge_commit: exec.mergeCommit, pushed: exec.pushed });
+  patched = upsertFrontmatterMap(patched, "merge_result", { executed_at: today, merge_commit: exec.mergeCommit, pushed: exec.pushed, checkout_behind: checkoutBehind });
+  if (checkoutBehind) {
+    patched = `${patched.trimEnd()}\n\n**Checkout out of sync:** \`${project.default_branch}\` was checked out in the project repo's own working tree when this merge landed. This merge never touches that working tree by design (M4) — \`git status\` there will show every file it introduced staged for deletion until synced. Run \`${CHECKOUT_SYNC_COMMAND}\` in the project repo to bring it back in line.\n`;
+  }
   const errs = validateArtifactSource(patched, file, dirname(file), root);
   if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
 

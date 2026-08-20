@@ -350,6 +350,13 @@ export interface MergeResultRecord {
   executed_at: string;
   merge_commit: string;
   pushed: boolean | null;
+  // NOTES (2026-08-20 checkout-sync ruling): true when the project repo's own primary checkout had
+  // `default_branch` checked out at execution time — M4's "never a checkout" guarantee (merge.ts's own
+  // header) is deliberate and stays load-bearing, but it leaves that ONE checkout staging every merged
+  // file for deletion until synced by hand (merge.ts#checkoutBehindMerge's own doc has the mechanism).
+  // Always present (never omitted) so a merge_result silent on this can only mean it predates the
+  // ruling, never that the check was skipped.
+  checkout_behind: boolean;
 }
 
 export interface Artifact {
