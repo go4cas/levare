@@ -195,6 +195,39 @@ describe("merge gate card — clean trial, guardrail violation", () => {
   });
 });
 
+// Actor-aware ruling (2026-08-20): a `protected-branch` finding is what approving this SAME gate
+// resolves — it must not read as a blocker, and must not hide the approve button the way a real
+// violation (protected-path, never) still does (covered above).
+describe("merge gate card — clean trial, protected-branch finding (gate-exempt)", () => {
+  const repo = makeRepo({
+    artifact: {
+      merge: {
+        branch: "levare/widget-1",
+        target: "main",
+        commits_ahead: 1,
+        diffstat: " feature.txt | 1 +\n 1 file changed, 1 insertion(+)",
+        conflicted: false,
+        conflicts: [],
+        guardrail_violations: ["protected-branch: merge to protected branch 'main' (team 'quill')"],
+      },
+    },
+  });
+  const art = [...repo.artifacts.get("acme/widget-1")!.values()][0];
+  const html = gateCardHtml(repo, mergeGate(art), NOW);
+
+  test("still offers Merge, wired to approve — the finding does not withhold the button", () => {
+    expect(html).toContain('data-verb="approve"');
+    expect(html).toContain(">Merge<");
+    expect(html).not.toContain('data-verb="recheck"');
+  });
+
+  test("renders the finding as an informational note, never the danger callout", () => {
+    expect(html).not.toContain("notice notice--danger");
+    expect(html).toContain("protected-branch: merge to protected branch 'main' (team 'quill')");
+    expect(html).toContain("authorization to land here");
+  });
+});
+
 describe("merge gate card — cta (run-view) variant carries the same rules", () => {
   test("a conflicted cta card also omits approve and offers recheck", () => {
     const repo = makeRepo({
