@@ -20,6 +20,7 @@ import {
   checkGuardrailsForMerge,
   formatMergeArtifact,
   createDispatchWorktree,
+  commitDispatchWorktree,
 } from "../src/merge.ts";
 import { parseArtifactDoc } from "../src/repo.ts";
 import { validateArtifactSource } from "../src/validate.ts";
@@ -413,6 +414,123 @@ describe("createDispatchWorktree (NOTES R4-SANDBOX, Ruling 1)", () => {
       expect(created.ok).toBe(false);
       if (created.ok) return;
       expect(created.error).toContain("ghost");
+    } finally {
+      rmrf(repo);
+    }
+  });
+});
+
+// Goal "commit-on-produce" (Finding 74): the runner-side commit that must fire before a dispatch
+// worktree's teardown — this is what closes the gap a native member's own uncommitted file edits fell
+// into (nothing ever ran `git add`/`git commit` against the worktree, so `createDispatchWorktree#cleanup`
+// force-deleted them along with the scratch directory). Tested directly against `commitDispatchWorktree`
+// here (never through the full AdapterRunner) — adapters.test.ts covers the wiring into produce/
+// produceAsync/author() instead.
+describe("commitDispatchWorktree (goal commit-on-produce, Finding 74)", () => {
+  test("commits whatever the member left uncommitted, under the given identity, as one commit on the work branch", () => {
+    const repo = makeProjectRepo();
+    try {
+      git(repo, ["branch", "levare/unit-a", "main"]);
+      const beforeSha = rev(repo, "levare/unit-a");
+      const created = createDispatchWorktree(repo, "levare/unit-a");
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+      try {
+        writeFileSync(join(created.worktree.path, "jot-list.ts"), "export function list() {}\n");
+        const result = commitDispatchWorktree(created.worktree.path, created.worktree.baseSha, "list-entries-builder: code for list-entries", { name: "list-entries-builder", email: "list-entries-builder@levare.local" });
+        expect(result.committed).toBe(true);
+        if (!result.committed) return;
+        expect(result.commit).toBe(rev(repo, "levare/unit-a"));
+      } finally {
+        created.worktree.cleanup();
+      }
+      expect(rev(repo, "levare/unit-a")).not.toBe(beforeSha);
+      // Authored as the member, never levare-runner/cas — the code is the member's own work product.
+      const author = git(repo, ["log", "-1", "--format=%an <%ae>", "levare/unit-a"]).trim();
+      expect(author).toBe("list-entries-builder <list-entries-builder@levare.local>");
+      // Never landed in the project's own working tree.
+      expect(existsSync(join(repo, "jot-list.ts"))).toBe(false);
+    } finally {
+      rmrf(repo);
+    }
+  });
+
+  test("a clean worktree (member already self-committed, or genuinely no changes) never creates an empty commit", () => {
+    const repo = makeProjectRepo();
+    try {
+      git(repo, ["branch", "levare/unit-a", "main"]);
+      const beforeSha = rev(repo, "levare/unit-a");
+      const created = createDispatchWorktree(repo, "levare/unit-a");
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+      let result: ReturnType<typeof commitDispatchWorktree>;
+      try {
+        result = commitDispatchWorktree(created.worktree.path, created.worktree.baseSha, "should never land", { name: "finch", email: "finch@levare.local" });
+      } finally {
+        created.worktree.cleanup();
+      }
+      expect(result).toEqual({ committed: false, reason: "clean" });
+      expect(rev(repo, "levare/unit-a")).toBe(beforeSha);
+    } finally {
+      rmrf(repo);
+    }
+  });
+
+  test("a member's own self-commit is reported as committed too — commitDispatchWorktree compares against baseSha, never just 'did I personally just commit'", () => {
+    const repo = makeProjectRepo();
+    try {
+      git(repo, ["branch", "levare/unit-a", "main"]);
+      const created = createDispatchWorktree(repo, "levare/unit-a");
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+      let selfCommitSha: string;
+      let result: ReturnType<typeof commitDispatchWorktree>;
+      try {
+        writeFileSync(join(created.worktree.path, "member-output.txt"), "written by the member itself\n");
+        spawnSync("git", ["-C", created.worktree.path, "-c", "user.name=member", "-c", "user.email=member@levare.test", "add", "-A"], { env: HERMETIC_ENV });
+        spawnSync("git", ["-C", created.worktree.path, "-c", "user.name=member", "-c", "user.email=member@levare.test", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "member self-commit"], {
+          env: HERMETIC_ENV,
+        });
+        selfCommitSha = git(created.worktree.path, ["rev-parse", "HEAD"]).trim();
+        // The tree is already clean by this point — commitDispatchWorktree adds/commits nothing of its
+        // own — but the branch still moved past baseSha, so this must read as "committed", not "clean".
+        result = commitDispatchWorktree(created.worktree.path, created.worktree.baseSha, "should never land", { name: "finch", email: "finch@levare.local" });
+      } finally {
+        created.worktree.cleanup();
+      }
+      expect(result).toEqual({ committed: true, commit: selfCommitSha });
+      // No second, redundant commit was created on top of the member's own.
+      expect(rev(repo, "levare/unit-a")).toBe(selfCommitSha);
+      const author = git(repo, ["log", "-1", "--format=%an <%ae>", "levare/unit-a"]).trim();
+      expect(author).toBe("member <member@levare.test>");
+    } finally {
+      rmrf(repo);
+    }
+  });
+
+  test("reports an error (never throws, never silently discards) when the commit itself fails", () => {
+    const repo = makeProjectRepo();
+    try {
+      git(repo, ["branch", "levare/unit-a", "main"]);
+      const created = createDispatchWorktree(repo, "levare/unit-a");
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+      let result: ReturnType<typeof commitDispatchWorktree>;
+      try {
+        writeFileSync(join(created.worktree.path, "jot-list.ts"), "export function list() {}\n");
+        // Force a hard git-level failure the same way a real host might hit one — a stale index.lock
+        // left behind in THIS worktree's own admin dir (each worktree has its own index; the lock lives
+        // beside it, never at the shared repo's own `.git/index.lock`), which `git commit` refuses to
+        // proceed past.
+        writeFileSync(join(created.worktree.gitDir, "index.lock"), "");
+        result = commitDispatchWorktree(created.worktree.path, created.worktree.baseSha, "message", { name: "finch", email: "finch@levare.local" });
+      } finally {
+        rmSync(join(created.worktree.gitDir, "index.lock"), { force: true });
+        created.worktree.cleanup();
+      }
+      expect(result.committed).toBe(false);
+      if (result.committed) return;
+      expect(result.reason).toBe("error");
     } finally {
       rmrf(repo);
     }

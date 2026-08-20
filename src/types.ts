@@ -395,6 +395,13 @@ export interface Artifact {
    * `HEAD`, is what gets recorded. Present on every artifact from every member kind (unlike `sandbox`,
    * this is not about how the spawn ran, but about what defined it). Absent on pre-this-ruling artifacts. */
   registry?: string | null;
+  /** Goal "commit-on-produce" (Finding 74): the commit SHA this dispatch's own worktree file changes
+   * landed on the work branch as, or "none" if the dispatch changed nothing — see
+   * adapters.ts#commitCodeChanges's own doc. Present only when a real dispatch worktree existed for this
+   * member (self-referential/unresolvable `repo:`, or no work branch yet, both omit it — exactly
+   * `sandbox`'s own no-worktree case, but for every member kind, not just cli/remote). Absent on every
+   * pre-this-ruling artifact. */
+  code_commit?: string | null;
 }
 
 export interface Usage {

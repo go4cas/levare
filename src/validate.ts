@@ -286,6 +286,17 @@ export const ARTIFACT_SCHEMA: Schema = {
       nullable: true,
       description: "A content hash over the governing registry (teams/agents/connectors/projects/skills/knowledge/types/studio.md) as it stood on disk when this artifact was produced — what definitions actually governed the dispatch. Absent on pre-this-ruling artifacts.",
     },
+    // Goal "commit-on-produce" (Finding 74): whether this dispatch's own dispatch-worktree file changes
+    // (if any) survived the worktree's teardown as a commit on the work branch — see
+    // adapters.ts#commitCodeChanges's own doc. Present only when a real dispatch worktree existed for
+    // this member, for every member kind (unlike sandbox above, which is cli/remote-only — a worktree's
+    // existence, not the spawn kind, is what makes a code commit possible).
+    code_commit: {
+      type: "str",
+      required: false,
+      nullable: true,
+      description: "The commit SHA this dispatch's own worktree file changes landed on the work branch as, or 'none' if the dispatch changed nothing. Present only when a real dispatch worktree existed for this member. Absent on pre-this-ruling artifacts.",
+    },
   },
 };
 
