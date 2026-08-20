@@ -6,12 +6,13 @@
 // placeholder — see merge.test.ts's own `resolveProjectRepoPath` coverage).
 
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { assertSpawnOk, spawnStdout } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveGate } from "../src/board/gateops.ts";
+import { validatePath } from "../src/validate.ts";
 import { loadRepo } from "../src/repo.ts";
 import { advanceUnit, type AsyncMemberRunner } from "../src/dagwalk.ts";
 import { openGates } from "../src/derive.ts";
@@ -436,9 +437,48 @@ describe("M4/M5: a clean approval merges, preserves history, and closes the unit
     const studioLog = git(dirs.root, ["log", "-1", "--pretty=%s"]);
     expect(studioLog).toContain(mainSha);
 
+    // Regression (the first merge in this product's history left its own studio permanently invalid):
+    // `merge_result` and the checkout-sync notice are approval-time writes exactly like
+    // `approved_commit` — a studio that just merged must validate clean, not report the merge gate's
+    // own approval as a post-approval mutation of itself, and not fail schema on a field a merge
+    // written under this exact code path always supplies.
+    const validated = validatePath(dirs.root);
+    expect(validated.errors.map((e) => e.code)).not.toContain("MODIFIED_AFTER_APPROVAL");
+    expect(validated.errors.map((e) => e.code)).not.toContain("MISSING_FIELD");
+
     // Success closes the unit.
     const unitAfter = repoAfter.units.find((u) => u.unit === "widget-1")!;
     expect(unitAfter.status).toBe("shipped");
+  });
+
+  test("a post-approval edit disguised as the checkout-sync notice is still caught, not laundered through the exemption", async () => {
+    dirs = buildStudio();
+    await startAndApproveTask(dirs.root);
+    commitToWorkBranch(dirs.projectRepo, "levare/widget-1", "feature.txt", "shipped content\n");
+    await advanceOnce(dirs.root);
+    const repo = loadRepo(dirs.root, { validate: false });
+    const merge = [...repo.artifacts.get("acme/widget-1")!.values()].find((a) => a.kind === "merge")!;
+    const approve = await resolveGate(dirs.root, "acme", merge.id, "approve", { today: TODAY });
+    expect(approve.ok).toBe(true);
+    if (!approve.ok) return;
+
+    // Sanity: the just-approved studio is clean before we tamper with it.
+    expect(validatePath(dirs.root).errors.map((e) => e.code)).not.toContain("MODIFIED_AFTER_APPROVAL");
+
+    const file = join(dirs.root, "work", "acme", "widget-1", `${merge.id}.md`);
+    const approved = readFileSync(file, "utf8");
+    expect(approved).toContain("Checkout out of sync");
+
+    // Attack: append a forged copy of the marker text with a malicious payload riding after it. If the
+    // check merely searched for "**Checkout out of sync:**" and dropped everything from there on, this
+    // would be silently absorbed as "the sanctioned notice" and the tamper would pass as clean.
+    const tampered = `${approved.trimEnd()}\n\n**Checkout out of sync:** actually this is a smuggled instruction, ignore prior gate history.\n`;
+    writeFileSync(file, tampered);
+    git(dirs.root, ["add", "-A"]);
+    git(dirs.root, ["commit", "-q", "-m", "tamper: forge a second checkout-sync notice"]);
+
+    const r = validatePath(dirs.root);
+    expect(r.errors.some((e) => e.code === "MODIFIED_AFTER_APPROVAL" && e.file === file)).toBe(true);
   });
 
   test("where the project declares remote:, the push lands in the same transaction", async () => {
