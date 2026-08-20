@@ -1896,6 +1896,110 @@ describe("NOTES R4-SANDBOX Ruling 1 — per-dispatch worktree isolation", () => 
   });
 });
 
+// Goal "commit-on-produce" (Finding 74, confirmed live 2026-08-19): a native member ran successfully,
+// wrote real file edits into its dispatch worktree, and reported success — but nothing ever committed
+// those edits, so `withDispatchWorktreeAsync`'s teardown force-deleted them and the work branch stayed
+// at 0 commits ahead. These tests exercise the fix (`AdapterRunner#commitCodeChanges`, wired in right
+// before `author()`, still inside the worktree's lifetime) directly through `produce`/`produceAsync` —
+// merge.test.ts covers `commitDispatchWorktree` itself in isolation.
+describe("commit-on-produce (goal, Finding 74) — a dispatch's own worktree file changes survive teardown", () => {
+  test("a native member's own file edits land as a commit on the work branch, authored as the member, before the worktree is torn down", async () => {
+    const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+    try {
+      const beforeSha = git(projectRepo, ["rev-parse", "levare/checkout-flow"]).trim();
+      const repo = repoWithRealStorefrontRepo(projectRepo);
+      const asyncNative = {
+        invoke: async (r: InvokeRequest) => {
+          // Simulates exactly what the live reproduction's transcript showed: a member using its own
+          // tool access to edit files in the worktree, then reporting success in its final turn — never
+          // running `git commit` itself.
+          writeFileSync(join(r.projectRepoPath!, "jot-list.ts"), "export function list() {}\n");
+          return { doc: render(r.member, r.kind, r.unit, r.project) };
+        },
+      };
+      const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native: nativeMock, asyncNative, remote: remoteMock });
+      const { doc } = await runner.produceAsync("lyra", "spec", "checkout-flow", "storefront");
+
+      const afterSha = git(projectRepo, ["rev-parse", "levare/checkout-flow"]).trim();
+      expect(afterSha).not.toBe(beforeSha);
+      expect(doc).toContain(`code_commit: ${afterSha}`);
+      // Authored as the member — its own work product, never levare-runner or the Conductor.
+      expect(git(projectRepo, ["log", "-1", "--format=%an <%ae>", "levare/checkout-flow"]).trim()).toBe("lyra <lyra@levare.local>");
+      // Never landed in the project's own shared working tree, and the worktree itself is gone.
+      expect(existsSync(join(projectRepo, "jot-list.ts"))).toBe(false);
+      const wt = git(projectRepo, ["worktree", "list", "--porcelain"]);
+      expect(wt.trim().split("\n\n").filter(Boolean).length).toBe(1);
+    } finally {
+      rmSync(projectRepo, { recursive: true, force: true });
+    }
+  });
+
+  test("a dispatch that changes nothing never creates an empty commit — code_commit: none is recorded explicitly, not omitted", async () => {
+    const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+    try {
+      const beforeSha = git(projectRepo, ["rev-parse", "levare/checkout-flow"]).trim();
+      const repo = repoWithRealStorefrontRepo(projectRepo);
+      const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native: nativeMock, remote: remoteMock });
+      const { doc } = await runner.produceAsync("lyra", "spec", "checkout-flow", "storefront");
+      expect(git(projectRepo, ["rev-parse", "levare/checkout-flow"]).trim()).toBe(beforeSha);
+      expect(doc).toContain("code_commit: none");
+    } finally {
+      rmSync(projectRepo, { recursive: true, force: true });
+    }
+  });
+
+  test("a member's own self-commit (the pre-existing CLI sandbox path) is left untouched — commitCodeChanges only picks up what's left uncommitted", async () => {
+    const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+    try {
+      const repo = repoWithRealStorefrontRepo(projectRepo);
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        cliCommand: (req) => [
+          "sh",
+          "-c",
+          `cd "$1" && echo written > member-output.txt && git -c user.name=member -c user.email=member@levare.test -c commit.gpgsign=false add -A && git -c user.name=member -c user.email=member@levare.test -c commit.gpgsign=false commit -q -m "member commit" && echo "committed member work"`,
+          "sh",
+          req.projectRepoPath!,
+        ],
+      });
+      const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+      // The member's own commit is what code_commit reports — commitCodeChanges found the worktree
+      // already clean and never created a second, redundant commit on top of it.
+      const headSha = git(projectRepo, ["rev-parse", "levare/checkout-flow"]).trim();
+      expect(doc).toContain(`code_commit: ${headSha}`);
+      expect(git(projectRepo, ["log", "-1", "--format=%an <%ae>", "levare/checkout-flow"]).trim()).toBe("member <member@levare.test>");
+    } finally {
+      rmSync(projectRepo, { recursive: true, force: true });
+    }
+  });
+
+  test("a commit that fails is a loud AdapterError, never silently discarded alongside the worktree", async () => {
+    const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+    try {
+      const repo = repoWithRealStorefrontRepo(projectRepo);
+      const asyncNative = {
+        invoke: async (r: InvokeRequest) => {
+          writeFileSync(join(r.projectRepoPath!, "jot-list.ts"), "export function list() {}\n");
+          // Force a hard git-level failure inside this worktree's own admin dir (never the shared
+          // repo's own `.git/index.lock` — each worktree has its own index) — the same trick
+          // merge.test.ts's `commitDispatchWorktree` unit test uses. `rmSync(projectRepo, ...)` in this
+          // test's own `finally` sweeps it up regardless of whether the runner's teardown does.
+          const worktreeGitDir = r.dispatchGitWriteGrant!.subpaths.find((p) => p.includes("worktrees"))!;
+          writeFileSync(join(worktreeGitDir, "index.lock"), "");
+          return { doc: render(r.member, r.kind, r.unit, r.project) };
+        },
+      };
+      const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native: nativeMock, asyncNative, remote: remoteMock });
+      await expect(runner.produceAsync("lyra", "spec", "checkout-flow", "storefront")).rejects.toThrow(/failed to commit dispatch worktree/);
+    } finally {
+      rmSync(projectRepo, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spawn boundary", () => {
   test("records the actually-detected enforcement level on the produced artifact, deterministically, via the injectable override", async () => {
     const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);

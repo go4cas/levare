@@ -74,6 +74,21 @@ export function runnerCommit(root: string, files: string[], message: string): st
   return commitAs(root, files, message, { name: RUNNER_NAME, email: RUNNER_EMAIL });
 }
 
+// Goal "commit-on-produce" (Finding 74): a member's own commit identity for its work product inside a
+// dispatch worktree — deliberately NEITHER of the two identities above. RUNNER_NAME means "levare's own
+// autonomous record of what it did" (this constant's own doc comment); CONDUCTOR_NAME means "a human
+// click by the Conductor caused this" (invariant 1). Neither is honest for code a member wrote on its
+// own: it is the member's work product, not levare's account of it, so `git log`/`git blame` on a
+// PROJECT repo should be able to answer "which member wrote this" the same way `produced_by:` already
+// answers it on the artifact document. Not a registered identity anywhere in the studio — synthesized
+// directly from the member id, mirroring RUNNER_EMAIL's own `@levare.local` convention. Never spawns
+// git itself (merge.ts owns every git operation against a project's own repo, independently of this
+// module — see that file's own header comment for why); this only names WHO a project-repo commit
+// should be attributed to.
+export function memberIdentity(member: string): { name: string; email: string } {
+  return { name: member, email: `${member}@levare.local` };
+}
+
 // ---------------------------------------------------------------------------
 // Transactional writes ("files are the truth + git is the audit log" — a write with no matching
 // commit is an unaudited mutation, and must never be left on disk).

@@ -138,6 +138,13 @@ export interface DispatchWorktree {
    * worktree's own admin state sharing the same original repo.
    */
   gitDir: string;
+  /** Goal "commit-on-produce": the branch's tip SHA at the moment this worktree was checked out, i.e.
+   * before the dispatch that owns this worktree ever ran — `commitDispatchWorktree`'s own "did anything
+   * actually land" check compares the branch's tip AFTER against this, never against whether the runner
+   * itself happened to be the one that committed (a member that already self-commits its own work, e.g.
+   * NOTES R4-SANDBOX-FIX-7's CLI sandbox path, must not read as "nothing happened" just because there
+   * was nothing left FOR commitDispatchWorktree to do). */
+  baseSha: string;
   cleanup(): void;
 }
 
@@ -171,12 +178,14 @@ export function createDispatchWorktree(repoPath: string, branch: string): Create
     rmSync(scratch, { recursive: true, force: true });
     return { ok: false, error: `worktree at '${scratch}' has no readable/recognizable .git pointer file — cannot determine its own admin directory` };
   }
+  const baseSha = git(scratch, ["rev-parse", "HEAD"]).stdout.trim();
   let cleaned = false;
   return {
     ok: true,
     worktree: {
       path: scratch,
       gitDir,
+      baseSha,
       cleanup() {
         if (cleaned) return;
         cleaned = true;
@@ -186,6 +195,52 @@ export function createDispatchWorktree(repoPath: string, branch: string): Create
       },
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Commit-on-produce (goal "commit-on-produce — the work must survive the worktree", Finding 74): a
+// member's own file edits inside its dispatch worktree are otherwise pure working-tree state — nothing
+// durable exists until it lands on the branch ref (shared with the original repo), which is NOT what
+// `createDispatchWorktree#cleanup` force-deletes on teardown (that deletes the scratch directory, i.e.
+// the working tree/index, not the ref). Captures whatever the member left uncommitted at teardown time
+// as exactly one commit, authored as the member (never levare-runner/cas — see git.ts#memberIdentity's
+// own doc), so a dispatch's code survives even when the member itself never ran `git commit`. A no-op
+// when the worktree is already clean — either the member already committed its own work along the way
+// (NOTES R4-SANDBOX-FIX-7's self-commit path, still fully supported: this only picks up what's LEFT),
+// or the dispatch genuinely changed nothing — the caller (adapters.ts#author) distinguishes "clean" from
+// "committed" and stamps which one happened onto the produced artifact (`code_commit:`), so an empty
+// dispatch is visible, never silently indistinguishable from one that committed real work.
+// ---------------------------------------------------------------------------
+
+export type DispatchCommitResult = { committed: true; commit: string } | { committed: false; reason: "clean" } | { committed: false; reason: "error"; error: string };
+
+/** If `worktreePath` has uncommitted changes (tracked or untracked), commits all of them as one commit
+ * under `identity` — this must never create an empty commit (see this section's own header), so nothing
+ * is touched when the tree is already clean. Either way, reports `{ committed: true, commit }` when the
+ * branch's tip now differs from `baseSha` (this dispatch's changes — whether just committed here, or
+ * already self-committed by the member beforehand, e.g. NOTES R4-SANDBOX-FIX-7's CLI sandbox path — are
+ * on the branch) or `{ committed: false, reason: "clean" }` when it still equals `baseSha` (nothing
+ * happened this dispatch at all). A `status`/`add`/`commit` failure reports `{ committed: false, reason:
+ * "error" }` rather than throwing — the caller decides how loud to be (adapters.ts#produce/produceAsync
+ * throw an AdapterError on it, turning it into a `blocked` artifact via dagwalk.ts#produceOne's existing
+ * member-failure handling, the same path every other member failure already takes — never silently
+ * discarded alongside the worktree). */
+export function commitDispatchWorktree(worktreePath: string, baseSha: string, message: string, identity: { name: string; email: string }): DispatchCommitResult {
+  const status = git(worktreePath, ["status", "--porcelain"]);
+  if (status.status !== 0) return { committed: false, reason: "error", error: `git status failed: ${status.stderr.trim()}` };
+
+  if (status.stdout.trim() !== "") {
+    const add = git(worktreePath, ["add", "-A"]);
+    if (add.status !== 0) return { committed: false, reason: "error", error: `git add failed: ${add.stderr.trim()}` };
+
+    const commit = git(worktreePath, ["-c", `user.name=${identity.name}`, "-c", `user.email=${identity.email}`, "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", message]);
+    if (commit.status !== 0) return { committed: false, reason: "error", error: `git commit failed: ${commit.stderr.trim()}${commit.stdout.trim()}` };
+  }
+
+  const rev = git(worktreePath, ["rev-parse", "HEAD"]);
+  if (rev.status !== 0) return { committed: false, reason: "error", error: `git rev-parse HEAD failed: ${rev.stderr.trim()}` };
+  const head = rev.stdout.trim();
+  return head === baseSha ? { committed: false, reason: "clean" } : { committed: true, commit: head };
 }
 
 // ---------------------------------------------------------------------------

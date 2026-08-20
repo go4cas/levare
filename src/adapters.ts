@@ -44,10 +44,10 @@ import { assembleContext, unitArtifactPaths } from "./context.ts";
 import { asyncSdkTransport, bunSdkTransport, resolveNativeBinary, asSdkTransportResult, type AsyncSdkTransport, type SdkTransport, type SdkWorkerResponse } from "./sdk-transport.ts";
 import { buildDispatchTrace, writeDispatchTrace } from "./dispatch-trace.ts";
 import { repoCapabilities } from "./repo.ts";
-import { resolveProjectRepoPath, workBranchName, branchExists, createDispatchWorktree } from "./merge.ts";
+import { resolveProjectRepoPath, workBranchName, branchExists, createDispatchWorktree, commitDispatchWorktree, type DispatchCommitResult } from "./merge.ts";
 import { isSafeHomeDotpath, detectFetchAtDispatchLauncher } from "./validate.ts";
 import { detectSandbox, wrapForSandbox, resolveDarwinUserTempDir, type SandboxDetection, type SandboxLevel, type SandboxPolicy, type WrappedSpawn } from "./sandbox.ts";
-import { registryStateHash } from "./git.ts";
+import { registryStateHash, memberIdentity } from "./git.ts";
 import type { Pricing } from "./pricing.ts";
 import type { Repo } from "./repo.ts";
 import type { MemberRunner } from "./runner.ts";
@@ -102,6 +102,15 @@ export interface InvokeRequest {
    * branch yet) — exactly `projectRepoPath`'s own no-worktree case.
    */
   dispatchGitWriteGrant?: { root: string; subpaths: string[] };
+  /**
+   * Goal "commit-on-produce" (Finding 74): the dispatch worktree's own branch tip SHA at the moment it
+   * was checked out, i.e. before this dispatch ran at all (`merge.ts#DispatchWorktree.baseSha`) — what
+   * `commitCodeChanges` compares the branch's tip against, after invoking and after its own commit
+   * attempt, to decide whether this dispatch's work landed at all (regardless of whether the member
+   * self-committed or `commitCodeChanges` had to). Set alongside `dispatchGitWriteGrant`, exactly
+   * `projectRepoPath`'s own no-worktree case when absent.
+   */
+  dispatchWorktreeBaseSha?: string;
   /**
    * NOTES R4-VENDOR-CLI (live macOS gate: real `gh`, not the member stub): a fresh, per-dispatch scratch
    * directory a wrapped vendor CLI's own config/state/data/cache directories get redirected into under a
@@ -1187,7 +1196,8 @@ export class AdapterRunner implements MemberRunner {
         default:
           throw new AdapterError(`unknown agent kind '${(agent as Agent).kind}' for '${member}'`);
       }
-      return this.author(req2, raw, receipt, extraConsumes, sandbox);
+      const codeCommit = this.commitCodeChanges(member, kind, unit, req2);
+      return this.author(req2, raw, receipt, extraConsumes, sandbox, codeCommit);
     });
   }
 
@@ -1235,7 +1245,8 @@ export class AdapterRunner implements MemberRunner {
         default:
           throw new AdapterError(`unknown agent kind '${(agent as Agent).kind}' for '${member}'`);
       }
-      return this.author(req2, raw, receipt, extraConsumes, sandbox);
+      const codeCommit = this.commitCodeChanges(member, kind, unit, req2);
+      return this.author(req2, raw, receipt, extraConsumes, sandbox, codeCommit);
     });
   }
 
@@ -1344,7 +1355,7 @@ export class AdapterRunner implements MemberRunner {
     }
     AdapterRunner.logWorktreeDebug(`dispatch worktree created for '${member}' at '${created.worktree.path}' (gitDir '${created.worktree.gitDir}') for branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}'`);
     try {
-      return fn({ ...req, projectRepoPath: created.worktree.path, dispatchGitWriteGrant: dispatchGitWriteGrant(created.worktree.gitDir) });
+      return fn({ ...req, projectRepoPath: created.worktree.path, dispatchGitWriteGrant: dispatchGitWriteGrant(created.worktree.gitDir), dispatchWorktreeBaseSha: created.worktree.baseSha });
     } finally {
       created.worktree.cleanup();
     }
@@ -1371,10 +1382,30 @@ export class AdapterRunner implements MemberRunner {
     }
     AdapterRunner.logWorktreeDebug(`dispatch worktree created for '${member}' at '${created.worktree.path}' (gitDir '${created.worktree.gitDir}') for branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}'`);
     try {
-      return await fn({ ...req, projectRepoPath: created.worktree.path, dispatchGitWriteGrant: dispatchGitWriteGrant(created.worktree.gitDir) });
+      return await fn({ ...req, projectRepoPath: created.worktree.path, dispatchGitWriteGrant: dispatchGitWriteGrant(created.worktree.gitDir), dispatchWorktreeBaseSha: created.worktree.baseSha });
     } finally {
       created.worktree.cleanup();
     }
+  }
+
+  // Goal "commit-on-produce" (Finding 74): runs INSIDE withDispatchWorktree(Async)'s callback — after
+  // the invoke above has returned, before that callback returns and the `finally` force-deletes the
+  // worktree (adapters.ts#withDispatchWorktree/withDispatchWorktreeAsync) — so this is the only chance
+  // any code ever gets to see the member's own uncommitted file edits before they're gone for good. A
+  // no-op returning undefined when there was no real dispatch worktree at all (`req.dispatchGitWriteGrant`
+  // absent — self-referential/unresolvable `repo:`, or no work branch yet, exactly `projectRepoPath`'s
+  // own no-worktree case): there is nothing to commit against and nothing worth stamping on the artifact.
+  // A commit failure is a HARD failure, thrown before `author()` ever runs, never swallowed — mirrors
+  // `createDispatchWorktree` failing above: a member's real code changes existing but failing to land on
+  // the work branch is exactly this finding recurring, and must block the unit as loudly as any other
+  // member failure (dagwalk.ts#produceOne's existing catch → `blocked` artifact).
+  private commitCodeChanges(member: string, kind: string, unit: string, req: InvokeRequest): DispatchCommitResult | undefined {
+    if (!req.dispatchGitWriteGrant) return undefined;
+    const result = commitDispatchWorktree(req.projectRepoPath!, req.dispatchWorktreeBaseSha!, `${member}: ${kind} for ${unit}`, memberIdentity(member));
+    if (!result.committed && result.reason === "error") {
+      throw new AdapterError(`member '${member}': failed to commit dispatch worktree changes for unit '${unit}' in '${req.projectRepoPath}': ${result.error}`);
+    }
+    return result;
   }
 
   // NOTES F17: build a Receipt from a CLI's own parsed token trailer (extractCliUsageTrailer), when it
@@ -1395,7 +1426,7 @@ export class AdapterRunner implements MemberRunner {
   // response) — used verbatim. Absent (every non-native adapter, and a mocked/stub native boundary
   // that doesn't report one) records `unreported`, honestly — never re-derived by parsing whatever
   // usage figures the member's own output happened to claim.
-  private author(req: InvokeRequest, raw: string, receipt?: Receipt, extraConsumes: string[] = [], sandbox?: SandboxLevel): { doc: string; receipt: Receipt } {
+  private author(req: InvokeRequest, raw: string, receipt?: Receipt, extraConsumes: string[] = [], sandbox?: SandboxLevel, codeCommit?: DispatchCommitResult): { doc: string; receipt: Receipt } {
     const content = stripFrontmatter(raw);
     if (!content) throw new AdapterError(`member '${req.member}' produced no usable content`);
     let finalReceipt = receipt ?? normalizeReceipt(null, this.opts.pricing);
@@ -1494,6 +1525,14 @@ export class AdapterRunner implements MemberRunner {
     if (req.agent.kind === "cli" && req.agent.sandbox === "unsandboxed" && req.agent.sandbox_reason) {
       lines.push(`sandbox_reason: ${req.agent.sandbox_reason}`);
     }
+    // Goal "commit-on-produce" (Finding 74): whether this dispatch's own worktree file changes (if any)
+    // survived teardown as a commit on the work branch — see `commitCodeChanges`'s own doc for when this
+    // runs. Present for every member kind that got a real dispatch worktree (unlike `sandbox:` above,
+    // this is about whether a worktree existed at all, not about which kind spawned a confinable OS
+    // process). `none` records a dispatch that changed nothing, explicitly — never silently
+    // indistinguishable from one that committed real work. A failed commit attempt never reaches this
+    // line at all (`commitCodeChanges` throws before `author()` is ever called).
+    if (codeCommit) lines.push(`code_commit: ${codeCommit.committed ? codeCommit.commit : "none"}`);
     lines.push("---", "");
     return { doc: lines.join("\n") + content + "\n", receipt: finalReceipt };
   }
