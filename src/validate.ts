@@ -310,6 +310,16 @@ export const ARTIFACT_SCHEMA: Schema = {
       nullable: true,
       description: "The commit SHA this dispatch's own worktree file changes landed on the work branch as, or 'none' if the dispatch changed nothing. Present only when a real dispatch worktree existed for this member. Absent on pre-this-ruling artifacts.",
     },
+    // Unit "member authorship survives a self-commit": present ONLY when `code_commit`'s own landed
+    // commit was authored/committed under an identity other than `git.ts#memberIdentity(produced_by)`
+    // expected — detection, never prevention, of a member's own commit resolving (or deliberately
+    // overriding to) some other identity. Absent whenever the identity matched.
+    code_commit_actor: {
+      type: "str",
+      required: false,
+      nullable: true,
+      description: "Present only when code_commit's landed commit was authored/committed under an identity other than the member's expected git.ts#memberIdentity — names the observed author (and committer, if different) instead. Absent when the identity matched, including every commit levare's own commitDispatchWorktree made itself.",
+    },
   },
 };
 

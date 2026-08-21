@@ -61,6 +61,7 @@ A markdown deliverable with YAML frontmatter, produced by a member and tracked t
 | `sandbox_reason` | string | — | — | — | Present only when this artifact's producing member declared sandbox: unsandboxed — the documented reason its spawn never runs under levare's OS sandbox, on any host. |
 | `registry` | string | — | ✅ | — | A content hash over the governing registry (teams/agents/connectors/projects/skills/knowledge/types/studio.md) as it stood on disk when this artifact was produced — what definitions actually governed the dispatch. Absent on pre-this-ruling artifacts. |
 | `code_commit` | string | — | ✅ | — | The commit SHA this dispatch's own worktree file changes landed on the work branch as, or 'none' if the dispatch changed nothing. Present only when a real dispatch worktree existed for this member. Absent on pre-this-ruling artifacts. |
+| `code_commit_actor` | string | — | ✅ | — | Present only when code_commit's landed commit was authored/committed under an identity other than the member's expected git.ts#memberIdentity — names the observed author (and committer, if different) instead. Absent when the identity matched, including every commit levare's own commitDispatchWorktree made itself. |
 
 ## Minimal valid skeleton
 
