@@ -165,7 +165,63 @@ function resolveWorktreeGitDir(worktreePath: string): string | undefined {
   }
 }
 
-export function createDispatchWorktree(repoPath: string, branch: string): CreateDispatchWorktreeResult {
+// Unit "member authorship survives a self-commit": a member's OWN `git commit` — run directly via its
+// Bash tool (`kind: native`), or by its own vendor CLI's internal git invocation (`kind: cli`, whenever
+// the sandbox never reaches a working "full" tier — confirmed live on this very host: bwrap/unshare both
+// refuse to create a namespace here, so `detectSandbox()` returns `none` and the spawn runs exactly as
+// unconfined as native) — never passes through `commitDispatchWorktree`'s own inline `-c` flags below.
+// It resolves identity, `commit.gpgsign`, and `core.hooksPath` entirely from AMBIENT config, which today
+// means the real, unscoped operator `$HOME` (`env.ts#buildMemberEnv`'s baseline copies `HOME` straight
+// from the daemon's own process env unless a `home:`-declaring subscription connector scopes it) — the
+// live defect this unit exists to close: a member's own commit silently lands as the OPERATOR's global
+// git identity, not the member's.
+//
+// `extensions.worktreeConfig` + `git config --worktree` is the only per-DISPATCH (not per-repo, not
+// per-process) scope git itself offers, confirmed by direct repro (not assumed): a value set with
+// `--worktree` in one worktree is invisible from the primary checkout and from a sibling worktree of the
+// same repo, which is exactly the isolation two concurrent dispatches for two DIFFERENT members need —
+// a plain `--local` write here would instead land in the shared `$GIT_DIR/config`, contaminating the
+// project's own checkout and racing every other concurrent dispatch on the same repo. Enabling the
+// extension itself is a one-time, idempotent, repo-wide flag (git's own `config.lock` serializes
+// concurrent enablers) that sets no per-worktree value by itself.
+//
+// `user.name`/`user.email` close the identity gap; `commit.gpgsign=false` and `core.hooksPath=/dev/null`
+// close the SAME gap for the two settings `commitDispatchWorktree` already protects its OWN commit with
+// below, which a member's bare commit currently bypasses entirely — gpgsign because an inherited real
+// HOME can reach the operator's own live gpg-agent (silently signing AS the operator, not just
+// mis-naming them); hooks because a linked worktree shares the primary checkout's real `.git/hooks`
+// directory verbatim (git has no per-worktree hooks dir), and NOTES R4-SANDBOX-FIX-8's own write grant
+// deliberately excludes `.git/hooks`/`.git/config` as code-execution vectors specifically so a sandboxed
+// member could never reach them — a fact a member's own UNSANDBOXED commit (every native dispatch; every
+// cli dispatch on a host with no working sandbox primitive) was never protected by in the first place.
+// All three are ordinary config keys with identical `--worktree` precedence — one write, same mechanism,
+// same reach; no separate treatment needed for identity vs. these two.
+//
+// Deliberately does NOT prevent a member from overriding any of these on its own command line (`git -c
+// user.email=... commit`) or by rewriting `config.worktree` itself (the sandboxed admin-dir write grant
+// that makes THIS function's own write reachable under a full sandbox — see its own call site's doc —
+// necessarily makes that file reachable to a member's own sandboxed commit too). Ruling: accept it,
+// don't prevent it — a member writing its own `-c` override is acting deliberately, and levare cannot
+// stop a process it granted real shell access to. What it must not do is pass unnoticed:
+// `commitDispatchWorktree`'s own detection below (`unexpectedActor`) is what surfaces an override instead
+// of silently trusting it.
+function configureDispatchWorktreeGitConfig(repoPath: string, worktreePath: string, identity: { name: string; email: string }): string | undefined {
+  const ext = git(repoPath, ["config", "extensions.worktreeConfig", "true"]);
+  if (ext.status !== 0) return `git config extensions.worktreeConfig failed: ${ext.stderr.trim()}`;
+  const settings: Array<[string, string]> = [
+    ["user.name", identity.name],
+    ["user.email", identity.email],
+    ["commit.gpgsign", "false"],
+    ["core.hooksPath", "/dev/null"],
+  ];
+  for (const [key, value] of settings) {
+    const r = git(worktreePath, ["config", "--worktree", key, value]);
+    if (r.status !== 0) return `git config --worktree ${key} failed: ${r.stderr.trim()}`;
+  }
+  return undefined;
+}
+
+export function createDispatchWorktree(repoPath: string, branch: string, identity: { name: string; email: string }): CreateDispatchWorktreeResult {
   const scratch = mkdtempSync(join(tmpdir(), "levare-dispatchwt-"));
   const wt = git(repoPath, ["worktree", "add", "-q", scratch, branch]);
   if (wt.status !== 0) {
@@ -177,6 +233,12 @@ export function createDispatchWorktree(repoPath: string, branch: string): Create
     git(repoPath, ["worktree", "remove", "--force", scratch]);
     rmSync(scratch, { recursive: true, force: true });
     return { ok: false, error: `worktree at '${scratch}' has no readable/recognizable .git pointer file — cannot determine its own admin directory` };
+  }
+  const configError = configureDispatchWorktreeGitConfig(repoPath, scratch, identity);
+  if (configError) {
+    git(repoPath, ["worktree", "remove", "--force", scratch]);
+    rmSync(scratch, { recursive: true, force: true });
+    return { ok: false, error: `could not configure dispatch worktree git identity: ${configError}` };
   }
   const baseSha = git(scratch, ["rev-parse", "HEAD"]).stdout.trim();
   let cleaned = false;
@@ -212,7 +274,44 @@ export function createDispatchWorktree(repoPath: string, branch: string): Create
 // dispatch is visible, never silently indistinguishable from one that committed real work.
 // ---------------------------------------------------------------------------
 
-export type DispatchCommitResult = { committed: true; commit: string } | { committed: false; reason: "clean" } | { committed: false; reason: "error"; error: string };
+/** The observed author/committer identity of a landed dispatch commit, recorded ONLY when it doesn't
+ * match the `identity` `commitDispatchWorktree` was given — i.e. a member's own commit (native Bash tool,
+ * or a `cli` member's own vendor process) resolved SOME OTHER ambient identity instead of ever going
+ * through this function's own `-c` override below, or explicitly overrode it on its own command line.
+ * Detection only (see `commitDispatchWorktree`'s own doc) — never used to block or rewrite the commit. */
+export interface DispatchCommitActor {
+  authorName: string;
+  authorEmail: string;
+  committerName: string;
+  committerEmail: string;
+}
+
+export type DispatchCommitResult =
+  | { committed: true; commit: string; unexpectedActor?: DispatchCommitActor }
+  | { committed: false; reason: "clean" }
+  | { committed: false; reason: "error"; error: string };
+
+// Unit "member authorship survives a self-commit": reads back the LANDED commit's own author/committer
+// (never assumed from `identity` — a member's own commit, self-committed before this function ever ran,
+// may have resolved a completely different identity, which is exactly the case this exists to catch) and
+// compares against what this dispatch expected. `undefined` on a read failure (an unreadable `commit`,
+// which should never happen for a SHA this same function just resolved via `rev-parse HEAD`, but this is
+// detection, not a hard dependency — a failure here must never turn into a thrown error that blocks an
+// otherwise-successful dispatch).
+function readCommitActor(worktreePath: string, commit: string): DispatchCommitActor | undefined {
+  const r = git(worktreePath, ["log", "-1", "--format=%an%x1f%ae%x1f%cn%x1f%ce", commit]);
+  if (r.status !== 0) return undefined;
+  const [authorName, authorEmail, committerName, committerEmail] = r.stdout.trim().split("\x1f");
+  if (authorEmail === undefined || committerEmail === undefined) return undefined;
+  return { authorName, authorEmail, committerName, committerEmail };
+}
+
+function detectUnexpectedActor(worktreePath: string, commit: string, identity: { name: string; email: string }): DispatchCommitActor | undefined {
+  const actor = readCommitActor(worktreePath, commit);
+  if (!actor) return undefined;
+  const matches = actor.authorName === identity.name && actor.authorEmail === identity.email && actor.committerName === identity.name && actor.committerEmail === identity.email;
+  return matches ? undefined : actor;
+}
 
 /** If `worktreePath` has uncommitted changes (tracked or untracked), commits all of them as one commit
  * under `identity` — this must never create an empty commit (see this section's own header), so nothing
@@ -224,7 +323,15 @@ export type DispatchCommitResult = { committed: true; commit: string } | { commi
  * "error" }` rather than throwing — the caller decides how loud to be (adapters.ts#produce/produceAsync
  * throw an AdapterError on it, turning it into a `blocked` artifact via dagwalk.ts#produceOne's existing
  * member-failure handling, the same path every other member failure already takes — never silently
- * discarded alongside the worktree). */
+ * discarded alongside the worktree).
+ *
+ * Unit "member authorship survives a self-commit": `unexpectedActor` is set on the `committed: true` case
+ * whenever the LANDED commit's own author/committer doesn't match `identity` — this fires both for a
+ * member's own bare commit that resolved some other ambient identity (the live defect this unit closes)
+ * and for a member that deliberately overrode identity on its own command line (accepted, never
+ * prevented — see `configureDispatchWorktreeGitConfig`'s own doc — but surfaced here regardless of which
+ * case it was, since this function has no way to tell them apart and no need to). Absent whenever this
+ * function did the committing itself (its own `-c` flags below always match `identity` by construction). */
 export function commitDispatchWorktree(worktreePath: string, baseSha: string, message: string, identity: { name: string; email: string }): DispatchCommitResult {
   const status = git(worktreePath, ["status", "--porcelain"]);
   if (status.status !== 0) return { committed: false, reason: "error", error: `git status failed: ${status.stderr.trim()}` };
@@ -240,7 +347,9 @@ export function commitDispatchWorktree(worktreePath: string, baseSha: string, me
   const rev = git(worktreePath, ["rev-parse", "HEAD"]);
   if (rev.status !== 0) return { committed: false, reason: "error", error: `git rev-parse HEAD failed: ${rev.stderr.trim()}` };
   const head = rev.stdout.trim();
-  return head === baseSha ? { committed: false, reason: "clean" } : { committed: true, commit: head };
+  if (head === baseSha) return { committed: false, reason: "clean" };
+  const unexpectedActor = detectUnexpectedActor(worktreePath, head, identity);
+  return unexpectedActor ? { committed: true, commit: head, unexpectedActor } : { committed: true, commit: head };
 }
 
 // ---------------------------------------------------------------------------

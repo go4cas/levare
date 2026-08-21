@@ -1348,7 +1348,7 @@ export class AdapterRunner implements MemberRunner {
       );
       return fn(req);
     }
-    const created = createDispatchWorktree(dispatchRepo.repoPath, dispatchRepo.branch);
+    const created = createDispatchWorktree(dispatchRepo.repoPath, dispatchRepo.branch, memberIdentity(member));
     if (!created.ok) {
       AdapterRunner.logWorktreeDebug(`dispatch worktree declined for '${member}': createDispatchWorktree failed for branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}': ${created.error}`);
       throw new AdapterError(`member '${member}': could not create dispatch worktree for work branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}': ${created.error}`);
@@ -1375,7 +1375,7 @@ export class AdapterRunner implements MemberRunner {
       );
       return fn(req);
     }
-    const created = createDispatchWorktree(dispatchRepo.repoPath, dispatchRepo.branch);
+    const created = createDispatchWorktree(dispatchRepo.repoPath, dispatchRepo.branch, memberIdentity(member));
     if (!created.ok) {
       AdapterRunner.logWorktreeDebug(`dispatch worktree declined for '${member}': createDispatchWorktree failed for branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}': ${created.error}`);
       throw new AdapterError(`member '${member}': could not create dispatch worktree for work branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}': ${created.error}`);
@@ -1533,6 +1533,19 @@ export class AdapterRunner implements MemberRunner {
     // indistinguishable from one that committed real work. A failed commit attempt never reaches this
     // line at all (`commitCodeChanges` throws before `author()` is ever called).
     if (codeCommit) lines.push(`code_commit: ${codeCommit.committed ? codeCommit.commit : "none"}`);
+    // Unit "member authorship survives a self-commit": present ONLY when the landed commit's own
+    // author/committer doesn't match `memberIdentity(req.member)` — a member's own bare commit resolving
+    // some other ambient identity (the live defect this unit closes), or a member deliberately overriding
+    // identity on its own command line (accepted, never prevented — see merge.ts#commitDispatchWorktree's
+    // own doc). Absent whenever the identity matches, including every commit `commitDispatchWorktree`
+    // made itself (its own `-c` flags always match by construction) — this line's mere PRESENCE is the
+    // anomaly signal, mirroring `sandbox_reason`'s own "present only when relevant" precedent above.
+    if (codeCommit?.committed && codeCommit.unexpectedActor) {
+      const a = codeCommit.unexpectedActor;
+      const committerDiffers = a.authorName !== a.committerName || a.authorEmail !== a.committerEmail;
+      const committerPart = committerDiffers ? ` (committer: ${a.committerName} <${a.committerEmail}>)` : "";
+      lines.push(`code_commit_actor: ${a.authorName} <${a.authorEmail}>${committerPart}`);
+    }
     lines.push("---", "");
     return { doc: lines.join("\n") + content + "\n", receipt: finalReceipt };
   }

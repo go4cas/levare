@@ -411,6 +411,15 @@ export interface Artifact {
    * `sandbox`'s own no-worktree case, but for every member kind, not just cli/remote). Absent on every
    * pre-this-ruling artifact. */
   code_commit?: string | null;
+  /** Unit "member authorship survives a self-commit": present ONLY when `code_commit`'s own landed
+   * commit was authored/committed under an identity other than `git.ts#memberIdentity(produced_by)`
+   * expected — a member's own bare commit (native Bash tool, or a `cli` member's own vendor process)
+   * resolved some other ambient identity instead of ever going through `merge.ts#commitDispatchWorktree`'s
+   * own `-c` override, or a member deliberately overrode identity on its own command line. Detection
+   * only — levare does not and cannot prevent either case, only surface it (see
+   * `commitDispatchWorktree`'s own doc). Absent whenever the identity matched, including every commit
+   * `commitDispatchWorktree` made itself. */
+  code_commit_actor?: string | null;
 }
 
 export interface Usage {

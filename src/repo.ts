@@ -320,6 +320,7 @@ function toArtifact(d: Record<string, YamlValue>, body: string): Artifact {
     sandbox: (d.sandbox as Artifact["sandbox"]) ?? null,
     registry: (d.registry as string | null) ?? null,
     code_commit: (d.code_commit as string | null) ?? null,
+    code_commit_actor: (d.code_commit_actor as string | null) ?? null,
   };
 }
 
