@@ -217,7 +217,7 @@ async function main() {
 
   // 2. The REAL per-dispatch worktree — the identical production function, not a hand-rolled `git
   // worktree add`.
-  const created = createDispatchWorktree(projectRepo, branch);
+  const created = createDispatchWorktree(projectRepo, branch, { name: "member", email: "member@levare.local" });
   if (!created.ok) {
     console.log(`createDispatchWorktree failed: ${created.error}`);
     rmSync(projectRepo, { recursive: true, force: true });

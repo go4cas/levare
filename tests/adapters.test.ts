@@ -1948,7 +1948,56 @@ describe("commit-on-produce (goal, Finding 74) — a dispatch's own worktree fil
     }
   });
 
-  test("a member's own self-commit (the pre-existing CLI sandbox path) is left untouched — commitCodeChanges only picks up what's left uncommitted", async () => {
+  // Unit "member authorship survives a self-commit" (live evidence, 2026-08-21, commit 98e7c2b on
+  // levare/find-since): this test USED TO bake `-c user.name=member -c user.email=member@levare.test`
+  // directly into the fake member's own commit command — which proved only that commitCodeChanges leaves
+  // an ALREADY-correctly-identified self-commit alone, never the actual ambient-resolution path a real
+  // member's own bare `git commit` (no `-c` flags at all) hits live. That gap is exactly why the live
+  // defect shipped past this coverage. Rewritten to run a genuinely bare commit, with the member's spawn
+  // env pointed at a fake $HOME carrying a CONFLICTING global identity (standing in for the operator's
+  // own real ~/.gitconfig) — reproducing the live failure mode directly, not merely asserting around it.
+  test("a member's own bare self-commit (no -c flags) resolves the worktree's own identity, never a conflicting $HOME global config", async () => {
+    const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+    const fakeHome = mkdtempSync(join(tmpdir(), "levare-fakehome-"));
+    try {
+      writeFileSync(join(fakeHome, ".gitconfig"), "[user]\n\tname = go4cas\n\temail = go4cas@gmail.com\n");
+      const repo = repoWithRealStorefrontRepo(projectRepo);
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        baseEnv: { ...process.env, HOME: fakeHome },
+        cliCommand: (req) => [
+          "sh",
+          "-c",
+          // No -c flags at all — exactly what a real member's own Bash tool / vendor CLI process runs.
+          `cd "$1" && echo written > member-output.txt && git add -A && git commit -q -m "member commit" && echo "committed member work"`,
+          "sh",
+          req.projectRepoPath!,
+        ],
+      });
+      const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+      // The member's own commit is what code_commit reports — commitCodeChanges found the worktree
+      // already clean and never created a second, redundant commit on top of it.
+      const headSha = git(projectRepo, ["rev-parse", "levare/checkout-flow"]).trim();
+      expect(doc).toContain(`code_commit: ${headSha}`);
+      // Attributed to the member itself — never the conflicting identity the fake $HOME's own global
+      // config declared, which is exactly what the live defect produced before this unit's fix.
+      expect(git(projectRepo, ["log", "-1", "--format=%an <%ae>", "levare/checkout-flow"]).trim()).toBe("finch <finch@levare.local>");
+      // No mismatch surfaced — the worktree's own config correctly supplied the member's identity, so
+      // there was nothing unexpected to flag.
+      expect(doc).not.toContain("code_commit_actor:");
+    } finally {
+      rmSync(projectRepo, { recursive: true, force: true });
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  // Unit "member authorship survives a self-commit", detection ruling: levare accepts a member
+  // deliberately overriding identity on its own command line (real shell access, cannot be prevented)
+  // but must not let it pass unnoticed — `code_commit_actor` on the artifact is where that surfaces.
+  test("a member's own commit that explicitly overrides identity on its own command line is accepted, but surfaced via code_commit_actor", async () => {
     const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
     try {
       const repo = repoWithRealStorefrontRepo(projectRepo);
@@ -1960,17 +2009,18 @@ describe("commit-on-produce (goal, Finding 74) — a dispatch's own worktree fil
         cliCommand: (req) => [
           "sh",
           "-c",
-          `cd "$1" && echo written > member-output.txt && git -c user.name=member -c user.email=member@levare.test -c commit.gpgsign=false add -A && git -c user.name=member -c user.email=member@levare.test -c commit.gpgsign=false commit -q -m "member commit" && echo "committed member work"`,
+          `cd "$1" && echo written > member-output.txt && git -c user.name=rogue -c user.email=rogue@example.com -c commit.gpgsign=false add -A && git -c user.name=rogue -c user.email=rogue@example.com -c commit.gpgsign=false commit -q -m "member commit" && echo "committed member work"`,
           "sh",
           req.projectRepoPath!,
         ],
       });
       const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
-      // The member's own commit is what code_commit reports — commitCodeChanges found the worktree
-      // already clean and never created a second, redundant commit on top of it.
       const headSha = git(projectRepo, ["rev-parse", "levare/checkout-flow"]).trim();
+      // The override lands exactly as the member asked — never rewritten or blocked.
       expect(doc).toContain(`code_commit: ${headSha}`);
-      expect(git(projectRepo, ["log", "-1", "--format=%an <%ae>", "levare/checkout-flow"]).trim()).toBe("member <member@levare.test>");
+      expect(git(projectRepo, ["log", "-1", "--format=%an <%ae>", "levare/checkout-flow"]).trim()).toBe("rogue <rogue@example.com>");
+      // But it does not pass unnoticed.
+      expect(doc).toContain("code_commit_actor: rogue <rogue@example.com>");
     } finally {
       rmSync(projectRepo, { recursive: true, force: true });
     }
@@ -2528,7 +2578,7 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
     "a sandboxed member cannot write into a second, sibling dispatch's own worktree",
     async () => {
       const projectRepo = makeProjectRepoWithBranches(["unit-a", "unit-b"]);
-      const sibling = createDispatchWorktree(projectRepo, "levare/unit-b");
+      const sibling = createDispatchWorktree(projectRepo, "levare/unit-b", { name: "finch", email: "finch@levare.local" });
       if (!sibling.ok) throw new Error(`could not create sibling worktree: ${sibling.error}`);
       try {
         const repo = repoWithRealStorefrontRepo(projectRepo);

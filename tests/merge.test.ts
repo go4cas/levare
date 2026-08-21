@@ -29,6 +29,10 @@ import type { Team } from "../src/types.ts";
 
 const HERMETIC_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
 
+// A generic dispatch identity for tests that exercise createDispatchWorktree's own mechanics (worktree
+// creation/cleanup/isolation) rather than identity attribution specifically.
+const MEMBER_IDENTITY = { name: "member", email: "member@levare.local" };
+
 function git(repoRoot: string, args: string[]): string {
   const r = spawnSync("git", ["-C", repoRoot, "-c", "user.name=seed", "-c", "user.email=seed@levare.test", "-c", "commit.gpgsign=false", ...args], {
     encoding: "utf8",
@@ -391,7 +395,7 @@ describe("createDispatchWorktree (NOTES R4-SANDBOX, Ruling 1)", () => {
     try {
       git(repo, ["branch", "levare/unit-a", "main"]);
       const mainHead = git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]).trim();
-      const created = createDispatchWorktree(repo, "levare/unit-a");
+      const created = createDispatchWorktree(repo, "levare/unit-a", MEMBER_IDENTITY);
       expect(created.ok).toBe(true);
       if (!created.ok) return;
       expect(created.worktree.path).not.toBe(repo);
@@ -412,7 +416,7 @@ describe("createDispatchWorktree (NOTES R4-SANDBOX, Ruling 1)", () => {
     try {
       git(repo, ["branch", "levare/unit-a", "main"]);
       const beforeSha = rev(repo, "levare/unit-a");
-      const created = createDispatchWorktree(repo, "levare/unit-a");
+      const created = createDispatchWorktree(repo, "levare/unit-a", MEMBER_IDENTITY);
       expect(created.ok).toBe(true);
       if (!created.ok) return;
       try {
@@ -431,13 +435,52 @@ describe("createDispatchWorktree (NOTES R4-SANDBOX, Ruling 1)", () => {
     }
   });
 
+  // Unit "member authorship survives a self-commit" (live evidence, 2026-08-21): a member's own bare
+  // `git commit` — no `-c user.name=`/`-c user.email=` at all — is exactly what a native member's Bash
+  // tool, or an unsandboxed/"none"-tier `cli` member's own vendor process, actually runs. Reproduces the
+  // ambient resolution that failed live: a real (non-hermetic) `GIT_CONFIG_GLOBAL` and a `$HOME` carrying
+  // a DIFFERENT, conflicting identity (standing in for the operator's own real `~/.gitconfig`) — before
+  // this unit's fix, git would have resolved that global identity, not the member's. Proves
+  // `createDispatchWorktree`'s own `extensions.worktreeConfig`/`--worktree` write wins regardless.
+  test("a member's own commit with NO -c flags resolves the worktree's own identity, never a conflicting global $HOME config", () => {
+    const repo = makeProjectRepo();
+    const fakeHome = mkdtempSync(join(tmpdir(), "levare-fakehome-"));
+    try {
+      writeFileSync(join(fakeHome, ".gitconfig"), "[user]\n\tname = go4cas\n\temail = go4cas@gmail.com\n");
+      git(repo, ["branch", "levare/unit-a", "main"]);
+      const created = createDispatchWorktree(repo, "levare/unit-a", MEMBER_IDENTITY);
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+      try {
+        writeFileSync(join(created.worktree.path, "member-output.txt"), "written ambiently\n");
+        const ambientEnv: NodeJS.ProcessEnv = { ...process.env, HOME: fakeHome, GIT_CONFIG_SYSTEM: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
+        delete ambientEnv.GIT_CONFIG_GLOBAL;
+        delete ambientEnv.GIT_AUTHOR_NAME;
+        delete ambientEnv.GIT_AUTHOR_EMAIL;
+        delete ambientEnv.GIT_COMMITTER_NAME;
+        delete ambientEnv.GIT_COMMITTER_EMAIL;
+        const add = spawnSync("git", ["-C", created.worktree.path, "add", "-A"], { env: ambientEnv, encoding: "utf8" });
+        assertSpawnOk("git add (ambient, no -c flags)", add);
+        const commit = spawnSync("git", ["-C", created.worktree.path, "commit", "-q", "-m", "ambient member commit"], { env: ambientEnv, encoding: "utf8" });
+        assertSpawnOk("git commit (ambient, no -c flags)", commit);
+      } finally {
+        created.worktree.cleanup();
+      }
+      const author = git(repo, ["log", "-1", "--format=%an <%ae>", "levare/unit-a"]).trim();
+      expect(author).toBe(`${MEMBER_IDENTITY.name} <${MEMBER_IDENTITY.email}>`);
+    } finally {
+      rmrf(repo);
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
   test("two units on the same project get two independent worktrees of two different branches at once", () => {
     const repo = makeProjectRepo();
     try {
       git(repo, ["branch", "levare/unit-a", "main"]);
       git(repo, ["branch", "levare/unit-b", "main"]);
-      const a = createDispatchWorktree(repo, "levare/unit-a");
-      const b = createDispatchWorktree(repo, "levare/unit-b");
+      const a = createDispatchWorktree(repo, "levare/unit-a", MEMBER_IDENTITY);
+      const b = createDispatchWorktree(repo, "levare/unit-b", MEMBER_IDENTITY);
       expect(a.ok).toBe(true);
       expect(b.ok).toBe(true);
       if (!a.ok || !b.ok) return;
@@ -453,10 +496,77 @@ describe("createDispatchWorktree (NOTES R4-SANDBOX, Ruling 1)", () => {
     }
   });
 
+  // Unit "member authorship survives a self-commit": two concurrent dispatches for two DIFFERENT members
+  // on the same project repo must never race or leak identity into each other — the reason `--worktree`
+  // config (scoped to $GIT_DIR/worktrees/<name>/config.worktree) was chosen over a plain `--local` write,
+  // which would land in the SHARED $GIT_DIR/config instead (confirmed live by direct repro against a real
+  // git worktree during this unit's own investigation).
+  test("two concurrent dispatch worktrees for two different members each resolve their OWN identity, and the primary checkout's own config is never touched", () => {
+    const repo = makeProjectRepo();
+    try {
+      git(repo, ["branch", "levare/unit-a", "main"]);
+      git(repo, ["branch", "levare/unit-b", "main"]);
+      const identityA = { name: "list-entries-builder", email: "list-entries-builder@levare.local" };
+      const identityB = { name: "find-since-builder", email: "find-since-builder@levare.local" };
+      const a = createDispatchWorktree(repo, "levare/unit-a", identityA);
+      const b = createDispatchWorktree(repo, "levare/unit-b", identityB);
+      expect(a.ok).toBe(true);
+      expect(b.ok).toBe(true);
+      if (!a.ok || !b.ok) return;
+      try {
+        const emailA = spawnSync("git", ["-C", a.worktree.path, "config", "user.email"], { env: HERMETIC_ENV, encoding: "utf8" });
+        const emailB = spawnSync("git", ["-C", b.worktree.path, "config", "user.email"], { env: HERMETIC_ENV, encoding: "utf8" });
+        expect(spawnStdout("git config user.email (worktree a)", emailA).trim()).toBe(identityA.email);
+        expect(spawnStdout("git config user.email (worktree b)", emailB).trim()).toBe(identityB.email);
+      } finally {
+        a.worktree.cleanup();
+        b.worktree.cleanup();
+      }
+      // The primary checkout's own config was never given either member's identity — unset, not just
+      // "different" (a plain --local write would have left ONE of the two member identities here instead).
+      const primaryEmail = spawnSync("git", ["-C", repo, "config", "user.email"], { env: HERMETIC_ENV, encoding: "utf8" });
+      expect(primaryEmail.status).not.toBe(0);
+    } finally {
+      rmrf(repo);
+    }
+  });
+
+  // Unit "member authorship survives a self-commit" fold-in: a linked worktree shares the primary
+  // checkout's real `.git/hooks` directory (git has no per-worktree hooks dir) — a member's own bare
+  // commit would otherwise run repo hooks completely unconfined, exactly the "code-execution vector"
+  // NOTES R4-SANDBOX-FIX-8 excludes `.git/hooks` from the sandbox's own write grant to guard against.
+  // `core.hooksPath=/dev/null` at the worktree-config level closes this for a member's own bare commit
+  // too, without touching the primary checkout's real hooks at all.
+  test("a member's own bare commit never runs the shared repo's real pre-commit hook", () => {
+    const repo = makeProjectRepo();
+    try {
+      git(repo, ["branch", "levare/unit-a", "main"]);
+      mkdirSync(join(repo, ".git", "hooks"), { recursive: true });
+      const marker = join(repo, ".git", "hooks-ran.marker");
+      writeFileSync(join(repo, ".git", "hooks", "pre-commit"), `#!/bin/sh\ntouch "${marker}"\nexit 1\n`, { mode: 0o755 });
+      const created = createDispatchWorktree(repo, "levare/unit-a", MEMBER_IDENTITY);
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+      try {
+        writeFileSync(join(created.worktree.path, "member-output.txt"), "hello\n");
+        const add = spawnSync("git", ["-C", created.worktree.path, "add", "-A"], { env: HERMETIC_ENV, encoding: "utf8" });
+        assertSpawnOk("git add", add);
+        // No -c flags at all: if the real hook (which exits 1) ran, this commit would fail.
+        const commit = spawnSync("git", ["-C", created.worktree.path, "commit", "-q", "-m", "member commit"], { env: HERMETIC_ENV, encoding: "utf8" });
+        assertSpawnOk("git commit (hook must be disabled)", commit);
+      } finally {
+        created.worktree.cleanup();
+      }
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmrf(repo);
+    }
+  });
+
   test("fails loudly (never silently) when the branch does not exist", () => {
     const repo = makeProjectRepo();
     try {
-      const created = createDispatchWorktree(repo, "levare/ghost");
+      const created = createDispatchWorktree(repo, "levare/ghost", MEMBER_IDENTITY);
       expect(created.ok).toBe(false);
       if (created.ok) return;
       expect(created.error).toContain("ghost");
@@ -478,12 +588,13 @@ describe("commitDispatchWorktree (goal commit-on-produce, Finding 74)", () => {
     try {
       git(repo, ["branch", "levare/unit-a", "main"]);
       const beforeSha = rev(repo, "levare/unit-a");
-      const created = createDispatchWorktree(repo, "levare/unit-a");
+      const identity = { name: "list-entries-builder", email: "list-entries-builder@levare.local" };
+      const created = createDispatchWorktree(repo, "levare/unit-a", identity);
       expect(created.ok).toBe(true);
       if (!created.ok) return;
       try {
         writeFileSync(join(created.worktree.path, "jot-list.ts"), "export function list() {}\n");
-        const result = commitDispatchWorktree(created.worktree.path, created.worktree.baseSha, "list-entries-builder: code for list-entries", { name: "list-entries-builder", email: "list-entries-builder@levare.local" });
+        const result = commitDispatchWorktree(created.worktree.path, created.worktree.baseSha, "list-entries-builder: code for list-entries", identity);
         expect(result.committed).toBe(true);
         if (!result.committed) return;
         expect(result.commit).toBe(rev(repo, "levare/unit-a"));
@@ -506,7 +617,7 @@ describe("commitDispatchWorktree (goal commit-on-produce, Finding 74)", () => {
     try {
       git(repo, ["branch", "levare/unit-a", "main"]);
       const beforeSha = rev(repo, "levare/unit-a");
-      const created = createDispatchWorktree(repo, "levare/unit-a");
+      const created = createDispatchWorktree(repo, "levare/unit-a", { name: "finch", email: "finch@levare.local" });
       expect(created.ok).toBe(true);
       if (!created.ok) return;
       let result: ReturnType<typeof commitDispatchWorktree>;
@@ -526,13 +637,16 @@ describe("commitDispatchWorktree (goal commit-on-produce, Finding 74)", () => {
     const repo = makeProjectRepo();
     try {
       git(repo, ["branch", "levare/unit-a", "main"]);
-      const created = createDispatchWorktree(repo, "levare/unit-a");
+      const created = createDispatchWorktree(repo, "levare/unit-a", { name: "finch", email: "finch@levare.local" });
       expect(created.ok).toBe(true);
       if (!created.ok) return;
       let selfCommitSha: string;
       let result: ReturnType<typeof commitDispatchWorktree>;
       try {
         writeFileSync(join(created.worktree.path, "member-output.txt"), "written by the member itself\n");
+        // An explicit `-c` override on the member's own command line — accepted, never prevented (a
+        // member holds real shell access), but this is exactly what commitDispatchWorktree's own
+        // `unexpectedActor` detection below must surface rather than silently trust.
         spawnSync("git", ["-C", created.worktree.path, "-c", "user.name=member", "-c", "user.email=member@levare.test", "add", "-A"], { env: HERMETIC_ENV });
         spawnSync("git", ["-C", created.worktree.path, "-c", "user.name=member", "-c", "user.email=member@levare.test", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "member self-commit"], {
           env: HERMETIC_ENV,
@@ -544,7 +658,11 @@ describe("commitDispatchWorktree (goal commit-on-produce, Finding 74)", () => {
       } finally {
         created.worktree.cleanup();
       }
-      expect(result).toEqual({ committed: true, commit: selfCommitSha });
+      expect(result).toEqual({
+        committed: true,
+        commit: selfCommitSha,
+        unexpectedActor: { authorName: "member", authorEmail: "member@levare.test", committerName: "member", committerEmail: "member@levare.test" },
+      });
       // No second, redundant commit was created on top of the member's own.
       expect(rev(repo, "levare/unit-a")).toBe(selfCommitSha);
       const author = git(repo, ["log", "-1", "--format=%an <%ae>", "levare/unit-a"]).trim();
@@ -558,7 +676,7 @@ describe("commitDispatchWorktree (goal commit-on-produce, Finding 74)", () => {
     const repo = makeProjectRepo();
     try {
       git(repo, ["branch", "levare/unit-a", "main"]);
-      const created = createDispatchWorktree(repo, "levare/unit-a");
+      const created = createDispatchWorktree(repo, "levare/unit-a", { name: "finch", email: "finch@levare.local" });
       expect(created.ok).toBe(true);
       if (!created.ok) return;
       let result: ReturnType<typeof commitDispatchWorktree>;
