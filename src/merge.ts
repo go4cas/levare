@@ -562,12 +562,14 @@ export function executeMerge(repoPath: string, branch: string, defaultBranch: st
  * re-introduce exactly the hazard `update-ref` was chosen to avoid. But that guarantee has exactly one
  * blind spot: when the primary checkout's `HEAD` symbolically resolves to `default_branch` itself —
  * the ordinary state right after `doStart` opens a work branch off it — `update-ref` moves the ref
- * `HEAD` points at without touching the index or working tree, so the checkout is left staging every
- * file the merge introduced for DELETION (`git status` diffs the index against the now-advanced HEAD
- * tree) until the operator syncs it by hand. This function detects exactly that condition. Read-only,
- * and called strictly AFTER `executeMerge`'s own transaction has already concluded (success or
- * failure) — it never gates, influences, or rolls back the merge itself; it only reports on what a
- * successful one left behind, so the caller can say so instead of staying silent about it.
+ * `HEAD` points at without touching the index or working tree, so `git status` there no longer
+ * matches the merge (it diffs the index against the now-advanced HEAD tree): a file the merge
+ * INTRODUCED reads as staged for deletion, a file it MODIFIED reads as a staged reversion to its
+ * pre-merge content. Both shapes observed live against `jot` — `find-entries` (five new files, all
+ * `D `) and `find-since` (one modified file, `M `). This function detects exactly that condition.
+ * Read-only, and called strictly AFTER `executeMerge`'s own transaction has already concluded
+ * (success or failure) — it never gates, influences, or rolls back the merge itself; it only reports
+ * on what a successful one left behind, so the caller can say so instead of staying silent about it.
  */
 export function checkoutBehindMerge(repoPath: string, defaultBranch: string): boolean {
   const head = git(repoPath, ["symbolic-ref", "--quiet", "HEAD"]);
@@ -590,7 +592,7 @@ export const CHECKOUT_SYNC_COMMAND = "git stash -u && git reset --hard HEAD";
  * read side — the text can't drift between them, and there is nothing here for member-authored
  * content to imitate: a match requires reproducing this exact string, which is not a mutation. */
 export function formatCheckoutSyncNotice(defaultBranch: string): string {
-  return `**Checkout out of sync:** \`${defaultBranch}\` was checked out in the project repo's own working tree when this merge landed. This merge never touches that working tree by design (M4) — \`git status\` there will show every file it introduced staged for deletion until synced. Run \`${CHECKOUT_SYNC_COMMAND}\` in the project repo to bring it back in line. The \`stash -u\` preserves any uncommitted work of your own there.`;
+  return `**Checkout out of sync:** \`${defaultBranch}\` was checked out in the project repo's own working tree when this merge landed. This merge never touches that working tree by design (M4) — \`git status\` there will not match the merge until synced: files it introduced show staged for deletion, files it modified show staged as reversions to their pre-merge content. Run \`${CHECKOUT_SYNC_COMMAND}\` in the project repo to bring it back in line. The \`stash -u\` preserves any uncommitted work of your own there.`;
 }
 
 // ---------------------------------------------------------------------------
