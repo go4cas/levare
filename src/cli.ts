@@ -228,6 +228,27 @@ function wrap(text: string, width: number): string[] {
 // phase-8 daemon in the same process (deliverable a). Read-only when --read-only is passed, or by
 // default when root sits under a fixtures/ tree (NOTES E14); a read-only board never gets a daemon
 // (nothing for it to legitimately write). `--no-daemon` disables it on an otherwise-writable root too.
+// A bind failure is the one `levare serve` startup error an operator hits routinely — almost always
+// because a `serve` for this same studio is already running — and it used to surface as a raw Bun
+// stack trace naming `/$bunfs/root/levare:32974`, which reads as a crash rather than as "the server
+// is already running" (findings backlog #96). Exported and pure so a test can assert the wording
+// without binding a real port twice.
+//
+// House rule, from this project's own scaffold: errors are diagnoses — say what went wrong AND what
+// to do about it. Both remedies are named because which one is right depends on intent: a second
+// studio genuinely wants its own port, while a stale server wants stopping.
+export function formatServeStartError(e: unknown, port: number, root: string): string {
+  const code = typeof e === "object" && e !== null && "code" in e ? String((e as { code: unknown }).code) : "";
+  if (code === "EADDRINUSE") {
+    return (
+      `levare serve: port ${port} is already in use — a 'levare serve' is most likely already running.\n` +
+      `  Serve this studio on another port:  levare serve ${root} --port ${port + 1}\n` +
+      `  Or find and stop the existing one:  pgrep -fl 'levare serve'`
+    );
+  }
+  return `levare serve: could not start on port ${port}: ${e instanceof Error ? e.message : String(e)}`;
+}
+
 export function runServeCmd(rest: string[]): number {
   const root = rest.find((a) => !a.startsWith("-")) ?? DEFAULT_ROOT;
   // NOTES C11 part 4: load `<root>/.env` into this process's own environment on startup — exactly as
@@ -241,7 +262,17 @@ export function runServeCmd(rest: string[]): number {
   // stays read-write.
   const readOnly = rest.includes("--read-only") ? true : undefined;
   const noDaemon = rest.includes("--no-daemon");
-  const { url, board, daemon } = serve(root, port, { readOnly, noDaemon });
+  // `runCli` deliberately never exits for `serve` (the listener is what keeps the process alive), so
+  // a startup failure has to exit here itself — returning a non-zero code would just fall through and
+  // leave the process running with nothing bound.
+  let started: ReturnType<typeof serve>;
+  try {
+    started = serve(root, port, { readOnly, noDaemon });
+  } catch (e) {
+    console.error(formatServeStartError(e, port, root));
+    process.exit(1);
+  }
+  const { url, board, daemon } = started;
   console.log(`levare serve · ${root} → ${url}${board.ctx.readOnly ? " (read-only)" : ""}${daemon ? " · daemon: on" : " · daemon: off"}`);
   return 0;
 }
