@@ -7,6 +7,20 @@ name: CI
 # shipped past every existing check. The macos-latest leg below runs `bun run build` for real on
 # the OS most contributors use, not to produce a release artifact, just to prove the dev build
 # command works on that platform.
+#
+# The macOS leg ALSO runs the full suite (2026-08-22, findings backlog #108), and that is the more
+# important of its two jobs. Every sandbox proof in this repo — the decoy-file reads, cross-dispatch
+# write isolation, the git-write-grant reseal — is gated on `test.skipIf(hostSandbox.level !== "full")`
+# (tests/adapters.test.ts). GitHub's ubuntu-latest runner disables unprivileged user namespaces, so
+# bubblewrap/unshare fail their probe, `detectSandbox()` returns "none", and every one of those tests
+# SKIPS on the `test` job above — silently, with a green tick. macOS `sandbox-exec` needs no such
+# privilege, so those proofs actually execute here.
+#
+# Before this, levare's principal security boundary was verified only on a maintainer's laptop: if any
+# of it broke, CI would have gone green. The job name predates this and is now narrower than what it
+# does — renaming it means updating the required-status-check context in branch protection at the same
+# time, or every merge blocks waiting for a context that no longer reports. Deliberately left for a
+# separate, two-step change rather than done in passing here.
 on:
   push:
     branches: [main]
@@ -43,4 +57,7 @@ jobs:
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
+      # The sandbox proofs only execute where a working OS primitive exists — see this file's own
+      # header. This is the only leg of CI on which they run at all.
+      - run: bun test
       - run: bun run build

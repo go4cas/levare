@@ -12,7 +12,7 @@
 // breaks the moment prose and reality drift apart again.
 
 import { test, expect, describe, afterAll } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -107,70 +107,66 @@ describe("docs/guide/04-workflow's pasteable blocks produce a valid studio", () 
 // NOTES DOCS-WALKTHROUGH-2: `work/` vanished on clone before this fix — git never tracks an empty
 // directory, and the scaffold's own README overstated the layout (it marked work/, alongside
 // evals/ and ideas/, as merely "created on first use", when work/ is where the job actually happens).
-// This drives a REAL `git init` + founding commit, then a REAL `git clone` into a second directory —
-// the only way to prove a directory is actually tracked, not just present before the first commit —
-// and asserts work/ (with its tracked .gitkeep) survives while evals/ and ideas/, genuinely
-// empty-until-used, do not.
-describe("a freshly-initialized studio's work/ survives a clone (NOTES DOCS-WALKTHROUGH-2)", () => {
-  test("git clone of a freshly-`levare init`'d studio keeps work/, but not the still-empty evals/ or ideas/", () => {
+// This drives a REAL `git init` + founding commit and asserts, against the commit itself, that work/
+// (with its tracked .gitkeep) is in it while evals/ and ideas/, genuinely empty-until-used, are not.
+//
+// 2026-08-22 (findings backlog #109, fourth occurrence): this used to perform a REAL `git clone` into
+// a second directory, on the reasoning that cloning is "the only way to prove a directory is actually
+// tracked, not just present before the first commit". That reasoning was sound about WHAT to prove and
+// wrong about what to prove it WITH. `git clone` of a local path opens the source via its `.git`
+// directory directly — the one code path in this whole file subject to git's ownership check — and this
+// test deliberately discards ambient config (`GIT_CONFIG_SYSTEM: "/dev/null"`, a hermetic
+// `GIT_CONFIG_GLOBAL`), which also discards whatever `safe.directory` entry a runner image was relying
+// on. Three rounds of hardening (including the load-bearing `.git`-suffixed `safe.directory` form,
+// confirmed by repro) never made it stable: it failed intermittently on Linux CI, and on 2026-08-22 it
+// failed DETERMINISTICALLY on a hosted macOS runner the first time the suite ran there — retiring the
+// "Linux-only quirk" framing entirely. The maintainer's own laptop was the only host it reliably passed
+// on.
+//
+// What levare actually controls, and therefore what this test now asserts, is the CONTENT OF THE
+// FOUNDING COMMIT: `git ls-tree -r HEAD` is exactly the set of paths a clone would materialise. A
+// tracked `work/.gitkeep` in that tree IS the property ("survives a clone"); an untracked empty
+// directory cannot appear in it. `git -C <working-tree-root>` needs no `safe.directory` entry — the
+// prior comment already established that by observing only the clone line ever failed, never
+// `initStudio`'s own `git -C source init/add/commit` calls against the identical directory.
+//
+// The trade, stated plainly rather than buried: this asserts the property one hop earlier, at the
+// boundary levare owns, and no longer exercises git's own clone machinery. That machinery is not
+// levare's to test, and testing it cost four investigations.
+describe("a freshly-initialized studio's work/ is tracked in the founding commit (NOTES DOCS-WALKTHROUGH-2)", () => {
+  test("the founding commit carries work/.gitkeep — so a clone keeps work/ — but not the still-empty evals/ or ideas/", () => {
     const source = mkdtempSync(join(tmpdir(), "levare-clone-src-"));
-    const clone = mkdtempSync(join(tmpdir(), "levare-clone-dst-"));
     const configFile = join(tmpdir(), `levare-clone-gitconfig-${Math.random().toString(36).slice(2)}`);
     try {
-      // NOTES "dubious clone ownership": v0.2.5's tag sat unpublished for an hour on this exact line
-      // (`git clone` exit 128, "fatal: detected dubious ownership") — confirmed by direct repro (a
-      // root-owned local repo, this exact env shape: GIT_CONFIG_SYSTEM discarded, GIT_CONFIG_GLOBAL
-      // pointed at a config with no safe.directory entry) to be git's real, well-known
-      // ownership-mismatch refusal, not a coincidentally-matching different failure.
-      // `GIT_CONFIG_SYSTEM: "/dev/null"` is deliberate hermeticity (this test must not depend on
-      // whatever the ambient environment's system gitconfig happens to contain) — but that SAME
-      // discard also throws away any `safe.directory` entry the ambient environment (a CI runner
-      // image, actions/checkout, a contributor's own machine) may have been relying on to cover this
-      // test's own scratch paths, which is exactly what makes the ownership check's actual verdict
-      // depend on runner-specific provisioning this test never controls — "environmental either way,
-      // stable in neither": passed on CI's own run of this exact commit, failed on Release's, two
-      // minutes apart, nothing in either workflow's own steps differs up to this point. Declaring
-      // these paths safe IN THIS TEST'S OWN CONFIG closes that gap the same way the rest of this file
-      // already discards ambient config for identity: hermetic all the way, dependent on nothing
-      // inherited, regardless of the exact runner-instance condition that tips the ambient check.
-      //
-      // The `.git`-suffixed form is load-bearing, confirmed by direct repro — NOT the working-tree
-      // root a plain `git config --add safe.directory <path>` example usually shows and what a first
-      // attempt at this fix used, which still failed identically: `git clone` of a local path opens
-      // the SOURCE via its `.git` directory directly (the same code path a bare/object-store access
-      // takes), checking ITS ownership — distinct from every other git.ts command in this codebase,
-      // which uses `-C <root>` against the WORKING TREE root and needs no such entry at all (confirmed
-      // by the fact that only this clone line was ever reported failing, never `initStudio`'s own
-      // `git -C source init/add/commit` calls immediately above it, against the identical directory).
-      writeFileSync(
-        configFile,
-        `[user]\n\tname = Clone Test\n\temail = clone@example.com\n[safe]\n\tdirectory = ${join(source, ".git")}\n\tdirectory = ${join(clone, ".git")}\n`,
-      );
+      // Hermetic identity only — `initStudio`'s own commit needs a user.name/user.email that does not
+      // depend on whatever the ambient environment happens to carry. No `safe.directory` entry is
+      // needed any more: nothing below opens a repository by its `.git` directory.
+      writeFileSync(configFile, `[user]\n\tname = Clone Test\n\temail = clone@example.com\n`);
       const env = { ...process.env, GIT_CONFIG_GLOBAL: configFile, GIT_CONFIG_SYSTEM: "/dev/null" };
 
       const result = initStudio(source, env);
       expect(result.git.committed).toBe(true);
 
-      rmSync(clone, { recursive: true, force: true }); // git clone requires the target not exist yet
-      const cloneResult = spawnSync("git", ["clone", "-q", source, clone], { encoding: "utf8", env });
-      // NOTES "dubious clone ownership" / the eighth instance of a test whose result depended on
-      // something other than the behaviour it asserts: a bare `expect(status).toBe(0)` discarded git's
-      // own stderr, so this exact failure cost a screenshot and an hour to even name, on a run whose
-      // logs are already gone by the time anyone can look. Every failure path below states what
-      // actually happened.
-      if (cloneResult.status !== 0) {
+      // Every path in the founding commit — precisely what a clone of it would produce.
+      const tree = spawnSync("git", ["-C", source, "ls-tree", "-r", "HEAD", "--name-only"], { encoding: "utf8", env });
+      // The eighth instance of a test whose result depended on something other than the behaviour it
+      // asserts (see this describe's own note) taught this: never let a bare status assertion discard
+      // git's own stderr — a failure here must say what actually happened, on a CI run whose logs are
+      // gone by the time anyone looks.
+      if (tree.status !== 0) {
         throw new Error(
-          `git clone exited ${cloneResult.status ?? "null"}` +
-            `${cloneResult.signal ? ` (signal ${cloneResult.signal})` : ""}: ${cloneResult.stderr || "(no stderr captured)"}`,
+          `git ls-tree exited ${tree.status ?? "null"}` +
+            `${tree.signal ? ` (signal ${tree.signal})` : ""}: ${tree.stderr || "(no stderr captured)"}`,
         );
       }
+      const tracked = tree.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
 
-      expect(readdirSync(join(clone, "work"))).toEqual([".gitkeep"]);
-      expect(() => readdirSync(join(clone, "evals"))).toThrow();
-      expect(() => readdirSync(join(clone, "ideas"))).toThrow();
+      expect(tracked).toContain("work/.gitkeep");
+      // Empty-until-used: git cannot track an empty directory, so neither may appear under any path.
+      expect(tracked.filter((p) => p.startsWith("evals/"))).toEqual([]);
+      expect(tracked.filter((p) => p.startsWith("ideas/"))).toEqual([]);
     } finally {
       rmSync(source, { recursive: true, force: true });
-      rmSync(clone, { recursive: true, force: true });
       rmSync(configFile, { force: true });
     }
   });
