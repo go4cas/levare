@@ -9,6 +9,7 @@
     "build": "./scripts/build.sh",
     "validate": "bun run src/cli.ts validate",
     "docs:generate": "bun run scripts/generate-cheatsheets.ts",
+    "verify:head": "bun run scripts/verify-head-checks.ts",
     "deps:check": "bun -e \"const d=Object.keys(require('./package.json').dependencies||{});const bad=d.filter(x=>x!=='@anthropic-ai/claude-agent-sdk');if(bad.length){console.error('forbidden deps: '+bad);process.exit(1)}console.log('deps ok')\""
   },
   "dependencies": {
