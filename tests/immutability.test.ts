@@ -4,6 +4,7 @@ import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { validatePath, type ImmutabilityState } from "../src/validate.ts";
+import { FORMER_CHECKOUT_SYNC_NOTICES } from "../src/merge.ts";
 
 // PRD §4: "an approved artifact's file content may not change in a later commit (checked at
 // validation time against git)." This can only be exercised against a live git repo, so it lives
@@ -249,3 +250,98 @@ describe("approved-immutability against the recorded approval commit (A7)", () =
     expect(r.errors.some((e) => e.code === "MODIFIED_AFTER_APPROVAL")).toBe(true);
   });
 });
+
+// The checkout-sync notice's wording is a versioned schema element, not free-form prose (the
+// ~/source/jot-studio outage, 2026-08-23 — see merge.ts#formatCheckoutSyncNotice's own doc comment): a
+// merge artifact approved before a wording change has that change's PREDECESSOR baked into its git
+// baseline forever, byte for byte. stripCheckoutSyncNotice (validate.ts) must recognize every wording
+// FORMER_CHECKOUT_SYNC_NOTICES records, not just the current one — parameterized over the whole array
+// (not just today's one entry) so a future retired wording is covered here the moment it's appended,
+// with no test edit required.
+describe.each(FORMER_CHECKOUT_SYNC_NOTICES.map((format, i) => [i, format] as const))(
+  "approved-immutability: a checkout-sync notice written under retired wording #%i (A7, merge kind)",
+  (index, formatRetiredNotice) => {
+    let root: string;
+    const REL = join("work", "acme", `widget-${index}`, `merge-widget-${index}-v1.md`);
+    const DEFAULT_BRANCH = "main";
+    const NOTICE = formatRetiredNotice(DEFAULT_BRANCH);
+
+    // The `merge:` block itself is NOT approval-exempt (validate.ts's own comment: it's part of the
+    // gate-open content, guaranteed identical baseline-to-current here) — held constant across both
+    // commits below, same as a real merge gate's own block never changes after gate-open.
+    const MERGE_BLOCK = ["merge:", "  branch: levare/widget-1", `  target: ${DEFAULT_BRANCH}`, "  commits_ahead: 1", '  diffstat: " 1 file changed"', "  conflicted: false", "  conflicts: []", "  guardrail_violations: []"].join("\n");
+    const PLAIN_BODY = ["# merge — clean", "", "1 commit(s) on `levare/widget-1` ahead of `main`, merges cleanly.", ""].join("\n");
+
+    function frontmatter(status: string, extra: string[]): string {
+      return [
+        "---",
+        "kind: merge",
+        `id: merge-widget-${index}-v1`,
+        `unit: widget-${index}`,
+        "project: acme",
+        `status: ${status}`,
+        "produced_by: levare-runner",
+        "consumes: []",
+        "supersedes: null",
+        ...extra,
+        "created: 2026-07-17",
+        "files: []",
+        MERGE_BLOCK,
+        "---",
+        "",
+      ].join("\n");
+    }
+
+    // Build: commit the gate-open in-review artifact (baseline commit B, no notice — matches
+    // gateops.ts#doApproveMerge, which only appends the notice AT approval time), then commit it
+    // approved — status/approved_by/approved_commit/merge_result stamped, and the notice appended
+    // under THIS entry's retired wording — exactly what a real approval produced while that wording
+    // was current. Returns nothing; each test mutates from the resulting HEAD.
+    function seedApprovedWithRetiredNotice(r: string): void {
+      git(r, ["init", "-q"]);
+      mkdirSync(join(r, "work", "acme", `widget-${index}`), { recursive: true });
+      const inReview = frontmatter("in-review", ["approved_by: null"]) + PLAIN_BODY;
+      writeFileSync(join(r, REL), inReview);
+      git(r, ["add", "-A"]);
+      git(r, ["commit", "-q", "-m", "open merge gate"]);
+      const baseline = git(r, ["rev-parse", "HEAD"]).stdout.trim();
+      const approved =
+        frontmatter("approved", [
+          'approved_by: "cas 2026-07-17"',
+          `approved_commit: ${baseline}`,
+          "merge_result:",
+          "  merge_commit: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+          "  pushed: null",
+        ]) +
+        PLAIN_BODY.trimEnd() +
+        `\n\n${NOTICE}\n`;
+      writeFileSync(join(r, REL), approved);
+      git(r, ["add", "-A"]);
+      git(r, ["commit", "-q", "-m", "approve merge"]);
+    }
+
+    beforeAll(() => {
+      root = mkdtempSync(join(tmpdir(), "levare-checkout-sync-notice-"));
+      seedApprovedWithRetiredNotice(root);
+    });
+    afterAll(() => {
+      if (root) rmSync(root, { recursive: true, force: true });
+    });
+
+    test("a byte-identical, never-touched artifact validates clean — the wording moving on must not itself read as a mutation", () => {
+      const r = validatePath(root);
+      expect(stateOf(r, `merge-widget-${index}-v1.md`)).toBe("S2a");
+      expect(r.errors.map((e) => e.code)).not.toContain("MODIFIED_AFTER_APPROVAL");
+    });
+
+    test("a real post-approval edit is still caught — recognizing the retired wording never widens into a pattern/marker match", () => {
+      const abs = join(root, REL);
+      writeFileSync(abs, `${readFileSync(abs, "utf8")}\nSmuggled paragraph.\n`);
+      git(root, ["add", "-A"]);
+      git(root, ["commit", "-q", "-m", "tamper after approval"]);
+      const r = validatePath(root);
+      expect(stateOf(r, `merge-widget-${index}-v1.md`)).toBe("S2c");
+      expect(r.errors.some((e) => e.code === "MODIFIED_AFTER_APPROVAL")).toBe(true);
+    });
+  },
+);
