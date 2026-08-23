@@ -67,7 +67,7 @@ describe("F20: an exhausted loop's card states the round count and disables requ
       const repo = loadRepo(root, { validate: false });
       const gate = openGates(repo).find((g) => g.target === "spec-loyalty-flow-v3");
       expect(gate).toBeDefined();
-      expect(gate!.loop).toEqual({ round: 3, maxRounds: 3, until: "spec.approved", exhausted: true });
+      expect(gate!.loop).toEqual({ round: 3, maxRounds: 3, until: "spec.approved", exhausted: true, companionKind: "review" });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -109,7 +109,7 @@ describe("F20: an exhausted loop's card states the round count and disables requ
 
       const repo = loadRepo(root, { validate: false });
       const gate = openGates(repo).find((g) => g.target === "spec-loyalty-flow-v1");
-      expect(gate!.loop).toEqual({ round: 1, maxRounds: 3, until: "spec.approved", exhausted: false });
+      expect(gate!.loop).toEqual({ round: 1, maxRounds: 3, until: "spec.approved", exhausted: false, companionKind: "review" });
 
       const html = renderStudio(repo, root, new Date("2026-07-12T00:00:00Z"), []);
       const cardStart = html.indexOf('data-gate-target="spec-loyalty-flow-v1"');

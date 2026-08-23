@@ -31,6 +31,7 @@ import {
   railNav,
   gateCardHtml,
   dispatchingFor,
+  gateKindLabel,
   orchestratorPanel,
   projectStatusChip,
   artifactFileName,
@@ -149,7 +150,18 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
       const gate = gates.find((g) => g.unit === u.unit);
       // Item 6e: the canonical status→colour map, not a hand-picked class — the same active-must-be-
       // blue fix as the Studio card (projectStatusChip).
-      const chip = gate ? statusBadge("needs-you", "at gate") : statusBadge(fromWorkUnitStatus(u.status), u.status);
+      //
+      // Phase 2 "gate card" goal, items 3/4: this used to read a flat "at gate" for EVERY gate shape —
+      // a queued start gate, a merge trial, a plain review, a loop round — the exact Finding 97/83/72
+      // shape (this row's own mini-score dots, right below, already go live via `scoreNodes(..., running)`
+      // while this chip stayed blind to it). Now consults the same `dispatchingFor` the gate card itself
+      // uses (kind-aware — see shell.ts's own doc comment) and names the gate's kind when it doesn't.
+      const gateDispatching = gate ? dispatchingFor(running, gate) : undefined;
+      const chip = gate
+        ? gateDispatching
+          ? statusBadge("active", "dispatching")
+          : statusBadge("needs-you", gateKindLabel(gate))
+        : statusBadge(fromWorkUnitStatus(u.status), u.status);
       const spend = unitSpend(repo, u);
       const artifacts = [...(repo.artifacts.get(`${u.project}/${u.unit}`)?.values() ?? [])].sort((a, b) => a.created.localeCompare(b.created));
       const artifactRows = artifacts

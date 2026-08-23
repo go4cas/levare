@@ -53,6 +53,19 @@ export function tokLabel(n: number): string {
   return String(n);
 }
 
+// "1m 42s" / "1h 04m" — elapsed since a live invocation's real `startedAt` (never a fabricated
+// number). Lives here, not in render/run.ts (its original home), so render/shell.ts's gate card can
+// use the exact same helper for its own dispatching-elapsed display (Phase 2 "gate card" goal, item 2)
+// without run.ts importing shell.ts importing run.ts back — derive.ts has no board/ dependents to cycle.
+export function elapsedLabel(startedAtIso: string, now: Date): string {
+  const totalS = Math.max(0, Math.floor((now.getTime() - new Date(startedAtIso).getTime()) / 1000));
+  const h = Math.floor(totalS / 3600);
+  const m = Math.floor((totalS % 3600) / 60);
+  const s = totalS % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
+  return `${m}m ${String(s).padStart(2, "0")}s`;
+}
+
 /**
  * "14m", "2h", "3d" — coarse age from an ISO-ish timestamp to `now`.
  *
@@ -116,8 +129,14 @@ export interface OpenGate {
    * clicks: `exhausted` is true once this round is the loop's last without `until` satisfied, so the
    * card can state the round count up front and disable "Request changes" instead of silently
    * discarding it after a refused round-trip.
+   *
+   * `companionKind` (Phase 2 "gate card" goal, item 1): the loop's OTHER member's kind — e.g. for a
+   * gate on `review` (`until: review.approved`), this is `spec`, the author kind `doRequest` actually
+   * re-invokes (F16: "request changes" always re-runs the author, regardless of which member the gate
+   * itself sits on). Lets `dispatchingFor` recognize that redo as belonging to THIS gate without
+   * matching on unit alone — the loop's own two kinds are one logical round, seen from either side.
    */
-  loop?: { round: number; maxRounds: number; until: string; exhausted: boolean };
+  loop?: { round: number; maxRounds: number; until: string; exhausted: boolean; companionKind?: string };
 }
 
 /**
@@ -167,7 +186,13 @@ export function openGates(repo: Repo): OpenGate[] {
         // state the round count and disable "Request changes" before the Conductor ever clicks it.
         const membership = team ? loopMembershipFor(team, art.kind, capabilities) : undefined;
         const loop = membership
-          ? { round: roundOf(art.id), maxRounds: membership.loop.maxRounds, until: membership.loop.until, exhausted: roundOf(art.id) >= membership.loop.maxRounds }
+          ? {
+              round: roundOf(art.id),
+              maxRounds: membership.loop.maxRounds,
+              until: membership.loop.until,
+              exhausted: roundOf(art.id) >= membership.loop.maxRounds,
+              companionKind: membership.companionKind,
+            }
           : undefined;
         gates.push({
           type: "artifact",

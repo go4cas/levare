@@ -232,7 +232,7 @@ describe("F21: a blocked loop critic's retry keeps the round's consumed set and 
         const repo = loadRepo(root, { validate: false });
         const gate = openGates(repo).find((g) => g.target === "review-announcement-v1");
         expect(gate).toBeDefined();
-        expect(gate!.loop).toEqual({ round: 1, maxRounds: 3, until: "review.approved", exhausted: false });
+        expect(gate!.loop).toEqual({ round: 1, maxRounds: 3, until: "review.approved", exhausted: false, companionKind: "product-brief" });
 
         expect(readFileSync(counterFile, "utf8").trim()).toBe(String(failCount + 1)); // every attempt really ran.
       } finally {

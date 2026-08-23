@@ -10,7 +10,7 @@
 import type { Repo } from "../../repo.ts";
 import type { Artifact } from "../../types.ts";
 import { firstParagraph } from "../../repo.ts";
-import { esc, costLabel, ageLabel, projectLastActivity, type OpenGate } from "../../derive.ts";
+import { esc, costLabel, ageLabel, elapsedLabel, projectLastActivity, type OpenGate } from "../../derive.ts";
 import type { RegistryExtras } from "../../extra.ts";
 import { diagnose } from "../../doctor.ts";
 import type { DaemonInvocation } from "../../daemon.ts";
@@ -414,16 +414,70 @@ export function railNav(repo: Repo, extras: RegistryExtras, opts: { activeRegist
 // invocation in flight for that unit (render/studio.ts / render/project.ts / render/run.ts callers
 // below), so the board acknowledges a Start/Request-changes click immediately instead of sitting
 // static for however long the member takes.
-function dispatchingHtml(member: string, kind: string): string {
-  return `<div class="gate__verbs gate__verbs--pending">${pendingState({ label: `dispatching ${member} · ${kind}…` })}</div>`;
+//
+// Phase 2 "gate card" goal, item 2: carries the SAME `elapsedLabel` vocabulary run.ts's Tier-3 live
+// strip already renders, plus round n/m for a loop redo — never a fabricated number, only what
+// `DispatchingInfo` actually knows (see `dispatchingFor` below). This is server-rendered HTML with no
+// client-side ticking (checked assets/app.js: no `setInterval` anywhere) — like the Tier-3 strip it
+// mirrors, it updates only on the next fragment refetch (an SSE `reload` broadcast or a manual
+// navigation), not continuously in the browser. That per-render staleness is Finding 79/40's own
+// territory, deliberately untouched here.
+function dispatchingHtml(d: DispatchingInfo, now: Date): string {
+  const roundText = d.loop ? `round ${d.loop.round}/${d.loop.maxRounds} · ` : "";
+  return `<div class="gate__verbs gate__verbs--pending">${pendingState({ label: `dispatching ${d.member} · ${d.kind}… · ${roundText}${elapsedLabel(d.startedAt, now)}` })}</div>`;
 }
 
-// The daemon's live in-flight projection (running()), narrowed to a single gate's own unit — a gate
-// whose unit has a matching invocation is being produced RIGHT NOW, so the board renders it as
-// dispatching instead of an actionable card (NOTES F10 defect 3).
-export function dispatchingFor(running: DaemonInvocation[], gate: OpenGate): { member: string; kind: string } | undefined {
+export interface DispatchingInfo {
+  member: string;
+  kind: string;
+  startedAt: string;
+  /** Set only when this gate's own artifact belongs to a loop — the round now being produced (one past
+   * the currently-open, about-to-be-superseded round `gate.loop.round` already names). */
+  loop?: { round: number; maxRounds: number };
+}
+
+// The daemon's live in-flight projection (running()), narrowed to a single gate's own unit AND (for a
+// gate that actually has a kind — every shape but start/blocked, neither of which has one) to the
+// specific kind that gate's resolution depends on.
+//
+// Phase 2 "gate card" goal, item 1 (Finding 82/83/72's own cross-kind risk): matching on unit alone
+// would be wrong the instant two DIFFERENT, unrelated kinds could be in flight for the same unit at
+// once — but `dagwalk.ts#nextAction` never allows that (it walks a team's `flow` strictly in order and
+// halts the WHOLE unit at the first open gate, never advancing to a later step past it — verified
+// directly, not assumed) and the daemon dispatches at most one invocation per unit at a time
+// (`daemon.ts#tickOnce`'s own "single-flight" comment). The one place a running invocation's kind
+// legitimately DIFFERS from the open gate's own kind is F16's loop redo: a gate sitting on the critic
+// kind (`until: review.approved`) stays open while `doRequest` re-invokes the AUTHOR kind — the loop's
+// two kinds are one logical round, and `gate.loop.companionKind` (derive.ts) names the other side so
+// that redo still matches. Matching the gate's own kind ALONE (ignoring companionKind) would silently
+// stop recognizing that redo as dispatching — a regression, not a fix, since it is the single most
+// common case this whole mechanism exists for.
+// Phase 2 "gate card" goal, item 3 (Finding 97: a queued unit and a merge-blocked unit both read
+// identically): a start gate, a plain single-shot review, a loop round, and a merge trial are four
+// different things a Conductor might click through to — this names which one, from vocabulary already
+// in scope at every call site (`gate.type`, `gate.loop`, `art.kind === "merge"`; established Phase 1 as
+// needing no plumbing). Deliberately does NOT cover `gate.loop?.exhausted` — that already has its own
+// dedicated "exhausted" badge/styling (below), which stays a Conductor-facing urgency signal, not a
+// kind label.
+export function gateKindLabel(gate: OpenGate): string {
+  if (gate.type === "start") return "start";
+  if (gate.type === "blocked" || gate.type === "artifact-blocked") return "blocked";
+  if (gate.artifact?.kind === "merge") return "merge";
+  if (gate.loop) return `loop · ${gate.loop.round}/${gate.loop.maxRounds}`;
+  return "step";
+}
+
+export function dispatchingFor(running: DaemonInvocation[], gate: OpenGate): DispatchingInfo | undefined {
   const inv = running.find((r) => r.project === gate.project && r.unit === gate.unit);
-  return inv ? { member: inv.member, kind: inv.kind } : undefined;
+  if (!inv) return undefined;
+  const gateKind = gate.artifact?.kind;
+  if (gateKind && inv.kind !== gateKind && inv.kind !== gate.loop?.companionKind) return undefined;
+  return {
+    member: inv.member,
+    kind: inv.kind,
+    startedAt: inv.startedAt,
+    loop: gate.loop ? { round: gate.loop.round + 1, maxRounds: gate.loop.maxRounds } : undefined,
+  };
 }
 
 // Amendment 1 §1/R3: the work-unit-type glyph from the entity-icon family (the same thin geometric
@@ -438,7 +492,7 @@ export function typeGlyphSvg(typeName: string | undefined, size = 15): string {
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true">${registryKindIconBody("types", typeName)}</svg>`;
 }
 
-export function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: boolean; dispatching?: { member: string; kind: string } } = {}): string {
+export function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: boolean; dispatching?: DispatchingInfo } = {}): string {
   const unit = repo.units.find((u) => u.project === gate.project && u.unit === gate.unit);
   const type = unit ? repo.types.get(unit.type) : undefined;
   const glyph = typeGlyphSvg(type?.name);
@@ -446,7 +500,7 @@ export function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?
 
   if (gate.type === "start") {
     const startVerbs = dispatching
-      ? dispatchingHtml(dispatching.member, dispatching.kind)
+      ? dispatchingHtml(dispatching, now)
       : `<div class="gate__verbs">
         <button class="verb is-primary" data-verb="start">Start</button>
         <button class="verb is-secondary" data-verb="notyet">Not yet</button>
@@ -493,7 +547,7 @@ export function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?
     const ctx = esc(firstParagraph(art.body ?? ""));
     const age = ageLabel(art.created, now);
     const verbs = dispatching
-      ? dispatchingHtml(dispatching.member, dispatching.kind)
+      ? dispatchingHtml(dispatching, now)
       : `<div class="gate__verbs">
         <button class="verb is-primary" data-verb="retry">Retry</button>
         <button class="verb is-secondary" data-verb="skip">Skip</button>
@@ -543,7 +597,7 @@ export function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?
   const roundBadge = gate.loop ? `<span class="gate__round">round ${gate.loop.round}/${gate.loop.maxRounds}</span>` : "";
   const meta = `<div class="gate__meta"><span>${esc(age)}</span>${cost ? `<span class="cost">${cost}</span>` : ""}${roundBadge}</div>`;
   const verbs = dispatching
-    ? dispatchingHtml(dispatching.member, dispatching.kind)
+    ? dispatchingHtml(dispatching, now)
     : gate.loop?.exhausted
       ? `<div class="gate__verbs">
         <button class="verb is-primary" data-verb="approve">Approve anyway</button>
@@ -583,7 +637,7 @@ export function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?
     bodyWrapCls: "gate__body",
     title: nameRow,
     titleExtra: `<p class="gate__ctx">${ctx}</p>${consumesHtml}${meta}`,
-    status: `<span class="gate__badge${gate.loop?.exhausted ? " is-exhausted" : ""}">${gate.loop?.exhausted ? statusLabel("exhausted") : "on you"}</span>`,
+    status: `<span class="gate__badge${gate.loop?.exhausted ? " is-exhausted" : ""}">${gate.loop?.exhausted ? statusLabel("exhausted") : gateKindLabel(gate)}</span>`,
     meta: verbs,
   });
 }
@@ -622,7 +676,7 @@ function diffstatSummary(diffstat: string): string | null {
   return `${files} file${files === 1 ? "" : "s"} changed · +${ins}/-${del}`;
 }
 
-function mergeGateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: boolean; dispatching?: { member: string; kind: string } }): string {
+function mergeGateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: boolean; dispatching?: DispatchingInfo }): string {
   const art = gate.artifact!;
   const merge = art.merge;
   const unit = repo.units.find((u) => u.project === gate.project && u.unit === gate.unit);
@@ -642,7 +696,7 @@ function mergeGateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: 
   // renders as a stalled state (recheck is always safe to offer) rather than throwing.
   if (!merge) {
     const verbs = dispatching
-      ? dispatchingHtml(dispatching.member, dispatching.kind)
+      ? dispatchingHtml(dispatching, now)
       : `<div class="gate__verbs"><button class="verb is-primary" data-verb="recheck">Re-check</button></div>`;
     return card({
       as: "article",
@@ -653,7 +707,7 @@ function mergeGateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: 
       bodyWrapCls: "gate__body",
       title: nameRow,
       titleExtra: callout("warning", "this merge gate has no trial-merge report on disk yet &mdash; re-check to generate one."),
-      status: `<span class="gate__badge">on you</span>`,
+      status: `<span class="gate__badge">${gateKindLabel(gate)}</span>`,
       meta: verbs,
     });
   }
@@ -692,7 +746,7 @@ function mergeGateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: 
 
   const project = repo.projects.get(gate.project);
   const verbsHtml = dispatching
-    ? dispatchingHtml(dispatching.member, dispatching.kind)
+    ? dispatchingHtml(dispatching, now)
     : canApprove
       ? `<div class="gate__verbs"><button class="verb is-primary" data-verb="approve">${project?.remote ? "Merge &amp; push" : "Merge"}</button></div>`
       : `<div class="gate__verbs"><button class="verb is-primary" data-verb="recheck">Re-check</button></div>`;
@@ -719,7 +773,7 @@ function mergeGateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: 
     bodyWrapCls: "gate__body",
     title: nameRow,
     titleExtra,
-    status: `<span class="gate__badge">on you</span>`,
+    status: `<span class="gate__badge">${gateKindLabel(gate)}</span>`,
     meta: verbsHtml,
   });
 }

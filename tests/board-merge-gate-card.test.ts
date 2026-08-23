@@ -268,9 +268,12 @@ describe("merge gate card — dispatching (in-flight) state", () => {
       },
     });
     const art = [...repo.artifacts.get("acme/widget-1")!.values()][0];
-    const html = gateCardHtml(repo, mergeGate(art), NOW, { dispatching: { member: "levare-runner", kind: "merge" } });
+    const html = gateCardHtml(repo, mergeGate(art), NOW, {
+      dispatching: { member: "levare-runner", kind: "merge", startedAt: "2026-07-17T01:59:00.000Z" },
+    });
     expect(html).toContain("is-dispatching");
     expect(html).toContain('class="pending"');
+    expect(html).toContain("1m 00s");
     expect(html).not.toContain('data-verb="approve"');
     expect(html).not.toContain('data-verb="recheck"');
   });
