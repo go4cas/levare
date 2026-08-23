@@ -17,7 +17,7 @@ import type { DaemonInvocation } from "../../daemon.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
 import { getVersionInfo, versionChip } from "../../version.ts";
 import { statusLabel } from "../status.ts";
-import { statusBadge, counter, pendingState, card, confirmModal, toastViewport, orchTurn, renderPersistedTurns, tag, callout } from "../components.ts";
+import { statusBadge, neutralChip, counter, pendingState, card, confirmModal, toastViewport, orchTurn, renderPersistedTurns, tag, callout } from "../components.ts";
 import { loadConversationTail } from "../../conversation.ts";
 import { deriveTeamStyle } from "../team-color.ts";
 import { registryKindIconBody } from "./entity-icons.ts";
@@ -595,6 +595,26 @@ export function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?
     ? `${gate.loop.round} of ${gate.loop.maxRounds} rounds used — this loop cannot continue without \`${esc(gate.loop.until)}\`.`
     : esc(firstParagraph(art.body ?? ""));
   const roundBadge = gate.loop ? `<span class="gate__round">round ${gate.loop.round}/${gate.loop.maxRounds}</span>` : "";
+  // Ruling 2026-08-23 ("the gate card is where decisions happen", Findings 104/105): the decision-
+  // relevant fact — CHANGES REQUESTED, or an approval — rendered directly, never buried below the
+  // fold in `ctx`'s truncated prose. `art.verdict` absent (predates the field, or the critic's own
+  // prompt hasn't been told about it yet — both collapse to the SAME state on purpose) renders its own
+  // explicit, neutral "not recorded" chip — never silently omitted (that was Finding 105) and never
+  // defaulted to either enum value (a confident wrong default reads worse than the truncation it
+  // would replace). Scoped to kind: review only — every other kind has no verdict to show.
+  const verdictBadge =
+    art.kind === "review"
+      ? `<div class="gate__verdict">${
+          art.verdict === "APPROVED"
+            ? statusBadge("done", "Verdict: APPROVED")
+            : art.verdict === "CHANGES REQUESTED"
+              ? statusBadge("failed", "Verdict: CHANGES REQUESTED")
+              : neutralChip("Verdict not recorded", undefined, {
+                  text: "Predates this field, or the critic's own prompt hasn't been updated to write it yet — never read as either verdict.",
+                  id: `verdict-${esc(gate.project)}-${esc(gate.unit)}-${esc(art.id)}`,
+                })
+        }</div>`
+      : "";
   const meta = `<div class="gate__meta"><span>${esc(age)}</span>${cost ? `<span class="cost">${cost}</span>` : ""}${roundBadge}</div>`;
   const verbs = dispatching
     ? dispatchingHtml(dispatching, now)
@@ -616,6 +636,7 @@ export function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?
       <div class="gate__banner"><span class="dia" aria-hidden="true"></span><span class="t">Gate &middot; ${esc(gate.label)} review</span></div>
       <div class="gate__inner">
         ${nameRow}
+        ${verdictBadge}
         <p class="gate__ctx">${ctx}</p>
         ${consumesHtml}
         ${meta}
@@ -636,7 +657,7 @@ export function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?
     pre: `<span class="gate__marker" aria-hidden="true">${glyph}</span>`,
     bodyWrapCls: "gate__body",
     title: nameRow,
-    titleExtra: `<p class="gate__ctx">${ctx}</p>${consumesHtml}${meta}`,
+    titleExtra: `${verdictBadge}<p class="gate__ctx">${ctx}</p>${consumesHtml}${meta}`,
     status: `<span class="gate__badge${gate.loop?.exhausted ? " is-exhausted" : ""}">${gate.loop?.exhausted ? statusLabel("exhausted") : gateKindLabel(gate)}</span>`,
     meta: verbs,
   });

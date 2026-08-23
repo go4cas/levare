@@ -3,9 +3,9 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertExitCode } from "./spawn-helpers.ts";
-import { validatePath } from "../src/validate.ts";
+import { validatePath, validateArtifactSource } from "../src/validate.ts";
 import { loadPricing } from "../src/pricing.ts";
-import { loadRepo } from "../src/repo.ts";
+import { loadRepo, parseArtifactDoc } from "../src/repo.ts";
 
 describe("golden fixture", () => {
   test("fixtures/golden validates clean", () => {
@@ -93,6 +93,93 @@ describe("rejection fixtures", () => {
       expect(codes).toContain(code);
     });
   }
+});
+
+// Ruling 2026-08-23 ("the gate card is where decisions happen", Findings 104/105): `verdict` is
+// reserved for kind: review, nullable, never required — every review this product has ever produced
+// predates the field (Findings 99/114's own lesson: a required flip bricks every existing artifact the
+// instant the binary upgrades). validateArtifactSource/parseArtifactDoc directly, same idiom
+// merge.test.ts's "formatMergeArtifact — schema-valid" describe block already uses for a reserved,
+// kind-specific field — no full studio needed for a single artifact's own schema shape.
+describe("verdict (kind: review) — nullable, enum-checked, never required", () => {
+  function reviewDoc(extraFrontmatter: string): string {
+    return [
+      "---",
+      "kind: review",
+      "id: review-flow-v1",
+      "unit: flow",
+      "project: acme",
+      "status: in-review",
+      "produced_by: kestrel/finch",
+      "consumes: []",
+      "supersedes: null",
+      "approved_by: null",
+      "created: 2026-08-23",
+      "files: []",
+      extraFrontmatter,
+      "---",
+      "",
+      "The spec is close, but I would request one clarification before handing it to Builder.",
+      "",
+      "CHANGES REQUESTED",
+      "",
+    ]
+      .filter((l) => l !== "")
+      .join("\n");
+  }
+
+  test("absent entirely — every review this product has ever produced — validates clean, parses to null (never a fabricated default)", () => {
+    const doc = reviewDoc("");
+    expect(validateArtifactSource(doc)).toEqual([]);
+    expect(parseArtifactDoc(doc).verdict).toBeNull();
+  });
+
+  test("verdict: CHANGES REQUESTED validates and round-trips", () => {
+    const doc = reviewDoc("verdict: CHANGES REQUESTED");
+    expect(validateArtifactSource(doc)).toEqual([]);
+    expect(parseArtifactDoc(doc).verdict).toBe("CHANGES REQUESTED");
+  });
+
+  test("verdict: APPROVED validates and round-trips — the positive case no real review has exercised yet", () => {
+    const doc = reviewDoc("verdict: APPROVED");
+    expect(validateArtifactSource(doc)).toEqual([]);
+    expect(parseArtifactDoc(doc).verdict).toBe("APPROVED");
+  });
+
+  test("an unrecognized value fails BAD_ENUM, naming the field — never silently accepted as free-form prose", () => {
+    const doc = reviewDoc("verdict: LGTM");
+    const errs = validateArtifactSource(doc);
+    expect(errs.some((e) => e.code === "BAD_ENUM" && e.message.includes("verdict"))).toBe(true);
+  });
+
+  // The exact hazard the ruling named: status is a Conductor decision about the ARTIFACT, verdict is
+  // the critic's own conclusion about what it reviewed — independent fields, and an artifact may
+  // legitimately carry `status: approved` (the Conductor accepted the review) with no verdict recorded
+  // at all (review-find-entries-v1's own real shape: approved status, CHANGES REQUESTED only in prose).
+  test("status: approved and an absent verdict coexist without conflict — status is never read as a verdict stand-in", () => {
+    const doc = [
+      "---",
+      "kind: review",
+      "id: review-flow-v1",
+      "unit: flow",
+      "project: acme",
+      "status: approved",
+      "produced_by: kestrel/finch",
+      "consumes: []",
+      "supersedes: null",
+      'approved_by: "cas 2026-08-21"',
+      "created: 2026-08-21",
+      "files: []",
+      "---",
+      "",
+      "CHANGES REQUESTED",
+      "",
+    ].join("\n");
+    expect(validateArtifactSource(doc)).toEqual([]);
+    const art = parseArtifactDoc(doc);
+    expect(art.status).toBe("approved");
+    expect(art.verdict).toBeNull();
+  });
 });
 
 // NOTES F1: `levare validate` used to say "valid" about a studio that could not run a single step —
