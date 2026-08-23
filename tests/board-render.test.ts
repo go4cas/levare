@@ -226,6 +226,19 @@ describe("a gate card renders an immediate dispatching state while its unit is i
       expect(html).not.toContain('data-verb="reject"');
     }
   });
+
+  // Phase 2 "gate card" goal, item 3 (Finding 83/72's own "status chip vs card" shape): checkout-flow's
+  // open gate sits on `spec` (kestrel's `until: spec.approved`), so a request-changes redo re-invokes
+  // `review` — the loop's COMPANION kind, per F16. Before this fix the row chip read a flat "at gate"
+  // (now "loop · 1/3") regardless of what the daemon was doing; it must now read "dispatching" the
+  // moment that redo starts, in lockstep with the gate card's own indicator — never lag one step
+  // behind it the way a kind-blind or persisted-status-only chip would.
+  test("the unit row's own status chip goes 'dispatching' the instant the loop's companion kind is in flight — not left reading a stale gate label", () => {
+    const running = [{ project: "storefront", unit: "checkout-flow", member: "finch", kind: "review", startedAt: now.toISOString() }];
+    const html = renderProject(repo, "storefront", root, now, running);
+    expect(html).toContain('class="chip is-active">dispatching</span>');
+    expect(html).not.toContain('class="chip is-gate">loop · 1/3</span>');
+  });
 });
 
 describe("projectStatusChip — gate count wins, then active, else idle (NOTES UI1: canonical palette)", () => {
@@ -252,7 +265,10 @@ describe("project screen", () => {
     expect(html).toContain('class="unit__glyph"><svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true">');
     expect(html).not.toContain('class="unit__glyph">▸<');
     expect(html).toContain('class="miniscore unit__score"');
-    expect(html).toContain('class="chip is-gate">at gate</span>');
+    // Phase 2 "gate card" goal, item 3: the row chip now names the gate's KIND (Finding 97) instead of
+    // a flat "at gate" for every shape — this fixture's open gate is round 1/3 of checkout-flow's
+    // spec/review loop (kestrel.md's `until: spec.approved`, max_rounds: 3).
+    expect(html).toContain('class="chip is-gate">loop · 1/3</span>');
   });
 
   // Tier 2 (amendment 1 §2 R4, 1-10s resolution/refetch): a stable per-row key so a same-URL client
