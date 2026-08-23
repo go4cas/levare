@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { Repo } from "../../repo.ts";
-import { esc, openGates, scoreNodes, captionTime, gateBriefingSentence, type ScoreNode, type NodeState } from "../../derive.ts";
+import { esc, openGates, scoreNodes, captionTime, gateBriefingSentence, elapsedLabel, type ScoreNode, type NodeState } from "../../derive.ts";
 import { loadExtras } from "../../extra.ts";
 import { buildTimeline, type TimelineActor } from "../../timeline.ts";
 import type { DaemonInvocation } from "../../daemon.ts";
@@ -47,16 +47,11 @@ export function scoreLineClass(state: NodeState): string {
   return "sstep__line--future";
 }
 
-// "1m 42s" / "1h 04m" — elapsed since a live invocation's real `startedAt` (never a fabricated
-// number; see ScoreNode.live's own doc comment on why the live strip has no token count).
-export function elapsedLabel(startedAtIso: string, now: Date): string {
-  const totalS = Math.max(0, Math.floor((now.getTime() - new Date(startedAtIso).getTime()) / 1000));
-  const h = Math.floor(totalS / 3600);
-  const m = Math.floor((totalS % 3600) / 60);
-  const s = totalS % 60;
-  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
-  return `${m}m ${String(s).padStart(2, "0")}s`;
-}
+// Re-exported so existing callers (board/render.ts's barrel, tests) keep importing it from here — the
+// implementation moved to derive.ts (Phase 2 "gate card" goal, item 2) so shell.ts's gate card can use
+// the exact same helper without a run.ts↔shell.ts import cycle. See ScoreNode.live's own doc comment
+// for why the live strip built on it has no token count.
+export { elapsedLabel };
 
 // Phase 2 cluster 3 part 3: "actor avatars — agent initials on team tint, the Conductor as the only
 // solid-filled disc, the Runner deliberately gray" (base brief, Run view). A ledger row's `actor.name`
