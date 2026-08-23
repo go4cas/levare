@@ -590,10 +590,43 @@ export const CHECKOUT_SYNC_COMMAND = "git stash -u && git reset --hard HEAD";
  * marker inside untrusted post-approval content (see validate.ts#stripCheckoutSyncNotice's own doc
  * for why that distinction is load-bearing). One function, called from both the write side and the
  * read side — the text can't drift between them, and there is nothing here for member-authored
- * content to imitate: a match requires reproducing this exact string, which is not a mutation. */
+ * content to imitate: a match requires reproducing this exact string, which is not a mutation.
+ *
+ * STOP BEFORE YOU EDIT THIS STRING. Every artifact ever approved with the checkout-sync notice
+ * attached has THIS EXACT TEXT baked into its own pre-approval baseline — validate.ts reconstructs it
+ * from THIS function to recognize and strip that notice as an approval-time write, not a mutation.
+ * Changing the wording here, in place, retroactively breaks that recognition for every artifact
+ * approved under the old wording: `stripCheckoutSyncNotice` stops matching, the notice reads as
+ * unexplained body drift, and MODIFIED_AFTER_APPROVAL fires on a byte-identical, never-touched file.
+ * This is exactly how ~/source/jot-studio went down on 2026-08-23 — PR #26 reworded this function,
+ * and every merge artifact approved under the pre-#26 wording failed validation from that point on,
+ * with nothing else about them ever having changed.
+ *
+ * Before changing the return value below: copy the CURRENT body, verbatim, into a new entry at the
+ * end of `FORMER_CHECKOUT_SYNC_NOTICES` (below), dated and commented with the PR retiring it. Only
+ * then edit the wording here. Skipping that step is the mistake — this function has no way to catch
+ * it for you; the array is what makes the old wording still recognizable afterward. */
 export function formatCheckoutSyncNotice(defaultBranch: string): string {
   return `**Checkout out of sync:** \`${defaultBranch}\` was checked out in the project repo's own working tree when this merge landed. This merge never touches that working tree by design (M4) — \`git status\` there will not match the merge until synced: files it introduced show staged for deletion, files it modified show staged as reversions to their pre-merge content. Run \`${CHECKOUT_SYNC_COMMAND}\` in the project repo to bring it back in line. The \`stash -u\` preserves any uncommitted work of your own there.`;
 }
+
+/**
+ * Every RETIRED wording of `formatCheckoutSyncNotice`, oldest first — the notice text is a versioned
+ * schema element, not free-form prose (an artifact's approval baseline can only ever have been written
+ * under whichever wording was current the day it was approved). `stripCheckoutSyncNotice` (validate.ts)
+ * tries the CURRENT wording first, then every entry here, so an artifact approved years ago under a
+ * since-retired wording still validates clean. Append-only: never edit an entry in place once an
+ * artifact could have been approved under it — that would reintroduce the exact 2026-08-23 outage this
+ * array exists to prevent, just one layer down. Each entry must reproduce its wording byte-for-byte, as
+ * `formatCheckoutSyncNotice` returned it during its own lifetime.
+ */
+export const FORMER_CHECKOUT_SYNC_NOTICES: Array<(defaultBranch: string) => string> = [
+  // 2026-08-20 (PR #22/#23, introduced) – 2026-08-22 (PR #26, retired): named only the deletion shape
+  // ("will show every file it introduced staged for deletion until synced"), not the modified-file /
+  // staged-reversion shape #26 added once that second shape was observed live against `jot`.
+  (defaultBranch) =>
+    `**Checkout out of sync:** \`${defaultBranch}\` was checked out in the project repo's own working tree when this merge landed. This merge never touches that working tree by design (M4) — \`git status\` there will show every file it introduced staged for deletion until synced. Run \`${CHECKOUT_SYNC_COMMAND}\` in the project repo to bring it back in line. The \`stash -u\` preserves any uncommitted work of your own there.`,
+];
 
 // ---------------------------------------------------------------------------
 // The merge gate artifact itself — levare's own synthetic content (never a member's), same posture

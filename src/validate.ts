@@ -16,7 +16,7 @@ import { kindMatches } from "./flow.ts";
 import { SDK_TOOL_NAMES } from "./sdk-transport.ts";
 import type { SandboxDetection } from "./sandbox.ts";
 import { approvalExemptFields } from "./approval-fields.ts";
-import { formatCheckoutSyncNotice } from "./merge.ts";
+import { formatCheckoutSyncNotice, FORMER_CHECKOUT_SYNC_NOTICES } from "./merge.ts";
 export type { OverlayFile } from "./overlay.ts";
 
 export interface ValidationError {
@@ -2727,16 +2727,28 @@ function stripApprovalStamp(src: string, kind: string): string {
 // comparison mismatch (MODIFIED_AFTER_APPROVAL) instead of being laundered through. Called identically
 // on both baseline and current: the baseline (pre-approval) never legitimately ends with this exact
 // text, so it's always a no-op there.
+//
+// The notice's WORDING is itself a versioned schema element, not free-form prose (the ~/source/
+// jot-studio outage, 2026-08-23 — see formatCheckoutSyncNotice's own doc): an artifact approved before
+// PR #26 has PR #26's predecessor's wording baked into its baseline forever, and reconstructing only
+// today's wording can never match it. Tries the current wording first (the common case), then every
+// retired one in `FORMER_CHECKOUT_SYNC_NOTICES`, oldest-schema-element treatment applied uniformly —
+// each candidate still requires the SAME exact, byte-for-byte suffix match; none of this loosens the
+// match into a pattern/marker search.
 function stripCheckoutSyncNotice(src: string, defaultBranch: string | null): string {
   if (!defaultBranch) return src;
-  const suffix = `\n\n${formatCheckoutSyncNotice(defaultBranch)}\n`;
-  if (!src.endsWith(suffix)) return src;
-  // The writer builds this suffix onto `body.trimEnd()` (gateops.ts#doApproveMerge), consuming the
-  // single trailing newline every `kind: merge` body carries (formatMergeArtifact's own convention —
-  // this notice is the only body content ANY approval writes, and only for this kind). Re-add that one
-  // newline so the reconstructed content matches the pre-notice baseline exactly, not merely up to
-  // trailing whitespace.
-  return src.slice(0, -suffix.length) + "\n";
+  for (const format of [formatCheckoutSyncNotice, ...FORMER_CHECKOUT_SYNC_NOTICES]) {
+    const suffix = `\n\n${format(defaultBranch)}\n`;
+    if (src.endsWith(suffix)) {
+      // The writer builds this suffix onto `body.trimEnd()` (gateops.ts#doApproveMerge), consuming the
+      // single trailing newline every `kind: merge` body carries (formatMergeArtifact's own
+      // convention — this notice is the only body content ANY approval writes, and only for this
+      // kind). Re-add that one newline so the reconstructed content matches the pre-notice baseline
+      // exactly, not merely up to trailing whitespace.
+      return src.slice(0, -suffix.length) + "\n";
+    }
+  }
+  return src;
 }
 
 // realpath, tolerant of a path that does not resolve (returns the input unchanged).
