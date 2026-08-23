@@ -22,6 +22,8 @@ import {
   createDispatchWorktree,
   commitDispatchWorktree,
   checkoutBehindMerge,
+  formatCheckoutSyncNotice,
+  CHECKOUT_SYNC_COMMAND,
 } from "../src/merge.ts";
 import { parseArtifactDoc } from "../src/repo.ts";
 import { validateArtifactSource } from "../src/validate.ts";
@@ -387,6 +389,20 @@ describe("checkoutBehindMerge (checkout-sync ruling)", () => {
       rmrf(repo);
     }
   });
+});
+
+// Enforces the two-step formatCheckoutSyncNotice's own doc comment asks for, rather than leaving it to
+// memory (the 2026-08-23 ~/source/jot-studio outage was exactly a step someone had no way to be
+// reminded of). Pinned byte-for-byte on purpose: the day this wording changes again, THIS is the test
+// that fails, and its failure IS the prompt — copy the old body into a new dated entry at the end of
+// FORMER_CHECKOUT_SYNC_NOTICES (validate.ts#stripCheckoutSyncNotice tries every entry there), then
+// update this pin to match the new wording. A test that never fails on an intentional edit would be
+// useless here; one that fails elsewhere for the same edit (a snapshot buried in an unrelated describe
+// block) would be missed. This is deliberately the one place that catches it, named for what it's for.
+test("formatCheckoutSyncNotice's wording is pinned — changing it is a two-step, and this failing is step one's reminder", () => {
+  expect(formatCheckoutSyncNotice("main")).toBe(
+    `**Checkout out of sync:** \`main\` was checked out in the project repo's own working tree when this merge landed. This merge never touches that working tree by design (M4) — \`git status\` there will not match the merge until synced: files it introduced show staged for deletion, files it modified show staged as reversions to their pre-merge content. Run \`${CHECKOUT_SYNC_COMMAND}\` in the project repo to bring it back in line. The \`stash -u\` preserves any uncommitted work of your own there.`,
+  );
 });
 
 describe("createDispatchWorktree (NOTES R4-SANDBOX, Ruling 1)", () => {
