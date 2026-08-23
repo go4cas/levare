@@ -317,6 +317,9 @@ function toArtifact(d: Record<string, YamlValue>, body: string): Artifact {
     execution: (d.execution as Artifact["execution"]) ?? null,
     merge: (d.merge as Artifact["merge"]) ?? null,
     merge_result: (d.merge_result as Artifact["merge_result"]) ?? null,
+    // Reserved for kind: review — absent (null) means NOT RECORDED, never fabricated as either enum
+    // value (see types.ts's own doc on why that distinction matters).
+    verdict: (d.verdict as Artifact["verdict"]) ?? null,
     sandbox: (d.sandbox as Artifact["sandbox"]) ?? null,
     registry: (d.registry as string | null) ?? null,
     code_commit: (d.code_commit as string | null) ?? null,

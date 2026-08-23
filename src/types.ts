@@ -389,6 +389,15 @@ export interface Artifact {
   merge?: MergeInfo | null;
   /** NOTES MERGE-1: reserved for `kind: merge` — set by levare only on a successful `approve`. */
   merge_result?: MergeResultRecord | null;
+  /** Ruling 2026-08-23 ("the gate card is where decisions happen"): reserved for `kind: review` — the
+   * critic's own verdict, declared directly by the critic, never extracted from body prose (see
+   * validate.ts's own schema doc for the full reasoning — extraction was rejected against real data
+   * where nine of nine reviews read CHANGES REQUESTED and `status: approved` means the CONDUCTOR
+   * approved the review artifact, never that the critic's verdict was positive). Absent means NOT
+   * RECORDED — predates this field, or a critic whose own prompt hasn't been updated to write it yet —
+   * a caller must render that as its own explicit state, never default it to either value. Advisory
+   * only: never read by flow.ts#untilSatisfied or any loop-resolution path. */
+  verdict?: "APPROVED" | "CHANGES REQUESTED" | null;
   /** NOTES R4-SANDBOX (v2, Ruling 2): the OS-level sandbox enforcement a `kind: cli` member's spawn
    * actually ran under, when this artifact was produced by one — "full" (filesystem AND network
    * confined), "fs-only" (a filesystem-only fallback — no working bubblewrap, but the kernel still

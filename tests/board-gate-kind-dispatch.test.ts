@@ -180,3 +180,65 @@ describe("gate card dispatching state renders elapsed + round n/m, not just stat
     expect(html).toContain('class="pending__label">dispatching lyra · spec… · 0m 30s</span>');
   });
 });
+
+// Ruling 2026-08-23 ("the gate card is where decisions happen", Findings 104/105): the review's own
+// verdict, declared in frontmatter, renders directly on the card — never buried in truncated prose,
+// never silently omitted, and never guessed when absent. A card is a pure function of on-disk data
+// (gateCardHtml, Repo+OpenGate+now), so a fabricated `verdict` field is enough to exercise all three
+// states without a real critic dispatch.
+describe("gate card renders the review's own verdict, declared — never extracted, never guessed", () => {
+  const NOW = new Date("2026-07-17T02:00:00.000Z");
+
+  function reviewGate(art: Artifact): OpenGate {
+    return { type: "artifact", project: "acme", unit: "flow", target: art.id, artifact: art, label: "review" };
+  }
+
+  test("verdict: CHANGES REQUESTED renders plainly, not read off status", () => {
+    const art = artifact({ kind: "review", id: "review-flow-v1", verdict: "CHANGES REQUESTED" });
+    const html = gateCardHtml(makeRepo(art), reviewGate(art), NOW);
+    expect(html).toContain("Verdict: CHANGES REQUESTED");
+    expect(html).not.toContain("Verdict not recorded");
+    expect(html).not.toContain("Verdict: APPROVED");
+  });
+
+  test("verdict: APPROVED renders plainly", () => {
+    const art = artifact({ kind: "review", id: "review-flow-v1", verdict: "APPROVED", status: "approved" });
+    const html = gateCardHtml(makeRepo(art), reviewGate(art), NOW);
+    expect(html).toContain("Verdict: APPROVED");
+    expect(html).not.toContain("Verdict not recorded");
+  });
+
+  // The exact hazard the ruling named: `status: approved` means the CONDUCTOR approved the review
+  // artifact, never that the critic's own verdict was positive. review-find-entries-v1 (the real
+  // artifact this finding is drawn from) is `status: approved` with no verdict recorded at all (it
+  // predates the field) and CHANGES REQUESTED in its body — the card must not read `status` as a
+  // stand-in for verdict, in either direction.
+  test("status: approved with no verdict recorded renders 'not recorded' — never inferred as APPROVED from status", () => {
+    const art = artifact({ kind: "review", id: "review-find-entries-v1", status: "approved", approved_by: "cas 2026-08-21" });
+    const html = gateCardHtml(makeRepo(art), reviewGate(art), NOW);
+    expect(html).toContain("Verdict not recorded");
+    expect(html).not.toContain("Verdict: APPROVED");
+    expect(html).not.toContain("Verdict: CHANGES REQUESTED");
+  });
+
+  test("no verdict field at all (every review this product has ever produced, pre-ruling) renders 'not recorded', not silence", () => {
+    const art = artifact({ kind: "review", id: "review-flow-v1" });
+    expect(art.verdict).toBeUndefined();
+    const html = gateCardHtml(makeRepo(art), reviewGate(art), NOW);
+    expect(html).toContain("Verdict not recorded");
+  });
+
+  test("a non-review kind never shows a verdict slot at all", () => {
+    const art = artifact({ kind: "spec", id: "spec-flow-v1" });
+    const gate: OpenGate = { type: "artifact", project: "acme", unit: "flow", target: art.id, artifact: art, label: "spec" };
+    const html = gateCardHtml(makeRepo(art), gate, NOW);
+    expect(html).not.toContain("gate__verdict");
+    expect(html).not.toContain("Verdict");
+  });
+
+  test("the same three states render identically in the Orchestrator's cta card", () => {
+    const changesRequested = artifact({ kind: "review", id: "review-flow-v1", verdict: "CHANGES REQUESTED" });
+    const html = gateCardHtml(makeRepo(changesRequested), reviewGate(changesRequested), NOW, { cta: true });
+    expect(html).toContain("Verdict: CHANGES REQUESTED");
+  });
+});
