@@ -5,6 +5,7 @@ import { assertExitCode, assertSpawnFailed, spawnStdout } from "./spawn-helpers.
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { gzipSync } from "node:zlib";
 
 // NOTES DIST6: scripts/install.sh downloads real GitHub Release assets in production. This suite
 // never touches live GitHub — it builds a local fixture release layout (a temp dir shaped like
@@ -22,12 +23,24 @@ function fakeBinary(tag: string): string {
   return `#!/bin/sh\necho "levare 0.0.0-fixture (${tag})"\n`;
 }
 
-function writeAsset(dir: string, asset: string, tag: string) {
+// The pre-DIST8 fixture shape: a raw, uncompressed asset. Still real — it's what a release cut
+// before compression shipped, and what a LEVARE_VERSION pin to one of those must still fall back to.
+function writeRawAsset(dir: string, asset: string, tag: string) {
   mkdirSync(dir, { recursive: true });
   const content = fakeBinary(tag);
   const assetPath = join(dir, asset);
   writeFileSync(assetPath, content);
   chmodSync(assetPath, 0o755);
+  writeFileSync(join(dir, "SHA256SUMS"), `${sha256(content)}  ${asset}\n`);
+}
+
+// NOTES DIST8: the current fixture shape — a real gzip-compressed asset, matching what the release
+// workflow now uploads. SHA256SUMS records the DEcompressed content's hash under the raw asset name,
+// matching install.sh's own checksum-after-decompress order.
+function writeAsset(dir: string, asset: string, tag: string) {
+  mkdirSync(dir, { recursive: true });
+  const content = fakeBinary(tag);
+  writeFileSync(join(dir, `${asset}.gz`), gzipSync(Buffer.from(content)));
   writeFileSync(join(dir, "SHA256SUMS"), `${sha256(content)}  ${asset}\n`);
 }
 
@@ -146,6 +159,68 @@ describe("version resolution (NOTES DIST6)", () => {
     );
 
     assertSpawnFailed("scripts/install.sh", result);
+    expect(existsSync(binDir)).toBe(false);
+  });
+});
+
+// NOTES DIST8: release assets ship gzip-compressed. `curl | sh` always fetches this script fresh
+// from `main`, so a CURRENT script must still install correctly from an OLD release pinned via
+// LEVARE_VERSION that predates compression and published only the raw asset — this is that case,
+// isolated from the version-pinning tests above so a regression here can't hide behind them.
+describe("falling back to a pre-compression release (NOTES DIST8)", () => {
+  test("installs via the raw asset when the pinned release has no .gz at all", () => {
+    const asset = "levare-linux-x64";
+    const fixture = makeFixtureRoot();
+    writeRawAsset(join(fixture, "download", "v0.2.8"), asset, "pre-compression-marker");
+    const unameDir = stubUnameDir("Linux", "x86_64");
+    const binDir = join(scratchDir("bin"), "bin");
+
+    const result = runInstall(
+      baseEnv(unameDir, { LEVARE_RELEASE_BASE_URL: `file://${fixture}`, LEVARE_BIN_DIR: binDir, LEVARE_VERSION: "v0.2.8" }),
+    );
+
+    assertExitCode("scripts/install.sh", result, 0);
+    const bin = spawnSync(join(binDir, "levare"), ["--version"], { encoding: "utf8" });
+    expect(spawnStdout("installed levare --version", bin)).toContain("pre-compression-marker");
+  });
+
+  test("a release with a corrupt/truncated .gz reports decompression failure, distinct from a checksum failure", () => {
+    const asset = "levare-linux-x64";
+    const fixture = makeFixtureRoot();
+    const dir = join(fixture, "latest", "download");
+    mkdirSync(dir, { recursive: true });
+    const content = fakeBinary("ok");
+    const validGzip = gzipSync(Buffer.from(content));
+    // Truncate real gzip bytes rather than writing garbage — reproduces the actual "unexpected end
+    // of file" class of failure a broken/interrupted download produces.
+    writeFileSync(join(dir, `${asset}.gz`), validGzip.subarray(0, validGzip.length - 4));
+    writeFileSync(join(dir, "SHA256SUMS"), `${sha256(content)}  ${asset}\n`);
+    const unameDir = stubUnameDir("Linux", "x86_64");
+
+    const result = runInstall(
+      baseEnv(unameDir, { LEVARE_RELEASE_BASE_URL: `file://${fixture}`, LEVARE_BIN_DIR: join(scratchDir("bin"), "bin") }),
+    );
+
+    assertSpawnFailed("scripts/install.sh", result);
+    expect(result.stderr).toContain("failed to decompress");
+    expect(result.stderr).not.toContain("checksum verification failed");
+  });
+
+  test("a checksum mismatch on a compressed release still refuses the install, verified after decompression", () => {
+    const asset = "levare-linux-x64";
+    const fixture = makeFixtureRoot();
+    const dir = join(fixture, "latest", "download");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${asset}.gz`), gzipSync(Buffer.from(fakeBinary("tampered"))));
+    // Deliberately wrong hash — does not match the gzip's decompressed content above.
+    writeFileSync(join(dir, "SHA256SUMS"), `${"0".repeat(64)}  ${asset}\n`);
+    const unameDir = stubUnameDir("Linux", "x86_64");
+    const binDir = join(scratchDir("bin"), "bin");
+
+    const result = runInstall(baseEnv(unameDir, { LEVARE_RELEASE_BASE_URL: `file://${fixture}`, LEVARE_BIN_DIR: binDir }));
+
+    assertSpawnFailed("scripts/install.sh", result);
+    expect(result.stderr).toContain("checksum verification failed");
     expect(existsSync(binDir)).toBe(false);
   });
 });
