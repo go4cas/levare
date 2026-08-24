@@ -41,26 +41,30 @@ import { buildMemberEnv, teamOf, subscriptionConnector, scopeHome, scopeHomeForC
 import { connectStdioMcpServer, type McpToolCallResult } from "./mcp-client.ts";
 import { allowedTools } from "./guardrails.ts";
 import { assembleContext, unitArtifactPaths } from "./context.ts";
-import { asyncSdkTransport, bunSdkTransport, resolveNativeBinary, asSdkTransportResult, type AsyncSdkTransport, type SdkTransport, type SdkWorkerResponse } from "./sdk-transport.ts";
+import {
+  asyncSdkTransport,
+  bunSdkTransport,
+  resolveNativeBinary,
+  asSdkTransportResult,
+  LEVARE_CLAUDE_CONFIG_DIR,
+  type AsyncSdkTransport,
+  type SdkTransport,
+  type SdkWorkerResponse,
+  type WrapWorkerSpawn,
+} from "./sdk-transport.ts";
 import { buildDispatchTrace, writeDispatchTrace } from "./dispatch-trace.ts";
 import { repoCapabilities } from "./repo.ts";
 import { resolveProjectRepoPath, workBranchName, branchExists, createDispatchWorktree, commitDispatchWorktree, type DispatchCommitResult } from "./merge.ts";
 import { isSafeHomeDotpath, detectFetchAtDispatchLauncher } from "./validate.ts";
 import { detectSandbox, wrapForSandbox, resolveDarwinUserTempDir, type SandboxDetection, type SandboxLevel, type SandboxPolicy, type WrappedSpawn } from "./sandbox.ts";
 import { registryStateHash, memberIdentity } from "./git.ts";
+import { isCompiledBuild } from "./version.ts";
 import type { Pricing } from "./pricing.ts";
 import type { Repo } from "./repo.ts";
 import type { MemberRunner } from "./runner.ts";
 import type { Agent, Connector, Receipt } from "./types.ts";
 
 export class AdapterError extends Error {}
-
-// Finding 75 (part 1, 2026-08-24): the fixed, levare-authored explanation stamped as `sandbox_reason`
-// alongside every `sandbox: not-wrapped` artifact (author(), below) — NOT an author's own declaration
-// (unlike a `kind: cli` member's `sandbox: unsandboxed` reason, which is free text the studio author
-// writes). Kept as one constant so the artifact's stored text and any future reference to it (tests,
-// docs) can never drift apart.
-export const NATIVE_SANDBOX_REASON = "native members are never wrapped by levare's OS-level sandbox — an unwired mechanism, not a host limitation.";
 
 // What every adapter is handed to do its job. `context` is the §6-assembled prompt; `env` is the
 // allowlisted environment; `tools` is the native tool allowlist. Adapters that don't need a field
@@ -145,14 +149,14 @@ export interface InvokeRequest {
  * model cannot know its real token counts/cost, so this must never be re-derived by parsing the
  * returned doc's frontmatter; see `AdapterRunner#finalize`. */
 export interface NativeBoundary {
-  invoke(req: InvokeRequest): { doc: string; receipt?: Receipt };
+  invoke(req: InvokeRequest): { doc: string; receipt?: Receipt; sandbox?: SandboxLevel };
 }
 
 /** The non-blocking counterpart to `NativeBoundary` (NOTES F8) — same shape, Promise-returning,
  * mirroring `CliSpawn`/`AsyncCliSpawn`'s split. What `productionAdapterRunner`'s live `produceAsync`
  * path actually drives, so a real native SDK call never blocks `levare serve`'s event loop. */
 export interface AsyncNativeBoundary {
-  invoke(req: InvokeRequest): Promise<{ doc: string; receipt?: Receipt }>;
+  invoke(req: InvokeRequest): Promise<{ doc: string; receipt?: Receipt; sandbox?: SandboxLevel }>;
 }
 
 /** The remote MCP boundary — synchronous, used only by the phase-2 batch `Runner` (`levare replay`),
@@ -188,6 +192,19 @@ export interface SdkNativeBoundaryOptions {
    * (replay.ts) passes `repo.root` on every real construction, so a live `levare serve` dispatch always
    * gets one. */
   studioRoot?: string;
+  /**
+   * Finding 75 (part 2): the repo this native dispatch's sandbox policy is built against
+   * (`buildNativeSandboxPolicy`) — absent (every test double in this codebase, mirroring `studioRoot`'s
+   * own "no repo, no trace" convention above) means the worker's own OS-level spawn is never wrapped at
+   * all, exactly the pre-this-unit behaviour; `productionAdapterRunner` (replay.ts) always supplies it,
+   * mirroring `createAsyncStdioRemoteBoundary(repo, opts)`'s own required-positional `repo` — kept
+   * optional here instead (rather than a second required param) so every existing mocked-transport test
+   * construction in this codebase keeps compiling unchanged.
+   */
+  repo?: Repo;
+  /** Test-only override of OS sandbox primitive detection (mirrors `StdioRemoteBoundaryOptions.
+   * sandboxDetection`) — production never sets this; a fresh, real `detectSandbox()` runs per dispatch. */
+  sandboxDetection?: SandboxDetection;
 }
 
 export interface AsyncSdkNativeBoundaryOptions {
@@ -198,6 +215,10 @@ export interface AsyncSdkNativeBoundaryOptions {
   pathToClaudeCodeExecutable?: string;
   /** See `SdkNativeBoundaryOptions.studioRoot` — identical role, async boundary. */
   studioRoot?: string;
+  /** See `SdkNativeBoundaryOptions.repo` — identical role, async boundary. */
+  repo?: Repo;
+  /** See `SdkNativeBoundaryOptions.sandboxDetection` — identical role, async boundary. */
+  sandboxDetection?: SandboxDetection;
 }
 
 // Shared by both the sync and async native boundary constructors: the worker request built from an
@@ -381,13 +402,15 @@ export function createSdkNativeBoundary(opts: SdkNativeBoundaryOptions = {}): Na
   // genuinely existed as a sibling node_modules package).
   const pathToClaudeCodeExecutable = opts.pathToClaudeCodeExecutable ?? resolveNativeBinary() ?? undefined;
   return {
-    invoke(req: InvokeRequest): { doc: string; receipt?: Receipt } {
+    invoke(req: InvokeRequest): { doc: string; receipt?: Receipt; sandbox?: SandboxLevel } {
       const startedAt = new Date().toISOString();
       const env = nativeSpawnEnv(req, baseEnv);
-      const res = transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable), { env, timeoutMs });
+      let sandboxLevel: SandboxLevel | undefined;
+      const wrapWorkerSpawn = nativeWrapWorkerSpawn(opts.repo, req, pathToClaudeCodeExecutable, baseEnv, opts.sandboxDetection, (l) => (sandboxLevel = l));
+      const res = transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable), { env, timeoutMs, wrapWorkerSpawn });
       traceNativeDispatch(opts.studioRoot, req, res, { startedAt, timeoutMs, baseEnv, pathToClaudeCodeExecutable });
       if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`);
-      return { doc: res.result, receipt: res.receipt };
+      return { doc: res.result, receipt: res.receipt, sandbox: sandboxLevel };
     },
   };
 }
@@ -407,13 +430,15 @@ export function createAsyncSdkNativeBoundary(opts: AsyncSdkNativeBoundaryOptions
   const timeoutMs = opts.timeoutMs ?? 600_000;
   const pathToClaudeCodeExecutable = opts.pathToClaudeCodeExecutable ?? resolveNativeBinary() ?? undefined;
   return {
-    async invoke(req: InvokeRequest): Promise<{ doc: string; receipt?: Receipt }> {
+    async invoke(req: InvokeRequest): Promise<{ doc: string; receipt?: Receipt; sandbox?: SandboxLevel }> {
       const startedAt = new Date().toISOString();
       const env = nativeSpawnEnv(req, baseEnv);
-      const res = await transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable), { env, timeoutMs });
+      let sandboxLevel: SandboxLevel | undefined;
+      const wrapWorkerSpawn = nativeWrapWorkerSpawn(opts.repo, req, pathToClaudeCodeExecutable, baseEnv, opts.sandboxDetection, (l) => (sandboxLevel = l));
+      const res = await transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable), { env, timeoutMs, wrapWorkerSpawn });
       traceNativeDispatch(opts.studioRoot, req, res, { startedAt, timeoutMs, baseEnv, pathToClaudeCodeExecutable });
       if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`);
-      return { doc: res.result, receipt: res.receipt };
+      return { doc: res.result, receipt: res.receipt, sandbox: sandboxLevel };
     },
   };
 }
@@ -1167,6 +1192,112 @@ export function buildRemoteSandboxPolicy(repo: Repo, req: InvokeRequest, connect
   };
 }
 
+// Finding 75 (part 2): the per-uid base directory `@anthropic-ai/claude-agent-sdk/extract#
+// extractFromBunfs` (vendored at `node_modules/@anthropic-ai/claude-agent-sdk/extractFromBunfs.js` —
+// read directly, never guessed) extracts a COMPILED worker's own embedded native binary into, before
+// spawning it: `{tmpdir()}/claude-{uid}` on POSIX, `{tmpdir()}/claude` on win32 — computed here from the
+// SAME formula that file uses, never by calling extraction itself (only sdk-worker.ts's own process may
+// safely do that; see sdk-transport.ts's own module comment on why this parent process never can). The
+// per-VERSION content-hash subdirectory extraction actually writes into (and then executes, as the
+// resolved `pathToClaudeCodeExecutable`) isn't knowable without extracting, so the grant covers the
+// whole per-uid base, read-write — every version this host's worker might ever extract, across every
+// native dispatch it ever runs, not just this one.
+// Exported (mirrors `resolveDarwinUserTempDir`'s own testable shape) so the formula itself has a direct
+// unit test, independent of `process.platform`/`process.getuid` on whatever host `bun test` runs on.
+export function nativeBunfsExtractionBase(opts: { platform?: string; getuid?: () => number } = {}): string {
+  const platform = opts.platform ?? process.platform;
+  const getuid = opts.getuid ?? process.getuid?.bind(process) ?? (() => 0);
+  return pathJoin(tmpdir(), platform === "win32" ? "claude" : `claude-${getuid()}`);
+}
+
+/**
+ * Finding 75 (part 2) — the native-dispatch sibling of `buildDispatchSandboxPolicy`/
+ * `buildRemoteSandboxPolicy`: wraps the SDK WORKER's own OS-level self-invocation spawn
+ * (sdk-transport.ts#workerSpawnArgv), never the `claude` subprocess the SDK spawns internally one layer
+ * further down (a process this module cannot see or wrap directly — confining the worker that spawns it
+ * is what actually confines the whole tree, since the worker's own mount/seatbelt namespace applies to
+ * every descendant it forks).
+ *
+ * `cwd` here is the WORKER's own OS-level spawn cwd (sdk-transport.ts#workerSpawnCwd) — NOT the dispatch
+ * worktree. The two are the SAME path for a `kind: cli` member (`buildDispatchSandboxPolicy`'s own `cwd`
+ * param IS the worktree); for native they differ by construction: `workerSpawnCwd` is `LEVARE_ROOT` (a
+ * source run) or the inherited ambient cwd (a compiled self-invocation), consumed by the OS spawn
+ * itself, while the worktree (`req.projectRepoPath`) reaches the SDK one layer deeper via `query({
+ * options: { cwd } })`, read only once the worker process is already running. Reusing
+ * `AdapterRunner#sandboxWrap`'s cli-shaped call verbatim would bind the WRONG path read-write and leave
+ * the worktree itself entirely ungranted — it therefore gets its own explicit `writablePaths` entry
+ * here, independent of what `cwd` is bound to (and skipped on the rare case a project has no real local
+ * checkout at all, where `req.projectRepoPath` is undefined — nothing to grant).
+ *
+ * `allowNetwork` is unconditionally `true` — never gated on `env.ts#memberNetworkAllowed` the way
+ * `buildDispatchSandboxPolicy` gates a `cli` member's network reach on holding a granted connector.
+ * Every native dispatch calls the Anthropic API to do its one job; network is the mechanism this kind
+ * runs on, not an optional connector grant.
+ *
+ * Two grants exist here and nowhere else: `nativeBunfsExtractionBase` (compiled builds only — written
+ * AND executed by the worker itself) and `LEVARE_CLAUDE_CONFIG_DIR` (sdk-transport.ts — created by this
+ * process, read/written by the SDK's own inner `claude` CLI subprocess, on every run mode). Neither has
+ * an existing `SandboxPolicy` field any other kind ever points at.
+ */
+export function buildNativeSandboxPolicy(
+  repo: Repo,
+  req: InvokeRequest,
+  cwd: string,
+  pathToClaudeCodeExecutable: string | undefined,
+  baseEnv?: Record<string, string | undefined>,
+): SandboxPolicy {
+  const { readOnlyPaths, operatorHome, darwinTempDir } = baseSandboxContext(repo, cwd, undefined, req.env.PATH, baseEnv);
+  const treeDirs = (p: string) => [dirname(p), dirname(dirname(p))];
+  const sub = subscriptionConnector(repo, req.member);
+  const grantedHomeTargets = operatorHome ? (sub?.home ?? []).filter(isSafeHomeDotpath).map((dotpath) => pathJoin(operatorHome, dotpath)) : [];
+  return {
+    cwd,
+    home: req.env.HOME,
+    allowNetwork: true,
+    // A source-tree run resolves a real, immediately-usable binary path (NOTES phase-7 K14) — grant its
+    // own install tree exactly like a `cli` member's resolved argv[0] gets (baseSandboxContext's own
+    // `resolvedBin` reallow); a compiled run leaves this undefined (resolved+extracted inside the worker
+    // itself, NOTES DIST7) and relies on `nativeBunfsExtractionBase` below instead.
+    readOnlyPaths: [...readOnlyPaths, ...(pathToClaudeCodeExecutable ? treeDirs(pathToClaudeCodeExecutable) : [])],
+    operatorHome,
+    grantedHomeTargets,
+    writablePaths: [
+      ...(req.projectRepoPath && req.projectRepoPath !== cwd ? [req.projectRepoPath] : []),
+      ...(req.dispatchGitWriteGrant?.subpaths ?? []),
+      LEVARE_CLAUDE_CONFIG_DIR,
+      ...(isCompiledBuild() ? [nativeBunfsExtractionBase()] : []),
+    ],
+    gitWriteGrant: req.dispatchGitWriteGrant,
+    darwinXcrunTempDir: darwinTempDir,
+  };
+}
+
+// Finding 75 (part 2): shared by both the sync and async native boundary constructors — builds the
+// `WrapWorkerSpawn` closure `sdk-transport.ts` calls (only ever on the real self-invocation spawn path;
+// see its own doc) with a fresh, un-cached `detectSandbox()` per dispatch (sandbox.ts's own "never
+// assumed to still hold" posture), and reports the resulting enforcement level back to the caller via
+// `onLevel` — `transport.run()` calls the wrap closure SYNCHRONOUSLY, before its own first `await`
+// (async transport) or before returning at all (sync transport), so `onLevel` has always fired by the
+// time either `run()` call resolves. `undefined` when `opts.repo` was never supplied (every test double
+// in this codebase) — the pre-this-unit behaviour, unchanged: the worker spawns unwrapped.
+function nativeWrapWorkerSpawn(
+  repo: Repo | undefined,
+  req: InvokeRequest,
+  pathToClaudeCodeExecutable: string | undefined,
+  baseEnv: Record<string, string | undefined>,
+  sandboxDetection: SandboxDetection | undefined,
+  onLevel: (level: SandboxLevel) => void,
+): WrapWorkerSpawn | undefined {
+  if (!repo) return undefined;
+  return (argv, cwd) => {
+    const detection = sandboxDetection ?? detectSandbox();
+    const policy = buildNativeSandboxPolicy(repo, req, cwd, pathToClaudeCodeExecutable, baseEnv);
+    const wrapped = wrapForSandbox(argv, policy, detection);
+    onLevel(wrapped.level);
+    return wrapped;
+  };
+}
+
 /**
  * The phase-3 MemberRunner: resolves each member to its adapter, assembles context, scopes env, runs
  * it, and normalizes the receipt. Returns { doc, receipt } — the Runner validates the doc and records
@@ -1205,6 +1336,7 @@ export class AdapterRunner implements MemberRunner {
           const res = this.withHomeScope(member, req2, (r) => this.opts.native.invoke(r));
           raw = res.doc;
           receipt = res.receipt;
+          sandbox = res.sandbox;
           break;
         }
         case "remote":
@@ -1244,6 +1376,7 @@ export class AdapterRunner implements MemberRunner {
           const res = await this.withHomeScopeAsync(member, req2, async (r) => (this.opts.asyncNative ? await this.opts.asyncNative.invoke(r) : this.opts.native.invoke(r)));
           raw = res.doc;
           receipt = res.receipt;
+          sandbox = res.sandbox;
           break;
         }
         case "remote": {
@@ -1538,30 +1671,28 @@ export class AdapterRunner implements MemberRunner {
       if (finalReceipt.tokens_cache_write !== undefined) lines.push(`  tokens_cache_write: ${finalReceipt.tokens_cache_write ?? "null"}`);
       if (finalReceipt.plan) lines.push(`  plan: ${finalReceipt.plan}`);
     }
-    // NOTES R4-SANDBOX / NOTES MCP-1C: the OS-sandbox enforcement level this member's spawn actually ran
-    // under — a fact about THIS run, independent of `usage`/`unreported` (a member reporting no usage at
-    // all still carries a real sandbox level; never omitted just because nothing else was reported).
-    // `cli` (Ruling 2) and `remote` (ruling R3 — the SAME sandbox wrap, closing MCP-1C's own deferral) are
-    // the only two kinds levare's sandbox mechanism is WIRED to today.
-    //
-    // Finding 75 (part 1, 2026-08-24): `native` is NOT exempt because it has no process to wrap — the SDK
-    // worker's own spawn (sdk-transport.ts#workerSpawnArgv) is a real, wrappable OS process, the exact
-    // argv shape `wrapForSandbox` already takes for `cli`. Both docs/current-gaps.md and this file used to
-    // claim otherwise ("no separate process for this module to wrap") — refuted, corrected here. `native`
-    // is unwrapped today because the wrap is simply never CALLED for this kind — a known gap (part 2 of
-    // the ruling wires it), told below rather than left silent.
-    if ((req.agent.kind === "cli" || req.agent.kind === "remote") && sandbox) lines.push(`sandbox: ${sandbox}`);
-    if (req.agent.kind === "native") lines.push("sandbox: not-wrapped", `sandbox_reason: ${NATIVE_SANDBOX_REASON}`);
+    // NOTES R4-SANDBOX / NOTES MCP-1C / Finding 75 (part 2, 2026-08-24): the OS-sandbox enforcement
+    // level this member's spawn actually ran under — a fact about THIS run, independent of
+    // `usage`/`unreported` (a member reporting no usage at all still carries a real sandbox level; never
+    // omitted just because nothing else was reported). `cli` (Ruling 2), `remote` (ruling R3), and now
+    // `native` (Finding 75 part 2 — the SDK worker's own self-invocation spawn, sdk-transport.ts#
+    // workerSpawnArgv, wrapped by `createSdkNativeBoundary`/`createAsyncSdkNativeBoundary` exactly like a
+    // `cli` member's spawn) share the identical rule: present only when the boundary that actually ran
+    // reported a level. Absent for every kind when the boundary was a mocked/stub double (`replay
+    // --stubs`, most unit tests) — a mock never genuinely wrapped anything, so there is nothing honest to
+    // stamp, mirroring `cli`/`remote`'s own pre-existing convention rather than inventing a native-only
+    // exception to it. `sandbox: not-wrapped` (Finding 75 part 1) is no longer emitted by this binary —
+    // it remains a legal value only on artifacts an OLDER binary already wrote (validate.ts's schema
+    // still accepts it; Finding 99's ruling: never rewrite what an older binary produced).
+    if ((req.agent.kind === "cli" || req.agent.kind === "remote" || req.agent.kind === "native") && sandbox) lines.push(`sandbox: ${sandbox}`);
     // NOTES R4-SANDBOX-APPSERVER: recorded on EVERY artifact this member produces, independent of
     // `sandbox:`'s own value above (which reads "none" identically whether the host simply lacks a
     // primitive or the author declared this member unsandboxeable — the two are NOT the same fact, and
     // silently collapsing them would hide a deliberate, documented decision behind what looks like an
     // ordinary host-capability gap). `req.agent.sandbox_reason` is required by `validate.ts` whenever
-    // `sandbox: unsandboxed` is declared, so this is never emitted without one.
-    //
-    // Finding 75 (part 1): `sandbox_reason` also carries `NATIVE_SANDBOX_REASON` alongside `sandbox:
-    // not-wrapped` above — safe to share the field with the `unsandboxed`-declared case here because the
-    // discriminator between the two is `sandbox`'s own value (`none` vs `not-wrapped`), never this field.
+    // `sandbox: unsandboxed` is declared, so this is never emitted without one. `native` has no such
+    // declared escape hatch (Finding 75 part 2 gives it no `sandbox: unsandboxed` field), so this line
+    // stays cli-only.
     if (req.agent.kind === "cli" && req.agent.sandbox === "unsandboxed" && req.agent.sandbox_reason) {
       lines.push(`sandbox_reason: ${req.agent.sandbox_reason}`);
     }

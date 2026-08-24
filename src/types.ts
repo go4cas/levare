@@ -411,23 +411,25 @@ export interface Artifact {
    * future C1 style-2 loop-resolution consumer (NOTES D8/B3) must explicitly decide whether extracted
    * provenance counts, rather than reaching it by accident via a bare `verdict === "APPROVED"` check. */
   verdict_source?: "declared" | "extracted" | null;
-  /** NOTES R4-SANDBOX (v2, Ruling 2): the OS-level sandbox enforcement a `kind: cli`/`kind: remote`
-   * member's spawn actually ran under, when this artifact was produced by one — "full" (filesystem AND
-   * network confined), "fs-only" (a filesystem-only fallback — no working bubblewrap, but the kernel
-   * still permits an unshare-based mount-namespace confinement), or "none" (no working primitive found
-   * on this host — the spawn ran unconfined; see sandbox.ts). Independent of `usage`/`unreported` — a
-   * cli member that reported no usage at all still carries its real sandbox level, never omitted just
-   * because nothing else was reported.
+  /** NOTES R4-SANDBOX (v2, Ruling 2): the OS-level sandbox enforcement a `kind: cli`/`kind: remote`/
+   * `kind: native` member's spawn actually ran under, when this artifact was produced by one — "full"
+   * (filesystem AND network confined), "fs-only" (a filesystem-only fallback — no working bubblewrap,
+   * but the kernel still permits an unshare-based mount-namespace confinement), or "none" (no working
+   * primitive found on this host — the spawn ran unconfined; see sandbox.ts). Independent of
+   * `usage`/`unreported` — a member that reported no usage at all still carries its real sandbox level,
+   * never omitted just because nothing else was reported. Absent when the producing boundary was a
+   * mocked/stub double (nothing genuine to stamp), or on artifacts predating Ruling 2.
    *
-   * Finding 75 (part 1, 2026-08-24): a fourth value, "not-wrapped", is stamped unconditionally for
-   * every `kind: native` member. This is NOT the same fact as "none" — "none" means a real wrap was
-   * attempted and the host had nothing; "not-wrapped" means levare's sandbox mechanism is never called
-   * for this kind at all, on any host (a known, currently-true gap — see docs/current-gaps.md — not an
-   * architectural exemption; the SDK worker's spawn is a real, wrappable OS process, see
-   * sdk-transport.ts#workerSpawnArgv). `sandbox_reason` carries the fixed explanatory text alongside it
-   * (adapters.ts#author), safely reusing that field because the discriminator between "none" and
-   * "not-wrapped" is `sandbox`'s own value, never sibling-field presence or prose. Absent only on
-   * artifacts predating this ruling. */
+   * Finding 75 (part 1, 2026-08-24; part 2, 2026-08-24): a fourth value, "not-wrapped", was stamped
+   * unconditionally for every `kind: native` member while part 1 was the whole of this ruling — "none"
+   * means a real wrap was attempted and the host had nothing; "not-wrapped" meant levare's sandbox
+   * mechanism was never called for this kind at all, on any host. Part 2 wires it (the SDK worker's own
+   * self-invocation spawn is a real, wrappable OS process — see sdk-transport.ts#workerSpawnArgv —
+   * wrapped by adapters.ts#createSdkNativeBoundary/createAsyncSdkNativeBoundary exactly like a `cli`
+   * member's spawn): a native artifact this binary produces now stamps one of the three live values
+   * above, same as `cli`/`remote`. "not-wrapped" stays in the type only because an artifact an OLDER
+   * binary already wrote may still carry it (never rewritten — Finding 99's ruling); this binary never
+   * writes it again. */
   sandbox?: "full" | "fs-only" | "none" | "not-wrapped" | null;
   /** NOTES REGISTRY-PROVENANCE: a content hash over the governing registry (teams/, agents/,
    * connectors/, projects/, skills/, knowledge/, types/, studio.md) exactly as it stood on disk when

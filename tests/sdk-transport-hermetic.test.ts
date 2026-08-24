@@ -3,7 +3,15 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildQueryOptions } from "../src/sdk-worker.ts";
-import { createAsyncSdkTransport, hermeticSpawnEnv, LEVARE_CLAUDE_CONFIG_DIR, asSdkTransportResult } from "../src/sdk-transport.ts";
+import {
+  createAsyncSdkTransport,
+  createBunSdkTransport,
+  hermeticSpawnEnv,
+  LEVARE_CLAUDE_CONFIG_DIR,
+  asSdkTransportResult,
+  workerSpawnArgv,
+  workerSpawnCwd,
+} from "../src/sdk-transport.ts";
 
 // Phase-7 live-gate fix-up (NOTES K15): a real host hung indefinitely on every call because the
 // spawned CLI inherited the operator's personal Claude Code configuration — a user-installed
@@ -136,6 +144,130 @@ describe("a hung worker (with a hanging grandchild) is fully reaped on timeout",
       // synchronous with OS-level process teardown.
       const reaped = await waitFor(() => !pidIsAlive(grandchildPid), 2000);
       expect(reaped).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (3) Finding 75 (part 2): the worker's own OS-level self-invocation spawn is wrappable
+// ---------------------------------------------------------------------------
+//
+// adapters.ts builds the actual sandbox POLICY (repo/worktree/gitWriteGrant-aware — see
+// tests/adapters.test.ts's own "native adapter — sandboxed real spawn" describe block); this file's
+// job is narrower and lower-level: prove the TRANSPORT CONTRACT itself — `opts.wrapWorkerSpawn`, when
+// given, is called with the EXACT argv/cwd a real self-invocation was about to spawn, whatever it
+// returns is what actually runs, its `cleanup` fires afterward regardless of outcome, and an explicit
+// `workerPath` (every test double in this codebase, including every OTHER test in this file) never
+// engages it at all. Never spawns the real levare worker or the real SDK — a fast, fake replacement
+// script proves the wrap took effect without any network/credential dependency.
+
+function writeFastReplacementWorker(dir: string, body: string): string {
+  const workerPath = join(dir, "replacement-worker.ts");
+  writeFileSync(workerPath, [`await Bun.stdin.text();`, body].join("\n"));
+  return workerPath;
+}
+
+describe("wrapWorkerSpawn — the real self-invocation spawn is wrappable, a workerPath test double never is", () => {
+  test("createBunSdkTransport calls wrapWorkerSpawn with the exact real argv/cwd, and spawns whatever it returns instead", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-wrap-worker-sync-"));
+    try {
+      const replacement = writeFastReplacementWorker(dir, `console.log(JSON.stringify({ ok: true, result: "replaced" }));`);
+      let seenArgv: string[] | undefined;
+      let seenCwd: string | undefined;
+      const transport = createBunSdkTransport(); // no workerPath — the real self-invocation path
+      const res = transport.run(
+        { prompt: "hi" },
+        {
+          env: {},
+          timeoutMs: 5000,
+          wrapWorkerSpawn: (argv, cwd) => {
+            seenArgv = argv;
+            seenCwd = cwd;
+            return { argv: [process.execPath, replacement] };
+          },
+        },
+      );
+      expect(seenArgv).toEqual(workerSpawnArgv());
+      expect(seenCwd).toBe(workerSpawnCwd(undefined) ?? process.cwd());
+      // The REPLACEMENT argv actually ran, not the real (unwrapped) self-invocation — proof the
+      // transport spawns whatever the wrap returned, not what it was originally about to.
+      expect(res.ok).toBe(true);
+      expect((res as { result: string }).result).toBe("replaced");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("cleanup fires after the spawn even when the wrapped spawn itself fails", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-wrap-worker-cleanup-"));
+    try {
+      const replacement = writeFastReplacementWorker(dir, `process.exit(1);`);
+      let cleaned = false;
+      const transport = createBunSdkTransport();
+      const res = transport.run(
+        { prompt: "hi" },
+        {
+          env: {},
+          timeoutMs: 5000,
+          wrapWorkerSpawn: () => ({ argv: [process.execPath, replacement], cleanup: () => (cleaned = true) }),
+        },
+      );
+      expect(res.ok).toBe(false);
+      expect(cleaned).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an explicit workerPath (a test double, exactly like every other test in this file) never calls wrapWorkerSpawn at all", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-wrap-worker-double-"));
+    try {
+      const doubleWorker = writeFastReplacementWorker(dir, `console.log(JSON.stringify({ ok: true, result: "double" }));`);
+      let wrapCalled = false;
+      const transport = createBunSdkTransport(doubleWorker);
+      const res = transport.run(
+        { prompt: "hi" },
+        {
+          env: {},
+          timeoutMs: 5000,
+          wrapWorkerSpawn: () => {
+            wrapCalled = true;
+            return { argv: ["should-never-run"] };
+          },
+        },
+      );
+      expect(wrapCalled).toBe(false);
+      expect(res.ok).toBe(true);
+      expect((res as { result: string }).result).toBe("double");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the async transport mirrors the sync one exactly — same wrap contract, non-blocking spawn", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-wrap-worker-async-"));
+    try {
+      const replacement = writeFastReplacementWorker(dir, `console.log(JSON.stringify({ ok: true, result: "async-replaced" }));`);
+      let seenArgv: string[] | undefined;
+      let cleaned = false;
+      const transport = createAsyncSdkTransport();
+      const res = await transport.run(
+        { prompt: "hi" },
+        {
+          env: {},
+          timeoutMs: 5000,
+          wrapWorkerSpawn: (argv) => {
+            seenArgv = argv;
+            return { argv: [process.execPath, replacement], cleanup: () => (cleaned = true) };
+          },
+        },
+      );
+      expect(seenArgv).toEqual(workerSpawnArgv());
+      expect(res.ok).toBe(true);
+      expect((res as { result: string }).result).toBe("async-replaced");
+      expect(cleaned).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

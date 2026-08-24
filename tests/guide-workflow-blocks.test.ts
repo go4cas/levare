@@ -90,20 +90,18 @@ describe("docs/guide/04-workflow's pasteable blocks produce a valid studio", () 
   // that never asked the reader to build a design/spec/code-producing member, but one `levare
   // validate` should name rather than stay silent about (see validate.ts#validateUncoverableExpectedKinds).
   //
-  // Finding 75 (part 1, 2026-08-24; collapsed to one aggregate warning in the follow-up the same day):
-  // every kind: native member the walkthrough builds (lyra, scribe, wren) is named in ONE studio-wide
-  // SANDBOX_NOT_WRAPPED warning — a genuinely new, intentional telling this branch adds, not drift; see
-  // validate.ts#validateSandboxTelling's own doc.
-  test("the finished studio validates with zero warnings, other than the ones intentionally added (UNCOVERABLE_EXPECTED_KIND + one aggregate SANDBOX_NOT_WRAPPED)", () => {
+  // Finding 75 (part 2, 2026-08-24): the SANDBOX_NOT_WRAPPED warning this test used to also expect is
+  // gone — `kind: native` is wired onto the sandbox mechanism now (adapters.ts#createSdkNativeBoundary/
+  // createAsyncSdkNativeBoundary), so lyra/scribe/wren fold into the ordinary SANDBOX_UNAVAILABLE
+  // eligibility list like any other sandboxed member. This call passes no `sandbox` detection at all
+  // (validatePath(root), no third arg), so SANDBOX_UNAVAILABLE itself never fires either (see
+  // validate.ts#validateSandboxTelling's own "never assumed" guard) — the finished studio is left with
+  // exactly one warning.
+  test("the finished studio validates with zero warnings, other than the one intentionally added (UNCOVERABLE_EXPECTED_KIND)", () => {
     const r = validatePath(root);
     expect(r.ok).toBe(true);
     expect(r.errors).toEqual([]);
-    const sandboxWarnings = r.warnings.filter((w) => w.code === "SANDBOX_NOT_WRAPPED");
-    const otherWarnings = r.warnings.filter((w) => w.code !== "SANDBOX_NOT_WRAPPED");
-    expect(sandboxWarnings.length).toBe(1);
-    for (const name of ["lyra", "scribe", "wren"]) expect(sandboxWarnings[0].message).toContain(name);
-    expect(sandboxWarnings[0].message).not.toMatch(/tried:|no working.*primitive|primitive was found/i);
-    expect(otherWarnings).toEqual([
+    expect(r.warnings).toEqual([
       {
         code: "UNCOVERABLE_EXPECTED_KIND",
         message:

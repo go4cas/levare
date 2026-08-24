@@ -410,12 +410,22 @@ member always holds at least its own `server:` connector, so this reach is grant
 `native` was believed exempt on the theory that a Claude Agent SDK call has no separate spawned process for
 the sandbox to wrap — **refuted by Finding 75's trace (2026-08-24): the SDK worker's own spawn
 (`sdk-transport.ts#workerSpawnArgv`) is a real, wrappable OS process, the exact argv shape
-`wrapForSandbox` already takes for `cli`.** `native` is unwrapped today because the wrap is simply never
-CALLED for this kind, not because none exists to call — a known, currently-told gap (`sandbox:
-not-wrapped` on every native artifact, `levare doctor`'s own line for it — see adapters.ts#author and
-doctor.ts's own doc), not an architectural impossibility. Wiring it is deferred as a separate unit (part 2
-of the same ruling): the allowlist work (`node_modules/@anthropic-ai/claude-agent-sdk-*`, the resolved
-native binary, network for the live API call) is real design work, not a rename.) **The Conductor's ruling: this is not a missing third
+`wrapForSandbox` already takes for `cli`.** Part 2 of the ruling wires it
+(`adapters.ts#createSdkNativeBoundary`/`createAsyncSdkNativeBoundary` build a native-specific
+`SandboxPolicy` — the two grants no other kind needs (the compiled-build `bunfs` extraction target,
+`LEVARE_CLAUDE_CONFIG_DIR`), the dispatch worktree granted separately from the worker's own OS-level
+spawn cwd (the two are the same path for `cli`, NOT for `native` — see `buildNativeSandboxPolicy`'s own
+doc for why reusing `sandboxWrap`'s cli-shaped call verbatim would bind the wrong directory), and
+`allowNetwork: true` UNCONDITIONALLY, never gated on `memberNetworkAllowed` — every native dispatch
+calls the Anthropic API to do its one job, so this is the one place the credential-vs-network coupling
+above does NOT hold: network is the mechanism for this kind, not an optional connector-gated reach). A
+native artifact this binary produces now stamps a real `sandbox:` value (or none, when the boundary was
+mocked), exactly like `cli`/`remote`; `sandbox: not-wrapped` stays legal only on artifacts an older
+binary already wrote (Finding 99's ruling: never rewrite what an older binary produced). **Verified only
+by construction so far** (`bun test`, this repo's own container never reports better than `sandbox:
+none`) — `scripts/repro-r4-sandbox-native-worker.ts` is the standing probe for a live macOS host,
+mirroring every prior R4-SANDBOX round's own "construction is not the same as a kernel actually
+enforcing it" posture; it has not yet been run live.) **The Conductor's ruling: this is not a missing third
 dimension awaiting construction, because levare has no connector shape that names a purely-local
 capability in the first place** — Ruling 2's own reasoning is that every connector IS levare's declared
 way of naming an external reach; "hold a credential but deny network" would require inventing a connector
@@ -1296,3 +1306,65 @@ connector report.
 See NOTES DOCS-WALKTHROUGH-3 for the full investigation behind each finding — including how the `style.
 color` transform's actual behaviour was established before ruling on it, and why `Members running`/
 `Active` turned out not to be the drift it first looked like.
+
+## The sandbox mechanism is now wired onto `kind: native` — Finding 75 part 2, live verification still owed
+
+Part 1 (PR #33) made the gap honest: a `kind: native` member's spawn was never wrapped by levare's OS
+sandbox, on any host, and every produced artifact said so plainly (`sandbox: not-wrapped`) instead of
+implying an architectural exemption that never existed. This unit closes it.
+
+The work turned out to be narrow, exactly as Phase 1 predicted: five of `cli`'s six R4-SANDBOX rounds
+(`(allow sysctl-read)`, the broad `file-read*` default, ancestor-metadata grants, the `dirhelper`
+mach-lookup, the `trustd.agent`/`SecurityServer` pair) are unconditional fixes inside
+`buildSandboxExecProfile`/`bubblewrapArgv` — native inherits every one of them free the moment its argv
+goes through the same `wrapForSandbox`. Three things were genuinely new:
+
+1. **Two grants no other kind needs.** The compiled-build `bunfs` extraction target
+   (`adapters.ts#nativeBunfsExtractionBase` — `{tmpdir()}/claude-{uid}`, mirroring the vendored
+   `extractFromBunfs.js`'s own formula, never by calling extraction itself) and
+   `LEVARE_CLAUDE_CONFIG_DIR` (created by the parent, read/written by the SDK's own inner `claude` CLI
+   subprocess) — both threaded into `buildNativeSandboxPolicy`'s `writablePaths`.
+2. **The cwd distinction.** For `cli`, `SandboxPolicy.cwd` and the dispatch worktree are the same path.
+   For native they are not: the worker's own OS-level spawn cwd (`sdk-transport.ts#workerSpawnCwd`) is
+   `LEVARE_ROOT` (source) or the inherited ambient cwd (compiled), while the worktree
+   (`req.projectRepoPath`) reaches the SDK one layer deeper via `query({ options: { cwd } })`, read only
+   after the worker is already running. `buildNativeSandboxPolicy` grants the worktree its own explicit
+   `writablePaths` entry, independent of what `cwd` is bound to.
+3. **`allowNetwork` is unconditionally `true`** — never gated on `env.ts#memberNetworkAllowed` the way a
+   `cli`/`remote` member's network reach is. Every native dispatch calls the Anthropic API to do its one
+   job; network is the mechanism here, not an optional connector grant (see the "credential-vs-network
+   coupling" entry above, updated to name this as the one exception).
+
+Composition reused what a native member already had sitting unused: a real per-dispatch worktree, a
+real `dispatchGitWriteGrant`, real HOME scoping. `buildDispatchSandboxPolicy` never gained a `kind`
+branch — instead `adapters.ts#buildNativeSandboxPolicy` is a dedicated sibling (mirroring
+`buildRemoteSandboxPolicy`'s own precedent), and the deny-then-reallow reseal (`SandboxPolicy.
+gitWriteGrant`) is reused verbatim, unchanged.
+
+Wiring lives in `sdk-transport.ts`'s `createBunSdkTransport`/`createAsyncSdkTransport`: both now accept
+an optional `wrapWorkerSpawn` callback (`SdkTransportRunOptions`) that wraps the worker's own
+self-invocation argv/cwd for whichever primitive this host has — called only on the REAL self-invocation
+path (an explicit `workerPath`, every test double in this codebase, is never wrapped, mirroring
+`AdapterRunner#runCli`'s own `this.spawn === bunSpawn` guard). `adapters.ts#createSdkNativeBoundary`/
+`createAsyncSdkNativeBoundary` build that callback from `opts.repo` (a NEW, optional field — absent for
+every existing mocked-transport test construction in this repo, which is why none of them needed
+updating) and thread the resulting enforcement level back onto the produced artifact exactly like `cli`/
+`remote` already do: `sandbox: <level>` only when the boundary that ran genuinely reported one, never
+the old unconditional `sandbox: not-wrapped` stamp. That value stays legal to READ (validate.ts's schema
+still accepts it) — Finding 99's ruling holds: an older binary's artifacts are never rewritten, only new
+artifacts stamp the new shape.
+
+`validate.ts`'s SANDBOX_NOT_WRAPPED code — the studio-level "this kind is never wrapped, on any host,
+installing bubblewrap changes nothing" telling — is retired outright: a native agent now folds into the
+SAME `SANDBOX_UNAVAILABLE` eligibility list a `cli`/implemented-`remote` agent already does
+(`validateSandboxTelling`), because the fact it used to name is no longer true. `levare doctor` drops its
+own parallel "N native members never wrapped" line for the identical reason (`cli.ts` folds native agents
+into the same `sandboxedAgents` list it already builds).
+
+**Verified only by construction so far.** Every one of `cli`'s six R4-SANDBOX rounds was diagnosed from a
+live host's own crash signature or kernel log — none was predictable from source, and this container
+(Linux, no user namespaces) only ever reports `sandbox: none`, exactly like every prior round's own
+"never run live" caveat. `scripts/repro-r4-sandbox-native-worker.ts` is the standing probe: it spawns the
+wrapped worker argv under a real profile and is built to capture kernel denials the way
+`scripts/repro-r4-sandbox-fix10-hang.ts` does for `cli` — but it has never been run on a live host. This
+needs a live macOS run before merge, the same standard every prior R4-SANDBOX round held itself to.

@@ -157,6 +157,30 @@ export type SdkTransportResult = SdkWorkerResponse & {
   timedOut: boolean;
 };
 
+/**
+ * Finding 75 (part 2): when supplied, wraps the WORKER's own OS-level self-invocation spawn (never the
+ * `claude` subprocess the SDK itself spawns internally, which this transport cannot see) for whichever
+ * sandbox primitive this host has — the SAME `sandbox.ts#wrapForSandbox` mechanism a `kind: cli`
+ * member's spawn already goes through, applied here to the worker instead. Given the RAW argv/cwd this
+ * transport was about to spawn with, returns what to spawn instead (`argv` may be unchanged — `level:
+ * "none"` still calls through, honestly reporting nothing was available — `cleanup`, when present, MUST
+ * be invoked once the spawn completes, success or failure alike — mirrors `sandbox.ts#WrappedSpawn`'s
+ * own contract exactly, since this IS that contract, just not typed against `sandbox.ts` directly here
+ * so this module stays free of any sandbox-specific import). Only ever called on the REAL self-invocation
+ * path (no explicit `workerPath`) — see `createBunSdkTransport`'s own guard for why a standalone test
+ * script is never wrapped. Absent (every test double, and the async orchestrator boundary, which has its
+ * own unrelated caller) is a legal no-op: the worker spawns exactly as it always has.
+ */
+export interface WrapWorkerSpawn {
+  (argv: string[], cwd: string): { argv: string[]; cleanup?: () => void };
+}
+
+export interface SdkTransportRunOptions {
+  env: Record<string, string | undefined>;
+  timeoutMs: number;
+  wrapWorkerSpawn?: WrapWorkerSpawn;
+}
+
 /** The synchronous transport boundary (adapters.ts's NativeBoundary only — see the module note above
  * for why this must never be called from a `levare serve` request path). Declared return type stays
  * `SdkWorkerResponse` deliberately — every test double across this repo implementing this interface
@@ -167,13 +191,13 @@ export type SdkTransportResult = SdkWorkerResponse & {
  * dispatch-trace wiring — the only caller that does) narrows via `asSdkTransportResult` below, which
  * degrades to empty/zero defaults for an injected test double that never populated them. */
 export interface SdkTransport {
-  run(req: SdkWorkerRequest, opts: { env: Record<string, string | undefined>; timeoutMs: number }): SdkWorkerResponse;
+  run(req: SdkWorkerRequest, opts: SdkTransportRunOptions): SdkWorkerResponse;
 }
 
 /** The non-blocking transport boundary (orchestrator-boundary.ts — the one reachable from
  * `levare serve`'s request path). Same request/response shape as `SdkTransport`, Promise-returning. */
 export interface AsyncSdkTransport {
-  run(req: SdkWorkerRequest, opts: { env: Record<string, string | undefined>; timeoutMs: number }): Promise<SdkWorkerResponse>;
+  run(req: SdkWorkerRequest, opts: SdkTransportRunOptions): Promise<SdkWorkerResponse>;
 }
 
 /** Narrows a transport's return value to `SdkTransportResult`, defaulting the diagnostic fields when
@@ -224,7 +248,12 @@ export const WORKER_COMMAND = "__worker";
 
 const CLI_ENTRY_PATH = Bun.fileURLToPath(new URL("./cli.ts", import.meta.url));
 
-function workerSpawnArgv(): string[] {
+// Exported (Finding 75 part 2): `adapters.ts`'s native sandbox wiring needs to know the EXACT argv a
+// real self-invocation spawns so a diagnostic script can build the identical wrapped invocation
+// `createBunSdkTransport`/`createAsyncSdkTransport` do — mirrors `buildDispatchSandboxPolicy`'s own
+// export for the identical "a ladder must call the real thing, never hand-mirror it" reason (NOTES
+// R4-SANDBOX-FIX-13).
+export function workerSpawnArgv(): string[] {
   return isCompiledBuild() ? [process.execPath, WORKER_COMMAND] : [process.execPath, CLI_ENTRY_PATH, WORKER_COMMAND];
 }
 
@@ -239,7 +268,8 @@ function workerSpawnArgv(): string[] {
 // worker's own module resolution is irrelevant (everything is embedded) and the native-binary path
 // is already resolved once and passed explicitly (`pathToClaudeCodeExecutable`) — so it simply omits
 // `cwd`, which makes `Bun.spawn` inherit the running process's own (real) cwd instead.
-function workerSpawnCwd(workerPath: string | undefined): string | undefined {
+// Exported (Finding 75 part 2) for the same reason as `workerSpawnArgv` above.
+export function workerSpawnCwd(workerPath: string | undefined): string | undefined {
   if (workerPath === undefined && isCompiledBuild()) return undefined;
   return LEVARE_ROOT;
 }
@@ -555,37 +585,57 @@ export function createBunSdkTransport(workerPath?: string): SdkTransport {
         return { ok: false, error: `sdk worker script not found at ${workerPath}`, stdout: "", stderr: "", durationMs: Date.now() - startedAt, timedOut: false };
       }
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-      const argv = workerPath !== undefined ? [process.execPath, workerPath] : workerSpawnArgv();
-      const proc = Bun.spawnSync(argv, {
-        cwd: workerSpawnCwd(workerPath),
-        env: definedEnv(hermeticSpawnEnv(opts.env)),
-        stdin: Buffer.from(JSON.stringify(req)),
-        stdout: "pipe",
-        stderr: "pipe",
-        timeout: timeoutMs,
-        killSignal: "SIGKILL",
-        detached: true,
-      });
-      const durationMs = Date.now() - startedAt;
-      // NOTES DISPATCH-TRACE: decoded UNCONDITIONALLY, before branching on the exit reason —
-      // `spawnSync` buffers whatever the child wrote before a timeout-kill same as any other exit, so
-      // this is the one place both variables exist regardless of which return below fires.
-      const stdout = proc.stdout ? new TextDecoder().decode(proc.stdout).trim() : "";
-      const stderr = proc.stderr ? new TextDecoder().decode(proc.stderr).trim() : "";
-      if (proc.exitedDueToTimeout) {
-        // spawnSync's own timeout+killSignal only reached the direct child (confirmed empirically —
-        // see killProcessTree's own comment); reap any surviving grandchildren explicitly.
-        if (proc.pid) killProcessTree(proc.pid);
-        return { ok: false, error: `sdk worker timed out after ${timeoutMs}ms`, stdout, stderr, durationMs, timedOut: true };
-      }
-      if (proc.exitCode !== 0) {
-        return { ok: false, error: `sdk worker exited ${proc.exitCode}: ${stderr || stdout || "(no output)"}`, stdout, stderr, durationMs, timedOut: false };
+      let argv = workerPath !== undefined ? [process.execPath, workerPath] : workerSpawnArgv();
+      let cwd = workerSpawnCwd(workerPath);
+      let cleanupWrap: (() => void) | undefined;
+      // Finding 75 (part 2): only the real self-invocation spawn is ever wrapped — a standalone
+      // `workerPath` script is a test double, never a real OS process this codebase's own sandbox
+      // exists to confine (mirrors AdapterRunner#runCli's `this.spawn === bunSpawn` guard exactly).
+      // NOTES R4-SANDBOX-FIX-6: the policy's own `cwd` must equal the EXACT path the process actually
+      // runs in, or the wrap confines the wrong directory — resolved to a concrete value (never left
+      // `undefined`, which a compiled self-invocation otherwise leaves for `Bun.spawnSync` to fill in
+      // implicitly from its own ambient cwd) before the wrap is asked to build a policy against it.
+      if (workerPath === undefined && opts.wrapWorkerSpawn) {
+        const resolvedCwd = cwd ?? process.cwd();
+        const wrapped = opts.wrapWorkerSpawn(argv, resolvedCwd);
+        argv = wrapped.argv;
+        cwd = resolvedCwd;
+        cleanupWrap = wrapped.cleanup;
       }
       try {
-        const parsed = JSON.parse(stdout) as SdkWorkerResponse;
-        return { ...parsed, stdout, stderr, durationMs, timedOut: false };
-      } catch {
-        return { ok: false, error: `sdk worker produced non-JSON output: ${stdout.slice(0, 200)}`, stdout, stderr, durationMs, timedOut: false };
+        const proc = Bun.spawnSync(argv, {
+          cwd,
+          env: definedEnv(hermeticSpawnEnv(opts.env)),
+          stdin: Buffer.from(JSON.stringify(req)),
+          stdout: "pipe",
+          stderr: "pipe",
+          timeout: timeoutMs,
+          killSignal: "SIGKILL",
+          detached: true,
+        });
+        const durationMs = Date.now() - startedAt;
+        // NOTES DISPATCH-TRACE: decoded UNCONDITIONALLY, before branching on the exit reason —
+        // `spawnSync` buffers whatever the child wrote before a timeout-kill same as any other exit, so
+        // this is the one place both variables exist regardless of which return below fires.
+        const stdout = proc.stdout ? new TextDecoder().decode(proc.stdout).trim() : "";
+        const stderr = proc.stderr ? new TextDecoder().decode(proc.stderr).trim() : "";
+        if (proc.exitedDueToTimeout) {
+          // spawnSync's own timeout+killSignal only reached the direct child (confirmed empirically —
+          // see killProcessTree's own comment); reap any surviving grandchildren explicitly.
+          if (proc.pid) killProcessTree(proc.pid);
+          return { ok: false, error: `sdk worker timed out after ${timeoutMs}ms`, stdout, stderr, durationMs, timedOut: true };
+        }
+        if (proc.exitCode !== 0) {
+          return { ok: false, error: `sdk worker exited ${proc.exitCode}: ${stderr || stdout || "(no output)"}`, stdout, stderr, durationMs, timedOut: false };
+        }
+        try {
+          const parsed = JSON.parse(stdout) as SdkWorkerResponse;
+          return { ...parsed, stdout, stderr, durationMs, timedOut: false };
+        } catch {
+          return { ok: false, error: `sdk worker produced non-JSON output: ${stdout.slice(0, 200)}`, stdout, stderr, durationMs, timedOut: false };
+        }
+      } finally {
+        cleanupWrap?.();
       }
     },
   };
@@ -614,9 +664,20 @@ export function createAsyncSdkTransport(workerPath?: string): AsyncSdkTransport 
         return { ok: false, error: `sdk worker script not found at ${workerPath}`, stdout: "", stderr: "", durationMs: Date.now() - startedAt, timedOut: false };
       }
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-      const argv = workerPath !== undefined ? [process.execPath, workerPath] : workerSpawnArgv();
+      let argv = workerPath !== undefined ? [process.execPath, workerPath] : workerSpawnArgv();
+      let cwd = workerSpawnCwd(workerPath);
+      let cleanupWrap: (() => void) | undefined;
+      // Finding 75 (part 2): see createBunSdkTransport's own identical guard/doc above — the same
+      // real-self-invocation-only wrap, applied to the async spawn path.
+      if (workerPath === undefined && opts.wrapWorkerSpawn) {
+        const resolvedCwd = cwd ?? process.cwd();
+        const wrapped = opts.wrapWorkerSpawn(argv, resolvedCwd);
+        argv = wrapped.argv;
+        cwd = resolvedCwd;
+        cleanupWrap = wrapped.cleanup;
+      }
       const proc = Bun.spawn(argv, {
-        cwd: workerSpawnCwd(workerPath),
+        cwd,
         env: definedEnv(hermeticSpawnEnv(opts.env)),
         stdin: Buffer.from(JSON.stringify(req)),
         stdout: "pipe",
@@ -656,6 +717,7 @@ export function createAsyncSdkTransport(workerPath?: string): AsyncSdkTransport 
         }
       } finally {
         clearTimeout(timer);
+        cleanupWrap?.();
       }
     },
   };

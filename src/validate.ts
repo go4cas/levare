@@ -339,36 +339,39 @@ export const ARTIFACT_SCHEMA: Schema = {
       description:
         "Present only when verdict is set. extracted — levare found exactly one anchored verdict line in the review body (the only value this binary writes today). declared — reserved for a future structured channel a member's boundary reports directly; not yet implemented, never written. Absent whenever verdict itself is absent.",
     },
-    // NOTES R4-SANDBOX (v2, Ruling 2): the OS-sandbox enforcement level a `kind: cli`/`kind: remote`
-    // member's spawn actually ran under, when it produced this artifact — independent of
-    // `usage`/`unreported` (see adapters.ts#author). Absent for pre-this-ruling artifacts.
+    // NOTES R4-SANDBOX (v2, Ruling 2): the OS-sandbox enforcement level a `kind: cli`/`kind: remote`/
+    // `kind: native` member's spawn actually ran under, when it produced this artifact — independent of
+    // `usage`/`unreported` (see adapters.ts#author). Absent for pre-this-ruling artifacts, and absent
+    // whenever the boundary that ran was a mocked/stub double (nothing genuine to stamp).
     //
-    // Finding 75 (part 1, 2026-08-24): "not-wrapped" is a FOURTH value, stamped unconditionally for
-    // every `kind: native` member — NOT the same fact as "none" (a real wrap attempted, host had
-    // nothing). "not-wrapped" means levare never calls its sandbox mechanism for this kind, on any host
-    // — a known, currently-true gap (part 2 of the ruling wires it), not an architectural exemption:
-    // this field's own value is what previously read as "Absent for native members... [is] intentional"
-    // — it wasn't; that framing was a false premise, corrected here.
+    // Finding 75 (part 1, 2026-08-24; part 2, 2026-08-24): "not-wrapped" was a FOURTH value, stamped
+    // unconditionally for every `kind: native` member while levare had no wrap wired for that kind at
+    // all — NOT the same fact as "none" (a real wrap attempted, host had nothing). Part 2 wires the wrap
+    // (adapters.ts#createSdkNativeBoundary/createAsyncSdkNativeBoundary spawn the SDK worker's own
+    // self-invocation through it, exactly like a `cli` member's spawn): a NEW native artifact now stamps
+    // one of the same three live values `cli`/`remote` always could. "not-wrapped" stays in the enum
+    // ONLY so an artifact an OLDER binary already wrote still validates (Finding 99's ruling: never
+    // rewrite what an older binary produced) — this binary never stamps it again.
     sandbox: {
       type: "enum",
       required: false,
       nullable: true,
       enum: ["full", "fs-only", "none", "not-wrapped"],
-      description: "The OS-level sandbox enforcement this member's spawn actually ran under: full (filesystem and network confined), fs-only (filesystem-only fallback), none (a real wrap was attempted but no working primitive was found on this host — the spawn ran unconfined), or not-wrapped (kind: native — levare's sandbox mechanism is never called for this kind at all, on any host; not a host capability gap). Absent on pre-this-ruling artifacts.",
+      description: "The OS-level sandbox enforcement this member's spawn actually ran under: full (filesystem and network confined), fs-only (filesystem-only fallback), none (a real wrap was attempted but no working primitive was found on this host — the spawn ran unconfined). 'not-wrapped' is a legacy value: artifacts written before this binary wired kind: native onto the sandbox mechanism stamped it unconditionally for every native member; this binary never writes it again, but still accepts it on artifacts that already have it. Absent on pre-Ruling-2 artifacts, or whenever the producing boundary was a mocked/stub double.",
     },
     // NOTES R4-SANDBOX-APPSERVER: present alongside `sandbox: none` produced by a member declaring
-    // `sandbox: unsandboxed` (types.ts#Agent.sandbox) — distinguishes "this host had nothing" from "this
-    // member was declared unsandboxeable, on any host" (adapters.ts#author's own doc explains why the
-    // two facts must never collapse into the identical `sandbox: none` line alone).
+    // `sandbox: unsandboxed` (types.ts#Agent.sandbox, cli-only) — distinguishes "this host had nothing"
+    // from "this member was declared unsandboxeable, on any host" (adapters.ts#author's own doc explains
+    // why the two facts must never collapse into the identical `sandbox: none` line alone).
     //
-    // Finding 75 (part 1): also present alongside `sandbox: not-wrapped`, carrying levare's own fixed
-    // explanatory text rather than an author's declaration. Safe to share the field across both cases —
-    // unlike the "none" ambiguity this field was built to resolve, the discriminator here is `sandbox`'s
-    // own value ("none" vs "not-wrapped"), never this field's presence or its prose.
+    // Finding 75 (part 1): a legacy artifact may also carry this field alongside `sandbox: not-wrapped`,
+    // holding levare's own fixed (no-longer-written) explanatory text rather than an author's
+    // declaration — safe to have shared the field across both cases, since the discriminator was always
+    // `sandbox`'s own value ("none" vs "not-wrapped"), never this field's presence or its prose.
     sandbox_reason: {
       type: "str",
       required: false,
-      description: "Present alongside sandbox: none when this artifact's producing member declared sandbox: unsandboxed (the author's own documented reason), or alongside sandbox: not-wrapped for every kind: native member (levare's own fixed explanation — never wrapped, on any host).",
+      description: "Present alongside sandbox: none when this artifact's producing member declared sandbox: unsandboxed (the author's own documented reason). On a legacy artifact, may also be present alongside sandbox: not-wrapped, carrying levare's own fixed (no-longer-written) explanation.",
     },
     // NOTES REGISTRY-PROVENANCE: a content hash over the governing registry — teams/, agents/,
     // connectors/, projects/, skills/, knowledge/, types/, studio.md — exactly as it stood on disk when
@@ -1391,9 +1394,10 @@ function validateAgentVariant(data: Record<string, YamlValue>, file: string, err
 // same sandbox wrap a `kind: cli` agent's spawn does — so it's eligible for the exact same
 // SANDBOX_UNAVAILABLE telling a `kind: cli` agent gets when `sandbox.level === "none"`. This function
 // only RESOLVES eligibility (returns the implemented agents' names) rather than emitting the warning
-// itself — the follow-up to Finding 75 (part 1) collapsed SANDBOX_UNAVAILABLE/SANDBOX_NOT_WRAPPED from
-// one warning per affected member to ONE aggregate warning per studio (see
-// validateSandboxTelling, below, the sole emitter for both codes now): six identical ~250-char
+// itself — the follow-up to Finding 75 (part 1) collapsed SANDBOX_UNAVAILABLE from one warning per
+// affected member to ONE aggregate warning per studio (see validateSandboxTelling, below, the sole
+// emitter — Finding 75 part 2 folds `kind: native` into the same aggregate, closing the separate
+// SANDBOX_NOT_WRAPPED code that block used to also emit): six identical ~250-char
 // per-member paragraphs read as six problems when it is one host/kind fact, and buried doctor's own
 // actually-actionable warnings (missing credentials) below the fold. Resolving eligibility here, not
 // re-deriving it a second time from bare frontmatter in validateSandboxTelling, keeps the two checks
@@ -1483,23 +1487,27 @@ function validateAgentRemoteImplementation(root: string, warnings: ValidationWar
   return implementedRemoteAgents;
 }
 
-// Finding 75 (part 1, follow-up 2026-08-24): the sole emitter of SANDBOX_UNAVAILABLE and
-// SANDBOX_NOT_WRAPPED — both are STUDIO-LEVEL facts, not per-member ones. The same host lacking
-// bubblewrap is not six separate facts because six members happen to be cli/remote; levare not wiring
-// native's wrap is not N separate facts because N members happen to be native. ONE warning per code,
-// per studio, naming every affected member — mirroring doctor.ts's own already-collapsed presentation
-// (`sandboxedAgents`/`nativeAgents`, both single joined lines there) rather than inventing a second,
-// inconsistent shape here. `implementedRemoteAgents` is threaded in from validateAgentRemoteImplementation
-// (already resolved there — see its own doc for why this function doesn't re-derive it). Tree-wide only
-// (same "no root, no cross-entity telling" posture as validateAgentRemoteImplementation) — a single-file
-// validate has no sibling agents to aggregate against, so it stays silent on both codes, same as before
-// this change (`sandbox` was already only ever passed from a directory-tree validatePath call).
+// Finding 75 (part 1, follow-up 2026-08-24; part 2, 2026-08-24): the sole emitter of
+// SANDBOX_UNAVAILABLE — a STUDIO-LEVEL fact, not a per-member one. The same host lacking bubblewrap is
+// not six separate facts because six members happen to be cli/remote/native. ONE warning per studio,
+// naming every affected member — mirroring doctor.ts's own already-collapsed `sandboxedAgents` line
+// rather than inventing a second, inconsistent shape here. `implementedRemoteAgents` is threaded in from
+// validateAgentRemoteImplementation (already resolved there — see its own doc for why this function
+// doesn't re-derive it). Tree-wide only (same "no root, no cross-entity telling" posture as
+// validateAgentRemoteImplementation) — a single-file validate has no sibling agents to aggregate
+// against, so it stays silent on this code, same as before this change (`sandbox` was already only ever
+// passed from a directory-tree validatePath call).
+//
+// Part 2 closes the SANDBOX_NOT_WRAPPED code this function used to also emit: a `kind: native` member's
+// spawn now goes through the identical sandbox wrap a `cli`/implemented-`remote` member's does
+// (adapters.ts#createSdkNativeBoundary/createAsyncSdkNativeBoundary) — it is folded into the same
+// `sandboxedAgents` list below rather than told as a separate, levare-can-never-fix-this fact, because
+// that fact is no longer true.
 function validateSandboxTelling(root: string, warnings: ValidationWarning[], overlay: OverlayFile | undefined, sandbox: SandboxDetection | undefined, implementedRemoteAgents: string[]): void {
   const agentsDir = join(root, "agents");
   if (!existsSync(agentsDir)) return;
 
-  const cliAgents: string[] = [];
-  const nativeAgents: string[] = [];
+  const sandboxEligibleAgents: string[] = [];
   for (const name of readdirSync(agentsDir).sort()) {
     if (!name.endsWith(".md") || name.endsWith(".learnings.md")) continue;
     let data: Record<string, YamlValue>;
@@ -1511,25 +1519,16 @@ function validateSandboxTelling(root: string, warnings: ValidationWarning[], ove
     const agentName = typeof data.name === "string" ? data.name : basename(name, ".md");
     // NOTES R4-SANDBOX-APPSERVER: a `sandbox: unsandboxed` cli agent is excluded — SANDBOX_DECLARED_
     // UNSANDBOXED (still per-member; each one names its OWN author-given reason, which genuinely does
-    // differ member to member, unlike the two host/kind facts this function aggregates) is its telling.
-    if (data.kind === "cli" && data.sandbox !== "unsandboxed") cliAgents.push(agentName);
-    else if (data.kind === "native") nativeAgents.push(agentName);
+    // differ member to member, unlike the host/kind fact this function aggregates) is its telling.
+    // `native` has no such declared escape hatch (Finding 75 part 2) — every native agent is eligible.
+    if (data.kind === "native" || (data.kind === "cli" && data.sandbox !== "unsandboxed")) sandboxEligibleAgents.push(agentName);
   }
 
-  const sandboxedAgents = [...cliAgents, ...implementedRemoteAgents].sort();
+  const sandboxedAgents = [...sandboxEligibleAgents, ...implementedRemoteAgents].sort();
   if (sandbox && sandbox.level === "none" && sandboxedAgents.length > 0) {
     warnings.push({
       code: "SANDBOX_UNAVAILABLE",
       message: `no working OS-level sandbox primitive was found on this host (tried: ${sandboxPrimitivesTried(sandbox)}) — these members run unconfined beyond env/HOME scoping: ${sandboxedAgents.join(", ")}; see 'levare doctor' for what was tried`,
-      file: agentsDir,
-    });
-  }
-
-  if (nativeAgents.length > 0) {
-    const names = nativeAgents.sort();
-    warnings.push({
-      code: "SANDBOX_NOT_WRAPPED",
-      message: `${names.length} native member${names.length === 1 ? "" : "s"} ${names.length === 1 ? "is" : "are"} never wrapped by levare's OS-level sandbox, on any host: ${names.join(", ")}. levare does not yet wire the wrap for kind: native — installing bubblewrap or sandbox-exec will not change it.`,
       file: agentsDir,
     });
   }
