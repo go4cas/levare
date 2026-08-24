@@ -52,7 +52,7 @@ import {
   type SdkWorkerResponse,
   type WrapWorkerSpawn,
 } from "./sdk-transport.ts";
-import { buildDispatchTrace, writeDispatchTrace } from "./dispatch-trace.ts";
+import { buildDispatchTrace, buildDispatchTraceStart, writeDispatchTrace } from "./dispatch-trace.ts";
 import { repoCapabilities } from "./repo.ts";
 import { resolveProjectRepoPath, workBranchName, branchExists, createDispatchWorktree, commitDispatchWorktree, type DispatchCommitResult } from "./merge.ts";
 import { isSafeHomeDotpath, detectFetchAtDispatchLauncher } from "./validate.ts";
@@ -404,11 +404,13 @@ export function createSdkNativeBoundary(opts: SdkNativeBoundaryOptions = {}): Na
   return {
     invoke(req: InvokeRequest): { doc: string; receipt?: Receipt; sandbox?: SandboxLevel } {
       const startedAt = new Date().toISOString();
+      const traceCtx = { startedAt, timeoutMs, baseEnv, pathToClaudeCodeExecutable };
+      traceNativeDispatchStart(opts.studioRoot, req, traceCtx);
       const env = nativeSpawnEnv(req, baseEnv);
       let sandboxLevel: SandboxLevel | undefined;
       const wrapWorkerSpawn = nativeWrapWorkerSpawn(opts.repo, req, pathToClaudeCodeExecutable, baseEnv, opts.sandboxDetection, (l) => (sandboxLevel = l));
       const res = transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable), { env, timeoutMs, wrapWorkerSpawn });
-      traceNativeDispatch(opts.studioRoot, req, res, { startedAt, timeoutMs, baseEnv, pathToClaudeCodeExecutable });
+      traceNativeDispatchFinish(opts.studioRoot, req, res, traceCtx);
       if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`);
       return { doc: res.result, receipt: res.receipt, sandbox: sandboxLevel };
     },
@@ -432,40 +434,58 @@ export function createAsyncSdkNativeBoundary(opts: AsyncSdkNativeBoundaryOptions
   return {
     async invoke(req: InvokeRequest): Promise<{ doc: string; receipt?: Receipt; sandbox?: SandboxLevel }> {
       const startedAt = new Date().toISOString();
+      const traceCtx = { startedAt, timeoutMs, baseEnv, pathToClaudeCodeExecutable };
+      traceNativeDispatchStart(opts.studioRoot, req, traceCtx);
       const env = nativeSpawnEnv(req, baseEnv);
       let sandboxLevel: SandboxLevel | undefined;
       const wrapWorkerSpawn = nativeWrapWorkerSpawn(opts.repo, req, pathToClaudeCodeExecutable, baseEnv, opts.sandboxDetection, (l) => (sandboxLevel = l));
       const res = await transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable), { env, timeoutMs, wrapWorkerSpawn });
-      traceNativeDispatch(opts.studioRoot, req, res, { startedAt, timeoutMs, baseEnv, pathToClaudeCodeExecutable });
+      traceNativeDispatchFinish(opts.studioRoot, req, res, traceCtx);
       if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`);
       return { doc: res.result, receipt: res.receipt, sandbox: sandboxLevel };
     },
   };
 }
 
-// NOTES DISPATCH-TRACE: shared by both the sync and async native boundary — writes one trace per
-// dispatch attempt, success or failure alike, so a Conductor debugging a live studio has a consistent
-// record either way (not only on failure — a trace that only ever appears when something breaks is one
-// more thing to keep remembering to check for). A no-op when `studioRoot` was never supplied (every test
-// double, and `stubAdapterRunner`, which never constructs this boundary at all).
-function traceNativeDispatch(
-  studioRoot: string | undefined,
-  req: InvokeRequest,
-  res: SdkWorkerResponse,
-  ctx: { startedAt: string; timeoutMs: number; baseEnv: Record<string, string | undefined>; pathToClaudeCodeExecutable: string | undefined },
-): void {
+type NativeDispatchTraceCtx = { startedAt: string; timeoutMs: number; baseEnv: Record<string, string | undefined>; pathToClaudeCodeExecutable: string | undefined };
+
+function nativeDispatchTraceIdentityOpts(req: InvokeRequest, ctx: NativeDispatchTraceCtx) {
+  return {
+    homeScoped: req.homeScoped ?? false,
+    anthropicApiKeyPresent: typeof ctx.baseEnv.ANTHROPIC_API_KEY === "string",
+    nativeBinaryResolved: ctx.pathToClaudeCodeExecutable !== undefined,
+    startedAt: ctx.startedAt,
+    timeoutMs: ctx.timeoutMs,
+  };
+}
+
+// NOTES DISPATCH-TRACE / Finding 113: written BEFORE the spawn, with everything already known at that
+// point — inputs, env var names, HOME scoping, pid, timestamp, timeout bound — so a Conductor reading
+// `.levare/dispatch-logs/` mid-dispatch sees something instead of nothing for the dispatch's entire
+// duration (the exact gap Finding 113 observed: a ten-minute believed-hung dispatch left the directory
+// empty the whole time it ran). `traceNativeDispatchFinish` amends this SAME file in place once the
+// dispatch completes — shares `ctx` (in particular `ctx.startedAt`, which both the start and finish
+// records carry unchanged) with its caller specifically so the two writes land on the identical
+// filename (`traceFileName` is keyed on `started_at`, not wall-clock-at-write-time). A no-op when
+// `studioRoot` was never supplied (every test double, and `stubAdapterRunner`, which never constructs
+// this boundary at all).
+function traceNativeDispatchStart(studioRoot: string | undefined, req: InvokeRequest, ctx: NativeDispatchTraceCtx): void {
+  if (!studioRoot) return;
+  const record = buildDispatchTraceStart(req, nativeDispatchTraceIdentityOpts(req, ctx));
+  writeDispatchTrace(studioRoot, record);
+}
+
+// NOTES DISPATCH-TRACE: shared by both the sync and async native boundary — amends the start trace
+// (`traceNativeDispatchStart`, same file, same `ctx.startedAt`) with everything only knowable once the
+// dispatch finished — output, duration, outcome — success or failure alike, so a Conductor debugging a
+// live studio has a consistent record either way. A no-op when `studioRoot` was never supplied.
+function traceNativeDispatchFinish(studioRoot: string | undefined, req: InvokeRequest, res: SdkWorkerResponse, ctx: NativeDispatchTraceCtx): void {
   if (!studioRoot) return;
   const wide = asSdkTransportResult(res);
   const record = buildDispatchTrace(
     req,
     { ok: res.ok, error: res.ok ? undefined : res.error, timedOut: wide.timedOut, durationMs: wide.durationMs, stdout: wide.stdout, stderr: wide.stderr, receipt: res.ok ? res.receipt : undefined },
-    {
-      homeScoped: req.homeScoped ?? false,
-      anthropicApiKeyPresent: typeof ctx.baseEnv.ANTHROPIC_API_KEY === "string",
-      nativeBinaryResolved: ctx.pathToClaudeCodeExecutable !== undefined,
-      startedAt: ctx.startedAt,
-      timeoutMs: ctx.timeoutMs,
-    },
+    nativeDispatchTraceIdentityOpts(req, ctx),
   );
   writeDispatchTrace(studioRoot, record);
 }

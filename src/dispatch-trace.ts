@@ -81,16 +81,25 @@ export interface DispatchTraceRecord {
   home_scoped: boolean;
   anthropic_api_key_present: boolean;
   native_binary_resolved: boolean;
+  /** This levare process's own pid — not the worker's (unknown until the transport spawns it, after
+   * the start trace is already written). Lets a Conductor confirm which process a live trace belongs
+   * to; not a substitute for a worker pid this module never has in hand. */
+  pid: number;
   started_at: string;
-  duration_ms: number;
-  outcome: "ok" | "timeout" | "error";
+  /** `in_progress` is written ONLY by `buildDispatchTraceStart`, at dispatch start, before anything
+   * about the outcome is knowable — never a terminal state. A trace file left at `in_progress` (the
+   * dispatch's process died before the amend write landed) is diagnostic in its own right: it is the
+   * literal signature of a hang, not an ambiguous empty result. Every field below that isn't knowable
+   * until the dispatch finishes is correspondingly optional, populated only by the amend write. */
+  outcome: "in_progress" | "ok" | "timeout" | "error";
+  duration_ms?: number;
   error?: string;
   context: string;
   context_truncated: boolean;
-  worker_stdout: string;
-  worker_stdout_truncated: boolean;
-  worker_stderr: string;
-  worker_stderr_truncated: boolean;
+  worker_stdout?: string;
+  worker_stdout_truncated?: boolean;
+  worker_stderr?: string;
+  worker_stderr_truncated?: boolean;
   receipt?: Receipt;
 }
 
@@ -104,23 +113,26 @@ export interface NativeDispatchOutcome {
   receipt?: Receipt;
 }
 
+export interface DispatchTraceIdentityOpts {
+  homeScoped: boolean;
+  anthropicApiKeyPresent: boolean;
+  nativeBinaryResolved: boolean;
+  startedAt: string;
+  timeoutMs: number;
+}
+
 /**
- * Pure record builder — separated from `writeDispatchTrace`'s disk I/O so a test can assert on the
- * record's shape (in particular, the two invariants this module's own header names) without touching a
- * filesystem. `req` is the InvokeRequest actually handed to the boundary — its `env` is what
- * `describeMemberEnv`-equivalent redaction runs over; callers must pass the SAME env the real spawn used
- * (already allowlisted by `buildMemberEnv` upstream — this function trusts that boundary, exactly as
- * every other consumer of an `InvokeRequest.env` already does) so a trace never reports a broader grant
- * than the dispatch actually held.
+ * Everything about a dispatch that's known BEFORE it runs — inputs, env var names, HOME scoping, pid,
+ * timestamp, timeout bound. Shared by `buildDispatchTraceStart` (written as-is, `outcome: "in_progress"`)
+ * and `buildDispatchTrace` (this plus the outcome fields, once they're knowable) so the two never drift
+ * out of sync on what "the same dispatch" means. `req`'s `env` is what `describeMemberEnv`-equivalent
+ * redaction runs over; callers must pass the SAME env the real spawn used (already allowlisted by
+ * `buildMemberEnv` upstream — this function trusts that boundary, exactly as every other consumer of an
+ * `InvokeRequest.env` already does) so a trace never reports a broader grant than the dispatch actually
+ * held.
  */
-export function buildDispatchTrace(
-  req: InvokeRequest,
-  outcome: NativeDispatchOutcome,
-  opts: { homeScoped: boolean; anthropicApiKeyPresent: boolean; nativeBinaryResolved: boolean; startedAt: string; timeoutMs: number },
-): DispatchTraceRecord {
+function buildDispatchTraceIdentity(req: InvokeRequest, opts: DispatchTraceIdentityOpts) {
   const context = truncate(req.context);
-  const stdout = truncate(outcome.stdout, { fromEnd: true });
-  const stderr = truncate(outcome.stderr, { fromEnd: true });
   return {
     unit: req.unit,
     project: req.project,
@@ -137,12 +149,52 @@ export function buildDispatchTrace(
     home_scoped: opts.homeScoped,
     anthropic_api_key_present: opts.anthropicApiKeyPresent,
     native_binary_resolved: opts.nativeBinaryResolved,
+    pid: process.pid,
     started_at: opts.startedAt,
+    context: context.value,
+    context_truncated: context.truncated,
+  };
+}
+
+/**
+ * The start-of-dispatch trace (Finding 113): written before the spawn, so a Conductor reading
+ * `.levare/dispatch-logs/` mid-dispatch sees this immediately instead of nothing for the dispatch's
+ * entire duration. `outcome: "in_progress"` is the ONLY value this builder ever produces — never a
+ * terminal state — so a file left in this shape (the process died before the amend write) reads
+ * unambiguously as "started, never finished", not as a completed dispatch that produced nothing.
+ */
+export function buildDispatchTraceStart(req: InvokeRequest, opts: DispatchTraceIdentityOpts): DispatchTraceRecord {
+  return { ...buildDispatchTraceIdentity(req, opts), outcome: "in_progress" };
+}
+
+/** What `buildDispatchTrace` (the finish builder) always produces — the outcome-dependent fields
+ * `DispatchTraceRecord` otherwise leaves optional (so `buildDispatchTraceStart`'s in-progress shape
+ * stays legal) are guaranteed present here, so a caller of the finish builder never has to narrow. */
+export type DispatchTraceFinishedRecord = DispatchTraceRecord & {
+  duration_ms: number;
+  outcome: "ok" | "timeout" | "error";
+  worker_stdout: string;
+  worker_stdout_truncated: boolean;
+  worker_stderr: string;
+  worker_stderr_truncated: boolean;
+};
+
+/**
+ * Pure record builder — separated from `writeDispatchTrace`'s disk I/O so a test can assert on the
+ * record's shape (in particular, the two invariants this module's own header names) without touching a
+ * filesystem. Written on exit: amends the start trace (`buildDispatchTraceStart`) with everything only
+ * knowable once the dispatch finished — output, duration, outcome. Callers MUST pass the identical
+ * `opts.startedAt` (and, for `writeDispatchTrace`, the same target file) the start trace used, so the
+ * finish write lands on the SAME file rather than creating a second one — see `traceFileName`'s own doc.
+ */
+export function buildDispatchTrace(req: InvokeRequest, outcome: NativeDispatchOutcome, opts: DispatchTraceIdentityOpts): DispatchTraceFinishedRecord {
+  const stdout = truncate(outcome.stdout, { fromEnd: true });
+  const stderr = truncate(outcome.stderr, { fromEnd: true });
+  return {
+    ...buildDispatchTraceIdentity(req, opts),
     duration_ms: outcome.durationMs,
     outcome: outcome.timedOut ? "timeout" : outcome.ok ? "ok" : "error",
     error: outcome.error,
-    context: context.value,
-    context_truncated: context.truncated,
     worker_stdout: stdout.value,
     worker_stdout_truncated: stdout.truncated,
     worker_stderr: stderr.value,

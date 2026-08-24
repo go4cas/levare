@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildDispatchTrace,
+  buildDispatchTraceStart,
   writeDispatchTrace,
   sweepDispatchTraces,
   DISPATCH_LOG_DIR_NAME,
@@ -150,6 +151,72 @@ describe("buildDispatchTrace — outcome/timing/truncation shape", () => {
     expect(record.worker_stderr_truncated).toBe(true);
     expect(record.worker_stderr.endsWith("END")).toBe(true);
     expect(record.worker_stderr.startsWith("START")).toBe(false);
+  });
+});
+
+describe("buildDispatchTraceStart / amend-in-place — Finding 113: written before the spawn, amended after", () => {
+  const identityOpts = { homeScoped: false, anthropicApiKeyPresent: true, nativeBinaryResolved: true, startedAt: "2026-08-19T00:00:00.000Z", timeoutMs: 600_000 };
+
+  test("the start record is outcome: in_progress, with no outcome-dependent fields set yet", () => {
+    const record = buildDispatchTraceStart(baseReq(), identityOpts);
+    expect(record.outcome).toBe("in_progress");
+    expect(record.duration_ms).toBeUndefined();
+    expect(record.worker_stdout).toBeUndefined();
+    expect(record.worker_stderr).toBeUndefined();
+    expect(record.error).toBeUndefined();
+    expect(record.receipt).toBeUndefined();
+    // Everything knowable up front IS present — inputs, env names, HOME scoping, pid, timestamp, timeout.
+    expect(record.unit).toBe("list-entries");
+    expect(record.member).toBe("quill/builder");
+    expect(record.env.map((e) => e.name).sort()).toEqual(["HOME", "PATH"]);
+    expect(record.home_scoped).toBe(false);
+    expect(typeof record.pid).toBe("number");
+    expect(record.started_at).toBe("2026-08-19T00:00:00.000Z");
+    expect(record.timeout_ms).toBe(600_000);
+    expect(record.context).toBe("THE ASSEMBLED CONTEXT");
+  });
+
+  test("a start write followed by a finish write with the same started_at overwrites the same file, not a second one", () => {
+    const studioRoot = mkdtempSync(join(tmpdir(), "levare-trace-studio-"));
+    try {
+      const req = baseReq();
+      const startRecord = buildDispatchTraceStart(req, identityOpts);
+      writeDispatchTrace(studioRoot, startRecord);
+      const dir = join(studioRoot, DISPATCH_LOG_DIR_NAME);
+      const afterStart = readdirSync(dir).filter((f) => f.endsWith(".json"));
+      expect(afterStart.length).toBe(1);
+      expect(JSON.parse(readFileSync(join(dir, afterStart[0]), "utf8")).outcome).toBe("in_progress");
+
+      const finishRecord = buildDispatchTrace(req, okOutcome(), identityOpts);
+      writeDispatchTrace(studioRoot, finishRecord);
+      const afterFinish = readdirSync(dir).filter((f) => f.endsWith(".json"));
+      // Same file — the finish write amended it in place, it did not create a second trace.
+      expect(afterFinish).toEqual(afterStart);
+      const amended = JSON.parse(readFileSync(join(dir, afterFinish[0]), "utf8"));
+      expect(amended.outcome).toBe("ok");
+      expect(amended.duration_ms).toBe(1234);
+    } finally {
+      rmSync(studioRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("a process dying between the two writes leaves a file that reads unambiguously as incomplete, not as a completed empty dispatch", () => {
+    const studioRoot = mkdtempSync(join(tmpdir(), "levare-trace-studio-"));
+    try {
+      // Simulates the crash case: only the start write ever lands.
+      writeDispatchTrace(studioRoot, buildDispatchTraceStart(baseReq(), identityOpts));
+      const dir = join(studioRoot, DISPATCH_LOG_DIR_NAME);
+      const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+      const stranded = JSON.parse(readFileSync(join(dir, files[0]), "utf8"));
+      expect(stranded.outcome).toBe("in_progress");
+      // Never "ok" (or any terminal outcome) with a fabricated/placeholder duration — the absence of
+      // duration_ms/worker_stdout/worker_stderr, together with outcome staying "in_progress", is the
+      // only signal a reader needs to tell "started, never finished" apart from a real completed run.
+      expect(stranded.duration_ms).toBeUndefined();
+      expect(stranded.worker_stdout).toBeUndefined();
+    } finally {
+      rmSync(studioRoot, { recursive: true, force: true });
+    }
   });
 });
 
