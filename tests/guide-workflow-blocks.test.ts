@@ -89,11 +89,19 @@ describe("docs/guide/04-workflow's pasteable blocks produce a valid studio", () 
   // uncoverable by this studio as the guide leaves it — a legitimate configuration for a walkthrough
   // that never asked the reader to build a design/spec/code-producing member, but one `levare
   // validate` should name rather than stay silent about (see validate.ts#validateUncoverableExpectedKinds).
-  test("the finished studio validates with zero warnings, other than the one this branch intentionally added", () => {
+  //
+  // Finding 75 (part 1, 2026-08-24): every kind: native member the walkthrough builds (lyra, scribe,
+  // wren) now also carries its own SANDBOX_NOT_WRAPPED warning — a genuinely new, intentional telling
+  // this branch adds, not drift; see validate.ts#validateAgentNativeSandboxWarning's own doc.
+  test("the finished studio validates with zero warnings, other than the ones intentionally added (UNCOVERABLE_EXPECTED_KIND + SANDBOX_NOT_WRAPPED per native member)", () => {
     const r = validatePath(root);
     expect(r.ok).toBe(true);
     expect(r.errors).toEqual([]);
-    expect(r.warnings).toEqual([
+    const sandboxWarnings = r.warnings.filter((w) => w.code === "SANDBOX_NOT_WRAPPED");
+    const otherWarnings = r.warnings.filter((w) => w.code !== "SANDBOX_NOT_WRAPPED");
+    expect(sandboxWarnings.map((w) => w.message.match(/agent '(\w+)'/)?.[1]).sort()).toEqual(["lyra", "scribe", "wren"]);
+    for (const w of sandboxWarnings) expect(w.message).not.toMatch(/tried:|no working.*primitive|primitive was found/i);
+    expect(otherWarnings).toEqual([
       {
         code: "UNCOVERABLE_EXPECTED_KIND",
         message:
