@@ -171,7 +171,17 @@ export function diagnose(
  * `sandbox`/`sandboxedAgents` above, since this is an author's own decision, true on every host, never
  * a fact about what THIS host happens to offer. Deliberately a SEPARATE line from the `sandbox.level ===
  * "none"` warning: that one names a host capability gap outside the studio author's control; this one
- * names a deliberate, documented exemption — collapsing the two would hide which is which. */
+ * names a deliberate, documented exemption — collapsing the two would hide which is which.
+ *
+ * `nativeAgents`, when given (Finding 75, part 1, 2026-08-24): every `kind: native` agent — printed
+ * UNCONDITIONALLY, same posture as `unsandboxedAgents` above and for the same reason: this is a fact
+ * about levare itself (the sandbox wrap is never CALLED for this kind, on any host — see
+ * validate.ts#SANDBOX_NOT_WRAPPED and adapters.ts#author's own doc), never a fact about what THIS host
+ * happens to offer, so it stays independent of `sandbox`'s own host-detection result. `levare doctor`
+ * reporting a working host `sandbox: full` used to be true about the host and silent about the kind a
+ * native member actually is; this line closes that silence, deliberately in different vocabulary from
+ * the `sandbox.level === "none"` warning above — no "tried", "found", or "no working primitive" — so a
+ * Conductor reading it does not conclude that installing bubblewrap/sandbox-exec would change anything. */
 export function formatDoctor(
   health: ConnectorHealth[],
   orchestrator?: OrchestratorStatus,
@@ -182,6 +192,7 @@ export function formatDoctor(
   sandbox?: SandboxDetection,
   sandboxedAgents?: string[],
   unsandboxedAgents?: Array<{ name: string; reason: string }>,
+  nativeAgents?: string[],
 ): string {
   const out: string[] = [];
   if (versionInfo) {
@@ -209,6 +220,14 @@ export function formatDoctor(
   if (unsandboxedAgents && unsandboxedAgents.length > 0) {
     for (const a of unsandboxedAgents) {
       out.push(`⚠ '${a.name}' declares sandbox: unsandboxed — its process runs OUTSIDE levare's OS sandbox on every host, by explicit author declaration: ${a.reason}`);
+    }
+    out.push("");
+  }
+  if (nativeAgents && nativeAgents.length > 0) {
+    for (const name of nativeAgents) {
+      out.push(
+        `⚠ '${name}' declares kind: native — its process is never wrapped by levare's OS-level sandbox, on any host. This is a levare limitation (the wrap is not yet wired for this kind), not a missing sandbox primitive — installing bubblewrap or sandbox-exec will not change it.`,
+      );
     }
     out.push("");
   }
@@ -269,6 +288,7 @@ export function runDoctor(
   sandbox?: SandboxDetection,
   sandboxedAgents?: string[],
   unsandboxedAgents?: Array<{ name: string; reason: string }>,
+  nativeAgents?: string[],
 ): string {
-  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo, promptCheck, remoteAgents, cliToolAgents, sandbox, sandboxedAgents, unsandboxedAgents);
+  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo, promptCheck, remoteAgents, cliToolAgents, sandbox, sandboxedAgents, unsandboxedAgents, nativeAgents);
 }

@@ -339,25 +339,36 @@ export const ARTIFACT_SCHEMA: Schema = {
       description:
         "Present only when verdict is set. extracted — levare found exactly one anchored verdict line in the review body (the only value this binary writes today). declared — reserved for a future structured channel a member's boundary reports directly; not yet implemented, never written. Absent whenever verdict itself is absent.",
     },
-    // NOTES R4-SANDBOX (v2, Ruling 2): the OS-sandbox enforcement level a `kind: cli` member's spawn
-    // actually ran under, when it produced this artifact — independent of `usage`/`unreported` (see
-    // adapters.ts#author). Absent for native/remote (never wrapped) and for any artifact predating this
-    // ruling.
+    // NOTES R4-SANDBOX (v2, Ruling 2): the OS-sandbox enforcement level a `kind: cli`/`kind: remote`
+    // member's spawn actually ran under, when it produced this artifact — independent of
+    // `usage`/`unreported` (see adapters.ts#author). Absent for pre-this-ruling artifacts.
+    //
+    // Finding 75 (part 1, 2026-08-24): "not-wrapped" is a FOURTH value, stamped unconditionally for
+    // every `kind: native` member — NOT the same fact as "none" (a real wrap attempted, host had
+    // nothing). "not-wrapped" means levare never calls its sandbox mechanism for this kind, on any host
+    // — a known, currently-true gap (part 2 of the ruling wires it), not an architectural exemption:
+    // this field's own value is what previously read as "Absent for native members... [is] intentional"
+    // — it wasn't; that framing was a false premise, corrected here.
     sandbox: {
       type: "enum",
       required: false,
       nullable: true,
-      enum: ["full", "fs-only", "none"],
-      description: "The OS-level sandbox a kind: cli (or fully-implemented kind: remote) member's spawn actually ran under: full (filesystem and network confined), fs-only (filesystem-only fallback), or none (no working primitive found — the spawn ran unconfined). Absent for native members and pre-this-ruling artifacts.",
+      enum: ["full", "fs-only", "none", "not-wrapped"],
+      description: "The OS-level sandbox enforcement this member's spawn actually ran under: full (filesystem and network confined), fs-only (filesystem-only fallback), none (a real wrap was attempted but no working primitive was found on this host — the spawn ran unconfined), or not-wrapped (kind: native — levare's sandbox mechanism is never called for this kind at all, on any host; not a host capability gap). Absent on pre-this-ruling artifacts.",
     },
-    // NOTES R4-SANDBOX-APPSERVER: present ONLY alongside `sandbox: none` produced by a member declaring
+    // NOTES R4-SANDBOX-APPSERVER: present alongside `sandbox: none` produced by a member declaring
     // `sandbox: unsandboxed` (types.ts#Agent.sandbox) — distinguishes "this host had nothing" from "this
     // member was declared unsandboxeable, on any host" (adapters.ts#author's own doc explains why the
     // two facts must never collapse into the identical `sandbox: none` line alone).
+    //
+    // Finding 75 (part 1): also present alongside `sandbox: not-wrapped`, carrying levare's own fixed
+    // explanatory text rather than an author's declaration. Safe to share the field across both cases —
+    // unlike the "none" ambiguity this field was built to resolve, the discriminator here is `sandbox`'s
+    // own value ("none" vs "not-wrapped"), never this field's presence or its prose.
     sandbox_reason: {
       type: "str",
       required: false,
-      description: "Present only when this artifact's producing member declared sandbox: unsandboxed — the documented reason its spawn never runs under levare's OS sandbox, on any host.",
+      description: "Present alongside sandbox: none when this artifact's producing member declared sandbox: unsandboxed (the author's own documented reason), or alongside sandbox: not-wrapped for every kind: native member (levare's own fixed explanation — never wrapped, on any host).",
     },
     // NOTES REGISTRY-PROVENANCE: a content hash over the governing registry — teams/, agents/,
     // connectors/, projects/, skills/, knowledge/, types/, studio.md — exactly as it stood on disk when
@@ -961,6 +972,7 @@ function validateSingleFile(
   if (kind.schema === AGENT_SCHEMA) validateAgentSandboxWarning(data, file, warnings, sandbox);
   if (kind.schema === AGENT_SCHEMA) validateAgentSandboxDeclaration(data, file, errors);
   if (kind.schema === AGENT_SCHEMA) validateAgentSandboxDeclaredWarning(data, file, warnings);
+  if (kind.schema === AGENT_SCHEMA) validateAgentNativeSandboxWarning(data, file, warnings);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorAuth(data, file, errors);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorRoleWarning(data, file, warnings);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorHomeWarning(data, file, warnings);
@@ -1575,6 +1587,26 @@ function validateAgentSandboxDeclaredWarning(data: Record<string, YamlValue>, fi
   warnings.push({
     code: "SANDBOX_DECLARED_UNSANDBOXED",
     message: `agent '${name}' declares sandbox: unsandboxed — its process runs OUTSIDE levare's OS sandbox on every host, even where a working primitive exists, by explicit author declaration: ${data.sandbox_reason}`,
+    file,
+  });
+}
+
+// Finding 75 (part 1, 2026-08-24): unconditional — unlike SANDBOX_UNAVAILABLE/SANDBOX_DECLARED_UNSANDBOXED
+// above, this names a fact about levare itself, true on EVERY host regardless of what sandbox primitive
+// it finds, so it takes no `sandbox?: SandboxDetection` parameter at all and fires for every kind: native
+// agent unconditionally. Deliberately a DIFFERENT code from SANDBOX_UNAVAILABLE (never shared) — that
+// code means "this host lacks a working primitive," a fact that can change by installing one; this one
+// means "levare does not call its sandbox mechanism for this kind, on any host" — a levare gap, not a
+// host gap. Sharing the code (or its vocabulary — "tried", "found", "no working primitive") would read as
+// the same fixable-by-installing-bubblewrap gap SANDBOX_UNAVAILABLE names, which is exactly wrong here:
+// the SDK worker's spawn is a real, wrappable OS process (sdk-transport.ts#workerSpawnArgv) — the wrap is
+// simply never called (part 2 of the ruling wires it).
+function validateAgentNativeSandboxWarning(data: Record<string, YamlValue>, file: string, warnings: ValidationWarning[]): void {
+  if (data.kind !== "native") return;
+  const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+  warnings.push({
+    code: "SANDBOX_NOT_WRAPPED",
+    message: `agent '${name}' declares kind: native — its process is never wrapped by levare's OS-level sandbox, on any host. This is a levare limitation (the wrap is not yet wired for this kind), not a missing sandbox primitive — installing bubblewrap or sandbox-exec will not change it.`,
     file,
   });
 }

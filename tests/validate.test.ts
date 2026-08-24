@@ -238,6 +238,109 @@ describe("verdict_source — nullable, enum-checked, sibling to verdict", () => 
   });
 });
 
+// Finding 75 (part 1, 2026-08-24): `sandbox` gains a FOURTH enum value, `not-wrapped`, stamped
+// unconditionally on every kind: native artifact (adapters.ts#author) — same nullable/optional shape as
+// before (Finding 99/114's own lesson: a required flip bricks every artifact predating the field). These
+// prove the new value round-trips and, critically, that an artifact predating this ruling — `sandbox`
+// absent entirely, the shape every artifact on disk had before today — still validates clean.
+describe("sandbox: not-wrapped (Finding 75, part 1) — nullable, enum-checked, never required", () => {
+  function artifactDoc(extraFrontmatter: string): string {
+    return [
+      "---",
+      "kind: spec",
+      "id: spec-flow-v1",
+      "unit: flow",
+      "project: acme",
+      "status: in-review",
+      "produced_by: kestrel/lyra",
+      "consumes: []",
+      "supersedes: null",
+      "approved_by: null",
+      "created: 2026-08-23",
+      "files: []",
+      extraFrontmatter,
+      "---",
+      "",
+      "Body.",
+      "",
+    ]
+      .filter((l) => l !== "")
+      .join("\n");
+  }
+
+  test("absent entirely — every artifact predating this ruling — validates clean, parses to null", () => {
+    const doc = artifactDoc("");
+    expect(validateArtifactSource(doc)).toEqual([]);
+    expect(parseArtifactDoc(doc).sandbox).toBeNull();
+  });
+
+  test("sandbox: not-wrapped, with its sandbox_reason, validates and round-trips", () => {
+    const doc = artifactDoc("sandbox: not-wrapped\nsandbox_reason: native members are never wrapped by levare's OS-level sandbox — an unwired mechanism, not a host limitation.");
+    expect(validateArtifactSource(doc)).toEqual([]);
+    expect(parseArtifactDoc(doc).sandbox).toBe("not-wrapped");
+  });
+
+  test("the three pre-existing values (full/fs-only/none) still validate — the new value is additive, not a replacement", () => {
+    for (const level of ["full", "fs-only", "none"]) {
+      expect(validateArtifactSource(artifactDoc(`sandbox: ${level}`))).toEqual([]);
+    }
+  });
+
+  test("an unrecognized value fails BAD_ENUM, naming the field", () => {
+    const doc = artifactDoc("sandbox: not-a-real-level");
+    const errs = validateArtifactSource(doc);
+    expect(errs.some((e) => e.code === "BAD_ENUM" && e.message.includes("sandbox"))).toBe(true);
+  });
+});
+
+// Finding 75 (part 1, 2026-08-24): the reporting half of the ruling — a kind: native agent's sandbox gap
+// is now told at validate/doctor time, never silent. Sibling to SANDBOX_UNAVAILABLE/SANDBOX_DECLARED_
+// UNSANDBOXED above, but a DIFFERENT code and DIFFERENT vocabulary on purpose: SANDBOX_UNAVAILABLE names
+// a HOST fact ("no working primitive was found — installing one would fix it"); SANDBOX_NOT_WRAPPED names
+// a LEVARE fact ("this kind is never wrapped, on any host — installing a primitive changes nothing").
+// Sharing either the code or the "tried"/"found"/"primitive" vocabulary would let a Conductor reasonably
+// (but wrongly) conclude bubblewrap/sandbox-exec is the fix.
+describe("SANDBOX_NOT_WRAPPED for kind: native agents (Finding 75, part 1)", () => {
+  function nativeAgentDoc(name = "lyra"): string {
+    return ["---", `name: ${name}`, "kind: native", "produces: [spec]", "model: claude-sonnet-5", "style:", "  avatar: Ly", "---", "", "A native member.", ""].join("\n");
+  }
+
+  test("fires unconditionally for a kind: native agent, independent of host sandbox state", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-native-sandbox-"));
+    try {
+      mkdirSync(join(dir, "agents"), { recursive: true });
+      writeFileSync(join(dir, "agents", "lyra.md"), nativeAgentDoc());
+      const r = validatePath(dir);
+      expect(r.ok).toBe(true);
+      expect(r.warnings.map((w) => w.code)).toContain("SANDBOX_NOT_WRAPPED");
+      const w = r.warnings.find((w) => w.code === "SANDBOX_NOT_WRAPPED")!;
+      expect(w.message).toContain("lyra");
+      expect(w.message).toContain("never wrapped");
+      // The exact misconception this ruling refuses to invite: installing bubblewrap/sandbox-exec would
+      // not change this, and the message must not use SANDBOX_UNAVAILABLE's own "tried"/"found"/"no
+      // working primitive" vocabulary, which reads as a fixable host gap.
+      expect(w.message).not.toMatch(/tried:|no working.*primitive|primitive was found/i);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("never fires for a kind: cli or kind: remote agent — SANDBOX_UNAVAILABLE (a different code) is theirs", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-cli-sandbox-"));
+    try {
+      mkdirSync(join(dir, "agents"), { recursive: true });
+      writeFileSync(
+        join(dir, "agents", "finch.md"),
+        ["---", "name: finch", "kind: cli", "produces: [review]", "command: [echo]", "result: stdout", "style:", "  avatar: Fi", "---", "", "A cli member.", ""].join("\n"),
+      );
+      const r = validatePath(dir);
+      expect(r.warnings.map((w) => w.code)).not.toContain("SANDBOX_NOT_WRAPPED");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 // NOTES F1: `levare validate` used to say "valid" about a studio that could not run a single step —
 // every per-file schema check passed while the one cross-entity fact the Runner rests on (a flow step
 // binds to a member that declares it produces a matching kind) went unchecked until runtime. These
@@ -1182,7 +1285,10 @@ describe("kind: remote — legal, valid, and warned about (NOTES MCP-1B)", () =>
       );
       const r = validatePath(dir);
       expect(r.ok).toBe(true);
-      expect(r.warnings).toEqual([]);
+      // Finding 75 (part 1, 2026-08-24): no longer an empty array — every kind: native agent now carries
+      // its own SANDBOX_NOT_WRAPPED warning (see the dedicated describe block below); this test stays
+      // scoped to what it actually checks — a native agent is never mistaken for REMOTE_NOT_IMPLEMENTED.
+      expect(r.warnings.map((w) => w.code)).not.toContain("REMOTE_NOT_IMPLEMENTED");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

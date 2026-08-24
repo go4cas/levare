@@ -1404,4 +1404,42 @@ describe("doctor.ts: sandbox status line + the sibling warning (NOTES R4-SANDBOX
       expect(out).not.toContain("declares sandbox: unsandboxed");
     });
   });
+
+  // Finding 75 (part 1, 2026-08-24): `nativeAgents` is printed UNCONDITIONALLY, same posture as
+  // `unsandboxedAgents` above — a fact about levare itself (the wrap is never CALLED for this kind, on
+  // any host), never a fact about what THIS host happens to offer.
+  describe("nativeAgents — a kind: native member's missing sandbox, told plainly (Finding 75, part 1)", () => {
+    test("names the member, even on a host WITH a working primitive", () => {
+      const out = formatDoctor([], undefined, undefined, undefined, undefined, undefined, FULL, ["finch"], undefined, ["lyra"]);
+      expect(out).toContain("⚠ 'lyra' declares kind: native");
+      expect(out).toContain("never wrapped");
+    });
+
+    // The exact misconception this ruling refuses to invite: distinct vocabulary from the
+    // SANDBOX_UNAVAILABLE-equivalent host-capability line above (no "tried", "found", or "no working
+    // primitive"), so a Conductor reading this does not conclude installing bubblewrap/sandbox-exec
+    // would change anything for this member.
+    test("does not use SANDBOX_UNAVAILABLE's own vocabulary — installing a primitive would not fix this", () => {
+      const out = formatDoctor([], undefined, undefined, undefined, undefined, undefined, NONE, ["finch"], undefined, ["lyra"]);
+      const nativeLine = out.split("\n").find((l) => l.includes("declares kind: native"))!;
+      expect(nativeLine).toBeTruthy();
+      expect(nativeLine).not.toMatch(/tried:|no working.*primitive|primitive was found/i);
+    });
+
+    test("prints alongside, never instead of, the host-capability warning for a DIFFERENT (cli) member", () => {
+      const out = formatDoctor([], undefined, undefined, undefined, undefined, undefined, NONE, ["finch"], undefined, ["lyra"]);
+      expect(out).toContain("run unconfined beyond env/HOME scoping: finch");
+      expect(out).toContain("⚠ 'lyra' declares kind: native");
+    });
+
+    test("omitted entirely → no such line, and no crash", () => {
+      const out = formatDoctor([], undefined, undefined, undefined, undefined, undefined, FULL, ["finch"]);
+      expect(out).not.toContain("declares kind: native");
+    });
+
+    test("empty array → no such line", () => {
+      const out = formatDoctor([], undefined, undefined, undefined, undefined, undefined, FULL, ["finch"], undefined, []);
+      expect(out).not.toContain("declares kind: native");
+    });
+  });
 });
