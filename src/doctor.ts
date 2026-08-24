@@ -150,14 +150,16 @@ export function diagnose(
  * `sandbox` below, is a coarser boundary than `tools:` describes); doctor repeats
  * `validateAgentCliToolsWarning`'s own telling.
  *
- * `sandbox`, when given (NOTES R4-SANDBOX, v2 Ruling 2 / NOTES MCP-1C, ruling R3): the OS-level sandbox
- * primitive actually detected on THIS host, right now — printed alongside `orchestrator`/`versionInfo`
- * since it's the same kind of "what does this machine actually offer" fact. A `level: "none"` result
- * also gets the sibling warning to `CLI_TOOLS_NOT_ENFORCEABLE`/`remoteAgents` above, once per member
- * whose spawn actually goes through this sandbox — every `kind: cli` agent, PLUS every `kind: remote`
- * agent backed by a real, granted, stdio MCP connector (ruling R3 gives it the identical confinement) —
- * named in `sandboxedAgents` — a studio with none of those has nothing this warning is FOR, so it stays
- * quiet even on a host with no working primitive.
+ * `sandbox`, when given (NOTES R4-SANDBOX, v2 Ruling 2 / NOTES MCP-1C, ruling R3 / Finding 75 part 2):
+ * the OS-level sandbox primitive actually detected on THIS host, right now — printed alongside
+ * `orchestrator`/`versionInfo` since it's the same kind of "what does this machine actually offer" fact.
+ * A `level: "none"` result also gets the sibling warning to `CLI_TOOLS_NOT_ENFORCEABLE`/`remoteAgents`
+ * above, once per member whose spawn actually goes through this sandbox — every `kind: cli` agent
+ * (unless it declares `sandbox: unsandboxed`), every `kind: remote` agent backed by a real, granted,
+ * stdio MCP connector (ruling R3 gives it the identical confinement), and every `kind: native` agent
+ * (Finding 75 part 2 — the SDK worker's own self-invocation spawn gets the identical wrap) — named in
+ * `sandboxedAgents` — a studio with none of those has nothing this warning is FOR, so it stays quiet
+ * even on a host with no working primitive.
  *
  * NOTES R4-SANDBOX-FIX-3 (round 3): `full` does NOT mean the same shape of confinement on every
  * `primitive` — Linux `bubblewrap` builds an allow-list from an empty root (nothing reachable unless
@@ -173,20 +175,11 @@ export function diagnose(
  * "none"` warning: that one names a host capability gap outside the studio author's control; this one
  * names a deliberate, documented exemption — collapsing the two would hide which is which.
  *
- * `nativeAgents`, when given (Finding 75, part 1, 2026-08-24, collapsed to one line in the same-day
- * follow-up): every `kind: native` agent, named in ONE line NESTED directly under the `sandbox:` status
- * line it qualifies — `levare doctor` reporting a working host `sandbox: full` used to be true about the
- * host and silent about the kind a native member actually is; this line closes that silence. Unlike
- * `unsandboxedAgents` above, this is NOT printed independently of `sandbox` — it's attached to it, inside
- * `if (sandbox)`, because that IS the line it qualifies (no `sandbox:` line, nothing to attach the
- * qualification to). Unconditional on `sandbox.level` itself, though (never gated on `"none"` the way the
- * host-capability warning right above it is) — this is a levare/kind fact, true on every host, not a fact
- * about what THIS host's own primitive detection found. ONE line naming every affected member (was one
- * ~250-char paragraph PER member — six of those buried doctor's own actually-actionable warnings, like a
- * missing credential, below the fold, and read as six problems when it was one fact), deliberately in
- * different vocabulary from the `sandbox.level === "none"` warning above — no "tried", "found", or "no
- * working primitive" — so a Conductor reading it does not conclude installing bubblewrap/sandbox-exec
- * would change anything. */
+ * Finding 75 (part 1, 2026-08-24, collapsed to one line in the same-day follow-up; part 2, 2026-08-24):
+ * `kind: native` agents used to get their own separate, unconditional "never wrapped, on any host" line
+ * here — that fact is no longer true (part 2 wires the wrap), so callers now fold native agents straight
+ * into `sandboxedAgents` above rather than passing them separately; there is no more `nativeAgents`
+ * parameter. */
 export function formatDoctor(
   health: ConnectorHealth[],
   orchestrator?: OrchestratorStatus,
@@ -197,7 +190,6 @@ export function formatDoctor(
   sandbox?: SandboxDetection,
   sandboxedAgents?: string[],
   unsandboxedAgents?: Array<{ name: string; reason: string }>,
-  nativeAgents?: string[],
 ): string {
   const out: string[] = [];
   if (versionInfo) {
@@ -218,20 +210,6 @@ export function formatDoctor(
     if (sandbox.level === "none" && sandboxedAgents && sandboxedAgents.length > 0) {
       out.push(
         `⚠ no working OS-level sandbox primitive found on this host (tried: ${sandbox.platform === "linux" ? "bubblewrap, unshare" : sandbox.platform === "darwin" ? "sandbox-exec" : "none available for this platform"}) — these members run unconfined beyond env/HOME scoping: ${sandboxedAgents.join(", ")}`,
-      );
-    }
-    // Follow-up to Finding 75 (part 1, 2026-08-24): ONE line, nested directly under the sandbox: status
-    // line it qualifies, naming every kind: native member — collapsed from one ~250-char paragraph PER
-    // member after that shape buried doctor's own actually-actionable warnings (missing credentials)
-    // below the fold, and read as N problems when it's one fact. Unconditional on `sandbox.level` (never
-    // gated on "none" the way the line above is) — this is a levare/kind fact, true on every host,
-    // independent of what THIS host's own primitive detection found; but nested under `sandbox:`
-    // specifically because that IS the line it qualifies ("full" is true about the host and silent about
-    // the kind these members actually are without this line right under it).
-    if (nativeAgents && nativeAgents.length > 0) {
-      const names = [...nativeAgents].sort();
-      out.push(
-        `  ⚠ ${names.length} native member${names.length === 1 ? "" : "s"} ${names.length === 1 ? "is" : "are"} never wrapped by this sandbox, on any host: ${names.join(", ")}. levare does not yet wire the wrap for kind: native — installing bubblewrap or sandbox-exec will not change it.`,
       );
     }
     out.push("");
@@ -299,7 +277,6 @@ export function runDoctor(
   sandbox?: SandboxDetection,
   sandboxedAgents?: string[],
   unsandboxedAgents?: Array<{ name: string; reason: string }>,
-  nativeAgents?: string[],
 ): string {
-  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo, promptCheck, remoteAgents, cliToolAgents, sandbox, sandboxedAgents, unsandboxedAgents, nativeAgents);
+  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo, promptCheck, remoteAgents, cliToolAgents, sandbox, sandboxedAgents, unsandboxedAgents);
 }
