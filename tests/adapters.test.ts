@@ -896,6 +896,31 @@ describe("native adapter — sandboxed real spawn (Finding 75, part 2)", () => {
       expect(policy.writablePaths!.some((p) => p.includes("claude-"))).toBe(false);
     });
 
+    // Finding 75 (part 3, round 2 — a live macOS run's own finding): a live run of
+    // `scripts/repro-r4-sandbox-native-worker.ts` found `claude-{uid}` absent from the generated profile
+    // entirely, even though `nativeBunfsExtractionBase`'s own formula was already correct. Root cause:
+    // `buildNativeSandboxPolicy` gates the whole grant behind the real, un-injected `isCompiledBuild()` —
+    // and `bun run scripts/...ts` (the ONLY way that probe can be invoked) is itself a source run, so the
+    // gate was unconditionally false there, silently dropping the exact grant the probe existed to test.
+    // The isCompiledBuildFn param above (added in this same round) closes it: injectable, mirroring this
+    // codebase's own established pattern (`which`/`probe`/`getconf` elsewhere), defaulting to the real
+    // `isCompiledBuild` everywhere else. This test is the always-run, host-independent proof that when
+    // the compiled-build branch genuinely IS engaged, the grant reaches `policy.writablePaths` — the
+    // "does it reach the real policy" half the previous, isolated `nativeBunfsGrantIsCanonicalized` (STEP
+    // A2) test never covered, since it built a profile directly and never routed through this function.
+    test("forcing the compiled-build branch (isCompiledBuildFn) puts the bunfs extraction base in writablePaths", () => {
+      const { repo, req } = policyReq();
+      const policy = buildNativeSandboxPolicy(repo, req, "/worker/spawn/cwd", undefined, undefined, () => true);
+      expect(policy.writablePaths).toContain(nativeBunfsExtractionBase());
+    });
+
+    test("isCompiledBuildFn defaults to the real isCompiledBuild when omitted — every existing call site is unaffected", () => {
+      const { repo, req } = policyReq();
+      const withDefault = buildNativeSandboxPolicy(repo, req, "/worker/spawn/cwd", undefined);
+      const withExplicitFalse = buildNativeSandboxPolicy(repo, req, "/worker/spawn/cwd", undefined, undefined, () => false);
+      expect(withDefault.writablePaths).toEqual(withExplicitFalse.writablePaths);
+    });
+
     test("a source-mode resolved native binary path grants its own install tree read-only, exactly like a cli member's resolved argv[0]", () => {
       const { repo, req } = policyReq();
       const policy = buildNativeSandboxPolicy(repo, req, "/worker/spawn/cwd", "/resolved/claude-agent-sdk/bin/claude");

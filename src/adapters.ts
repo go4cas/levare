@@ -1279,6 +1279,16 @@ export function ensureNativeBunfsExtractionBase(opts: Parameters<typeof nativeBu
  * Finding 75 part 3's own fix — see that function's doc) and `LEVARE_CLAUDE_CONFIG_DIR` (sdk-transport.ts
  * — created by this process, read/written by the SDK's own inner `claude` CLI subprocess, on every run
  * mode). Neither has an existing `SandboxPolicy` field any other kind ever points at.
+ *
+ * `isCompiledBuildFn` (Finding 75 part 3, round 2 — a live macOS run's own finding): defaults to the real
+ * `isCompiledBuild`, injectable so a PROBE can force the compiled-build branch without needing an actual
+ * `--define`-stamped binary. Without this, `scripts/repro-r4-sandbox-native-worker.ts`'s own STEP C —
+ * invoked via `bun run`, which is inherently a source run — could never exercise the
+ * `ensureNativeBunfsExtractionBase` grant at all: `isCompiledBuild()` reads real ambient state and is
+ * unconditionally false there, so the grant this whole unit exists to fix was silently absent from
+ * every profile the probe ever generated, and the probe passed for a reason production doesn't share.
+ * The exact same "the probe's own gap is part of the finding" lesson the original goal named, one layer
+ * deeper: closing the FIRST probe gap (auth) still left this SECOND one (build mode) unexercised.
  */
 export function buildNativeSandboxPolicy(
   repo: Repo,
@@ -1286,6 +1296,7 @@ export function buildNativeSandboxPolicy(
   cwd: string,
   pathToClaudeCodeExecutable: string | undefined,
   baseEnv?: Record<string, string | undefined>,
+  isCompiledBuildFn: () => boolean = isCompiledBuild,
 ): SandboxPolicy {
   const { readOnlyPaths, operatorHome, darwinTempDir } = baseSandboxContext(repo, cwd, undefined, req.env.PATH, baseEnv);
   const treeDirs = (p: string) => [dirname(p), dirname(dirname(p))];
@@ -1306,7 +1317,7 @@ export function buildNativeSandboxPolicy(
       ...(req.projectRepoPath && req.projectRepoPath !== cwd ? [req.projectRepoPath] : []),
       ...(req.dispatchGitWriteGrant?.subpaths ?? []),
       LEVARE_CLAUDE_CONFIG_DIR,
-      ...(isCompiledBuild() ? [ensureNativeBunfsExtractionBase()] : []),
+      ...(isCompiledBuildFn() ? [ensureNativeBunfsExtractionBase()] : []),
     ],
     gitWriteGrant: req.dispatchGitWriteGrant,
     darwinXcrunTempDir: darwinTempDir,
