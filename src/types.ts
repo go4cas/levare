@@ -144,12 +144,19 @@ export interface Agent {
 // A connector definition (§5): names the env var *names* a granted member receives; values never
 // live in the repo (invariant 11). `kind: cli` wraps a command; `kind: mcp` names an MCP server.
 // Studio-level settings (NOTES F11): a root singleton (`studio.md`), distinct from `projects/*.md`
-// (product pointers). Currently carries only the Orchestrator's declared model — the registry field
-// that replaces `LEVARE_ORCHESTRATOR_MODEL` as the source of truth (the env var remains a runtime
-// override). Optional throughout: an absent file, or an absent field, means "no studio-level
+// (product pointers). Optional throughout: an absent file, or an absent field, means "no studio-level
 // declaration" and callers fall back to their own built-in default.
 export interface StudioSettings {
+  /** The Orchestrator's declared model — the registry field that replaces
+   * `LEVARE_ORCHESTRATOR_MODEL` as the source of truth (the env var remains a runtime override). */
   orchestratorModel?: string;
+  /** Finding 90: the operator's OWN git identity (`git config user.name`/`user.email`, whatever they
+   * commit under directly) — declared here so `timeline.ts#gitLogRows` can recognize that a hand-edit
+   * committed under this identity and a levare-recorded Conductor action (`git.ts#CONDUCTOR_NAME`/
+   * `CONDUCTOR_EMAIL`) are the same human, rather than rendering them as two different actors. Absent
+   * → no declaration; the timeline falls back to `CONDUCTOR_NAME` alone, exactly as before this field
+   * existed. */
+  conductorGitIdentity?: { name: string; email: string };
 }
 
 // NOTES C13: how a connector's CLI/MCP backend authenticates. `env` (default) is the original

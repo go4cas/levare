@@ -73,7 +73,13 @@ export function loadStudioSettings(root: string): StudioSettings {
   const file = join(root, "studio.md");
   if (!existsSync(file)) return {};
   const { data } = parseFrontmatter(readFileSync(file, "utf8"));
-  return { orchestratorModel: optStr(data.orchestrator_model) };
+  const identity = data.conductor_git_identity as Record<string, YamlValue> | undefined;
+  const identityName = identity ? optStr(identity.name) : undefined;
+  const identityEmail = identity ? optStr(identity.email) : undefined;
+  return {
+    orchestratorModel: optStr(data.orchestrator_model),
+    conductorGitIdentity: identityName && identityEmail ? { name: identityName, email: identityEmail } : undefined,
+  };
 }
 
 /**

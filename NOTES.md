@@ -17372,3 +17372,50 @@ installs cleanly (`apt-get install gh`, confirmed working). What's actually miss
 the check asks whether CI already ran against a specific pushed commit, and nothing from this branch
 has been pushed. Pushing this branch is a separate call, not this unit's to make unprompted (see the
 main thread).
+
+# NOTES ACTOR-IDENTITY-MIRROR — Finding 90's fix reached, and nearly repeated, the exact conflation git.ts already warns about, from the opposite direction
+
+`git.ts#RUNNER_NAME`'s own doc comment guards one direction of a conflation: don't reuse `CONDUCTOR_NAME`
+for a commit the Conductor did not personally approve, because that "would misrepresent git log as a
+record of human decisions." Finding 90 (`cas` and the operator's own git identity rendering as two
+actors) needed a fix that let a studio declare the Conductor's real git identity, so a hand-committed
+edit and a levare-recorded approval by the same human resolve to one actor instead of two.
+
+The first implementation got the unification right and the conflation wrong, from the mirror-image
+direction: `resolveGitActor` rewrote the DISPLAYED author name to the declared identity, so a commit
+git recorded as `go4cas` rendered in the timeline text as `cas`'s counterpart — a human's own direct
+edit, made to look like it went through `commitAs`. Caught live on `~/source/jot-studio`, not by any
+test: `bun test` had no assertion checking that the row TEXT still matched what `git log` actually
+said, because every test written alongside the fix asserted the (now-known-wrong) unified display name
+as the expected value — the tests were exercising the bug, not catching it.
+
+**The fix, once actually separated:** `name` (and therefore the row text, "from git log") is always
+the raw git author, in every branch of `resolveGitActor`, never rewritten to a declared identity's
+name. "Same person" is carried by `kind`/the shared avatar (both resolve to `conductor`, both get the
+one solid disc) — a purely visual unification that never touches what the text claims git said.
+Provenance — whether this exact commit went through levare's own `commitAs` or was made directly —
+stays on `TimelineActor.stamped`, and (a second live-verification catch) a hover-only tooltip on the
+shared avatar wasn't a visible enough signal for it: a direct commit and an app-mediated one looked
+identical on a plain page glance, which is a regression from the PRE-Finding-90 behavior (an
+unrecognized direct commit at least rendered with no avatar at all, visibly blank). `run.ts`'s new
+`timelineDirectTag` renders a plain, neutrally-worded `direct` marker (not `unverified`/`manual` — a
+Conductor hand-editing a registry file is ordinary, not irregular; the tag states how a commit
+happened, it doesn't grade it) on exactly the `stamped: false` case, so provenance survives the
+unification without a hover.
+
+**The general shape, for whoever next touches actor resolution:** a system with an app-mediated
+identity and a human identity that can both refer to the same person has two failure modes on either
+side of the correct answer — collapse RUNNER_NAME into CONDUCTOR_NAME and you fabricate a human
+decision that never happened (`git.ts`'s original warning); collapse a human's own commit into the
+app's recorded identity (rewrite `name`, or unify without a visible marker) and you erase that a human
+acted outside the app at all. Both are the same category of error — treating "same underlying person"
+as license to make two provenance-distinct actions indistinguishable — reached from opposite ends of
+the same fix. The `stamped` field plus `timelineDirectTag` is what keeps "one person, two provenances"
+from silently becoming "one person, one story."
+
+## Verification
+
+`bun test` → 1639 pass, 9 skip, 0 fail across 113 files. `bunx tsc --noEmit` clean. `bun run
+deps:check` → `deps ok`. Not verified against `~/source/jot-studio` directly in this session (no
+`~/source` access here) — the regression report and the fix it describes both came from the user's own
+live page-refresh against that studio.
