@@ -8,7 +8,7 @@ import { loadRepo } from "../src/repo.ts";
 import type { Repo } from "../src/repo.ts";
 import { assembleContext } from "../src/context.ts";
 import { loadPricing } from "../src/pricing.ts";
-import { AdapterRunner, AdapterError, createAsyncStdioRemoteBoundary, buildRemoteSandboxPolicy, type CliSpawn, type InvokeRequest, type NativeBoundary, type RemoteBoundary, type SpawnResult } from "../src/adapters.ts";
+import { AdapterRunner, AdapterError, createAsyncStdioRemoteBoundary, buildRemoteSandboxPolicy, NATIVE_SANDBOX_REASON, type CliSpawn, type InvokeRequest, type NativeBoundary, type RemoteBoundary, type SpawnResult } from "../src/adapters.ts";
 import { validateArtifactSource } from "../src/validate.ts";
 import { connectStdioMcpServer } from "../src/mcp-client.ts";
 import type { Agent, Connector } from "../src/types.ts";
@@ -2542,11 +2542,35 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
     }
   });
 
-  test("native/remote members never carry a sandbox level — Ruling 2 wraps only the two cli spawn paths", () => {
+  // Finding 75 (part 1, 2026-08-24): superseded — `native` used to be lumped in with `remote`'s own
+  // "mocked boundary, never wrapped" absence, but that conflated two different facts. `remote` (via the
+  // sync, mocked `RemoteBoundary` `produce()` exercises here) really does carry no sandbox line, because
+  // no real spawn boundary ran at all. `native` is different: levare's sandbox mechanism is never CALLED
+  // for this kind on any host (not "no process to wrap" — see adapters.ts#author's own doc), and that gap
+  // is now told on every native artifact rather than silently absent — see the two tests below.
+  test("a mocked remote member's sync produce() never carries a sandbox level — no real spawn boundary ran", () => {
+    const repo = loadRepo(ROOT);
+    // Synthesize a remote agent by cloning lyra's def with kind swapped, and enrol it in the team so
+    // context assembly resolves cleanly (same idiom as the "remote adapter (mocked MCP)" describe block).
+    repo.agents.set("echo", { ...repo.agents.get("lyra")!, name: "echo", kind: "remote", server: "echo-mcp", model: undefined });
+    repo.teams.get("kestrel")!.members.push("echo");
+    const remote: RemoteBoundary = { call: (r) => ({ doc: render("lyra", "spec", r.unit, r.project) }) };
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "echo", kind: "spec" }], native: nativeMock, remote });
+    const { doc } = runner.produce("echo", "spec", "checkout-flow", "storefront");
+    expect(doc).not.toContain("sandbox:");
+  });
+
+  test("a native member always carries sandbox: not-wrapped + the fixed sandbox_reason — levare's sandbox mechanism is never called for this kind, on any host", () => {
     const repo = loadRepo(ROOT);
     const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native: nativeMock, remote: remoteMock });
     const { doc } = runner.produce("lyra", "spec", "checkout-flow", "storefront");
-    expect(doc).not.toContain("sandbox:");
+    expect(doc).toContain("sandbox: not-wrapped");
+    expect(doc).toContain(`sandbox_reason: ${NATIVE_SANDBOX_REASON}`);
+  });
+
+  test("the native sandbox_reason names levare's own gap, not a host capability — no 'tried'/'found'/'primitive' vocabulary that would suggest installing bubblewrap fixes it", () => {
+    expect(NATIVE_SANDBOX_REASON).not.toMatch(/tried|found|primitive|unavailable/i);
+    expect(NATIVE_SANDBOX_REASON).toMatch(/never wrapped/i);
   });
 
   test("an injected (test-double) CliSpawn never gets its argv wrapped — sandboxing only ever touches the real spawn boundary", () => {

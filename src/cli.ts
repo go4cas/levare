@@ -40,7 +40,7 @@ function formatResult(result: ValidationResult): string {
 
 export function runValidate(path: string): number {
   // NOTES R4-SANDBOX: a fresh, real probe every run (never assumed from the platform alone) — see
-  // sandbox.ts's own header and validate.ts#validateAgentSandboxWarning, the sibling to
+  // sandbox.ts's own header and validate.ts#validateSandboxTelling, the sibling to
   // CLI_TOOLS_NOT_ENFORCEABLE this threads into.
   const result = validatePath(path, undefined, detectSandbox());
   if (result.ok) {
@@ -157,6 +157,9 @@ export function runDoctorCmd(rest: string[]): number {
     const unsandboxedAgents = [...repo.agents.values()]
       .filter((a) => a.kind === "cli" && a.sandbox === "unsandboxed" && a.sandbox_reason)
       .map((a) => ({ name: a.name, reason: a.sandbox_reason! }));
+    // Finding 75 (part 1): every kind: native agent — unconditional, same posture as unsandboxedAgents
+    // above (see formatDoctor's own doc for why this cannot be folded into sandboxedAgents/`sandbox`).
+    const nativeAgents = [...repo.agents.values()].filter((a) => a.kind === "native").map((a) => a.name);
     process.stdout.write(
       runDoctor(
         [...repo.connectors.values()],
@@ -171,6 +174,7 @@ export function runDoctorCmd(rest: string[]): number {
         detectSandbox(),
         sandboxedAgents,
         unsandboxedAgents,
+        nativeAgents,
       ),
     );
     return 0;

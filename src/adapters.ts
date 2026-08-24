@@ -55,6 +55,13 @@ import type { Agent, Connector, Receipt } from "./types.ts";
 
 export class AdapterError extends Error {}
 
+// Finding 75 (part 1, 2026-08-24): the fixed, levare-authored explanation stamped as `sandbox_reason`
+// alongside every `sandbox: not-wrapped` artifact (author(), below) — NOT an author's own declaration
+// (unlike a `kind: cli` member's `sandbox: unsandboxed` reason, which is free text the studio author
+// writes). Kept as one constant so the artifact's stored text and any future reference to it (tests,
+// docs) can never drift apart.
+export const NATIVE_SANDBOX_REASON = "native members are never wrapped by levare's OS-level sandbox — an unwired mechanism, not a host limitation.";
+
 // What every adapter is handed to do its job. `context` is the §6-assembled prompt; `env` is the
 // allowlisted environment; `tools` is the native tool allowlist. Adapters that don't need a field
 // (a CLI ignores `tools`) simply don't read it.
@@ -1535,15 +1542,26 @@ export class AdapterRunner implements MemberRunner {
     // under — a fact about THIS run, independent of `usage`/`unreported` (a member reporting no usage at
     // all still carries a real sandbox level; never omitted just because nothing else was reported).
     // `cli` (Ruling 2) and `remote` (ruling R3 — the SAME sandbox wrap, closing MCP-1C's own deferral) are
-    // the only two kinds that ever spawn a real OS process levare itself confines; `native` never carries
-    // one (the Claude Agent SDK call has no separate process for this module to wrap).
+    // the only two kinds levare's sandbox mechanism is WIRED to today.
+    //
+    // Finding 75 (part 1, 2026-08-24): `native` is NOT exempt because it has no process to wrap — the SDK
+    // worker's own spawn (sdk-transport.ts#workerSpawnArgv) is a real, wrappable OS process, the exact
+    // argv shape `wrapForSandbox` already takes for `cli`. Both docs/current-gaps.md and this file used to
+    // claim otherwise ("no separate process for this module to wrap") — refuted, corrected here. `native`
+    // is unwrapped today because the wrap is simply never CALLED for this kind — a known gap (part 2 of
+    // the ruling wires it), told below rather than left silent.
     if ((req.agent.kind === "cli" || req.agent.kind === "remote") && sandbox) lines.push(`sandbox: ${sandbox}`);
+    if (req.agent.kind === "native") lines.push("sandbox: not-wrapped", `sandbox_reason: ${NATIVE_SANDBOX_REASON}`);
     // NOTES R4-SANDBOX-APPSERVER: recorded on EVERY artifact this member produces, independent of
     // `sandbox:`'s own value above (which reads "none" identically whether the host simply lacks a
     // primitive or the author declared this member unsandboxeable — the two are NOT the same fact, and
     // silently collapsing them would hide a deliberate, documented decision behind what looks like an
     // ordinary host-capability gap). `req.agent.sandbox_reason` is required by `validate.ts` whenever
     // `sandbox: unsandboxed` is declared, so this is never emitted without one.
+    //
+    // Finding 75 (part 1): `sandbox_reason` also carries `NATIVE_SANDBOX_REASON` alongside `sandbox:
+    // not-wrapped` above — safe to share the field with the `unsandboxed`-declared case here because the
+    // discriminator between the two is `sandbox`'s own value (`none` vs `not-wrapped`), never this field.
     if (req.agent.kind === "cli" && req.agent.sandbox === "unsandboxed" && req.agent.sandbox_reason) {
       lines.push(`sandbox_reason: ${req.agent.sandbox_reason}`);
     }

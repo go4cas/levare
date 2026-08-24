@@ -171,7 +171,22 @@ export function diagnose(
  * `sandbox`/`sandboxedAgents` above, since this is an author's own decision, true on every host, never
  * a fact about what THIS host happens to offer. Deliberately a SEPARATE line from the `sandbox.level ===
  * "none"` warning: that one names a host capability gap outside the studio author's control; this one
- * names a deliberate, documented exemption — collapsing the two would hide which is which. */
+ * names a deliberate, documented exemption — collapsing the two would hide which is which.
+ *
+ * `nativeAgents`, when given (Finding 75, part 1, 2026-08-24, collapsed to one line in the same-day
+ * follow-up): every `kind: native` agent, named in ONE line NESTED directly under the `sandbox:` status
+ * line it qualifies — `levare doctor` reporting a working host `sandbox: full` used to be true about the
+ * host and silent about the kind a native member actually is; this line closes that silence. Unlike
+ * `unsandboxedAgents` above, this is NOT printed independently of `sandbox` — it's attached to it, inside
+ * `if (sandbox)`, because that IS the line it qualifies (no `sandbox:` line, nothing to attach the
+ * qualification to). Unconditional on `sandbox.level` itself, though (never gated on `"none"` the way the
+ * host-capability warning right above it is) — this is a levare/kind fact, true on every host, not a fact
+ * about what THIS host's own primitive detection found. ONE line naming every affected member (was one
+ * ~250-char paragraph PER member — six of those buried doctor's own actually-actionable warnings, like a
+ * missing credential, below the fold, and read as six problems when it was one fact), deliberately in
+ * different vocabulary from the `sandbox.level === "none"` warning above — no "tried", "found", or "no
+ * working primitive" — so a Conductor reading it does not conclude installing bubblewrap/sandbox-exec
+ * would change anything. */
 export function formatDoctor(
   health: ConnectorHealth[],
   orchestrator?: OrchestratorStatus,
@@ -182,6 +197,7 @@ export function formatDoctor(
   sandbox?: SandboxDetection,
   sandboxedAgents?: string[],
   unsandboxedAgents?: Array<{ name: string; reason: string }>,
+  nativeAgents?: string[],
 ): string {
   const out: string[] = [];
   if (versionInfo) {
@@ -202,6 +218,20 @@ export function formatDoctor(
     if (sandbox.level === "none" && sandboxedAgents && sandboxedAgents.length > 0) {
       out.push(
         `⚠ no working OS-level sandbox primitive found on this host (tried: ${sandbox.platform === "linux" ? "bubblewrap, unshare" : sandbox.platform === "darwin" ? "sandbox-exec" : "none available for this platform"}) — these members run unconfined beyond env/HOME scoping: ${sandboxedAgents.join(", ")}`,
+      );
+    }
+    // Follow-up to Finding 75 (part 1, 2026-08-24): ONE line, nested directly under the sandbox: status
+    // line it qualifies, naming every kind: native member — collapsed from one ~250-char paragraph PER
+    // member after that shape buried doctor's own actually-actionable warnings (missing credentials)
+    // below the fold, and read as N problems when it's one fact. Unconditional on `sandbox.level` (never
+    // gated on "none" the way the line above is) — this is a levare/kind fact, true on every host,
+    // independent of what THIS host's own primitive detection found; but nested under `sandbox:`
+    // specifically because that IS the line it qualifies ("full" is true about the host and silent about
+    // the kind these members actually are without this line right under it).
+    if (nativeAgents && nativeAgents.length > 0) {
+      const names = [...nativeAgents].sort();
+      out.push(
+        `  ⚠ ${names.length} native member${names.length === 1 ? "" : "s"} ${names.length === 1 ? "is" : "are"} never wrapped by this sandbox, on any host: ${names.join(", ")}. levare does not yet wire the wrap for kind: native — installing bubblewrap or sandbox-exec will not change it.`,
       );
     }
     out.push("");
@@ -269,6 +299,7 @@ export function runDoctor(
   sandbox?: SandboxDetection,
   sandboxedAgents?: string[],
   unsandboxedAgents?: Array<{ name: string; reason: string }>,
+  nativeAgents?: string[],
 ): string {
-  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo, promptCheck, remoteAgents, cliToolAgents, sandbox, sandboxedAgents, unsandboxedAgents);
+  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo, promptCheck, remoteAgents, cliToolAgents, sandbox, sandboxedAgents, unsandboxedAgents, nativeAgents);
 }

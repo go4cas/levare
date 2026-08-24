@@ -339,25 +339,36 @@ export const ARTIFACT_SCHEMA: Schema = {
       description:
         "Present only when verdict is set. extracted — levare found exactly one anchored verdict line in the review body (the only value this binary writes today). declared — reserved for a future structured channel a member's boundary reports directly; not yet implemented, never written. Absent whenever verdict itself is absent.",
     },
-    // NOTES R4-SANDBOX (v2, Ruling 2): the OS-sandbox enforcement level a `kind: cli` member's spawn
-    // actually ran under, when it produced this artifact — independent of `usage`/`unreported` (see
-    // adapters.ts#author). Absent for native/remote (never wrapped) and for any artifact predating this
-    // ruling.
+    // NOTES R4-SANDBOX (v2, Ruling 2): the OS-sandbox enforcement level a `kind: cli`/`kind: remote`
+    // member's spawn actually ran under, when it produced this artifact — independent of
+    // `usage`/`unreported` (see adapters.ts#author). Absent for pre-this-ruling artifacts.
+    //
+    // Finding 75 (part 1, 2026-08-24): "not-wrapped" is a FOURTH value, stamped unconditionally for
+    // every `kind: native` member — NOT the same fact as "none" (a real wrap attempted, host had
+    // nothing). "not-wrapped" means levare never calls its sandbox mechanism for this kind, on any host
+    // — a known, currently-true gap (part 2 of the ruling wires it), not an architectural exemption:
+    // this field's own value is what previously read as "Absent for native members... [is] intentional"
+    // — it wasn't; that framing was a false premise, corrected here.
     sandbox: {
       type: "enum",
       required: false,
       nullable: true,
-      enum: ["full", "fs-only", "none"],
-      description: "The OS-level sandbox a kind: cli (or fully-implemented kind: remote) member's spawn actually ran under: full (filesystem and network confined), fs-only (filesystem-only fallback), or none (no working primitive found — the spawn ran unconfined). Absent for native members and pre-this-ruling artifacts.",
+      enum: ["full", "fs-only", "none", "not-wrapped"],
+      description: "The OS-level sandbox enforcement this member's spawn actually ran under: full (filesystem and network confined), fs-only (filesystem-only fallback), none (a real wrap was attempted but no working primitive was found on this host — the spawn ran unconfined), or not-wrapped (kind: native — levare's sandbox mechanism is never called for this kind at all, on any host; not a host capability gap). Absent on pre-this-ruling artifacts.",
     },
-    // NOTES R4-SANDBOX-APPSERVER: present ONLY alongside `sandbox: none` produced by a member declaring
+    // NOTES R4-SANDBOX-APPSERVER: present alongside `sandbox: none` produced by a member declaring
     // `sandbox: unsandboxed` (types.ts#Agent.sandbox) — distinguishes "this host had nothing" from "this
     // member was declared unsandboxeable, on any host" (adapters.ts#author's own doc explains why the
     // two facts must never collapse into the identical `sandbox: none` line alone).
+    //
+    // Finding 75 (part 1): also present alongside `sandbox: not-wrapped`, carrying levare's own fixed
+    // explanatory text rather than an author's declaration. Safe to share the field across both cases —
+    // unlike the "none" ambiguity this field was built to resolve, the discriminator here is `sandbox`'s
+    // own value ("none" vs "not-wrapped"), never this field's presence or its prose.
     sandbox_reason: {
       type: "str",
       required: false,
-      description: "Present only when this artifact's producing member declared sandbox: unsandboxed — the documented reason its spawn never runs under levare's OS sandbox, on any host.",
+      description: "Present alongside sandbox: none when this artifact's producing member declared sandbox: unsandboxed (the author's own documented reason), or alongside sandbox: not-wrapped for every kind: native member (levare's own fixed explanation — never wrapped, on any host).",
     },
     // NOTES REGISTRY-PROVENANCE: a content hash over the governing registry — teams/, agents/,
     // connectors/, projects/, skills/, knowledge/, types/, studio.md — exactly as it stood on disk when
@@ -823,13 +834,13 @@ export function validatePath(target: string, overlay?: OverlayFile, sandbox?: Sa
   if (st.isFile()) {
     fileCount = 1;
     // No studio root to cross-check a proposal artifact's connector against — fail-open (NOTES CAP-A).
-    validateSingleFile(target, classify(target), errors, artifacts, overlay, warnings, undefined, sandbox);
+    validateSingleFile(target, classify(target), errors, artifacts, overlay, warnings);
   } else {
     // Directory tree: walk registry folders + work/. `target` IS the studio root here.
     const mdFiles = walkMarkdown(target);
     fileCount = mdFiles.length;
     for (const f of mdFiles) {
-      validateSingleFile(f, classify(relative(target, f)), errors, artifacts, overlay, warnings, target, sandbox);
+      validateSingleFile(f, classify(relative(target, f)), errors, artifacts, overlay, warnings, target);
     }
     // Folder-artifact discovery + index-count check on work/ subdirectories.
     discoverFolderArtifacts(target, errors, artifacts);
@@ -844,7 +855,8 @@ export function validatePath(target: string, overlay?: OverlayFile, sandbox?: Sa
     validateAgentContextScope(target, errors, overlay);
     validateEnvNotTracked(target, errors);
     validateKnownModels(target, errors, overlay);
-    validateAgentRemoteImplementation(target, warnings, overlay, sandbox);
+    const implementedRemoteAgents = validateAgentRemoteImplementation(target, warnings, overlay);
+    validateSandboxTelling(target, warnings, overlay, sandbox, implementedRemoteAgents);
   }
 
   // Cross-artifact checks over everything discovered.
@@ -936,7 +948,6 @@ function validateSingleFile(
   overlay?: OverlayFile,
   warnings: ValidationWarning[] = [],
   root?: string,
-  sandbox?: SandboxDetection,
 ): void {
   if (!kind.schema) return; // unknown location or non-schema file (e.g. README) — skip.
   let data: Record<string, YamlValue>;
@@ -958,7 +969,6 @@ function validateSingleFile(
   if (kind.schema === AGENT_SCHEMA) validateAgentVariant(data, file, errors);
   if (kind.schema === AGENT_SCHEMA) validateAgentTools(data, file, errors);
   if (kind.schema === AGENT_SCHEMA) validateAgentCliToolsWarning(data, file, warnings);
-  if (kind.schema === AGENT_SCHEMA) validateAgentSandboxWarning(data, file, warnings, sandbox);
   if (kind.schema === AGENT_SCHEMA) validateAgentSandboxDeclaration(data, file, errors);
   if (kind.schema === AGENT_SCHEMA) validateAgentSandboxDeclaredWarning(data, file, warnings);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorAuth(data, file, errors);
@@ -1378,16 +1388,20 @@ function validateAgentVariant(data: Record<string, YamlValue>, file: string, err
 //
 // NOTES MCP-1C (PRD Amendment 3, ruling R3): a FULLY implemented remote agent (`reason === null` below)
 // now spawns a real OS process (adapters.ts#createAsyncStdioRemoteBoundary) that goes through the exact
-// same sandbox wrap a `kind: cli` agent's spawn does — so it earns the exact same `SANDBOX_UNAVAILABLE`
-// telling `validateAgentSandboxWarning` already gives a `kind: cli` agent when `sandbox.level === "none"`.
-// Emitted HERE, in this tree-wide pass, rather than duplicating `validateAgentSandboxWarning`'s own
-// per-file connector resolution: this function has already done the exact work (resolved `server:` to a
-// real, granted, stdio `kind: mcp` connector) that deciding "is this remote agent even a real spawn"
-// requires, and re-deriving it a second time from bare frontmatter would risk the two checks silently
-// disagreeing about which remote agents are "real" as the resolution logic evolves.
-function validateAgentRemoteImplementation(root: string, warnings: ValidationWarning[], overlay?: OverlayFile, sandbox?: SandboxDetection): void {
+// same sandbox wrap a `kind: cli` agent's spawn does — so it's eligible for the exact same
+// SANDBOX_UNAVAILABLE telling a `kind: cli` agent gets when `sandbox.level === "none"`. This function
+// only RESOLVES eligibility (returns the implemented agents' names) rather than emitting the warning
+// itself — the follow-up to Finding 75 (part 1) collapsed SANDBOX_UNAVAILABLE/SANDBOX_NOT_WRAPPED from
+// one warning per affected member to ONE aggregate warning per studio (see
+// validateSandboxTelling, below, the sole emitter for both codes now): six identical ~250-char
+// per-member paragraphs read as six problems when it is one host/kind fact, and buried doctor's own
+// actually-actionable warnings (missing credentials) below the fold. Resolving eligibility here, not
+// re-deriving it a second time from bare frontmatter in validateSandboxTelling, keeps the two checks
+// from silently disagreeing about which remote agents are "real" as this resolution logic evolves.
+function validateAgentRemoteImplementation(root: string, warnings: ValidationWarning[], overlay?: OverlayFile): string[] {
+  const implementedRemoteAgents: string[] = [];
   const agentsDir = join(root, "agents");
-  if (!existsSync(agentsDir)) return;
+  if (!existsSync(agentsDir)) return implementedRemoteAgents;
 
   const teamConnectors = new Map<string, Set<string>>();
   const teamsByMember = new Map<string, string[]>();
@@ -1458,17 +1472,66 @@ function validateAgentRemoteImplementation(root: string, warnings: ValidationWar
         message: `agent '${agentName}' declares kind: remote — ${reason}; this member will not produce real work until it does (only a real, granted, stdio kind: mcp connector is implemented — PRD Amendment 3 ruling R5)`,
         file,
       });
-    } else if (sandbox && sandbox.level === "none") {
-      // NOTES MCP-1C: this branch is reached ONLY for a fully implemented remote agent — a real,
-      // granted, stdio kind: mcp connector, exactly the case adapters.ts#createAsyncStdioRemoteBoundary
-      // spawns for real and sandbox-wraps (ruling R3). Sibling to validateAgentSandboxWarning's own
-      // per-`kind: cli` telling, same code, same "see levare doctor" pointer.
-      warnings.push({
-        code: "SANDBOX_UNAVAILABLE",
-        message: `agent '${agentName}' declares kind: remote with a real, granted, stdio MCP connector but no working OS-level sandbox primitive was found on this host (tried: ${sandboxPrimitivesTried(sandbox)}) — its spawned MCP server process runs unconfined beyond env/HOME scoping; see 'levare doctor' for what was tried`,
-        file,
-      });
+    } else {
+      // NOTES MCP-1C: reached ONLY for a fully implemented remote agent — a real, granted, stdio
+      // kind: mcp connector, exactly the case adapters.ts#createAsyncStdioRemoteBoundary spawns for real
+      // and sandbox-wraps (ruling R3) — so it's eligible for validateSandboxTelling's own aggregate
+      // SANDBOX_UNAVAILABLE warning, alongside every eligible kind: cli agent.
+      implementedRemoteAgents.push(agentName);
     }
+  }
+  return implementedRemoteAgents;
+}
+
+// Finding 75 (part 1, follow-up 2026-08-24): the sole emitter of SANDBOX_UNAVAILABLE and
+// SANDBOX_NOT_WRAPPED — both are STUDIO-LEVEL facts, not per-member ones. The same host lacking
+// bubblewrap is not six separate facts because six members happen to be cli/remote; levare not wiring
+// native's wrap is not N separate facts because N members happen to be native. ONE warning per code,
+// per studio, naming every affected member — mirroring doctor.ts's own already-collapsed presentation
+// (`sandboxedAgents`/`nativeAgents`, both single joined lines there) rather than inventing a second,
+// inconsistent shape here. `implementedRemoteAgents` is threaded in from validateAgentRemoteImplementation
+// (already resolved there — see its own doc for why this function doesn't re-derive it). Tree-wide only
+// (same "no root, no cross-entity telling" posture as validateAgentRemoteImplementation) — a single-file
+// validate has no sibling agents to aggregate against, so it stays silent on both codes, same as before
+// this change (`sandbox` was already only ever passed from a directory-tree validatePath call).
+function validateSandboxTelling(root: string, warnings: ValidationWarning[], overlay: OverlayFile | undefined, sandbox: SandboxDetection | undefined, implementedRemoteAgents: string[]): void {
+  const agentsDir = join(root, "agents");
+  if (!existsSync(agentsDir)) return;
+
+  const cliAgents: string[] = [];
+  const nativeAgents: string[] = [];
+  for (const name of readdirSync(agentsDir).sort()) {
+    if (!name.endsWith(".md") || name.endsWith(".learnings.md")) continue;
+    let data: Record<string, YamlValue>;
+    try {
+      ({ data } = parseFrontmatter(readOverlaid(join(agentsDir, name), overlay)));
+    } catch {
+      continue; // its own PARSE_ERROR was already recorded by the per-file pass.
+    }
+    const agentName = typeof data.name === "string" ? data.name : basename(name, ".md");
+    // NOTES R4-SANDBOX-APPSERVER: a `sandbox: unsandboxed` cli agent is excluded — SANDBOX_DECLARED_
+    // UNSANDBOXED (still per-member; each one names its OWN author-given reason, which genuinely does
+    // differ member to member, unlike the two host/kind facts this function aggregates) is its telling.
+    if (data.kind === "cli" && data.sandbox !== "unsandboxed") cliAgents.push(agentName);
+    else if (data.kind === "native") nativeAgents.push(agentName);
+  }
+
+  const sandboxedAgents = [...cliAgents, ...implementedRemoteAgents].sort();
+  if (sandbox && sandbox.level === "none" && sandboxedAgents.length > 0) {
+    warnings.push({
+      code: "SANDBOX_UNAVAILABLE",
+      message: `no working OS-level sandbox primitive was found on this host (tried: ${sandboxPrimitivesTried(sandbox)}) — these members run unconfined beyond env/HOME scoping: ${sandboxedAgents.join(", ")}; see 'levare doctor' for what was tried`,
+      file: agentsDir,
+    });
+  }
+
+  if (nativeAgents.length > 0) {
+    const names = nativeAgents.sort();
+    warnings.push({
+      code: "SANDBOX_NOT_WRAPPED",
+      message: `${names.length} native member${names.length === 1 ? "" : "s"} ${names.length === 1 ? "is" : "are"} never wrapped by levare's OS-level sandbox, on any host: ${names.join(", ")}. levare does not yet wire the wrap for kind: native — installing bubblewrap or sandbox-exec will not change it.`,
+      file: agentsDir,
+    });
   }
 }
 
@@ -1508,39 +1571,6 @@ function validateAgentCliToolsWarning(data: Record<string, YamlValue>, file: str
   warnings.push({
     code: "CLI_TOOLS_NOT_ENFORCEABLE",
     message: `agent '${name}' declares kind: cli and 'tools:' — tools: on a cli member is not enforceable by levare at the per-tool level, even under a working OS sandbox (Ruling 2 narrows the member's overall reach, but does not distinguish between individual named tools) — encode the constraint in the connector/command via the vendor's own flags`,
-    file,
-  });
-}
-
-// NOTES R4-SANDBOX (v2, Ruling 2): sibling to CLI_TOOLS_NOT_ENFORCEABLE above — a `kind: cli` agent
-// runs through Ruling 2's OS-level sandbox whenever a working primitive exists on the host running it;
-// when none does, the spawn proceeds unconfined (a Conductor ruling: best-effort, never escalated to a
-// spawn failure — see sandbox.ts's own header) and this warning is how a studio author is told plainly,
-// the same "legal, but tell them" posture every warning in this file takes. `sandbox` is undefined for
-// every call site that hasn't opted into reporting host capability (validateArtifactSource's
-// single-document boundary, most existing tests) — the warning is simply skipped, never assumed, since
-// a caller with no detection result has nothing honest to say about this host. Fires per `kind: cli`
-// agent (mirroring CLI_TOOLS_NOT_ENFORCEABLE's own per-file scope), not once per studio — a studio with
-// several cli agents sees the gap named against each one, exactly as it would for tools:.
-//
-// NOTES MCP-1C: `kind: remote` deliberately does NOT go through THIS function (it only ever checks
-// `data.kind !== "cli"`) — a remote agent's SANDBOX_UNAVAILABLE telling lives in
-// `validateAgentRemoteImplementation` instead, which has already resolved whether `server:` names a
-// real, granted, stdio connector (the only remote shape that spawns anything for this warning to be
-// about) as part of its own REMOTE_NOT_IMPLEMENTED check — see that function's own doc for why the
-// telling lives there rather than being re-derived a second time here from bare per-file frontmatter.
-//
-// NOTES R4-SANDBOX-APPSERVER: silenced when the member ALREADY declares `sandbox: unsandboxed` —
-// `SANDBOX_DECLARED_UNSANDBOXED` (below) is the more specific, more useful telling for that member
-// (it names the author's OWN reason, not merely "this host has nothing"), and printing BOTH for the
-// identical member on an incapable host would read as two gaps where there is exactly one fact:
-// this member never runs confined, on any host, and the studio already says why.
-function validateAgentSandboxWarning(data: Record<string, YamlValue>, file: string, warnings: ValidationWarning[], sandbox?: SandboxDetection): void {
-  if (data.kind !== "cli" || !sandbox || sandbox.level !== "none" || data.sandbox === "unsandboxed") return;
-  const name = typeof data.name === "string" ? data.name : basename(file, ".md");
-  warnings.push({
-    code: "SANDBOX_UNAVAILABLE",
-    message: `agent '${name}' declares kind: cli but no working OS-level sandbox primitive was found on this host (tried: ${sandboxPrimitivesTried(sandbox)}) — its process runs unconfined beyond env/HOME scoping; see 'levare doctor' for what was tried`,
     file,
   });
 }
@@ -1708,7 +1738,7 @@ export function detectVersionManagerHomeGap(resolvedCommandPath: string | undefi
 }
 
 // NOTES R4-SANDBOX-APPSERVER: fires at STUDIO VALIDATION time, using a real `Bun.which` resolution
-// against THIS host's own PATH — the same "host-aware but never assumed" posture `validateAgentSandboxWarning`
+// against THIS host's own PATH — the same "host-aware but never assumed" posture `validateSandboxTelling`
 // already takes for `SANDBOX_UNAVAILABLE` (both are optional-injection, host-dependent checks; this one
 // isn't threaded through `validatePath`'s own `sandbox?` parameter because it needs no probe/spawn, only
 // a cheap PATH lookup already safe to run unconditionally — the same posture `hasResolvableLocalPath`
