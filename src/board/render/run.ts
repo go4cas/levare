@@ -189,7 +189,11 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
           // the natural date/time boundary.
           const dateStr = t.ts.slice(0, 10);
           const timeStr = t.ts.slice(11, 16);
-          return `<div class="tlrow"><span class="tlrow__time mono"><span class="tlrow__date">${esc(dateStr)}</span><span class="tlrow__clock">${esc(timeStr)}</span></span><span class="tlrow__text">${timelineActorAvatar(repo, t.actor)}${t.text}</span></div>`;
+          // Finding 88: a commit that also touched the governing registry gets a plain marker, not a
+          // rewritten sentence — it may still be causally relevant to the unit (e.g. the project's own
+          // registration commit); the tag says "look closer", it doesn't hide or relabel the row.
+          const registryTag = t.registry ? ` <span class="tag" title="this commit also touched the governing registry">registry</span>` : "";
+          return `<div class="tlrow"><span class="tlrow__time mono"><span class="tlrow__date">${esc(dateStr)}</span><span class="tlrow__clock">${esc(timeStr)}</span></span><span class="tlrow__text">${timelineActorAvatar(repo, t.actor)}${t.text}${registryTag}</span></div>`;
         })
         .join("\n")
     : emptyState({ message: "No recorded events yet." });

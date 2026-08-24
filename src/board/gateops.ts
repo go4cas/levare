@@ -25,6 +25,7 @@ import { locateArtifactFile } from "../locate.ts";
 import { unitArtifactPaths } from "../context.ts";
 import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL, transactionalWrite, dirtyRegistryFiles, type TxFile } from "../git.ts";
 import { advanceUnit, latestLiveArtifact, type AsyncMemberRunner } from "../dagwalk.ts";
+import { appendBranchEvent } from "../timeline.ts";
 import { executeProposal, type ExecuteProposalOptions } from "../execution.ts";
 import { resolveProjectRepoPath, workBranchName, trialMerge, checkGuardrailsForMerge, executeMerge, createWorkBranch, checkoutBehindMerge, formatCheckoutSyncNotice } from "../merge.ts";
 import { violationLine } from "../guardrails.ts";
@@ -825,6 +826,11 @@ async function doStart(root: string, repo: Repo, unit: WorkUnit, memberRunner: A
     const branch = workBranchName(unit.unit);
     const created = createWorkBranch(projectRepoPath, branch, project.default_branch);
     if (!created.ok) return { ok: false, status: 500, error: `unit '${unit.unit}': could not create work branch '${branch}': ${created.error}` };
+    // Finding 86: the branch itself is a ref write, never a commit — `gitLogRows` (studio or project)
+    // would never see it, so record it as a ledger event instead. Only on the actual creation, not the
+    // idempotent re-run: a later `start` against a unit whose branch already exists performed no git
+    // side effect this time and must not log one.
+    if (created.created) appendBranchEvent(unit.dir, branch);
   }
 
   // NOTES F10 defect 3: registers the invocation with the daemon's inFlight projection the instant
