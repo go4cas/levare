@@ -173,15 +173,20 @@ export function diagnose(
  * "none"` warning: that one names a host capability gap outside the studio author's control; this one
  * names a deliberate, documented exemption — collapsing the two would hide which is which.
  *
- * `nativeAgents`, when given (Finding 75, part 1, 2026-08-24): every `kind: native` agent — printed
- * UNCONDITIONALLY, same posture as `unsandboxedAgents` above and for the same reason: this is a fact
- * about levare itself (the sandbox wrap is never CALLED for this kind, on any host — see
- * validate.ts#SANDBOX_NOT_WRAPPED and adapters.ts#author's own doc), never a fact about what THIS host
- * happens to offer, so it stays independent of `sandbox`'s own host-detection result. `levare doctor`
- * reporting a working host `sandbox: full` used to be true about the host and silent about the kind a
- * native member actually is; this line closes that silence, deliberately in different vocabulary from
- * the `sandbox.level === "none"` warning above — no "tried", "found", or "no working primitive" — so a
- * Conductor reading it does not conclude that installing bubblewrap/sandbox-exec would change anything. */
+ * `nativeAgents`, when given (Finding 75, part 1, 2026-08-24, collapsed to one line in the same-day
+ * follow-up): every `kind: native` agent, named in ONE line NESTED directly under the `sandbox:` status
+ * line it qualifies — `levare doctor` reporting a working host `sandbox: full` used to be true about the
+ * host and silent about the kind a native member actually is; this line closes that silence. Unlike
+ * `unsandboxedAgents` above, this is NOT printed independently of `sandbox` — it's attached to it, inside
+ * `if (sandbox)`, because that IS the line it qualifies (no `sandbox:` line, nothing to attach the
+ * qualification to). Unconditional on `sandbox.level` itself, though (never gated on `"none"` the way the
+ * host-capability warning right above it is) — this is a levare/kind fact, true on every host, not a fact
+ * about what THIS host's own primitive detection found. ONE line naming every affected member (was one
+ * ~250-char paragraph PER member — six of those buried doctor's own actually-actionable warnings, like a
+ * missing credential, below the fold, and read as six problems when it was one fact), deliberately in
+ * different vocabulary from the `sandbox.level === "none"` warning above — no "tried", "found", or "no
+ * working primitive" — so a Conductor reading it does not conclude installing bubblewrap/sandbox-exec
+ * would change anything. */
 export function formatDoctor(
   health: ConnectorHealth[],
   orchestrator?: OrchestratorStatus,
@@ -215,19 +220,25 @@ export function formatDoctor(
         `⚠ no working OS-level sandbox primitive found on this host (tried: ${sandbox.platform === "linux" ? "bubblewrap, unshare" : sandbox.platform === "darwin" ? "sandbox-exec" : "none available for this platform"}) — these members run unconfined beyond env/HOME scoping: ${sandboxedAgents.join(", ")}`,
       );
     }
+    // Follow-up to Finding 75 (part 1, 2026-08-24): ONE line, nested directly under the sandbox: status
+    // line it qualifies, naming every kind: native member — collapsed from one ~250-char paragraph PER
+    // member after that shape buried doctor's own actually-actionable warnings (missing credentials)
+    // below the fold, and read as N problems when it's one fact. Unconditional on `sandbox.level` (never
+    // gated on "none" the way the line above is) — this is a levare/kind fact, true on every host,
+    // independent of what THIS host's own primitive detection found; but nested under `sandbox:`
+    // specifically because that IS the line it qualifies ("full" is true about the host and silent about
+    // the kind these members actually are without this line right under it).
+    if (nativeAgents && nativeAgents.length > 0) {
+      const names = [...nativeAgents].sort();
+      out.push(
+        `  ⚠ ${names.length} native member${names.length === 1 ? "" : "s"} ${names.length === 1 ? "is" : "are"} never wrapped by this sandbox, on any host: ${names.join(", ")}. levare does not yet wire the wrap for kind: native — installing bubblewrap or sandbox-exec will not change it.`,
+      );
+    }
     out.push("");
   }
   if (unsandboxedAgents && unsandboxedAgents.length > 0) {
     for (const a of unsandboxedAgents) {
       out.push(`⚠ '${a.name}' declares sandbox: unsandboxed — its process runs OUTSIDE levare's OS sandbox on every host, by explicit author declaration: ${a.reason}`);
-    }
-    out.push("");
-  }
-  if (nativeAgents && nativeAgents.length > 0) {
-    for (const name of nativeAgents) {
-      out.push(
-        `⚠ '${name}' declares kind: native — its process is never wrapped by levare's OS-level sandbox, on any host. This is a levare limitation (the wrap is not yet wired for this kind), not a missing sandbox primitive — installing bubblewrap or sandbox-exec will not change it.`,
-      );
     }
     out.push("");
   }

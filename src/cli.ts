@@ -40,7 +40,7 @@ function formatResult(result: ValidationResult): string {
 
 export function runValidate(path: string): number {
   // NOTES R4-SANDBOX: a fresh, real probe every run (never assumed from the platform alone) — see
-  // sandbox.ts's own header and validate.ts#validateAgentSandboxWarning, the sibling to
+  // sandbox.ts's own header and validate.ts#validateSandboxTelling, the sibling to
   // CLI_TOOLS_NOT_ENFORCEABLE this threads into.
   const result = validatePath(path, undefined, detectSandbox());
   if (result.ok) {

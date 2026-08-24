@@ -325,6 +325,28 @@ describe("SANDBOX_NOT_WRAPPED for kind: native agents (Finding 75, part 1)", () 
     }
   });
 
+  // Follow-up to Finding 75 (part 1, 2026-08-24): six identical per-member paragraphs read as six
+  // problems when it's one fact — collapsed to ONE warning per studio, naming every native member,
+  // mirroring doctor.ts's own single joined-names line rather than repeating per file.
+  test("multiple native agents in the same studio produce exactly ONE aggregate warning, naming all of them", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-native-sandbox-multi-"));
+    try {
+      mkdirSync(join(dir, "agents"), { recursive: true });
+      writeFileSync(join(dir, "agents", "lyra.md"), nativeAgentDoc("lyra"));
+      writeFileSync(join(dir, "agents", "wren.md"), nativeAgentDoc("wren"));
+      writeFileSync(join(dir, "agents", "scribe.md"), nativeAgentDoc("scribe"));
+      const r = validatePath(dir);
+      const sandboxWarnings = r.warnings.filter((w) => w.code === "SANDBOX_NOT_WRAPPED");
+      expect(sandboxWarnings.length).toBe(1);
+      expect(sandboxWarnings[0].message).toContain("3 native members");
+      expect(sandboxWarnings[0].message).toContain("lyra");
+      expect(sandboxWarnings[0].message).toContain("wren");
+      expect(sandboxWarnings[0].message).toContain("scribe");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("never fires for a kind: cli or kind: remote agent — SANDBOX_UNAVAILABLE (a different code) is theirs", () => {
     const dir = mkdtempSync(join(tmpdir(), "levare-cli-sandbox-"));
     try {
@@ -1313,9 +1335,9 @@ describe("kind: remote — legal, valid, and warned about (NOTES MCP-1B)", () =>
 
   // NOTES MCP-1C (PRD Amendment 3, ruling R3): a FULLY implemented remote agent (a real, granted,
   // stdio kind: mcp connector — the exact shape "carries NO remote warning" above proves) now spawns a
-  // real process levare itself sandboxes — so it earns the SAME SANDBOX_UNAVAILABLE telling a `kind:
-  // cli` agent already gets, mirroring validate.ts#validateAgentSandboxWarning's own cli-only warning
-  // one level up, in the tree-wide remote-implementation pass (validateAgentRemoteImplementation).
+  // real process levare itself sandboxes — so it's eligible for the SAME aggregate SANDBOX_UNAVAILABLE
+  // telling a `kind: cli` agent is (validate.ts#validateSandboxTelling, the sole emitter, fed the
+  // implemented-agent list validateAgentRemoteImplementation resolves).
   describe("SANDBOX_UNAVAILABLE for a fully implemented remote agent (NOTES MCP-1C)", () => {
     const NONE_DETECTION = { platform: "linux", primitive: "none", level: "none" } as const;
 
@@ -1345,9 +1367,28 @@ describe("kind: remote — legal, valid, and warned about (NOTES MCP-1B)", () =>
         expect(r.ok).toBe(true);
         expect(r.warnings.map((w) => w.code)).toContain("SANDBOX_UNAVAILABLE");
         const w = r.warnings.find((w) => w.code === "SANDBOX_UNAVAILABLE")!;
+        // Follow-up to Finding 75 (part 1, 2026-08-24): ONE aggregate warning per studio, naming every
+        // affected member — cli and implemented-remote share the same message shape doctor.ts's own
+        // sandboxedAgents line already uses, not remote-specific wording.
         expect(w.message).toContain("echo");
-        expect(w.message).toContain("kind: remote");
-        expect(w.message).toContain("spawned MCP server process runs unconfined");
+        expect(w.message).toContain("run unconfined beyond env/HOME scoping");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("a cli AND an implemented remote agent, both unconfined, are named in the SAME single aggregate warning", () => {
+      const dir = implementedRemoteDir();
+      try {
+        writeFileSync(
+          join(dir, "agents", "finch.md"),
+          ["---", "name: finch", "kind: cli", "produces: [review]", 'command: ["echo", "{task}"]', 'result: "plain text"', "style:", "  avatar: Fi", "---", "", "A cli member.", ""].join("\n"),
+        );
+        const r = validatePath(dir, undefined, NONE_DETECTION);
+        const sandboxWarnings = r.warnings.filter((w) => w.code === "SANDBOX_UNAVAILABLE");
+        expect(sandboxWarnings.length).toBe(1);
+        expect(sandboxWarnings[0].message).toContain("echo");
+        expect(sandboxWarnings[0].message).toContain("finch");
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
