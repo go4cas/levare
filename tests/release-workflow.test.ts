@@ -111,6 +111,25 @@ describe("release workflow (NOTES DIST2)", () => {
     expect(buildStep.run).toContain("./scripts/build.sh");
   });
 
+  // NOTES DIST8: the uploaded artifact is the gzip-compressed binary, not the raw one — asserted
+  // directly so a future edit can't silently start uploading the ~300MB raw binary again.
+  test("each matrix asset is gzip-compressed before upload, and the uploaded artifact is the .gz", () => {
+    const wf = loadWorkflow();
+    const steps = wf.jobs.build.steps;
+    const compressStep = steps.find((s: { run?: string }) => s.run?.includes("gzip"));
+    expect(compressStep).toBeDefined();
+    expect(compressStep.run).toContain("dist/${{ matrix.asset }}");
+
+    const uploadStep = steps.find((s: { uses?: string }) => s.uses?.startsWith("actions/upload-artifact"));
+    expect(uploadStep.with.name).toBe("${{ matrix.asset }}.gz");
+    expect(uploadStep.with.path).toBe("dist/${{ matrix.asset }}.gz");
+
+    const compressIdx = steps.indexOf(compressStep);
+    const uploadIdx = steps.indexOf(uploadStep);
+    expect(compressIdx).toBeGreaterThanOrEqual(0);
+    expect(compressIdx).toBeLessThan(uploadIdx);
+  });
+
   test("the build job is gated on the verify job (tests + deps:check) passing first", () => {
     const wf = loadWorkflow();
     expect(wf.jobs.build.needs).toBe("verify");
@@ -200,6 +219,15 @@ describe("quickstart install section matches the release workflow (NOTES DIST2)"
     const shaStep = wf.jobs.release.steps.find((s: { run?: string }) => s.run?.includes("sha256sum"));
     expect(shaStep.run).toContain("sha256sum");
     expect(quickstart).toContain("sha256sum -c SHA256SUMS");
+  });
+
+  // NOTES DIST8: the manual-install doc must decompress before it checksums — matching install.sh's
+  // own order (checksum runs on the decompressed bytes, verifying exactly what gets chmod'd/run).
+  test("the quickstart doc decompresses the downloaded asset before verifying its checksum", () => {
+    const gunzipIdx = quickstart.indexOf("gunzip");
+    const checksumIdx = quickstart.indexOf("sha256sum -c SHA256SUMS");
+    expect(gunzipIdx).toBeGreaterThanOrEqual(0);
+    expect(checksumIdx).toBeGreaterThan(gunzipIdx);
   });
 
   test("the quickstart doc states the same runtime prerequisites as the release notes: git and a model provider", () => {

@@ -100,10 +100,19 @@ jobs:
             esac
           fi
 
+      # NOTES DIST8: a raw `bun build --compile` binary here is ~300MB, almost all of it the
+      # embedded Claude Agent SDK native binary — compressing what ships (not what's embedded, see
+      # DIST8's own ruling) cuts that by roughly 4-5x. gzip specifically: `install.sh` decompresses
+      # client-side under whatever `sh`/toolchain a user has, and gzip is the one compressor that
+      # ships in base macOS and every mainstream Linux distro without a package manager. This step
+      # runs after the version-stamp smoke test above, which needs the raw executable bytes.
+      - name: Compress ${{ matrix.asset }}
+        run: gzip -9 "dist/${{ matrix.asset }}"
+
       - uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.asset }}
-          path: dist/${{ matrix.asset }}
+          name: ${{ matrix.asset }}.gz
+          path: dist/${{ matrix.asset }}.gz
           if-no-files-found: error
 
   release:
@@ -119,13 +128,23 @@ jobs:
         with:
           path: artifacts
 
+      # NOTES DIST8: SHA256SUMS lists the DEcompressed binary's hash under its raw (uncompressed)
+      # asset name — install.sh checksums after decompressing (verifying exactly what it's about to
+      # chmod/exec, not merely that the download arrived intact), and its SHA256SUMS lookup already
+      # keys strictly on that raw name for both this release's compressed asset and any older
+      # pre-DIST8 release it might fall back to. Decompressing into a scratch dir to hash, rather
+      # than hand-building the line, reuses sha256sum's own output format exactly.
       - name: Collect binaries and generate checksums
         run: |
           mkdir -p release
-          find artifacts -type f -exec cp {} release/ \;
-          chmod +x release/levare-*
+          find artifacts -type f -name '*.gz' -exec cp {} release/ \;
           cd release
-          sha256sum levare-* > SHA256SUMS
+          scratch="$(mktemp -d)"
+          for f in levare-*.gz; do
+            gzip -dc "$f" > "$scratch/${f%.gz}"
+          done
+          (cd "$scratch" && sha256sum levare-*) > SHA256SUMS
+          rm -rf "$scratch"
           ls -la
 
       - name: Publish GitHub Release
