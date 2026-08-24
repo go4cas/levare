@@ -191,9 +191,12 @@ Look at the rest of that command template:
 **levare cannot enforce those — Codex does.** But levare can *declare* them, and anyone reading the
 registry can see them. When a vendor hands you guardrails, use them, and make them visible.
 
-(This is the honest boundary of levare's capability model. It governs which agents run, what they see,
-and what credentials they hold. It does **not** yet constrain what a wrapped foreign CLI can do to the
-machine it runs on. See [Operations](../06-operations.md).)
+(This is the boundary between two different mechanisms, and it moved. levare's **capability model**
+governs which agents run, what they see, and what credentials they hold. What a wrapped foreign CLI
+can do to the machine it runs on is governed by levare's **OS-level sandbox** instead — which is
+real, and is the subject of the next section. On a host with no working sandbox primitive, the
+vendor's own flags above are the only guardrails in play, which is exactly why declaring them still
+matters. See [Operations](../06-operations.md).)
 
 ## What sandboxing means for a vendor CLI's own auth
 
