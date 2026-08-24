@@ -6,7 +6,7 @@
 // pure helpers directly rather than only ever running the script by hand.
 
 import { describe, expect, test } from "bun:test";
-import { nativeInheritsCliAcquittedGrants, nativeBunfsGrantIsCanonicalized, CLI_ACQUITTED_LINES } from "../scripts/repro-r4-sandbox-native-worker.ts";
+import { nativeInheritsCliAcquittedGrants, nativeBunfsGrantIsCanonicalized, nativeBunfsGrantReachesRealPolicy, CLI_ACQUITTED_LINES } from "../scripts/repro-r4-sandbox-native-worker.ts";
 
 describe("nativeInheritsCliAcquittedGrants — the native worker's profile carries every one of cli's six already-acquitted grants", () => {
   test("passes — every acquitted line is present, byte-identical, in both the cli-shaped and native-shaped generated profiles", () => {
@@ -43,6 +43,24 @@ describe("nativeBunfsGrantIsCanonicalized — the pre-created bunfs extraction b
     console.log = () => {};
     try {
       expect(nativeBunfsGrantIsCanonicalized()).toBe(true);
+    } finally {
+      console.log = originalLog;
+    }
+  });
+});
+
+// Finding 75 (part 3, round 2): a live macOS run found `nativeBunfsGrantIsCanonicalized` (STEP A2) passing
+// while the real profile carried NO bunfs extraction base at all — A2 never routes through
+// `buildNativeSandboxPolicy`, so it couldn't see that function's own `isCompiledBuild()` gate silently
+// dropping the grant on every `bun run`/`bun test` invocation (both are source runs). STEP A3 closes that:
+// always-run, host-independent proof that once the compiled-build branch is genuinely engaged, the value
+// reaches BOTH `policy.writablePaths` and the profile the generator emits from it.
+describe("nativeBunfsGrantReachesRealPolicy — the grant reaches buildNativeSandboxPolicy's own output, not just an isolated fixture", () => {
+  test("passes — writablePaths contains the base, and the generated profile carries the corresponding rule", () => {
+    const originalLog = console.log;
+    console.log = () => {};
+    try {
+      expect(nativeBunfsGrantReachesRealPolicy()).toBe(true);
     } finally {
       console.log = originalLog;
     }

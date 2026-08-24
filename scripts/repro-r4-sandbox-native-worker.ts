@@ -215,6 +215,49 @@ export function nativeBunfsGrantIsCanonicalized(): boolean {
   }
 }
 
+// STEP A3 — Finding 75 part 3 (round 2): closes the gap a live macOS run found in A2. A2 proves canon()
+// resolution works in ISOLATION (a synthetic fixture, never routed through `buildNativeSandboxPolicy` at
+// all) — it can't fail for the reason production actually broke, because `buildNativeSandboxPolicy` gates
+// the whole grant behind `isCompiledBuild()`, which A2 never touches. This step builds the REAL policy via
+// the REAL production function (with `isCompiledBuildFn` forced to `() => true`, since this always-run
+// step — like every `bun test` run — is itself a source invocation) and asserts the value actually reaches
+// BOTH `policy.writablePaths` and the generated profile text, closing "does it reach the real policy" and
+// "does the profile generator read it" — not just "does canon() resolve a directory in a vacuum."
+export function nativeBunfsGrantReachesRealPolicy(): boolean {
+  console.log("\n=== STEP A3: does the bunfs extraction base actually reach buildNativeSandboxPolicy's own output? ===\n");
+  const repo = loadRepo("fixtures/golden");
+  const lyraAgent = repo.agents.get("lyra")!;
+  const { projectRepo, worktreePath } = buildRealWorktree();
+  try {
+    const req: InvokeRequest = {
+      agent: lyraAgent,
+      member: "lyra",
+      kind: "spec",
+      unit: "repro",
+      project: "storefront",
+      context: "",
+      env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
+      tools: [],
+      projectRepoPath: worktreePath,
+    };
+    const workerCwd = workerSpawnCwd(undefined) ?? process.cwd();
+    const policy = buildNativeSandboxPolicy(repo, req, workerCwd, undefined, process.env, () => true);
+    const base = nativeBunfsExtractionBase();
+    const inWritablePaths = policy.writablePaths?.includes(base) ?? false;
+    console.log(`[${inWritablePaths ? "OK  " : "FAIL"}] policy.writablePaths includes ${base}: ${inWritablePaths}`);
+
+    const profile = buildSandboxExecProfile(policy);
+    const realBase = realpathSync(ensureNativeBunfsExtractionBase());
+    const expectedLine = `(allow file-write* (subpath ${JSON.stringify(realBase)}))`;
+    const inProfile = profile.includes(expectedLine);
+    console.log(`[${inProfile ? "OK  " : "FAIL"}] generated profile contains: ${expectedLine}`);
+
+    return inWritablePaths && inProfile;
+  } finally {
+    rmSync(projectRepo, { recursive: true, force: true });
+  }
+}
+
 // STEP C — Finding 75 part 3's own fix for the goal's Phase 2 instruction: the probe must exercise TOOL
 // USE, not just startup — STEP B's own `{prompt:"hi"}` payload dies on "Not logged in" before the worker
 // ever reaches a Bash-shaped filesystem operation, which is exactly why the part 2 regression shipped
@@ -252,7 +295,13 @@ async function stepC_bashShapedScratchDirProbe(): Promise<boolean | null> {
       projectRepoPath: worktreePath,
     };
     const workerCwd = workerSpawnCwd(undefined) ?? process.cwd();
-    const policy = buildNativeSandboxPolicy(repo, req, workerCwd, undefined, process.env);
+    // Finding 75 part 3 (round 2 — a live macOS run's own finding): `bun run scripts/...ts` is itself a
+    // SOURCE run, so the real, un-injected `isCompiledBuild()` is unconditionally false here — the grant
+    // this whole step exists to probe is gated on it (`buildNativeSandboxPolicy`'s own doc). Without
+    // forcing it, STEP C would silently generate a profile with NO bunfs extraction base grant at all and
+    // "pass" (or fail) for a reason production never shares. `() => true` mirrors a real compiled dispatch.
+    const policy = buildNativeSandboxPolicy(repo, req, workerCwd, undefined, process.env, () => true);
+    console.log(`policy.writablePaths includes the bunfs extraction base: ${policy.writablePaths?.includes(nativeBunfsExtractionBase()) ?? false}`);
     const darwinTempDir = resolveDarwinUserTempDir();
     // The exact shape the evidence trace's own EPERM names: base/<slugified-cwd>/<uuid>/, fabricated since
     // the real inner-CLI values aren't knowable from outside it — Phase 1 item 3's own claim under test.
@@ -346,11 +395,13 @@ async function stepB_liveSpawnAttempt(): Promise<void> {
 async function main() {
   const parityOk = nativeInheritsCliAcquittedGrants();
   const canonOk = nativeBunfsGrantIsCanonicalized();
+  const reachesPolicyOk = nativeBunfsGrantReachesRealPolicy();
   const bashProbeOk = await stepC_bashShapedScratchDirProbe();
   await stepB_liveSpawnAttempt();
   console.log(`\n${"=".repeat(78)}`);
   console.log(parityOk ? "STEP A: PASS (construction-level parity confirmed)" : "STEP A: FAIL — see above");
   console.log(canonOk ? "STEP A2: PASS (bunfs extraction base grant is canon()-resolved)" : "STEP A2: FAIL — see above");
+  console.log(reachesPolicyOk ? "STEP A3: PASS (grant reaches buildNativeSandboxPolicy's own output and the generated profile)" : "STEP A3: FAIL — see above (this is round 2's own regression: the value never reached the real policy)");
   console.log(bashProbeOk === null ? "STEP C: SKIPPED (no working sandbox primitive on this host)" : bashProbeOk ? "STEP C: PASS (Bash-shaped scratch-dir mkdir/write/read succeeded under the wrap)" : "STEP C: FAIL — see above (this is Finding 75 part 3's own regression)");
   console.log("THIS SCRIPT HAS NOT BEEN RUN ON A LIVE HOST. A live macOS run is a merge condition for");
   console.log("Finding 75 part 3, not a formality — see this file's own header.");
