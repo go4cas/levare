@@ -303,7 +303,7 @@ export function scoreNodes(repo: Repo, unit: WorkUnit, running: DaemonInvocation
   const inv = running.find((r) => r.project === unit.project && r.unit === unit.unit);
   const capabilities = repoCapabilities(repo);
   const unreachable = new Set(unreachableExpectedKinds(repo, unit, capabilities));
-  return expects.map((kind) => {
+  const nodes: ScoreNode[] = expects.map((kind) => {
     // Prefer the live (non-superseded) artifact of this kind; fall back to the most recent one so a
     // rejected/blocked kind still renders its true state rather than reading as untouched.
     const live = artifacts.filter((a) => a.kind === kind);
@@ -341,6 +341,32 @@ export function scoreNodes(repo: Repo, unit: WorkUnit, running: DaemonInvocation
       producedBy: current.produced_by,
     };
   });
+
+  // Finding 87: `gate: merge` is real — dagwalk.ts opens it as a repo-bearing unit's own final gate,
+  // once every responsible team's own flow is satisfied — but it is a PROJECT-level fact injected by
+  // the walk, never a member of any type's `expects:` list, so the rail (built from `expects` alone)
+  // had no row for the one gate a Conductor spends real, blocking time on. `project.repo` set and not
+  // the studio's own self-referential "." sentinel (the same test project.ts's own repo-link uses) is
+  // the one merge-eligibility fact this pure, I/O-free function can honestly read — dagwalk.ts's own
+  // runtime check additionally resolves the local checkout and confirms the work branch exists, which
+  // needs the filesystem this function deliberately never touches (see this file's own header).
+  const project = repo.projects.get(unit.project);
+  if (project && project.repo && project.repo !== ".") {
+    const mergeArtifacts = artifacts.filter((a) => a.kind === "merge");
+    const currentMerge = mergeArtifacts.find((a) => a.status !== "superseded") ?? mergeArtifacts[mergeArtifacts.length - 1];
+    nodes.push(
+      currentMerge
+        ? {
+            kind: "merge",
+            shape: nodeStateFor(currentMerge.status) === "gate" ? "diamond" : "dot",
+            state: nodeStateFor(currentMerge.status),
+            artifact: currentMerge,
+            producedBy: currentMerge.produced_by,
+          }
+        : { kind: "merge", shape: "dot", state: "wait" },
+    );
+  }
+  return nodes;
 }
 
 function nodeStateFor(status: ArtifactStatus): NodeState {
@@ -398,8 +424,40 @@ export function leadingArtifact(repo: Repo, unit: WorkUnit): Artifact | undefine
   return all.filter((a) => a.status !== "superseded").sort((a, b) => a.created.localeCompare(b.created)).pop();
 }
 
+// Compact "N files changed · +ins/-del" pulled from `git diff --stat`'s own trailing summary line —
+// never the full per-file listing. Returns null for anything that doesn't match (an empty diffstat —
+// 0 commits ahead — or a shape this hasn't seen), in which case a caller simply omits it rather than
+// guessing. Lives here, not render/shell.ts (its original home), so unitSummary below (Finding 117)
+// can use the exact same parser the merge gate card already does, without derive.ts importing from
+// board/ — the same elapsedLabel precedent already established for this exact reason.
+export function diffstatSummary(diffstat: string): string | null {
+  const lines = diffstat
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const last = lines[lines.length - 1];
+  if (!last) return null;
+  const m = /^(\d+) files? changed(?:, (\d+) insertions?\(\+\))?(?:, (\d+) deletions?\(-\))?/.exec(last);
+  if (!m) return null;
+  const files = Number(m[1]);
+  const ins = m[2] ?? "0";
+  const del = m[3] ?? "0";
+  return `${files} file${files === 1 ? "" : "s"} changed · +${ins}/-${del}`;
+}
+
 export function unitSummary(repo: Repo, unit: WorkUnit): string {
   const art = leadingArtifact(repo, unit);
+  // Finding 117: a shipped unit's leading artifact is its own merge gate's report (ruling A8) —
+  // correct as a record of what the gate said BEFORE landing ("approving this gate is the
+  // authorization to land here"), wrong read as CURRENT status once it already has. `merge_result` is
+  // set only once the merge actually executed (types.ts) — absent on a pre-this-ruling shipped unit,
+  // which falls through to the pre-existing (unchanged) behavior below rather than fabricating one.
+  if (unit.status === "shipped" && art?.kind === "merge" && art.merge && art.merge_result) {
+    const stat = diffstatSummary(art.merge.diffstat);
+    // A literal arrow, not the `&rarr;` entity — this string goes through renderInline()'s esc() at
+    // its one call site (project.ts), which would otherwise double-escape a literal ampersand.
+    return `merged ${art.merge_result.merge_commit.slice(0, 7)} → ${art.merge.target}${stat ? `, ${stat}` : ""}`;
+  }
   if (art && art.body) return firstParagraph(art.body);
   return "";
 }

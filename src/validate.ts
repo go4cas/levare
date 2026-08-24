@@ -212,6 +212,16 @@ export const ARTIFACT_SCHEMA: Schema = {
         warning: { type: "str", required: false, nullable: true, description: "A human-readable warning about the execution, or null." },
       },
     },
+    // Finding 84: why this artifact is `blocked`, mirroring work-unit.blocked_reason one level down.
+    // Set once at write time (dagwalk.ts#writeBlocked, board/gateops.ts#blockedRetryDoc) and never
+    // cleared — a successful retry patches only `status` to `superseded`, so this survives to tell a
+    // failed-dispatch supersession apart from an ordinary content-revision one, which never sets it.
+    blocked_reason: {
+      type: "str",
+      required: false,
+      nullable: true,
+      description: "Why this artifact is blocked, when status is blocked — written by the runner when a member fails to produce it. Never cleared by a later status change, so it survives a successful retry's supersession as the record of what actually happened to the superseded attempt.",
+    },
     // NOTES MERGE-1 (PRD Amendment 2, M1/M2): reserved for `kind: merge` — the trial-merge report a
     // merge gate carries. Structurally optional on every artifact (mirroring `execution:`'s own
     // reservation for `kind: proposal`) rather than schema-gated by kind — a merge gate is levare's

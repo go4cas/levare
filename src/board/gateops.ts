@@ -567,6 +567,7 @@ function blockedRetryDoc(art: Artifact, newId: string, msg: string, createdAt: s
     `consumes: [${consumes.join(", ")}]`,
     `supersedes: ${supersedes ?? "null"}`,
     "approved_by: null",
+    `blocked_reason: ${JSON.stringify(msg)}`,
     `created: ${createdAt}`,
     "files: []",
     "---",

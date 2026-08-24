@@ -562,6 +562,7 @@ function writeBlocked(
     `consumes: [${consumes.join(", ")}]`,
     "supersedes: null",
     "approved_by: null",
+    `blocked_reason: ${JSON.stringify(msg)}`,
     `created: ${today}`,
     "files: []",
     "---",

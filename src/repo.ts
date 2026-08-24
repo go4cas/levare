@@ -310,6 +310,7 @@ function toArtifact(d: Record<string, YamlValue>, body: string): Artifact {
     files: d.files ? strArr(d.files) : [],
     usage: (d.usage as Usage | null) ?? null,
     body: body.trim(),
+    blocked_reason: optStr(d.blocked_reason) ?? null,
     // NOTES CAP-A: reserved for kind: proposal — undefined for every other artifact.
     connector: optStr(d.connector) ?? null,
     action: optStr(d.action) ?? null,
