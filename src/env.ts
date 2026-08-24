@@ -136,9 +136,12 @@ export function buildConnectorEnv(
  * console.log/writeFileSync/commit call. It carries the variable NAME and, deliberately, only a
  * `present: true` marker (every entry it returns already passed the allowlist, so "present" is
  * always true here — the shape exists so a caller can never accidentally destructure a `.value`
- * field that doesn't exist).
+ * field that doesn't exist). Parameter type is `string | undefined` per value — matches
+ * `process.env`'s own shape too, so a caller describing an unfiltered process env (dispatch-trace.ts's
+ * Orchestrator path, Finding 94) needs no cast; this function only ever reads keys, never a value,
+ * so an `undefined` value is exactly as safe here as a `string` one.
  */
-export function describeMemberEnv(env: Record<string, string>): Array<{ name: string; present: true }> {
+export function describeMemberEnv(env: Record<string, string | undefined>): Array<{ name: string; present: true }> {
   return Object.keys(env)
     .sort()
     .map((name) => ({ name, present: true as const }));

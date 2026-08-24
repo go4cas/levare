@@ -80,17 +80,34 @@ export interface DispatchTraceRecord {
    * path ran, never the literal directory. */
   home_scoped: boolean;
   anthropic_api_key_present: boolean;
-  native_binary_resolved: boolean;
+  /** Finding 112: whether a real spawnable native binary was found — reported by the WORKER
+   * (`sdk-worker.ts`, the only place that ever knows on a compiled build; see
+   * `resolvePathToClaudeCodeExecutable`'s own doc) when it ran far enough to answer, else by the
+   * parent's own pre-spawn knowledge for a source build (resolved once, at boundary-construction
+   * time, before any dispatch). Absent — never `false` — when neither knows: a compiled-build start
+   * trace (the worker hasn't run yet) or a transport-level failure the worker's own `respond()` never
+   * reached. `false` is a real, meaningful negative now; `undefined` means "not yet knowable", never
+   * conflated with it. */
+  native_binary_resolved?: boolean;
+  /** This levare process's own pid — not the worker's (unknown until the transport spawns it, after
+   * the start trace is already written). Lets a Conductor confirm which process a live trace belongs
+   * to; not a substitute for a worker pid this module never has in hand. */
+  pid: number;
   started_at: string;
-  duration_ms: number;
-  outcome: "ok" | "timeout" | "error";
+  /** `in_progress` is written ONLY by `buildDispatchTraceStart`, at dispatch start, before anything
+   * about the outcome is knowable — never a terminal state. A trace file left at `in_progress` (the
+   * dispatch's process died before the amend write landed) is diagnostic in its own right: it is the
+   * literal signature of a hang, not an ambiguous empty result. Every field below that isn't knowable
+   * until the dispatch finishes is correspondingly optional, populated only by the amend write. */
+  outcome: "in_progress" | "ok" | "timeout" | "error";
+  duration_ms?: number;
   error?: string;
   context: string;
   context_truncated: boolean;
-  worker_stdout: string;
-  worker_stdout_truncated: boolean;
-  worker_stderr: string;
-  worker_stderr_truncated: boolean;
+  worker_stdout?: string;
+  worker_stdout_truncated?: boolean;
+  worker_stderr?: string;
+  worker_stderr_truncated?: boolean;
   receipt?: Receipt;
 }
 
@@ -104,23 +121,28 @@ export interface NativeDispatchOutcome {
   receipt?: Receipt;
 }
 
+export interface DispatchTraceIdentityOpts {
+  homeScoped: boolean;
+  anthropicApiKeyPresent: boolean;
+  /** See `DispatchTraceRecord.native_binary_resolved` — undefined when not yet knowable, never a
+   * stand-in `false`. */
+  nativeBinaryResolved?: boolean;
+  startedAt: string;
+  timeoutMs: number;
+}
+
 /**
- * Pure record builder — separated from `writeDispatchTrace`'s disk I/O so a test can assert on the
- * record's shape (in particular, the two invariants this module's own header names) without touching a
- * filesystem. `req` is the InvokeRequest actually handed to the boundary — its `env` is what
- * `describeMemberEnv`-equivalent redaction runs over; callers must pass the SAME env the real spawn used
- * (already allowlisted by `buildMemberEnv` upstream — this function trusts that boundary, exactly as
- * every other consumer of an `InvokeRequest.env` already does) so a trace never reports a broader grant
- * than the dispatch actually held.
+ * Everything about a dispatch that's known BEFORE it runs — inputs, env var names, HOME scoping, pid,
+ * timestamp, timeout bound. Shared by `buildDispatchTraceStart` (written as-is, `outcome: "in_progress"`)
+ * and `buildDispatchTrace` (this plus the outcome fields, once they're knowable) so the two never drift
+ * out of sync on what "the same dispatch" means. `req`'s `env` is what `describeMemberEnv`-equivalent
+ * redaction runs over; callers must pass the SAME env the real spawn used (already allowlisted by
+ * `buildMemberEnv` upstream — this function trusts that boundary, exactly as every other consumer of an
+ * `InvokeRequest.env` already does) so a trace never reports a broader grant than the dispatch actually
+ * held.
  */
-export function buildDispatchTrace(
-  req: InvokeRequest,
-  outcome: NativeDispatchOutcome,
-  opts: { homeScoped: boolean; anthropicApiKeyPresent: boolean; nativeBinaryResolved: boolean; startedAt: string; timeoutMs: number },
-): DispatchTraceRecord {
+function buildDispatchTraceIdentity(req: InvokeRequest, opts: DispatchTraceIdentityOpts) {
   const context = truncate(req.context);
-  const stdout = truncate(outcome.stdout, { fromEnd: true });
-  const stderr = truncate(outcome.stderr, { fromEnd: true });
   return {
     unit: req.unit,
     project: req.project,
@@ -137,12 +159,52 @@ export function buildDispatchTrace(
     home_scoped: opts.homeScoped,
     anthropic_api_key_present: opts.anthropicApiKeyPresent,
     native_binary_resolved: opts.nativeBinaryResolved,
+    pid: process.pid,
     started_at: opts.startedAt,
+    context: context.value,
+    context_truncated: context.truncated,
+  };
+}
+
+/**
+ * The start-of-dispatch trace (Finding 113): written before the spawn, so a Conductor reading
+ * `.levare/dispatch-logs/` mid-dispatch sees this immediately instead of nothing for the dispatch's
+ * entire duration. `outcome: "in_progress"` is the ONLY value this builder ever produces — never a
+ * terminal state — so a file left in this shape (the process died before the amend write) reads
+ * unambiguously as "started, never finished", not as a completed dispatch that produced nothing.
+ */
+export function buildDispatchTraceStart(req: InvokeRequest, opts: DispatchTraceIdentityOpts): DispatchTraceRecord {
+  return { ...buildDispatchTraceIdentity(req, opts), outcome: "in_progress" };
+}
+
+/** What `buildDispatchTrace` (the finish builder) always produces — the outcome-dependent fields
+ * `DispatchTraceRecord` otherwise leaves optional (so `buildDispatchTraceStart`'s in-progress shape
+ * stays legal) are guaranteed present here, so a caller of the finish builder never has to narrow. */
+export type DispatchTraceFinishedRecord = DispatchTraceRecord & {
+  duration_ms: number;
+  outcome: "ok" | "timeout" | "error";
+  worker_stdout: string;
+  worker_stdout_truncated: boolean;
+  worker_stderr: string;
+  worker_stderr_truncated: boolean;
+};
+
+/**
+ * Pure record builder — separated from `writeDispatchTrace`'s disk I/O so a test can assert on the
+ * record's shape (in particular, the two invariants this module's own header names) without touching a
+ * filesystem. Written on exit: amends the start trace (`buildDispatchTraceStart`) with everything only
+ * knowable once the dispatch finished — output, duration, outcome. Callers MUST pass the identical
+ * `opts.startedAt` (and, for `writeDispatchTrace`, the same target file) the start trace used, so the
+ * finish write lands on the SAME file rather than creating a second one — see `traceFileName`'s own doc.
+ */
+export function buildDispatchTrace(req: InvokeRequest, outcome: NativeDispatchOutcome, opts: DispatchTraceIdentityOpts): DispatchTraceFinishedRecord {
+  const stdout = truncate(outcome.stdout, { fromEnd: true });
+  const stderr = truncate(outcome.stderr, { fromEnd: true });
+  return {
+    ...buildDispatchTraceIdentity(req, opts),
     duration_ms: outcome.durationMs,
     outcome: outcome.timedOut ? "timeout" : outcome.ok ? "ok" : "error",
     error: outcome.error,
-    context: context.value,
-    context_truncated: context.truncated,
     worker_stdout: stdout.value,
     worker_stdout_truncated: stdout.truncated,
     worker_stderr: stderr.value,
@@ -198,19 +260,143 @@ export function sweepDispatchTraces(dir: string, now: number = Date.now(), maxFi
   }
 }
 
+// Shared by `writeDispatchTrace`/`writeOrchestratorTrace` — the disk-I/O half of "write a trace",
+// identical for both record shapes (same directory, same best-effort swallow, same opportunistic
+// sweep). Only the filename derivation differs between the two, so that stays with each caller.
+function writeTraceFile(studioRoot: string, fileName: string, record: unknown, describeFailure: string): void {
+  const dir = join(studioRoot, DISPATCH_LOG_DIR_NAME);
+  try {
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, fileName), JSON.stringify(record, null, 2));
+    sweepDispatchTraces(dir);
+  } catch (e) {
+    console.error(`levare: could not write ${describeFailure}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 /**
  * Writes one dispatch trace to `<studioRoot>/.levare/dispatch-logs/` and sweeps retention. Best-effort:
  * a write failure (disk full, permissions) is logged and swallowed, never thrown — a diagnostic that can
  * crash the dispatch it's diagnosing would be strictly worse than the silence it replaces.
  */
 export function writeDispatchTrace(studioRoot: string, record: DispatchTraceRecord, now: string = record.started_at): void {
-  const dir = join(studioRoot, DISPATCH_LOG_DIR_NAME);
-  try {
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const file = join(dir, traceFileName(record, now));
-    writeFileSync(file, JSON.stringify(record, null, 2));
-    sweepDispatchTraces(dir);
-  } catch (e) {
-    console.error(`levare: could not write dispatch trace for ${record.member}/${record.kind} (${record.unit}): ${e instanceof Error ? e.message : String(e)}`);
-  }
+  writeTraceFile(studioRoot, traceFileName(record, now), record, `dispatch trace for ${record.member}/${record.kind} (${record.unit})`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Orchestrator traces (Finding 94): interpret()/narrate()/converse() (orchestrator-boundary.ts) are
+// SDK calls through the exact same transport a member dispatch uses, but they carry no unit/project/
+// member/kind — there is no InvokeRequest, no `agent`, nothing `DispatchTraceRecord` requires as
+// identity. Rather than widen that type with a second, unrelated set of optional fields (which would
+// leave one type describing two call shapes and weaken the "every member trace has unit/member/kind"
+// guarantee this module's other consumers rely on), this is a sibling record — sharing truncation,
+// filename derivation, and the retention sweep, not the shape. A `converse()` timeout was the ORIGINAL
+// gap Finding 94 named: `interpret()` failing twice at 45000ms left nothing in `.levare/dispatch-logs/`
+// at all, because the trace only ever covered the member path.
+//
+// `env` here is the Orchestrator's own env (`opts.env ?? process.env` in orchestrator-boundary.ts) —
+// the UNFILTERED process environment, or an unallowlisted caller override, never a member's
+// `buildMemberEnv`-allowlisted subset. `describeMemberEnv`'s redaction guarantee (names only, never a
+// value) holds regardless of which env record is passed in — it's structurally value-blind — but the
+// NAME SET an Orchestrator trace records is consequently broader than a member trace's own. No
+// `home_scoped` field either: the Orchestrator path never calls `scopeHome` at all, and a `false`
+// here would misleadingly imply scoping was considered and declined rather than never applicable.
+
+export type OrchestratorCall = "interpret" | "narrate" | "converse";
+
+export interface OrchestratorTraceRecord {
+  call: OrchestratorCall;
+  model: string;
+  timeout_ms: number;
+  /** Env var NAMES only — see this section's own header for why the set is broader than a member
+   * trace's. */
+  env: DispatchTraceEnvEntry[];
+  anthropic_api_key_present: boolean;
+  pid: number;
+  started_at: string;
+  /** Same `in_progress` sentinel and same reasoning as `DispatchTraceRecord.outcome` — written only by
+   * `buildOrchestratorTraceStart`, never a terminal state. */
+  outcome: "in_progress" | "ok" | "timeout" | "error";
+  duration_ms?: number;
+  error?: string;
+  prompt: string;
+  prompt_truncated: boolean;
+  worker_stdout?: string;
+  worker_stdout_truncated?: boolean;
+  worker_stderr?: string;
+  worker_stderr_truncated?: boolean;
+  receipt?: Receipt;
+}
+
+export interface OrchestratorTraceIdentityOpts {
+  call: OrchestratorCall;
+  model: string;
+  timeoutMs: number;
+  env: Record<string, string | undefined>;
+  anthropicApiKeyPresent: boolean;
+  startedAt: string;
+  prompt: string;
+}
+
+function buildOrchestratorTraceIdentity(opts: OrchestratorTraceIdentityOpts) {
+  const prompt = truncate(opts.prompt);
+  return {
+    call: opts.call,
+    model: opts.model,
+    timeout_ms: opts.timeoutMs,
+    env: describeMemberEnv(opts.env),
+    anthropic_api_key_present: opts.anthropicApiKeyPresent,
+    pid: process.pid,
+    started_at: opts.startedAt,
+    prompt: prompt.value,
+    prompt_truncated: prompt.truncated,
+  };
+}
+
+/** The start-of-call trace (Finding 94): written before the transport call, mirroring
+ * `buildDispatchTraceStart` — everything known up front, `outcome: "in_progress"` until amended. */
+export function buildOrchestratorTraceStart(opts: OrchestratorTraceIdentityOpts): OrchestratorTraceRecord {
+  return { ...buildOrchestratorTraceIdentity(opts), outcome: "in_progress" };
+}
+
+export type OrchestratorTraceFinishedRecord = OrchestratorTraceRecord & {
+  duration_ms: number;
+  outcome: "ok" | "timeout" | "error";
+  worker_stdout: string;
+  worker_stdout_truncated: boolean;
+  worker_stderr: string;
+  worker_stderr_truncated: boolean;
+};
+
+/** The finish trace — amends the start trace with the outcome, mirroring `buildDispatchTrace`.
+ * `outcome` here is the SAME shape `NativeDispatchOutcome` already describes (ok/error/timedOut/
+ * durationMs/stdout/stderr/receipt) — the Orchestrator's transport call produces the identical
+ * summary a member dispatch's does, via the same `asSdkTransportResult`. */
+export function buildOrchestratorTrace(outcome: NativeDispatchOutcome, opts: OrchestratorTraceIdentityOpts): OrchestratorTraceFinishedRecord {
+  const stdout = truncate(outcome.stdout, { fromEnd: true });
+  const stderr = truncate(outcome.stderr, { fromEnd: true });
+  return {
+    ...buildOrchestratorTraceIdentity(opts),
+    duration_ms: outcome.durationMs,
+    outcome: outcome.timedOut ? "timeout" : outcome.ok ? "ok" : "error",
+    error: outcome.error,
+    worker_stdout: stdout.value,
+    worker_stdout_truncated: stdout.truncated,
+    worker_stderr: stderr.value,
+    worker_stderr_truncated: stderr.truncated,
+    receipt: outcome.receipt,
+  };
+}
+
+// Same reasoning as `traceFileName`: filesystem-safe, sortable-by-name, keyed on `started_at` (not
+// wall-clock-at-write-time) so a start write and its later amend land on the identical file.
+function orchestratorTraceFileName(record: OrchestratorTraceRecord, now: string): string {
+  const stamp = now.replace(/[:.]/g, "-");
+  return `${stamp}-orchestrator-${record.call}.json`;
+}
+
+/** Writes one Orchestrator trace — same directory, same best-effort swallow, same opportunistic
+ * retention sweep as `writeDispatchTrace`. */
+export function writeOrchestratorTrace(studioRoot: string, record: OrchestratorTraceRecord, now: string = record.started_at): void {
+  writeTraceFile(studioRoot, orchestratorTraceFileName(record, now), record, `orchestrator trace for ${record.call}()`);
 }

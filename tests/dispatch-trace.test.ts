@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildDispatchTrace,
+  buildDispatchTraceStart,
+  buildOrchestratorTrace,
+  buildOrchestratorTraceStart,
   writeDispatchTrace,
+  writeOrchestratorTrace,
   sweepDispatchTraces,
   DISPATCH_LOG_DIR_NAME,
   type NativeDispatchOutcome,
@@ -153,6 +157,72 @@ describe("buildDispatchTrace — outcome/timing/truncation shape", () => {
   });
 });
 
+describe("buildDispatchTraceStart / amend-in-place — Finding 113: written before the spawn, amended after", () => {
+  const identityOpts = { homeScoped: false, anthropicApiKeyPresent: true, nativeBinaryResolved: true, startedAt: "2026-08-19T00:00:00.000Z", timeoutMs: 600_000 };
+
+  test("the start record is outcome: in_progress, with no outcome-dependent fields set yet", () => {
+    const record = buildDispatchTraceStart(baseReq(), identityOpts);
+    expect(record.outcome).toBe("in_progress");
+    expect(record.duration_ms).toBeUndefined();
+    expect(record.worker_stdout).toBeUndefined();
+    expect(record.worker_stderr).toBeUndefined();
+    expect(record.error).toBeUndefined();
+    expect(record.receipt).toBeUndefined();
+    // Everything knowable up front IS present — inputs, env names, HOME scoping, pid, timestamp, timeout.
+    expect(record.unit).toBe("list-entries");
+    expect(record.member).toBe("quill/builder");
+    expect(record.env.map((e) => e.name).sort()).toEqual(["HOME", "PATH"]);
+    expect(record.home_scoped).toBe(false);
+    expect(typeof record.pid).toBe("number");
+    expect(record.started_at).toBe("2026-08-19T00:00:00.000Z");
+    expect(record.timeout_ms).toBe(600_000);
+    expect(record.context).toBe("THE ASSEMBLED CONTEXT");
+  });
+
+  test("a start write followed by a finish write with the same started_at overwrites the same file, not a second one", () => {
+    const studioRoot = mkdtempSync(join(tmpdir(), "levare-trace-studio-"));
+    try {
+      const req = baseReq();
+      const startRecord = buildDispatchTraceStart(req, identityOpts);
+      writeDispatchTrace(studioRoot, startRecord);
+      const dir = join(studioRoot, DISPATCH_LOG_DIR_NAME);
+      const afterStart = readdirSync(dir).filter((f) => f.endsWith(".json"));
+      expect(afterStart.length).toBe(1);
+      expect(JSON.parse(readFileSync(join(dir, afterStart[0]), "utf8")).outcome).toBe("in_progress");
+
+      const finishRecord = buildDispatchTrace(req, okOutcome(), identityOpts);
+      writeDispatchTrace(studioRoot, finishRecord);
+      const afterFinish = readdirSync(dir).filter((f) => f.endsWith(".json"));
+      // Same file — the finish write amended it in place, it did not create a second trace.
+      expect(afterFinish).toEqual(afterStart);
+      const amended = JSON.parse(readFileSync(join(dir, afterFinish[0]), "utf8"));
+      expect(amended.outcome).toBe("ok");
+      expect(amended.duration_ms).toBe(1234);
+    } finally {
+      rmSync(studioRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("a process dying between the two writes leaves a file that reads unambiguously as incomplete, not as a completed empty dispatch", () => {
+    const studioRoot = mkdtempSync(join(tmpdir(), "levare-trace-studio-"));
+    try {
+      // Simulates the crash case: only the start write ever lands.
+      writeDispatchTrace(studioRoot, buildDispatchTraceStart(baseReq(), identityOpts));
+      const dir = join(studioRoot, DISPATCH_LOG_DIR_NAME);
+      const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+      const stranded = JSON.parse(readFileSync(join(dir, files[0]), "utf8"));
+      expect(stranded.outcome).toBe("in_progress");
+      // Never "ok" (or any terminal outcome) with a fabricated/placeholder duration — the absence of
+      // duration_ms/worker_stdout/worker_stderr, together with outcome staying "in_progress", is the
+      // only signal a reader needs to tell "started, never finished" apart from a real completed run.
+      expect(stranded.duration_ms).toBeUndefined();
+      expect(stranded.worker_stdout).toBeUndefined();
+    } finally {
+      rmSync(studioRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("writeDispatchTrace — lands under <studioRoot>/.levare/dispatch-logs/, valid JSON, matches the record", () => {
   test("writes a readable file whose contents round-trip the record", () => {
     const studioRoot = mkdtempSync(join(tmpdir(), "levare-trace-studio-"));
@@ -271,6 +341,66 @@ describe("sweepDispatchTraces — bounded retention, both bounds applied indepen
       const after = readdirSync(dir);
       expect(after.length).toBe(1);
       expect(after[0]).not.toBe(seeded[0]);
+    } finally {
+      rmSync(studioRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("buildOrchestratorTrace / buildOrchestratorTraceStart — Finding 94: a sibling shape, not a widened DispatchTraceRecord", () => {
+  const orchIdentityOpts = { call: "interpret" as const, model: "claude-sonnet-5", timeoutMs: 45_000, env: { PATH: "/usr/bin", HOME: "/home/operator" }, anthropicApiKeyPresent: true, startedAt: "2026-08-20T00:00:00.000Z", prompt: "how are we doing" };
+
+  test("the start record carries no unit/project/member/kind/agent_kind/home_scoped at all — genuinely a different shape", () => {
+    const record = buildOrchestratorTraceStart(orchIdentityOpts);
+    expect(record.outcome).toBe("in_progress");
+    expect(record.call).toBe("interpret");
+    expect(record.model).toBe("claude-sonnet-5");
+    expect("unit" in record).toBe(false);
+    expect("member" in record).toBe(false);
+    expect("agent_kind" in record).toBe(false);
+    expect("home_scoped" in record).toBe(false);
+    expect(typeof record.pid).toBe("number");
+  });
+
+  test("env names only, never a value — the SAME redaction guarantee as the member path, even though this env is the unfiltered process env", () => {
+    const record = buildOrchestratorTraceStart({ ...orchIdentityOpts, env: { PATH: "/usr/bin", ANTHROPIC_API_KEY: "sk-ant-SECRET" } });
+    const names = record.env.map((e) => e.name).sort();
+    expect(names).toEqual(["ANTHROPIC_API_KEY", "PATH"]);
+    expect(JSON.stringify(record)).not.toContain("sk-ant-SECRET");
+  });
+
+  test("a start write followed by a finish write with the same started_at overwrites the same file — same amend-in-place guarantee as the member path", () => {
+    const studioRoot = mkdtempSync(join(tmpdir(), "levare-trace-studio-"));
+    try {
+      writeOrchestratorTrace(studioRoot, buildOrchestratorTraceStart(orchIdentityOpts));
+      const dir = join(studioRoot, DISPATCH_LOG_DIR_NAME);
+      const afterStart = readdirSync(dir).filter((f) => f.endsWith(".json"));
+      expect(afterStart.length).toBe(1);
+      expect(JSON.parse(readFileSync(join(dir, afterStart[0]), "utf8")).outcome).toBe("in_progress");
+
+      const finishRecord = buildOrchestratorTrace({ ok: true, timedOut: false, durationMs: 900, stdout: "", stderr: "" }, orchIdentityOpts);
+      writeOrchestratorTrace(studioRoot, finishRecord);
+      const afterFinish = readdirSync(dir).filter((f) => f.endsWith(".json"));
+      expect(afterFinish).toEqual(afterStart);
+      const amended = JSON.parse(readFileSync(join(dir, afterFinish[0]), "utf8"));
+      expect(amended.outcome).toBe("ok");
+      expect(amended.duration_ms).toBe(900);
+    } finally {
+      rmSync(studioRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("a timed-out call is filed under outcome: timeout, and the filename never collides with a member trace's own naming scheme", () => {
+    const studioRoot = mkdtempSync(join(tmpdir(), "levare-trace-studio-"));
+    try {
+      const record = buildOrchestratorTrace({ ok: false, error: "sdk worker timed out after 45000ms", timedOut: true, durationMs: 45_000, stdout: "", stderr: "" }, orchIdentityOpts);
+      expect(record.outcome).toBe("timeout");
+      writeOrchestratorTrace(studioRoot, record);
+      const dir = join(studioRoot, DISPATCH_LOG_DIR_NAME);
+      const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+      expect(files.length).toBe(1);
+      expect(files[0]).toContain("orchestrator");
+      expect(files[0]).toContain("interpret");
     } finally {
       rmSync(studioRoot, { recursive: true, force: true });
     }

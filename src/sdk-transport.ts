@@ -128,9 +128,14 @@ export interface SdkWorkerRequest {
   pathToClaudeCodeExecutable?: string;
 }
 
+// `nativeBinaryResolved` (Finding 112): optional on BOTH branches — the worker itself always knows the
+// answer and reports it (`sdk-worker.ts#runSdkWorkerFromStdin`), but a TRANSPORT-level failure (worker
+// script not found, timed out before responding, exited without valid JSON) never reaches the worker's
+// own `respond()` call at all, so the transport's own synthesized `{ok:false,...}` legitimately has no
+// value to report — absent, not `false`: the resolution outcome is genuinely unknown, not a negative.
 export type SdkWorkerResponse =
-  | { ok: true; result: string; structuredOutput?: unknown; receipt?: Receipt }
-  | { ok: false; error: string };
+  | { ok: true; result: string; structuredOutput?: unknown; receipt?: Receipt; nativeBinaryResolved?: boolean }
+  | { ok: false; error: string; nativeBinaryResolved?: boolean };
 
 /**
  * NOTES DISPATCH-TRACE (native-dispatch-hang investigation, 2026-08-19): what `run()` actually returns,

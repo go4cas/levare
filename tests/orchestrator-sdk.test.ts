@@ -1,5 +1,5 @@
 import { test, expect, describe, beforeEach } from "bun:test";
-import { readFileSync, mkdtempSync, rmSync, cpSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, readdirSync, mkdtempSync, rmSync, cpSync, writeFileSync, mkdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { assertSpawnOk } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
@@ -23,6 +23,7 @@ import {
   asSdkTransportResult,
 } from "../src/sdk-transport.ts";
 import type { AsyncSdkTransport, SdkWorkerRequest, SdkWorkerResponse } from "../src/sdk-transport.ts";
+import { DISPATCH_LOG_DIR_NAME } from "../src/dispatch-trace.ts";
 
 // The precondition cache (sdk-transport.ts) is a module-level singleton shared across every test file
 // in this `bun test` process — reset it before each test in this file so no test's result depends on
@@ -800,6 +801,139 @@ describe("the missing-binary case is fast end to end (the acceptance criterion i
     } finally {
       rmSync(dir, { recursive: true, force: true });
       rmSync(scratchDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 94: interpret()/narrate()/converse() now write a dispatch trace, same directory a member
+// dispatch's own trace lands in — the ORIGINAL gap: an Orchestrator SDK call that failed or hung left
+// `.levare/dispatch-logs/` completely untouched, the one call a Conductor could never inspect after
+// the fact.
+// ---------------------------------------------------------------------------
+
+describe("createSdkOrchestratorBoundary — writes a dispatch trace (Finding 94)", () => {
+  function traceFiles(root: string): string[] {
+    try {
+      return readdirSync(join(root, DISPATCH_LOG_DIR_NAME)).filter((f) => f.endsWith(".json"));
+    } catch {
+      return [];
+    }
+  }
+  function readTrace(root: string, file: string): Record<string, unknown> {
+    return JSON.parse(readFileSync(join(root, DISPATCH_LOG_DIR_NAME, file), "utf8"));
+  }
+
+  test("no root supplied — the pre-existing behaviour, unchanged: no trace directory is ever created", async () => {
+    const { transport } = fakeTransport(() => ({ ok: true, result: "narrated." }));
+    const boundary = createSdkOrchestratorBoundary({ transport });
+    await boundary.narrate("3 gates open.");
+    // No filesystem assertion possible without a root — this just proves it never throws for lack of
+    // one, mirroring the member path's own "absent studioRoot is a no-op" contract.
+  });
+
+  test("interpret() writes a start trace before the call, then amends it in place on success — one file, not two", async () => {
+    const root = seedScratchRepo();
+    try {
+      let filesDuringCall: string[] = [];
+      let recordDuringCall: Record<string, unknown> | undefined;
+      const { transport } = fakeTransport(() => {
+        // Read INSIDE the handler, synchronously with the spawn — the finish write only happens after
+        // this returns, so this is the only point the start trace's own content is still observable.
+        filesDuringCall = traceFiles(root);
+        recordDuringCall = readTrace(root, filesDuringCall[0]);
+        return { ok: true, result: '{"kind":"stats"}', structuredOutput: { kind: "stats" }, receipt: { model: "claude-sonnet-5", tokens_in: 10, tokens_out: 2, usd: 0.001, wall_clock_s: 1.2, unreported: false } };
+      });
+      const boundary = createSdkOrchestratorBoundary({ transport, root, env: {} });
+      await boundary.interpret("how are we doing");
+
+      // At spawn time, the start trace already exists — the ORIGINAL gap this closes.
+      expect(filesDuringCall.length).toBe(1);
+      expect(recordDuringCall?.outcome).toBe("in_progress");
+      expect(recordDuringCall?.call).toBe("interpret");
+      expect(recordDuringCall?.duration_ms).toBeUndefined();
+
+      // After the call, the SAME file is amended, not a second one created.
+      const after = traceFiles(root);
+      expect(after).toEqual(filesDuringCall);
+      const finished = readTrace(root, after[0]);
+      expect(finished.outcome).toBe("ok");
+      expect(finished.duration_ms).toBeGreaterThanOrEqual(0);
+      expect(typeof finished.pid).toBe("number");
+      expect(finished.prompt).toContain("how are we doing");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a transport failure (the original Finding 94 case — interpret() timing out) still lands a trace, outcome: timeout, and the thrown error carries through", async () => {
+    const root = seedScratchRepo();
+    try {
+      const transport: AsyncSdkTransport = {
+        async run(): Promise<SdkWorkerResponse> {
+          return { ok: false, error: "sdk worker timed out after 45000ms" };
+        },
+      };
+      const boundary = createSdkOrchestratorBoundary({ transport, root, env: {} });
+      await expect(boundary.interpret("how are we doing")).rejects.toThrow(OrchestratorSdkError);
+
+      const files = traceFiles(root);
+      expect(files.length).toBe(1);
+      const record = readTrace(root, files[0]);
+      expect(record.call).toBe("interpret");
+      // A plain transport failure (no `timedOut` on the response) reports outcome: error, not timeout
+      // — asSdkTransportResult's own honest "nothing captured" default (sdk-transport.ts), not a guess.
+      expect(record.outcome).toBe("error");
+      expect(record.error).toBe("sdk worker timed out after 45000ms");
+      // Never a connector env value, and never the ANTHROPIC_API_KEY value either — names only, exactly
+      // the same invariant dispatch-trace.test.ts already proves for the member path.
+      expect(JSON.stringify(record)).not.toContain("sk-ant-");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("narrate() and converse() each write their own trace, with call: narrate / call: converse — never confused with an interpret() trace", async () => {
+    const root = seedScratchRepo();
+    try {
+      const { transport: narrateTransport } = fakeTransport(() => ({ ok: true, result: "narrated." }));
+      await createSdkOrchestratorBoundary({ transport: narrateTransport, root, env: {} }).narrate("3 gates open.");
+      let files = traceFiles(root);
+      expect(files.length).toBe(1);
+      expect(readTrace(root, files[0]).call).toBe("narrate");
+
+      const { transport: converseTransport } = fakeTransport(() => ({ ok: true, result: "here's what's open." }));
+      await createSdkOrchestratorBoundary({ transport: converseTransport, root, env: {} }).converse("what's open?", root);
+      files = traceFiles(root);
+      expect(files.length).toBe(2);
+      const converseFile = files.find((f) => readTrace(root, f).call === "converse");
+      expect(converseFile).toBeDefined();
+      // converse()'s prompt carries the full studio projection prepended (ruling C10) — the trace
+      // records that same prompt, truncated/flagged exactly like a member's assembled context would be.
+      expect(readTrace(root, converseFile!).prompt).toContain("what's open?");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("the Orchestrator's env name set is recorded broader than a member's — the full env it was actually given, names only, never a value", async () => {
+    const root = seedScratchRepo();
+    try {
+      const { transport } = fakeTransport(() => ({ ok: true, result: "narrated." }));
+      const boundary = createSdkOrchestratorBoundary({ transport, root, env: { PATH: "/usr/bin", HOME: "/home/operator", SOME_UNRELATED_SHELL_VAR: "whatever" } });
+      await boundary.narrate("3 gates open.");
+      const files = traceFiles(root);
+      const record = readTrace(root, files[0]);
+      const names = (record.env as Array<{ name: string; present: true }>).map((e) => e.name).sort();
+      expect(names).toEqual(["HOME", "PATH", "SOME_UNRELATED_SHELL_VAR"]);
+      for (const e of record.env as Array<{ name: string; present: true }>) {
+        expect(Object.keys(e).sort()).toEqual(["name", "present"]);
+      }
+      // No home_scoped field at all — the Orchestrator path never calls scopeHome (Finding 94's own
+      // ruling: a `false` here would misleadingly imply scoping was considered and declined).
+      expect(record.home_scoped).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });
