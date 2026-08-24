@@ -398,8 +398,40 @@ export function leadingArtifact(repo: Repo, unit: WorkUnit): Artifact | undefine
   return all.filter((a) => a.status !== "superseded").sort((a, b) => a.created.localeCompare(b.created)).pop();
 }
 
+// Compact "N files changed · +ins/-del" pulled from `git diff --stat`'s own trailing summary line —
+// never the full per-file listing. Returns null for anything that doesn't match (an empty diffstat —
+// 0 commits ahead — or a shape this hasn't seen), in which case a caller simply omits it rather than
+// guessing. Lives here, not render/shell.ts (its original home), so unitSummary below (Finding 117)
+// can use the exact same parser the merge gate card already does, without derive.ts importing from
+// board/ — the same elapsedLabel precedent already established for this exact reason.
+export function diffstatSummary(diffstat: string): string | null {
+  const lines = diffstat
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const last = lines[lines.length - 1];
+  if (!last) return null;
+  const m = /^(\d+) files? changed(?:, (\d+) insertions?\(\+\))?(?:, (\d+) deletions?\(-\))?/.exec(last);
+  if (!m) return null;
+  const files = Number(m[1]);
+  const ins = m[2] ?? "0";
+  const del = m[3] ?? "0";
+  return `${files} file${files === 1 ? "" : "s"} changed · +${ins}/-${del}`;
+}
+
 export function unitSummary(repo: Repo, unit: WorkUnit): string {
   const art = leadingArtifact(repo, unit);
+  // Finding 117: a shipped unit's leading artifact is its own merge gate's report (ruling A8) —
+  // correct as a record of what the gate said BEFORE landing ("approving this gate is the
+  // authorization to land here"), wrong read as CURRENT status once it already has. `merge_result` is
+  // set only once the merge actually executed (types.ts) — absent on a pre-this-ruling shipped unit,
+  // which falls through to the pre-existing (unchanged) behavior below rather than fabricating one.
+  if (unit.status === "shipped" && art?.kind === "merge" && art.merge && art.merge_result) {
+    const stat = diffstatSummary(art.merge.diffstat);
+    // A literal arrow, not the `&rarr;` entity — this string goes through renderInline()'s esc() at
+    // its one call site (project.ts), which would otherwise double-escape a literal ampersand.
+    return `merged ${art.merge_result.merge_commit.slice(0, 7)} → ${art.merge.target}${stat ? `, ${stat}` : ""}`;
+  }
   if (art && art.body) return firstParagraph(art.body);
   return "";
 }

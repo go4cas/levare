@@ -10,7 +10,7 @@
 import type { Repo } from "../../repo.ts";
 import type { Artifact } from "../../types.ts";
 import { firstParagraph } from "../../repo.ts";
-import { esc, costLabel, ageLabel, elapsedLabel, projectLastActivity, type OpenGate } from "../../derive.ts";
+import { esc, costLabel, ageLabel, elapsedLabel, projectLastActivity, diffstatSummary, type OpenGate } from "../../derive.ts";
 import type { RegistryExtras } from "../../extra.ts";
 import { diagnose } from "../../doctor.ts";
 import type { DaemonInvocation } from "../../daemon.ts";
@@ -674,28 +674,6 @@ export function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?
 // outcome. `reject`/`request` are never rendered either — resolveGate already refuses both against a
 // merge gate (NOTES MERGE-1) — there is no "changes" to request against a trial-merge report.
 // ---------------------------------------------------------------------------
-
-// Compact "N files changed · +ins/-del" pulled from `git diff --stat`'s own trailing summary line —
-// never the full per-file listing (the goal: "render compactly... not a full diff"). Returns null for
-// anything that doesn't match (an empty diffstat — 0 commits ahead — or a shape this hasn't seen), in
-// which case the card simply omits the chip rather than guessing.
-function diffstatSummary(diffstat: string): string | null {
-  const lines = diffstat
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-  const last = lines[lines.length - 1];
-  if (!last) return null;
-  const m = /^(\d+) files? changed(?:, (\d+) insertions?\(\+\))?(?:, (\d+) deletions?\(-\))?/.exec(last);
-  if (!m) return null;
-  const files = Number(m[1]);
-  const ins = m[2] ?? "0";
-  const del = m[3] ?? "0";
-  // A literal middle-dot character, not the `&middot;` entity — this string is passed through
-  // `tag()`, which `esc()`s its text (correctly: it's a plain-text label, not an HTML fragment), and
-  // `esc()` would otherwise double-escape a literal ampersand into `&amp;middot;`.
-  return `${files} file${files === 1 ? "" : "s"} changed · +${ins}/-${del}`;
-}
 
 function mergeGateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: boolean; dispatching?: DispatchingInfo }): string {
   const art = gate.artifact!;
