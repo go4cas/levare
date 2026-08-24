@@ -12,9 +12,9 @@
 // breaks the moment prose and reality drift apart again.
 
 import { test, expect, describe, afterAll } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { scaffoldStudio, initStudio } from "../src/init.ts";
 import { validatePath } from "../src/validate.ts";
@@ -96,19 +96,39 @@ describe("docs/guide/04-workflow's pasteable blocks produce a valid studio", () 
   // eligibility list like any other sandboxed member. This call passes no `sandbox` detection at all
   // (validatePath(root), no third arg), so SANDBOX_UNAVAILABLE itself never fires either (see
   // validate.ts#validateSandboxTelling's own "never assumed" guard) — the finished studio is left with
-  // exactly one warning.
-  test("the finished studio validates with zero warnings, other than the one intentionally added (UNCOVERABLE_EXPECTED_KIND)", () => {
+  // two warnings.
+  //
+  // Finding 77 (2026-08-24): 02-promote-to-a-project.md's own pasted `projects/todo-cli.md` declares
+  // `repo: ~/source/todo-cli` — the guide's illustrative product repo, never actually created by any
+  // heredoc this suite replays (the guide assumes a reader who already has it cloned; this test never
+  // fakes one). Tilde expansion now correctly resolves that against THIS process's real home. On most
+  // hosts `~/source/todo-cli` genuinely doesn't exist, so PROJECT_REPO_UNRESOLVED correctly fires —
+  // exactly the "config that looks right but the reader never ran `git clone`" case Finding 77 exists to
+  // tell, and the silent no-op that predated this fix. Guarded on `existsSync` (rather than hard-coded
+  // either way) because a real reader's own machine — or a dev host that genuinely has a `~/source/
+  // todo-cli` checkout — sees neither this warning nor the old silent no-op.
+  const todoCliRepo = join(homedir(), "source", "todo-cli");
+  const todoCliRepoExists = existsSync(join(todoCliRepo, ".git"));
+  test(`the finished studio validates with zero warnings, other than UNCOVERABLE_EXPECTED_KIND${todoCliRepoExists ? "" : " and PROJECT_REPO_UNRESOLVED"}`, () => {
     const r = validatePath(root);
     expect(r.ok).toBe(true);
     expect(r.errors).toEqual([]);
-    expect(r.warnings).toEqual([
+    const expected = [
       {
         code: "UNCOVERABLE_EXPECTED_KIND",
         message:
           "unit 'add-command' (type 'feature') expects kind(s) [design, spec, code], but no member of its responsible team (press) declares producing any of them — this may be a legitimate configuration (a unit that only ever needs part of its type's shape), but the board's score rail will show these stage(s) as not covered, never as merely queued",
         file: join(root, "work", "todo-cli", "add-command", "unit.md"),
       },
-    ]);
+    ];
+    if (!todoCliRepoExists) {
+      expected.push({
+        code: "PROJECT_REPO_UNRESOLVED",
+        message: `project 'todo-cli' declares repo: '~/source/todo-cli' which resolves to '${todoCliRepo}', but '${todoCliRepo}/.git' does not exist — no work branch or merge gate will be created for this project until repo: points at a real local checkout`,
+        file: join(root, "projects", "todo-cli.md"),
+      });
+    }
+    expect(r.warnings).toEqual(expected);
   });
 });
 

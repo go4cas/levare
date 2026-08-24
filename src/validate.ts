@@ -16,7 +16,7 @@ import { kindMatches } from "./flow.ts";
 import { SDK_TOOL_NAMES } from "./sdk-transport.ts";
 import type { SandboxDetection } from "./sandbox.ts";
 import { approvalExemptFields } from "./approval-fields.ts";
-import { formatCheckoutSyncNotice, FORMER_CHECKOUT_SYNC_NOTICES } from "./merge.ts";
+import { formatCheckoutSyncNotice, FORMER_CHECKOUT_SYNC_NOTICES, resolveProjectRepoPathRaw } from "./merge.ts";
 export type { OverlayFile } from "./overlay.ts";
 
 export interface ValidationError {
@@ -878,6 +878,7 @@ export function validatePath(target: string, overlay?: OverlayFile, sandbox?: Sa
     validateKnownModels(target, errors, overlay);
     const implementedRemoteAgents = validateAgentRemoteImplementation(target, warnings, overlay);
     validateSandboxTelling(target, warnings, overlay, sandbox, implementedRemoteAgents);
+    validateProjectRepoResolution(target, warnings, overlay);
   }
 
   // Cross-artifact checks over everything discovered.
@@ -1548,6 +1549,49 @@ function validateSandboxTelling(root: string, warnings: ValidationWarning[], ove
       code: "SANDBOX_UNAVAILABLE",
       message: `no working OS-level sandbox primitive was found on this host (tried: ${sandboxPrimitivesTried(sandbox)}) — these members run unconfined beyond env/HOME scoping: ${sandboxedAgents.join(", ")}; see 'levare doctor' for what was tried`,
       file: agentsDir,
+    });
+  }
+}
+
+// Finding 77: `undefined` from merge.ts#resolveProjectRepoPath means either "no repo declared" or
+// "declared but doesn't resolve" — a project that LOOKS configured silently gets no work branch, no
+// merge gate, no worktree, and (before this) no telling why (the Finding 73 class). Warns, never
+// errors, because a `repo:` that doesn't resolve YET is sometimes legitimate: NOTES MERGE-1's own
+// placeholder/SSH-URL-not-cloned-locally state (the golden fixture's `storefront` project) is a
+// permanent, documented, supported declaration, not a misconfiguration — so only a value that LOOKS
+// like a local path (excludes scp-like `user@host:path` and `scheme://` remote specs) is checked here.
+// The literal sentinel `repo: .` (the studio's own root, e.g. the golden fixture's `studio` project)
+// is excluded by declaration, not by resolved identity, matching resolveProjectRepoPath's own doc —
+// this stays silent even when validating a subtree that isn't itself a git checkout (the golden
+// fixture has no `.git` of its own), where resolveProjectRepoPath's realpath self-reference check
+// would otherwise never get the chance to fire.
+function repoRawLooksLikeLocalPath(raw: string): boolean {
+  if (raw.includes("://")) return false; // ssh://, https://, file://, ...
+  if (/^[^\s/]+@[^\s:]+:/.test(raw)) return false; // scp-like git@host:path
+  return true;
+}
+
+function validateProjectRepoResolution(root: string, warnings: ValidationWarning[], overlay?: OverlayFile): void {
+  const projectsDir = join(root, "projects");
+  if (!existsSync(projectsDir)) return;
+  for (const name of readdirSync(projectsDir).sort()) {
+    if (!name.endsWith(".md") || name.endsWith(".learnings.md")) continue;
+    const file = join(projectsDir, name);
+    let data: Record<string, YamlValue>;
+    try {
+      ({ data } = parseFrontmatter(readOverlaid(file, overlay)));
+    } catch {
+      continue; // its own PARSE_ERROR already recorded by the per-file pass.
+    }
+    const raw = typeof data.repo === "string" ? data.repo : "";
+    if (!raw || raw === "." || !repoRawLooksLikeLocalPath(raw)) continue;
+    const resolved = resolveProjectRepoPathRaw(root, raw);
+    if (existsSync(join(resolved, ".git"))) continue;
+    const projectName = typeof data.name === "string" ? data.name : basename(name, ".md");
+    warnings.push({
+      code: "PROJECT_REPO_UNRESOLVED",
+      message: `project '${projectName}' declares repo: '${raw}' which resolves to '${resolved}', but '${resolved}/.git' does not exist — no work branch or merge gate will be created for this project until repo: points at a real local checkout`,
+      file,
     });
   }
 }
