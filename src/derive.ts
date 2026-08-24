@@ -303,7 +303,7 @@ export function scoreNodes(repo: Repo, unit: WorkUnit, running: DaemonInvocation
   const inv = running.find((r) => r.project === unit.project && r.unit === unit.unit);
   const capabilities = repoCapabilities(repo);
   const unreachable = new Set(unreachableExpectedKinds(repo, unit, capabilities));
-  return expects.map((kind) => {
+  const nodes: ScoreNode[] = expects.map((kind) => {
     // Prefer the live (non-superseded) artifact of this kind; fall back to the most recent one so a
     // rejected/blocked kind still renders its true state rather than reading as untouched.
     const live = artifacts.filter((a) => a.kind === kind);
@@ -341,6 +341,32 @@ export function scoreNodes(repo: Repo, unit: WorkUnit, running: DaemonInvocation
       producedBy: current.produced_by,
     };
   });
+
+  // Finding 87: `gate: merge` is real — dagwalk.ts opens it as a repo-bearing unit's own final gate,
+  // once every responsible team's own flow is satisfied — but it is a PROJECT-level fact injected by
+  // the walk, never a member of any type's `expects:` list, so the rail (built from `expects` alone)
+  // had no row for the one gate a Conductor spends real, blocking time on. `project.repo` set and not
+  // the studio's own self-referential "." sentinel (the same test project.ts's own repo-link uses) is
+  // the one merge-eligibility fact this pure, I/O-free function can honestly read — dagwalk.ts's own
+  // runtime check additionally resolves the local checkout and confirms the work branch exists, which
+  // needs the filesystem this function deliberately never touches (see this file's own header).
+  const project = repo.projects.get(unit.project);
+  if (project && project.repo && project.repo !== ".") {
+    const mergeArtifacts = artifacts.filter((a) => a.kind === "merge");
+    const currentMerge = mergeArtifacts.find((a) => a.status !== "superseded") ?? mergeArtifacts[mergeArtifacts.length - 1];
+    nodes.push(
+      currentMerge
+        ? {
+            kind: "merge",
+            shape: nodeStateFor(currentMerge.status) === "gate" ? "diamond" : "dot",
+            state: nodeStateFor(currentMerge.status),
+            artifact: currentMerge,
+            producedBy: currentMerge.produced_by,
+          }
+        : { kind: "merge", shape: "dot", state: "wait" },
+    );
+  }
+  return nodes;
 }
 
 function nodeStateFor(status: ArtifactStatus): NodeState {

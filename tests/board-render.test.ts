@@ -793,18 +793,28 @@ describe("run screen — score rail node markers survive a real gate resolution"
     const before = renderRun(loadRepo(scratchRoot), "storefront", "checkout-flow", scratchRoot, now);
     const beforeScore = scoreBlock(before);
 
-    // Sanity on the fixture shape this pins: 5 expected kinds, 2 of them (code, review) genuinely
-    // have no artifact at all yet — the exact "artifact-shaped assumption" case.
+    // Sanity on the fixture shape this pins: 5 expected kinds plus storefront's own project-level
+    // merge step (repo: set, not the "." self-reference — Finding 87), 3 of them (code, review,
+    // merge) genuinely have no artifact at all yet — the exact "artifact-shaped assumption" case.
     const beforeNodes = scoreNodes(loadRepo(scratchRoot), loadRepo(scratchRoot).units.find((u) => u.unit === "checkout-flow")!);
-    expect(beforeNodes.map((n) => n.kind)).toEqual(["product-brief", "design", "spec", "code", "review"]);
-    expect(beforeNodes.filter((n) => !n.artifact).map((n) => n.kind)).toEqual(["code", "review"]);
+    expect(beforeNodes.map((n) => n.kind)).toEqual(["product-brief", "design", "spec", "code", "review", "merge"]);
+    expect(beforeNodes.filter((n) => !n.artifact).map((n) => n.kind)).toEqual(["code", "review", "merge"]);
 
-    expect(stepCount(beforeScore)).toBe(5);
-    expect(snodeClassesOf(beforeScore).length).toBe(5); // one marker per step — no gaps before the approve
+    expect(stepCount(beforeScore)).toBe(6);
+    expect(snodeClassesOf(beforeScore).length).toBe(6); // one marker per step — no gaps before the approve
     // Fault 1: "code" is not merely queued — no member of kestrel (the unit's responsible team)
     // declares producing it, so it renders "blocked" (the unreachable state's shared neutral-gray
     // treatment), never the same hollow "upcoming" a genuinely queued step like "review" gets.
-    expect(snodeClassesOf(beforeScore)).toEqual(["snode done", "snode done", "snode is-gate-open", "snode blocked", "snode upcoming"]);
+    // "merge" (Finding 87) reads the same hollow "upcoming" as "review" — genuinely not reached yet,
+    // not uncoverable.
+    expect(snodeClassesOf(beforeScore)).toEqual([
+      "snode done",
+      "snode done",
+      "snode is-gate-open",
+      "snode blocked",
+      "snode upcoming",
+      "snode upcoming",
+    ]);
 
     // The actual failing path: a real gate resolution against the real repo (not a hand-built one),
     // then a fresh re-derive from disk — exactly what the board's GET handler does on the next request.
@@ -814,12 +824,20 @@ describe("run screen — score rail node markers survive a real gate resolution"
     const after = renderRun(loadRepo(scratchRoot), "storefront", "checkout-flow", scratchRoot, now);
     const afterScore = scoreBlock(after);
 
-    expect(stepCount(afterScore)).toBe(5);
+    expect(stepCount(afterScore)).toBe(6);
     // Every step still carries its node marker post-resolution — "review" (still artifact-less, but
     // reachable) keeps its hollow "upcoming" marker; "code" (still nothing anywhere in the studio
-    // produces it) keeps reading "blocked", not a missing/mismatched one.
-    expect(snodeClassesOf(afterScore).length).toBe(5);
-    expect(snodeClassesOf(afterScore)).toEqual(["snode done", "snode done", "snode done", "snode blocked", "snode upcoming"]);
+    // produces it) keeps reading "blocked", not a missing/mismatched one; "merge" (still unreached —
+    // code/review haven't cleared) keeps its own "upcoming" marker too.
+    expect(snodeClassesOf(afterScore).length).toBe(6);
+    expect(snodeClassesOf(afterScore)).toEqual([
+      "snode done",
+      "snode done",
+      "snode done",
+      "snode blocked",
+      "snode upcoming",
+      "snode upcoming",
+    ]);
   });
 });
 
