@@ -403,12 +403,19 @@ member).length > 0`. First surfaced as a live finding by NOTES R4-VENDOR-CLI's v
 confirmed by construction: **levare cannot express "may hold this connector's credential, must not reach
 the network" for a `kind: cli` member** — credential-scope and network-scope are welded at the
 connector-grant level. (Originally scoped to `cli` specifically — NOTES R4-SANDBOX v2 Ruling 2 wrapped
-only the two `cli` spawn paths, with `native`/`remote` exempt since neither went through this sandbox
-mechanism. NOTES MCP-1C, ruling R3, extends the IDENTICAL coupling to `kind: remote`'s own spawned MCP
-server process — `env.ts#memberNetworkAllowed` is read by `adapters.ts#buildRemoteSandboxPolicy`
-exactly as it is by `buildDispatchSandboxPolicy`, and a remote member always holds at least its own
-`server:` connector, so this reach is granted by construction. `native` remains exempt — a Claude Agent
-SDK call has no separate spawned process for the sandbox to wrap.) **The Conductor's ruling: this is not a missing third
+only the two `cli` spawn paths. NOTES MCP-1C, ruling R3, extends the IDENTICAL coupling to `kind: remote`'s
+own spawned MCP server process — `env.ts#memberNetworkAllowed` is read by
+`adapters.ts#buildRemoteSandboxPolicy` exactly as it is by `buildDispatchSandboxPolicy`, and a remote
+member always holds at least its own `server:` connector, so this reach is granted by construction.
+`native` was believed exempt on the theory that a Claude Agent SDK call has no separate spawned process for
+the sandbox to wrap — **refuted by Finding 75's trace (2026-08-24): the SDK worker's own spawn
+(`sdk-transport.ts#workerSpawnArgv`) is a real, wrappable OS process, the exact argv shape
+`wrapForSandbox` already takes for `cli`.** `native` is unwrapped today because the wrap is simply never
+CALLED for this kind, not because none exists to call — a known, currently-told gap (`sandbox:
+not-wrapped` on every native artifact, `levare doctor`'s own line for it — see adapters.ts#author and
+doctor.ts's own doc), not an architectural impossibility. Wiring it is deferred as a separate unit (part 2
+of the same ruling): the allowlist work (`node_modules/@anthropic-ai/claude-agent-sdk-*`, the resolved
+native binary, network for the live API call) is real design work, not a rename.) **The Conductor's ruling: this is not a missing third
 dimension awaiting construction, because levare has no connector shape that names a purely-local
 capability in the first place** — Ruling 2's own reasoning is that every connector IS levare's declared
 way of naming an external reach; "hold a credential but deny network" would require inventing a connector
