@@ -167,7 +167,22 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
       const artifactRows = artifacts
         .map((a) => {
           const ind = a.status === "approved" ? "ind-done" : a.status === "in-review" ? "ind-gate" : a.status === "superseded" ? "ind-super" : "ind-prog";
-          const st = a.status === "in-review" ? `<span class="st gate">at gate</span>` : `<span class="st">${esc(a.status)}</span>`;
+          // Finding 116: this row used to read a flat "at gate" for every open gate, the exact defect
+          // Finding 97 already fixed on the unit chip above (`gateKindLabel(gate)`) — reuses that SAME
+          // `gate`, already in scope, rather than a second lookup: only one gate is ever open per unit
+          // (dagwalk.ts halts the whole unit at its first open gate), so `a.id === gate.target`
+          // whenever `a.status` is in-review. `gate` should always be set here by that invariant; the
+          // fallback string is defensive only, matching this file's own "never throw on live data"
+          // posture elsewhere.
+          //
+          // Finding 84: a plain-step artifact a member failed to produce (dagwalk.ts#writeBlocked) is
+          // marked `superseded` the instant a retry succeeds — the SAME status a genuine content
+          // revision gets — with nothing left in `a.status` to tell them apart. `a.blocked_reason` is
+          // set once at write time and never cleared by that supersession, so it's the real signal.
+          const st =
+            a.status === "in-review" ? `<span class="st gate">${esc(gate ? gateKindLabel(gate) : "at gate")}</span>`
+            : a.status === "superseded" && a.blocked_reason ? `<span class="st blocked" title="${esc(a.blocked_reason)}">failed dispatch</span>`
+            : `<span class="st">${esc(a.status)}</span>`;
           const label = a.status === "superseded" ? `<s>${esc(artifactFileName(a))}</s>` : esc(artifactFileName(a));
           return `<div class="aitem"><span class="ind ${ind}"></span><a class="nm link mono" href="${artifactHref(u.project, u.unit, a.id)}">${label}</a>${st}</div>`;
         })

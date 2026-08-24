@@ -384,6 +384,14 @@ export interface Artifact {
   params?: Record<string, string> | null;
   /** NOTES CAP-A: reserved for `kind: proposal` — set by levare on gate approval, never by a member. */
   execution?: ExecutionRecord | null;
+  /**
+   * Why this artifact is `blocked`, when a member failed to produce it (dagwalk.ts#writeBlocked/
+   * board/gateops.ts#blockedRetryDoc — the SAME reason WorkUnit.blocked_reason records, one level
+   * down). Set once at write time and never cleared: a retry that succeeds patches only `status`
+   * (superseded), so this survives to distinguish "this dispatch never ran" from an ordinary content
+   * revision, which also lands as `superseded` but never carries this field (Finding 84).
+   */
+  blocked_reason?: string | null;
   /** NOTES MERGE-1: reserved for `kind: merge` — the trial-merge report, written by levare when the
    * merge gate opens and rewritten in place by the `recheck` verb. */
   merge?: MergeInfo | null;
