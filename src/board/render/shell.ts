@@ -750,7 +750,14 @@ function mergeGateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: 
       ? `<div class="gate__verbs"><button class="verb is-primary" data-verb="approve">${project?.remote ? "Merge &amp; push" : "Merge"}</button></div>`
       : `<div class="gate__verbs"><button class="verb is-primary" data-verb="recheck">Re-check</button></div>`;
 
-  const titleExtra = `${trialBadge}${conflictDetail}${statsHtml}${guardrailHtml}${meta}`;
+  // Finding 122: `trialBadge` is a bare `statusBadge()` chip — a `<span>`, sized to its own content
+  // everywhere else on the board — but here it sits as a DIRECT child of `.gate__inner`/`.gate__body`
+  // (both `display:flex; flex-direction:column`), so flexbox's own default `align-items: stretch`
+  // stretches it to the row's full width: a large green banner that outweighs the small "merge"
+  // gate-kind chip beside it, for carrying strictly less information (CLEAN means only
+  // `!trial.conflicted`). The exact same review-gate verdict badge already avoids this by wrapping in
+  // `.gate__verdict` (unstyled — its only job is to stop being a direct flex child); same fix here.
+  const titleExtra = `<div class="gate__verdict">${trialBadge}</div>${conflictDetail}${statsHtml}${guardrailHtml}${meta}`;
 
   if (opts.cta) {
     return `<article class="gate gate--merge gate--cta${dispatching ? " is-dispatching" : ""}" data-gate-project="${esc(gate.project)}" data-gate-target="${esc(art.id)}">
