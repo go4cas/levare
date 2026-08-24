@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, realpathSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, chmodSync, realpathSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { assertSpawnOk } from "./spawn-helpers.ts";
 import { tmpdir, homedir } from "node:os";
@@ -25,6 +25,7 @@ import {
   type SpawnResult,
 } from "../src/adapters.ts";
 import type { SdkTransport, AsyncSdkTransport } from "../src/sdk-transport.ts";
+import { DISPATCH_LOG_DIR_NAME } from "../src/dispatch-trace.ts";
 import { validateArtifactSource } from "../src/validate.ts";
 import { connectStdioMcpServer } from "../src/mcp-client.ts";
 import type { Agent, Connector } from "../src/types.ts";
@@ -995,6 +996,105 @@ describe("native adapter — sandboxed real spawn (Finding 75, part 2)", () => {
         rmSync(scratchRoot, { recursive: true, force: true });
       }
     });
+  });
+});
+
+// Finding 112: `native_binary_resolved` used to be structurally `false` on every compiled build — the
+// parent never knows the worker's own resolution, so it always reported a negative indistinguishable
+// from a genuine missing-binary failure. The worker now reports the true answer back on
+// `res.nativeBinaryResolved`; these tests prove adapters.ts's own wiring prefers that report over its
+// own pre-spawn guess, and only falls back to the guess (never to a fabricated `false`) when the
+// worker never got to answer at all.
+describe("native adapter — dispatch trace native_binary_resolved (Finding 112)", () => {
+  function readTrace(studioRoot: string): Record<string, unknown> {
+    const dir = join(studioRoot, DISPATCH_LOG_DIR_NAME);
+    const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+    expect(files.length).toBe(1);
+    return JSON.parse(readFileSync(join(dir, files[0]), "utf8"));
+  }
+
+  // `requireFrom` scoped at an empty scratch dir makes resolveNativeBinary()'s own require.resolve
+  // genuinely fail to find the real installed package — the same technique tests/orchestrator-sdk.test.ts
+  // already uses (`checkSdkPreconditions`'s own requireFrom override) to simulate "unresolvable" without
+  // touching this dev sandbox's real node_modules, where the binary genuinely IS installed and would
+  // otherwise resolve every time, masking the case this test needs (the parent having no path of its own).
+  function unresolvableBinaryResolution(): { binaryResolution: { requireFrom: string }; cleanup: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), "levare-unresolvable-binary-"));
+    return { binaryResolution: { requireFrom: join(dir, "scratch.ts") }, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  test("the worker's own report wins even when the parent never resolved a path itself (the compiled-build case)", () => {
+    const repo = loadRepo(ROOT);
+    const agent = repo.agents.get("lyra")!;
+    const studioRoot = mkdtempSync(join(tmpdir(), "levare-trace-studio-"));
+    const { binaryResolution, cleanup } = unresolvableBinaryResolution();
+    try {
+      const transport: SdkTransport = { run: () => ({ ok: true, result: "native output", nativeBinaryResolved: true }) };
+      // Resolution forced to fail — the parent has no path of its own, exactly the compiled-build
+      // shape (resolveNativeBinary() returns null under isCompiledBuild()).
+      const boundary = createSdkNativeBoundary({ transport, studioRoot, binaryResolution });
+      boundary.invoke(baseReq(agent, { agent }));
+      expect(readTrace(studioRoot).native_binary_resolved).toBe(true);
+    } finally {
+      rmSync(studioRoot, { recursive: true, force: true });
+      cleanup();
+    }
+  });
+
+  test("a transport-level failure the worker's respond() never reached falls back to the parent's own knowledge — undefined here, never a fabricated false", () => {
+    const repo = loadRepo(ROOT);
+    const agent = repo.agents.get("lyra")!;
+    const studioRoot = mkdtempSync(join(tmpdir(), "levare-trace-studio-"));
+    const { binaryResolution, cleanup } = unresolvableBinaryResolution();
+    try {
+      // No nativeBinaryResolved on the response at all — a real transport-level failure (worker script
+      // not found, timeout, non-JSON output) never runs the worker's own respond() call.
+      const transport: SdkTransport = { run: () => ({ ok: false, error: "sdk worker script not found" }) };
+      const boundary = createSdkNativeBoundary({ transport, studioRoot, binaryResolution });
+      expect(() => boundary.invoke(baseReq(agent, { agent }))).toThrow();
+      expect(readTrace(studioRoot).native_binary_resolved).toBeUndefined();
+    } finally {
+      rmSync(studioRoot, { recursive: true, force: true });
+      cleanup();
+    }
+  });
+
+  test("the parent's own resolved path (the source-build case) still reports true even on that same transport-level failure", () => {
+    const repo = loadRepo(ROOT);
+    const agent = repo.agents.get("lyra")!;
+    const studioRoot = mkdtempSync(join(tmpdir(), "levare-trace-studio-"));
+    try {
+      const transport: SdkTransport = { run: () => ({ ok: false, error: "sdk worker timed out" }) };
+      const boundary = createSdkNativeBoundary({ transport, studioRoot, pathToClaudeCodeExecutable: "/resolved/claude" });
+      expect(() => boundary.invoke(baseReq(agent, { agent }))).toThrow();
+      expect(readTrace(studioRoot).native_binary_resolved).toBe(true);
+    } finally {
+      rmSync(studioRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("the start trace (written before the spawn) uses the parent's pre-spawn knowledge only — undefined on the compiled-build shape, since the worker hasn't run yet", () => {
+    const repo = loadRepo(ROOT);
+    const agent = repo.agents.get("lyra")!;
+    const studioRoot = mkdtempSync(join(tmpdir(), "levare-trace-studio-"));
+    const { binaryResolution, cleanup } = unresolvableBinaryResolution();
+    try {
+      let sawAtSpawnTime: unknown;
+      const transport: SdkTransport = {
+        run: () => {
+          sawAtSpawnTime = readTrace(studioRoot).native_binary_resolved;
+          return { ok: true, result: "native output", nativeBinaryResolved: true };
+        },
+      };
+      const boundary = createSdkNativeBoundary({ transport, studioRoot, binaryResolution });
+      boundary.invoke(baseReq(agent, { agent }));
+      expect(sawAtSpawnTime).toBeUndefined();
+      // The finish write then amends it with the worker's real report.
+      expect(readTrace(studioRoot).native_binary_resolved).toBe(true);
+    } finally {
+      rmSync(studioRoot, { recursive: true, force: true });
+      cleanup();
+    }
   });
 });
 

@@ -231,6 +231,14 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
   // itself chose — so the NEXT time a real call is slow, "the SDK retried N times, last delay Xms,
   // classified as <status>" is sitting in stderr instead of a bare, unexplained 45s wait.
   const startedAt = Date.now();
+  // NOTES DISPATCH-TRACE / Finding 112: resolved HERE, once, so every `respond()` below — success,
+  // no-result, and thrown — can report whether a real spawnable binary was found. This worker is the
+  // only place that ever knows the answer on a compiled build (`resolvePathToClaudeCodeExecutable`'s
+  // own doc): the parent that writes the dispatch trace can only see this by asking the worker.
+  // Passed into `buildQueryOptions` as an already-resolved `pathToClaudeCodeExecutable` so its own
+  // internal resolution call is a same-value passthrough, not a second extraction attempt.
+  const resolvedBinaryPath = resolvePathToClaudeCodeExecutable(req.pathToClaudeCodeExecutable);
+  const nativeBinaryResolved = resolvedBinaryPath !== undefined;
   try {
     let resultText = "";
     let structuredOutput: unknown;
@@ -243,7 +251,7 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
     let respondingModel: string | null = null;
     for await (const message of query({
       prompt: req.prompt,
-      options: buildQueryOptions(req),
+      options: buildQueryOptions({ ...req, pathToClaudeCodeExecutable: resolvedBinaryPath }),
     })) {
       if (message.type === "system" && message.subtype === "api_retry") {
         retryCount++;
@@ -273,13 +281,13 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
     }
     console.error(`levare: sdk worker query() finished in ${Date.now() - startedAt}ms (${retryCount} retr${retryCount === 1 ? "y" : "ies"}, ${sawSuccess ? "success" : "no success result"})`);
     if (!sawSuccess) {
-      respond({ ok: false, error: failure ?? "sdk query produced no result message" });
+      respond({ ok: false, error: failure ?? "sdk query produced no result message", nativeBinaryResolved });
       return;
     }
-    respond({ ok: true, result: resultText, structuredOutput, receipt });
+    respond({ ok: true, result: resultText, structuredOutput, receipt, nativeBinaryResolved });
   } catch (e) {
     console.error(`levare: sdk worker query() threw after ${Date.now() - startedAt}ms`);
-    respond({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    respond({ ok: false, error: e instanceof Error ? e.message : String(e), nativeBinaryResolved });
   }
 }
 

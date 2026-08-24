@@ -80,7 +80,15 @@ export interface DispatchTraceRecord {
    * path ran, never the literal directory. */
   home_scoped: boolean;
   anthropic_api_key_present: boolean;
-  native_binary_resolved: boolean;
+  /** Finding 112: whether a real spawnable native binary was found — reported by the WORKER
+   * (`sdk-worker.ts`, the only place that ever knows on a compiled build; see
+   * `resolvePathToClaudeCodeExecutable`'s own doc) when it ran far enough to answer, else by the
+   * parent's own pre-spawn knowledge for a source build (resolved once, at boundary-construction
+   * time, before any dispatch). Absent — never `false` — when neither knows: a compiled-build start
+   * trace (the worker hasn't run yet) or a transport-level failure the worker's own `respond()` never
+   * reached. `false` is a real, meaningful negative now; `undefined` means "not yet knowable", never
+   * conflated with it. */
+  native_binary_resolved?: boolean;
   /** This levare process's own pid — not the worker's (unknown until the transport spawns it, after
    * the start trace is already written). Lets a Conductor confirm which process a live trace belongs
    * to; not a substitute for a worker pid this module never has in hand. */
@@ -116,7 +124,9 @@ export interface NativeDispatchOutcome {
 export interface DispatchTraceIdentityOpts {
   homeScoped: boolean;
   anthropicApiKeyPresent: boolean;
-  nativeBinaryResolved: boolean;
+  /** See `DispatchTraceRecord.native_binary_resolved` — undefined when not yet knowable, never a
+   * stand-in `false`. */
+  nativeBinaryResolved?: boolean;
   startedAt: string;
   timeoutMs: number;
 }
