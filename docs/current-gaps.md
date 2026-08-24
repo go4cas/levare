@@ -1368,3 +1368,48 @@ live host's own crash signature or kernel log — none was predictable from sour
 wrapped worker argv under a real profile and is built to capture kernel denials the way
 `scripts/repro-r4-sandbox-fix10-hang.ts` does for `cli` — but it has never been run on a live host. This
 needs a live macOS run before merge, the same standard every prior R4-SANDBOX round held itself to.
+
+## Part 2's own live-host verification found a regression — Finding 75 part 3: the Bash scratch-dir denial
+
+Part 2's merge-condition live run surfaced immediately, and badly: a `quill/builder` dispatch produced NO
+code, only a report that every Bash invocation failed at sandbox setup with `EPERM ... mkdir
+'/private/tmp/claude-{uid}/<slugified-cwd>/<uuid>'`, before any command ever ran. Four of five member
+kinds worked under the wrap; the one that needs shell did not.
+
+**Root cause: a wrong grant, not a canonicalization bug.** `/tmp` and `/private/tmp` are the same
+directory (symlink); `/var/folders/xx/yyyy/T` (where `os.tmpdir()` lives on darwin, via `$TMPDIR`) is not
+aliased to either — a genuinely separate tree. `adapters.ts#nativeBunfsExtractionBase` computed its grant
+with plain `node:os`'s `tmpdir()` unconditionally; part 2's own doc claimed this "mirrors" the vendored
+`extractFromBunfs.js`'s formula, but that file's own `tmpdir()` helper hardcodes `/tmp` on darwin
+specifically to bypass `os.tmpdir()` (its own comment: "macOS /tmp works fine; os.tmpdir() below is for
+Android-on-Linux where /tmp isn't writable") — the one platform branch part 2's own unit test never
+covered. The Bash tool's own per-session scratch dirs share this identical per-uid base, so the wrong
+formula denied both bunfs extraction and every Bash invocation on darwin; Linux was never affected
+(`extractFromBunfs.js`'s Linux branch also calls plain `os.tmpdir()`, so the two formulas happened to
+agree there).
+
+**A second, compounding gap, found while fixing the first.** `sandbox.ts#canon`'s ENOENT fallback (return
+the un-resolved literal path when `realpathSync` throws) is safe for every OTHER production grant because
+levare itself pre-creates them before building the policy (a worktree, a scoped HOME, a git-logs dir).
+`nativeBunfsExtractionBase`'s own target is the one grant levare never creates — it predicts a path the
+inner CLI creates lazily, possibly for the first time ever on a host. Fixed the same way
+`dispatchGitWriteGrant` already does for its own logs dir: `ensureNativeBunfsExtractionBase` now
+pre-creates the base (best-effort, mirroring `sdk-transport.ts#hermeticSpawnEnv`'s posture) before it's
+threaded into `writablePaths`, so `canon()` always takes the real-resolution branch for this grant.
+
+**The probe's own gap was part of the finding, again.** `scripts/repro-r4-sandbox-native-worker.ts`'s STEP
+B sends a real worker a `{prompt:"hi"}` payload that dies on "Not logged in" before the worker ever
+reaches a Bash-shaped filesystem operation — passing cleanly while the exact regression it should have
+caught shipped underneath it. Two additions close this: STEP A2 (always-run, construction-level — proves
+the pre-created base is `canon()`-resolved before it's granted, against a scratch `CLAUDE_CODE_TMPDIR`)
+and STEP C (live-host-only, but credential-free — wraps a trivial `mkdir -p && echo && cat` shaped exactly
+like the evidence trace's own failing path, through the identical `buildNativeSandboxPolicy`/
+`wrapForSandbox` a real dispatch uses, and reports pass/fail without ever calling the Anthropic API).
+
+**Named, not resolved: whether the inner CLI's Bash tool applies a SECOND, inner sandbox layer of its own**
+(the vendored darwin binary's strings reference a `sandboxTmpDir`/`useSandbox` code path) is out of scope
+for what the evidence names and remains untested after this fix.
+
+Live verification is still owed — this fix, like part 2 itself, needs a live macOS run (STEP C passing,
+and a fresh `code` dispatch against a real merge-gated unit) before it can be called done, not merely
+constructed correctly.
