@@ -130,6 +130,47 @@ describe("resolveProjectRepoPath", () => {
       rmrf(studio);
     }
   });
+
+  // Finding 77: `~` is not `isAbsolute` — left unexpanded it silently mis-resolves to
+  // `<studioRoot>/~/...`, so a `repo: ~/code/foo` that LOOKS correct returns undefined exactly like an
+  // undeclared repo would. `home` is injected (resolveProjectRepoPath's own optional third param) so
+  // this is deterministic regardless of what this host's real $HOME contains.
+  test("expands a `~/` repo path against an injected home", () => {
+    const studio = mkdtempSync(join(tmpdir(), "levare-merge-studio-"));
+    const home = mkdtempSync(join(tmpdir(), "levare-merge-home-"));
+    const repo = join(home, "code", "foo");
+    try {
+      mkdirSync(repo, { recursive: true });
+      git(repo, ["-c", "init.defaultBranch=main", "init", "-q"]);
+      expect(resolveProjectRepoPath(studio, { repo: "~/code/foo" }, home)).toBe(repo);
+    } finally {
+      rmrf(home);
+      rmrf(studio);
+    }
+  });
+
+  test("expands a bare `~` repo path against an injected home", () => {
+    const studio = mkdtempSync(join(tmpdir(), "levare-merge-studio-"));
+    const home = mkdtempSync(join(tmpdir(), "levare-merge-home-"));
+    try {
+      git(home, ["-c", "init.defaultBranch=main", "init", "-q"]);
+      expect(resolveProjectRepoPath(studio, { repo: "~" }, home)).toBe(home);
+    } finally {
+      rmrf(home);
+      rmrf(studio);
+    }
+  });
+
+  test("does not expand `~user` (no passwd lookup)", () => {
+    const studio = mkdtempSync(join(tmpdir(), "levare-merge-studio-"));
+    const home = mkdtempSync(join(tmpdir(), "levare-merge-home-"));
+    try {
+      expect(resolveProjectRepoPath(studio, { repo: "~someuser/code/foo" }, home)).toBeUndefined();
+    } finally {
+      rmrf(home);
+      rmrf(studio);
+    }
+  });
 });
 
 describe("createWorkBranch (M1)", () => {
