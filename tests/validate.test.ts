@@ -2,6 +2,7 @@ import { test, expect, describe } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { assertExitCode } from "./spawn-helpers.ts";
 import { validatePath, validateArtifactSource } from "../src/validate.ts";
 import { loadPricing } from "../src/pricing.ts";
@@ -1507,5 +1508,95 @@ describe("MCP_FETCH_AT_DISPATCH — fetch-at-dispatch MCP launchers (NOTES MCP-1
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// Finding 77: `repo:` that looks configured but silently resolves to nothing (a typo'd path, a moved
+// directory, an unexpanded `~`, a directory that exists but was never `git init`ed) leaves a project
+// with no work branch, no merge gate, no worktree — and, before this, no telling why.
+describe("PROJECT_REPO_UNRESOLVED (Finding 77)", () => {
+  function projectStudio(repo: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "levare-project-repo-unresolved-"));
+    mkdirSync(join(dir, "projects"), { recursive: true });
+    writeFileSync(
+      join(dir, "projects", "acme.md"),
+      ["---", "name: acme", `repo: ${repo}`, "remote: null", "default_branch: main", "deploy: null", "pace: step", "---", "", "# Acme", ""].join("\n"),
+    );
+    return dir;
+  }
+
+  test("an absolute path with no .git checkout there warns, naming declared value, resolved value, and why", () => {
+    const parent = mkdtempSync(join(tmpdir(), "levare-project-repo-unresolved-"));
+    const missing = join(parent, "nonexistent-checkout");
+    const dir = projectStudio(missing);
+    try {
+      const r = validatePath(dir);
+      const w = r.warnings.find((w) => w.code === "PROJECT_REPO_UNRESOLVED");
+      expect(w).toBeDefined();
+      expect(w!.message).toContain(`repo: '${missing}'`);
+      expect(w!.message).toContain(`resolves to '${missing}'`);
+      expect(w!.message).toContain(".git");
+      expect(w!.message).toContain("acme");
+      expect(r.ok).toBe(true); // a warning, never an error — never flips ok.
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  test("an unexpanded `~` path warns and names what it actually resolved to — not the literal `~`", () => {
+    const dir = projectStudio("~/nowhere/levare-finding-77-scratch");
+    try {
+      const r = validatePath(dir);
+      const w = r.warnings.find((w) => w.code === "PROJECT_REPO_UNRESOLVED");
+      expect(w).toBeDefined();
+      expect(w!.message).toContain("repo: '~/nowhere/levare-finding-77-scratch'");
+      expect(w!.message).not.toContain(`resolves to '~`); // must name the EXPANDED path, not repeat the tilde.
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("repo: . (the studio's own self-referential root) stays silent — a documented exclusion, not a misconfiguration", () => {
+    const dir = projectStudio(".");
+    try {
+      const r = validatePath(dir);
+      expect(r.warnings.map((w) => w.code)).not.toContain("PROJECT_REPO_UNRESOLVED");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a scp-like SSH remote (not yet cloned locally) stays silent — NOTES MERGE-1's documented placeholder state", () => {
+    const dir = projectStudio("git@github.com:acme/storefront.git");
+    try {
+      const r = validatePath(dir);
+      expect(r.warnings.map((w) => w.code)).not.toContain("PROJECT_REPO_UNRESOLVED");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a real local git checkout stays silent", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-project-repo-unresolved-"));
+    mkdirSync(join(dir, "projects"), { recursive: true });
+    const checkout = join(dir, "checkout");
+    mkdirSync(checkout, { recursive: true });
+    spawnSync("git", ["-c", "init.defaultBranch=main", "-C", checkout, "init", "-q"], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" } });
+    writeFileSync(
+      join(dir, "projects", "acme.md"),
+      ["---", "name: acme", `repo: ${checkout}`, "remote: null", "default_branch: main", "deploy: null", "pace: step", "---", "", "# Acme", ""].join("\n"),
+    );
+    try {
+      const r = validatePath(dir);
+      expect(r.warnings.map((w) => w.code)).not.toContain("PROJECT_REPO_UNRESOLVED");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("fixtures/golden's storefront (SSH placeholder) and studio (repo: .) both stay silent", () => {
+    const r = validatePath("fixtures/golden");
+    expect(r.warnings.map((w) => w.code)).not.toContain("PROJECT_REPO_UNRESOLVED");
   });
 });

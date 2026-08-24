@@ -24,7 +24,7 @@
 
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, existsSync, realpathSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { checkGuardrails, violationLine, type DiffEntry, type GuardrailViolation } from "./guardrails.ts";
 import { RUNNER_NAME, RUNNER_EMAIL } from "./git.ts";
@@ -63,6 +63,27 @@ export function workBranchName(unit: string): string {
   return `levare/${unit}`;
 }
 
+// Finding 77: `~` is not absolute, so leaving it unexpanded silently mis-resolves `repo: ~/code/foo`
+// to `<studioRoot>/~/code/foo` — a config that reads as correct and does nothing. Only `~/` and a bare
+// `~` expand, against the real home; `~user` is deliberately left alone (needs a passwd lookup nobody
+// has asked for).
+function expandTilde(raw: string, home: string): string {
+  if (raw === "~") return home;
+  if (raw.startsWith("~/")) return join(home, raw.slice(2));
+  return raw;
+}
+
+/** Tilde-expand and studio-root-join a `repo:` value, WITHOUT checking whether the result is a real
+ * git checkout or the studio's own self-referential root — the same first step `resolveProjectRepoPath`
+ * takes internally, exported separately so validate.ts's PROJECT_REPO_UNRESOLVED warning (Finding 77)
+ * can name what an unresolvable `repo:` resolved TO, not just that resolution failed. `home` defaults
+ * to the real home (`node:os#homedir`) and is only ever overridden by a test — mirrors doctor.ts's own
+ * injectable `home`/`resolveCliPath` defaults. */
+export function resolveProjectRepoPathRaw(studioRoot: string, raw: string, home: string = homedir()): string {
+  const expanded = expandTilde(raw, home);
+  return isAbsolute(expanded) ? expanded : join(studioRoot, expanded);
+}
+
 /**
  * Resolve a project's `repo:` to a real, local, git-initialized checkout — the only shape the merge
  * machinery can act on. Returns undefined for anything else: a bare placeholder/SSH URL never actually
@@ -72,10 +93,10 @@ export function workBranchName(unit: string): string {
  * in this whole app commits artifacts into (conductorCommit/runnerCommit), and branch-switching it out
  * from under those writers would be a correctness hazard the PRD never asked this goal to take on.
  */
-export function resolveProjectRepoPath(studioRoot: string, project: Pick<Project, "repo">): string | undefined {
+export function resolveProjectRepoPath(studioRoot: string, project: Pick<Project, "repo">, home?: string): string | undefined {
   const raw = project.repo;
   if (!raw) return undefined;
-  const resolved = isAbsolute(raw) ? raw : join(studioRoot, raw);
+  const resolved = resolveProjectRepoPathRaw(studioRoot, raw, home);
   if (!existsSync(join(resolved, ".git"))) return undefined;
   try {
     if (realpathSync(resolved) === realpathSync(studioRoot)) return undefined;
