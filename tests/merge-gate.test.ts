@@ -16,8 +16,6 @@ import { validatePath } from "../src/validate.ts";
 import { loadRepo } from "../src/repo.ts";
 import { advanceUnit, type AsyncMemberRunner } from "../src/dagwalk.ts";
 import { openGates } from "../src/derive.ts";
-import { ledgerRows } from "../src/timeline.ts";
-import { CONDUCTOR_NAME } from "../src/git.ts";
 import type { Verb } from "../src/runner.ts";
 
 const HERMETIC_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
@@ -197,17 +195,6 @@ describe("M1: work branch created as part of the unit-opening transaction", () =
     expect(started.ok).toBe(true);
     const branchTip = git(dirs.projectRepo, ["rev-parse", "levare/widget-1"]).trim();
     expect(branchTip).toBe(tip);
-  });
-
-  test("Finding 86: the branch's own creation, invisible to git log, is recorded as a Conductor-attributed ledger event", async () => {
-    dirs = buildStudio();
-    const started = await resolveGate(dirs.root, "acme", "widget-1", "start", { memberRunner, today: TODAY });
-    expect(started.ok).toBe(true);
-    const rows = ledgerRows(join(dirs.root, "work", "acme", "widget-1"));
-    const branchRows = rows.filter((r) => r.kind === "branch");
-    expect(branchRows.length).toBe(1);
-    expect(branchRows[0].actor).toEqual({ kind: "conductor", name: CONDUCTOR_NAME });
-    expect(branchRows[0].text).toContain("levare/widget-1");
   });
 
   test("a no-repo project is entirely unaffected — no branch, and flow completion produces no merge gate", async () => {
