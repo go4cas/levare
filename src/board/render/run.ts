@@ -75,6 +75,18 @@ function timelineActorAvatar(repo: Repo, actor: TimelineActor): string {
   return "";
 }
 
+// Finding 90 (live-verification fix): the shared "C" avatar above unifies the PERSON, but a hover-only
+// tooltip made a direct git commit and a levare-recorded approval look identical on a page glance —
+// worse than the pre-fix "unknown" row, which was at least visibly blank. This tag is the visible half
+// of that distinction, exported (same convention as scoreNodeClass/scoreLineClass above) so a test can
+// exercise it without a full render fixture. Neutral wording on purpose ("direct", not
+// "unverified"/"manual") — a Conductor hand-editing the registry is ordinary, not irregular; the tag
+// states how the commit happened, it doesn't grade it. Only the exceptional case (`stamped: false`)
+// gets it — the ordinary app-mediated commit stays unmarked.
+export function timelineDirectTag(actor: TimelineActor): string {
+  return actor.kind === "conductor" && actor.stamped === false ? ` <span class="tag" title="committed directly with the Conductor's own git identity, not through levare">direct</span>` : "";
+}
+
 export function renderRun(repo: Repo, project: string, unitId: string, root: string, now: Date = new Date(), running: DaemonInvocation[] = [], status: OrchestratorStatus = resolveOrchestratorStatus()): string {
   const unit = repo.units.find((u) => u.project === project && u.unit === unitId);
   if (!unit) throw new Error(`unknown unit '${project}/${unitId}'`);
@@ -195,7 +207,7 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
           // the natural date/time boundary.
           const dateStr = t.ts.slice(0, 10);
           const timeStr = t.ts.slice(11, 16);
-          return `<div class="tlrow"><span class="tlrow__time mono"><span class="tlrow__date">${esc(dateStr)}</span><span class="tlrow__clock">${esc(timeStr)}</span></span><span class="tlrow__text">${timelineActorAvatar(repo, t.actor)}${t.text}</span></div>`;
+          return `<div class="tlrow"><span class="tlrow__time mono"><span class="tlrow__date">${esc(dateStr)}</span><span class="tlrow__clock">${esc(timeStr)}</span></span><span class="tlrow__text">${timelineActorAvatar(repo, t.actor)}${t.text}${timelineDirectTag(t.actor)}</span></div>`;
         })
         .join("\n")
     : emptyState({ message: "No recorded events yet." });

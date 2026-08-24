@@ -25,10 +25,13 @@ export interface TimelineActor {
   /** Finding 90: for `kind: "conductor"` only — true when this exact commit's author/email IS
    * `git.ts#CONDUCTOR_NAME`/`CONDUCTOR_EMAIL` (levare's own `commitAs`, i.e. an app-mediated action);
    * false when it matched only via a studio-declared `conductor_git_identity` (the same human, but a
-   * commit they made directly with their own git config, outside the app). Unifying the DISPLAY name
-   * must not erase this distinction — see `git.ts#RUNNER_NAME`'s own doc comment on why collapsing "the
-   * app did this" into "a human decided this" would misrepresent git log as a record of human
-   * decisions. Absent for every other kind. */
+   * commit they made directly with their own git config, outside the app). The avatar is what unifies
+   * "same person" (both resolve to the one solid Conductor disc) — `stamped` exists so the render layer
+   * can still mark provenance visibly on top of that shared avatar, never by rewriting `name`. See
+   * `git.ts#RUNNER_NAME`'s own doc comment on why collapsing "the app did this" into "a human decided
+   * this" would misrepresent git log as a record of human decisions — this field, and `name` staying
+   * the raw git author below, are what keep that same conflation from being reached from the other
+   * direction (a human's own direct commit read as if levare recorded it). Absent for every other kind. */
   stamped?: boolean;
 }
 
@@ -36,11 +39,17 @@ export interface TimelineActor {
  * identity shape the app itself produces (`CONDUCTOR_EMAIL`, `RUNNER_EMAIL`, `git.ts#memberIdentity`'s
  * `<member>@levare.local` shape) plus, optionally, the studio's own declared human identity for the
  * Conductor. `unknown` is reserved for a git identity matching none of those — a genuinely unrecognized
- * human, not a member/runner/conductor commit this function merely failed to recognize by name alone. */
+ * human, not a member/runner/conductor commit this function merely failed to recognize by name alone.
+ *
+ * `name` is ALWAYS the raw git author, never the declared identity's name — a timeline built "from git
+ * log" must keep showing what git actually recorded (an earlier version of this function rewrote it,
+ * which silently relabeled a human's own hand-committed edit as if it were levare's `commitAs` output).
+ * "Same person" is conveyed by `kind`/the shared avatar, not by rewriting the text; `stamped` carries
+ * the provenance distinction that rewrite would otherwise have erased. */
 export function resolveGitActor(name: string, email: string, declaredConductor?: { name: string; email: string }): TimelineActor {
-  if (email === CONDUCTOR_EMAIL) return { kind: "conductor", name: declaredConductor?.name ?? name, stamped: true };
+  if (email === CONDUCTOR_EMAIL) return { kind: "conductor", name, stamped: true };
   if (email === RUNNER_EMAIL) return { kind: "runner", name };
-  if (declaredConductor && email === declaredConductor.email) return { kind: "conductor", name: declaredConductor.name, stamped: false };
+  if (declaredConductor && email === declaredConductor.email) return { kind: "conductor", name, stamped: false };
   if (email === `${name}@levare.local`) return { kind: "member", name };
   return { kind: "unknown", name };
 }

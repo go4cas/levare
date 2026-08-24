@@ -1,10 +1,11 @@
 // Finding 90: `cas` (levare's own `commitAs` identity) and the operator's own git identity render as
 // two different actors, with no way for a reader to know they're the same human. `resolveGitActor`
 // (timeline.ts) is the fix — an exhaustive classifier over every identity shape the app itself
-// produces, plus an optional studio-declared human identity for the Conductor that unifies the
-// DISPLAY name without erasing whether levare's own `commitAs` made a given commit (`stamped`) or the
-// Conductor made it directly with their own git config. No dedicated test file existed for timeline.ts
-// before this goal.
+// produces, plus an optional studio-declared human identity for the Conductor. It unifies the PERSON
+// (same `kind`/avatar) without ever rewriting `name` — a first version of this fix rewrote the
+// displayed author to the declared name, which silently relabeled a hand-committed edit as if it were
+// levare's own `commitAs` output (live-verification catch, not caught by the tests before it). No
+// dedicated test file existed for timeline.ts before this goal.
 
 import { test, expect, describe } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
@@ -15,6 +16,7 @@ import { join } from "node:path";
 import { resolveGitActor, gitLogRows } from "../src/timeline.ts";
 import { loadStudioSettings } from "../src/repo.ts";
 import { CONDUCTOR_NAME, CONDUCTOR_EMAIL, RUNNER_NAME, RUNNER_EMAIL } from "../src/git.ts";
+import { timelineDirectTag } from "../src/board/render/run.ts";
 
 const HERMETIC_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
 
@@ -50,11 +52,11 @@ describe("resolveGitActor: Finding 90 exhaustive classification", () => {
     expect(resolveGitActor(CONDUCTOR_NAME, CONDUCTOR_EMAIL)).toEqual({ kind: "conductor", name: CONDUCTOR_NAME, stamped: true });
   });
 
-  test("CONDUCTOR_EMAIL WITH a declared identity → conductor, the declared display name, still stamped", () => {
-    expect(resolveGitActor(CONDUCTOR_NAME, CONDUCTOR_EMAIL, DECLARED)).toEqual({ kind: "conductor", name: DECLARED.name, stamped: true });
+  test("CONDUCTOR_EMAIL WITH a declared identity → still conductor/stamped, but `name` stays the raw git author, never the declared one", () => {
+    expect(resolveGitActor(CONDUCTOR_NAME, CONDUCTOR_EMAIL, DECLARED)).toEqual({ kind: "conductor", name: CONDUCTOR_NAME, stamped: true });
   });
 
-  test("the declared identity's own email (a direct hand-commit) → conductor, unstamped — the sub-signal a bare merge would erase", () => {
+  test("the declared identity's own email (a direct hand-commit) → conductor/unstamped, `name` is the operator's own raw git author", () => {
     expect(resolveGitActor(DECLARED.name, DECLARED.email, DECLARED)).toEqual({ kind: "conductor", name: DECLARED.name, stamped: false });
   });
 
@@ -76,7 +78,7 @@ describe("resolveGitActor: Finding 90 exhaustive classification", () => {
 });
 
 describe("gitLogRows: Finding 90 identity resolution end-to-end", () => {
-  test("an app-mediated (cas) commit and the operator's own direct commit unify to one display name once declared, but stay distinguishable by `stamped`", () => {
+  test("an app-mediated (cas) commit and the operator's own direct commit unify to one PERSON (same kind) once declared, while `name`/text keep showing exactly what git recorded, and `stamped` still tells them apart", () => {
     const root = mkdtempSync(join(tmpdir(), "levare-tl90-studio-"));
     try {
       git(root, ["init", "-q"]);
@@ -95,20 +97,44 @@ describe("gitLogRows: Finding 90 identity resolution end-to-end", () => {
       expect(stampedRow.actor).toEqual({ kind: "conductor", name: CONDUCTOR_NAME, stamped: true });
       expect(directRow.actor.kind).toBe("unknown");
 
-      // With the identity declared: both resolve to the SAME kind and display name...
+      // With the identity declared: both resolve to the SAME kind (one person, one avatar)...
       const declared = gitLogRows(root, unitDir, DECLARED);
       const stampedRow2 = declared.find((r) => r.text.includes("approved via the board"))!;
       const directRow2 = declared.find((r) => r.text.includes("hand-edited directly"))!;
       expect(stampedRow2.actor.kind).toBe("conductor");
       expect(directRow2.actor.kind).toBe("conductor");
-      expect(stampedRow2.actor.name).toBe(DECLARED.name);
+      // ...but the raw git author is NEVER rewritten — the row text still says exactly what git
+      // recorded, "cas" for the app-mediated commit and "go4cas" for the direct one.
+      expect(stampedRow2.actor.name).toBe(CONDUCTOR_NAME);
+      expect(stampedRow2.text).toContain(`<span class="who">${CONDUCTOR_NAME}</span>`);
       expect(directRow2.actor.name).toBe(DECLARED.name);
-      // ...but `stamped` still tells them apart: one went through levare's own commitAs, one didn't.
+      expect(directRow2.text).toContain(`<span class="who">${DECLARED.name}</span>`);
+      // ...and `stamped` still tells them apart: one went through levare's own commitAs, one didn't.
       expect(stampedRow2.actor.stamped).toBe(true);
       expect(directRow2.actor.stamped).toBe(false);
     } finally {
       rmrf(root);
     }
+  });
+});
+
+describe("timelineDirectTag: Finding 90's visible provenance marker (live-verification fix)", () => {
+  test("a direct (unstamped) conductor commit gets the visible tag", () => {
+    expect(timelineDirectTag({ kind: "conductor", name: "go4cas", stamped: false })).toContain(">direct<");
+  });
+
+  test("an app-mediated (stamped) conductor commit — the ordinary case — stays unmarked", () => {
+    expect(timelineDirectTag({ kind: "conductor", name: "cas", stamped: true })).toBe("");
+  });
+
+  test("no tag outside kind: conductor, even if stamped happened to be false", () => {
+    expect(timelineDirectTag({ kind: "member", name: "alex" })).toBe("");
+    expect(timelineDirectTag({ kind: "unknown", name: "random-dev" })).toBe("");
+  });
+
+  test("wording is neutral (\"direct\"), not judgmental (\"unverified\"/\"manual\") — a hand edit is ordinary, not irregular", () => {
+    const tag = timelineDirectTag({ kind: "conductor", name: "go4cas", stamped: false });
+    expect(tag).not.toMatch(/unverified|manual|invalid|suspicious/i);
   });
 });
 
