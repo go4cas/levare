@@ -17255,3 +17255,120 @@ in `tests/adapters.test.ts`, reproducing all three outcomes the goal predicts. `
 could not run either — no `gh` on PATH in this sandbox, the same class of limitation, unrelated to this
 change's own correctness. A run against the real studio, and a real `gh`-backed CI check, settle both if
 either of these is wrong.
+
+# NOTES: DIST8 — release assets ship gzip-compressed
+
+## What this closes
+
+Finding 101: `levare-darwin-arm64` ships at 294MB uncompressed (306/324/327MB for the other three
+platforms), almost all of it the embedded Claude Agent SDK native binary (230MB by itself) — a bare
+`bun build --compile` of levare's own code is 62MB. Conductor ruling, 2026-08-24 session: compress
+the release assets; do not touch the embed. The embed question (fetch-on-first-use, or a two-variant
+install) is deferred, explicitly, to **when someone other than the maintainer has installed levare**
+— today's evidence (`src/init.ts` scaffolds two of three example agents as `kind: native`, every
+artifact in `~/source/jot-studio` came from one) says shrinking the embed would pay off for
+approximately nobody yet. **Named cost, recorded as the ruling required:** compression makes the
+294MB less visible without making the underlying weight smaller — the trigger above, not this unit,
+is where that actual cause gets addressed. Comfort here must not be mistaken for resolution.
+
+## Phase 1 — measured before anything was written
+
+Compressed the host build (arm64 devcontainer, same ~300MB content profile as the darwin-arm64
+asset) with every compressor actually available:
+
+| method | output | ratio | compress | decompress |
+|---|---|---|---|---|
+| gzip -9 | 98.2MB | 3.14x | 29.8s | 2.3s |
+| zstd -19 | 72.3MB | 4.27x | 22.7s | 0.25s |
+| xz -6 | 65.4MB | 4.72x | 21.5s | 2.0s |
+| xz -9 | 58.3MB | 5.29x | 87.7s | 2.2s |
+
+Not a poor ratio by any of these — the ruling stands. **gzip was still the shipped choice despite
+having the worst ratio of the four**, decided in Phase 2 below on portability grounds, not on the
+numbers in this table alone.
+
+## Phase 2 — design decisions
+
+**Compression tool: gzip, not xz/zstd.** `install.sh` decompresses client-side, under whatever `sh` a
+user has, with no package manager assumed — this repo has already shipped one bad tool-availability
+assumption past every check once (`ci.yml`'s own header, macOS `bash` 3.2). gzip/gunzip ships in base
+macOS and every mainstream Linux distribution; `xz` and `zstd` do not (Homebrew-only on macOS). The
+better ratios in the table above are real, but they buy nothing if the install then fails on a stock
+machine for want of a decompressor — gzip is the only one of the four that's actually universal.
+
+**Checksum ordering (Conductor's call, not mine to make — explicitly reserved in the goal):
+checksum the decompressed binary.** `verify_checksum` already ran before `chmod +x`/`mv`; this
+preserves that exact guarantee — the checksum still covers precisely the bytes about to be executed,
+not merely the bytes that arrived over the wire. `SHA256SUMS` is unchanged in format: it lists the
+raw (uncompressed) binary's hash under the raw asset name, exactly as before compression existed.
+Checksumming the compressed download instead was the other option on the table (verifies transfer
+integrity, not what runs — a decompressor bug or corruption between decompress and exec would go
+uncaught) — rejected.
+
+**`install.sh`:** tries `$asset.gz` first; a failed download of the compressed name (404 on any
+pre-DIST8 release) falls back silently to `$asset` raw — only failure of *both* is fatal. `curl | sh`
+always fetches this script fresh from `main`, so it's a *current* script that must still install a
+release *pinned* (via `LEVARE_VERSION`) to before DIST8, which never published a `.gz` at all.
+Decompression is its own step (`decompress_gzip`), deliberately separated from checksum verification
+so the three real failure modes are diagnosed distinctly rather than folded into one generic error:
+download failure (names both attempted filenames), decompression failure (corrupt/truncated download
+— "the download is likely corrupt or truncated", not a raw `gzip: unexpected end of file`), and
+checksum failure (unchanged message, now truthfully reported *after* decompression). A real bug
+surfaced writing this: `decompress_gzip`'s own `dest` parameter clobbered the outer script's global
+`dest="$bin_dir/levare"` — POSIX `sh` functions have no variable scoping, so a same-named local turned
+the final `mv` into `mv X X`. Fixed by prefixing the function's own variables (`gz_src`, `gz_dest`,
+`gz_scratch_dir`); caught by the test suite below, not by inspection.
+
+**`release.yml`:** the build job still smoke-tests the raw binary (version stamp, embed check) before
+compressing it — compression is the last build step, after everything that needs real executable
+bytes. The release job decompresses each `.gz` into a scratch dir to compute `SHA256SUMS` via
+`sha256sum`'s own native output format (not hand-built), matching the raw-asset-name convention
+`install.sh` expects on both the compressed and any pre-DIST8 fallback path.
+
+**Docs:** `docs/guide/02-quickstart.md`'s manual-install path now names the `.gz` assets and inserts
+a `gunzip` step before the existing `sha256sum -c SHA256SUMS` line — same order as `install.sh`.
+
+## Tests
+
+`tests/install-script.test.ts` — `writeAsset` now produces a real gzip-compressed fixture (via
+`node:zlib`'s `gzipSync`) with `SHA256SUMS` keyed to the decompressed content, matching what a real
+release now looks like; the pre-DIST8 raw shape moved to a new `writeRawAsset` helper, used only where
+that shape is the point. New `describe("falling back to a pre-compression release (NOTES DIST8)")`:
+installs successfully from a release with no `.gz` at all (the pinning-transition regression this unit
+exists to prevent), a truncated-real-gzip-bytes fixture that must report decompression failure and
+must NOT say "checksum verification failed" (proving the three failure modes stay distinguishable),
+and a compressed release with a deliberately wrong checksum that must still refuse the install.
+`tests/release-workflow.test.ts` — new assertions that a `gzip` compression step exists in the build
+job before the upload-artifact step, that the uploaded artifact is named/pathed `.gz`, and that the
+quickstart doc's `gunzip` line precedes its `sha256sum -c SHA256SUMS` line.
+
+## Standing question (Finding 99's ruling)
+
+Does this invalidate artifacts written by an older binary? **No.** This is a distribution/transport
+change only — how the `levare` binary itself is packaged and fetched. It has zero effect on runtime
+behavior, on-disk artifact formats, or anything a previously-installed binary already wrote.
+
+## Verification
+
+`bun test` → 1625 pass, 9 skip, 0 fail across 112 files (install-script.test.ts and
+release-workflow.test.ts both included; +7 new tests between them). `bunx tsc --noEmit` clean.
+`bun run deps:check` → `deps ok`.
+
+**Real end-to-end install**, not a fixture stub: built an actual host-native binary
+(`scripts/build.sh`, no target — this arm64 devcontainer), gzip-compressed it, generated a real
+`SHA256SUMS` against it exactly as the release job now does, then ran the actual, unmodified
+`scripts/install.sh` (via the same `LEVARE_RELEASE_BASE_URL=file://...` seam the test suite uses —
+`curl | sh` against a live GitHub Release could not be exercised from here; no tag has been pushed,
+and cutting one is not this unit's call to make unprompted). Real `curl` fetched the `.gz`, real
+`gzip -dc` decompressed it, real `sha256sum -c` verified it, `chmod +x`/`mv` installed it, and
+`levare --version` on the produced binary printed `levare dev (build 5aca987)` — exit 0 throughout.
+This is also what caught the `dest`-clobbering bug above (the fixture-based unit tests would have
+caught it too — they did, once written — but this was the run where it was first seen).
+
+`bun run verify:head` could not be made to pass from here — not the same limitation as the entry
+immediately above this one (no `gh` at all): this session has outbound network access, and `gh`
+installs cleanly (`apt-get install gh`, confirmed working). What's actually missing is (a) `gh auth`
+— no GitHub credentials are available in this sandbox to log in — and (b), more fundamentally, that
+the check asks whether CI already ran against a specific pushed commit, and nothing from this branch
+has been pushed. Pushing this branch is a separate call, not this unit's to make unprompted (see the
+main thread).
