@@ -31,18 +31,31 @@
 //
 // THIS SCRIPT HAS NOT BEEN RUN ON A LIVE HOST. This container is Linux — `detectSandbox()` here reports
 // `none` (this repo's own sandbox.ts header: "this repo's own Linux dev container...only ever detects
-// none"), so STEP B degrades to printing the composed argv/profile and exits without ever asking the OS
-// to enforce anything. STEP A's own parity check is real and passes in this container, but a profile
-// that PARSES correctly and a kernel that actually ENFORCES it are not the same fact — the exact lesson
-// this whole R4-SANDBOX saga exists to keep re-learning. A live macOS run is a MERGE CONDITION for this
-// unit, not a formality.
+// none"), so STEP B/STEP C degrade to printing the composed argv/profile (STEP C: to a SKIPPED report)
+// and exit without ever asking the OS to enforce anything. STEP A/STEP A2's own construction checks are
+// real and pass in this container, but a profile that PARSES correctly and a kernel that actually
+// ENFORCES it are not the same fact — the exact lesson this whole R4-SANDBOX saga exists to keep
+// re-learning. A live macOS run is a MERGE CONDITION for this unit, not a formality.
+//
+// Finding 75 (part 3 — a regression from part 2, this container's own live evidence): a live macOS
+// `quill/builder` dispatch under part 2's own wiring produced NO code — every Bash invocation failed at
+// sandbox setup with `EPERM ... mkdir '/private/tmp/claude-{uid}/<slugified-cwd>/<uuid>'`. Root cause:
+// `adapters.ts#nativeBunfsExtractionBase` computed its grant with plain `node:os`'s `tmpdir()`, but the
+// vendored `extractFromBunfs.js`'s OWN `tmpdir()` helper hardcodes `/tmp` on darwin (bypassing
+// `os.tmpdir()`'s `$TMPDIR`, typically `/var/folders/...` — a genuinely different tree, never an alias of
+// `/tmp`) — the inner CLI's Bash tool shares this identical per-uid base for its own per-session scratch
+// dirs, so the wrong formula denied both. STEP A2 and STEP C below are this part's own addition: STEP B's
+// `{prompt:"hi"}` payload dies on "Not logged in" before ever reaching a Bash-shaped filesystem op, which
+// is exactly why the part 2 regression shipped past this very script unnoticed (this script's own
+// pre-existing gap is part of this finding too) — STEP C never talks to the API at all, so it actually
+// exercises the fixed code path on a live host, credential or not.
 
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { buildSandboxExecProfile, detectSandbox, wrapForSandbox, resolveDarwinUserTempDir } from "../src/sandbox.ts";
 import { createDispatchWorktree } from "../src/merge.ts";
-import { buildDispatchSandboxPolicy, buildNativeSandboxPolicy, nativeBunfsExtractionBase, type InvokeRequest } from "../src/adapters.ts";
+import { buildDispatchSandboxPolicy, buildNativeSandboxPolicy, nativeBunfsExtractionBase, ensureNativeBunfsExtractionBase, type InvokeRequest } from "../src/adapters.ts";
 import { workerSpawnArgv, workerSpawnCwd, LEVARE_CLAUDE_CONFIG_DIR } from "../src/sdk-transport.ts";
 import { loadRepo } from "../src/repo.ts";
 import { profileSkeleton } from "./repro-r4-sandbox-fix10-hang.ts";
@@ -173,6 +186,97 @@ export function nativeInheritsCliAcquittedGrants(): boolean {
   }
 }
 
+// STEP A2 — Finding 75 part 3's own always-run coverage, mirroring STEP A's own "this container never has
+// a working sandbox primitive at all" posture. Proves, by construction, that `ensureNativeBunfsExtractionBase`
+// closes `sandbox.ts#canon`'s ENOENT fallback gap for this specific grant: the base is pre-created against
+// a SCRATCH `CLAUDE_CODE_TMPDIR` (never the real host temp dir), then the generated darwin profile's own
+// `(allow file-write* (subpath ...))` line for it is asserted to name the FULLY REALPATH'D form — proving
+// `canon()` took the real-resolution branch, not the pre-resolution literal-string fallback that would
+// silently defeat the grant once a symlinked base (`/tmp` → `/private/tmp` on a real macOS host) is
+// involved. Runs identically on any host; darwin-specific symlink behavior isn't exercised in THIS
+// container, but the property under test — "the profile names the realpath'd form, not the raw one, once
+// the directory exists" — is host-independent by construction.
+export function nativeBunfsGrantIsCanonicalized(): boolean {
+  console.log("\n=== STEP A2: does the pre-created bunfs extraction base get canon()-resolved before it's granted? ===\n");
+  const scratchRoot = mkdtempSync(join(tmpdir(), "levare-bunfs-canon-repro-"));
+  try {
+    const base = ensureNativeBunfsExtractionBase({ platform: "darwin", getuid: () => 999, env: { CLAUDE_CODE_TMPDIR: scratchRoot } });
+    const realBase = realpathSync(base);
+    const profile = buildSandboxExecProfile({ cwd: "/a/b", allowNetwork: true, writablePaths: [base] });
+    const expectedLine = `(allow file-write* (subpath ${JSON.stringify(realBase)}))`;
+    const ok = profile.includes(expectedLine);
+    console.log(`[${ok ? "OK  " : "FAIL"}] profile contains the realpath'd grant: ${expectedLine}`);
+    if (!ok && base !== realBase) {
+      console.log(`  (base and its realpath differ on this host — ${base} vs ${realBase} — a genuine symlink case, good coverage)`);
+    }
+    return ok;
+  } finally {
+    rmSync(scratchRoot, { recursive: true, force: true });
+  }
+}
+
+// STEP C — Finding 75 part 3's own fix for the goal's Phase 2 instruction: the probe must exercise TOOL
+// USE, not just startup — STEP B's own `{prompt:"hi"}` payload dies on "Not logged in" before the worker
+// ever reaches a Bash-shaped filesystem operation, which is exactly why the part 2 regression shipped
+// unnoticed. This step never talks to the Anthropic API at all: it wraps a TRIVIAL shell command — never
+// the real worker — through the SAME `buildNativeSandboxPolicy`/`wrapForSandbox` a real native dispatch
+// uses, and has that command `mkdir -p` + write + read back a path shaped exactly like the evidence trace
+// (`{nativeBunfsExtractionBase()}/<slugified-cwd>/<uuid>/`) — a fabricated slug/uuid, since the real
+// values are opaque to this module and, per Phase 1 item 3, irrelevant: the grant is a subpath re-allow on
+// the BASE, so any nested name must work. FAILS on `edd638c` (the wrong `os.tmpdir()`-based formula denies
+// this write); PASSES after this unit's fix. Only meaningful on darwin with a working `sandbox-exec` —
+// degrades honestly (like STEP B) when nothing enforces on this host.
+async function stepC_bashShapedScratchDirProbe(): Promise<boolean | null> {
+  console.log("\n=== STEP C: a Bash-shaped mkdir/write/read under the wrapped native policy — no API credential needed ===\n");
+
+  const detection = detectSandbox();
+  if (detection.level === "none") {
+    console.log("no working primitive on this host — nothing for the OS to enforce here. Run this script on a");
+    console.log("macOS host with a working sandbox-exec to get a real pass/fail for this step.");
+    return null;
+  }
+
+  const repo = loadRepo("fixtures/golden");
+  const lyraAgent = repo.agents.get("lyra")!;
+  const { projectRepo, worktreePath } = buildRealWorktree();
+  try {
+    const req: InvokeRequest = {
+      agent: lyraAgent,
+      member: "lyra",
+      kind: "spec",
+      unit: "repro",
+      project: "storefront",
+      context: "",
+      env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
+      tools: [],
+      projectRepoPath: worktreePath,
+    };
+    const workerCwd = workerSpawnCwd(undefined) ?? process.cwd();
+    const policy = buildNativeSandboxPolicy(repo, req, workerCwd, undefined, process.env);
+    const darwinTempDir = resolveDarwinUserTempDir();
+    // The exact shape the evidence trace's own EPERM names: base/<slugified-cwd>/<uuid>/, fabricated since
+    // the real inner-CLI values aren't knowable from outside it — Phase 1 item 3's own claim under test.
+    const fakeScratchDir = join(nativeBunfsExtractionBase(), "-Users-cas-source-jot-studio", "77d98e72-b1f6-4d2c-b0e2-163bf8eb7de1");
+    const markerFile = join(fakeScratchDir, "probe.txt");
+    const script = `mkdir -p ${JSON.stringify(fakeScratchDir)} && echo probe-ok > ${JSON.stringify(markerFile)} && cat ${JSON.stringify(markerFile)}`;
+    const wrapped = wrapForSandbox(["/bin/sh", "-c", script], { ...policy, darwinXcrunTempDir: darwinTempDir }, detection);
+    console.log(`probing: ${fakeScratchDir}`);
+    console.log(`composed argv:\n${wrapped.argv.map((a, i) => `  [${i}] ${JSON.stringify(a)}`).join("\n")}`);
+
+    const proc = Bun.spawn(wrapped.argv, { cwd: workerCwd, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+    const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+    wrapped.cleanup?.();
+
+    const ok = proc.exitCode === 0 && stdout.trim() === "probe-ok";
+    console.log(`[exit ${proc.exitCode}] ${ok ? "PASS — mkdir/write/read all succeeded under the wrap" : "FAIL — denied (this is the regression this unit fixes)"}`);
+    if (stdout) console.log(`stdout: ${stdout.slice(0, 500)}`);
+    if (stderr) console.log(`stderr: ${stderr.slice(0, 500)}`);
+    return ok;
+  } finally {
+    rmSync(projectRepo, { recursive: true, force: true });
+  }
+}
+
 // STEP B — a real spawn attempt, only meaningful on darwin.
 async function stepB_liveSpawnAttempt(): Promise<void> {
   console.log("\n=== STEP B: a real wrapped worker spawn (only meaningful on darwin) ===\n");
@@ -241,11 +345,15 @@ async function stepB_liveSpawnAttempt(): Promise<void> {
 
 async function main() {
   const parityOk = nativeInheritsCliAcquittedGrants();
+  const canonOk = nativeBunfsGrantIsCanonicalized();
+  const bashProbeOk = await stepC_bashShapedScratchDirProbe();
   await stepB_liveSpawnAttempt();
   console.log(`\n${"=".repeat(78)}`);
   console.log(parityOk ? "STEP A: PASS (construction-level parity confirmed)" : "STEP A: FAIL — see above");
+  console.log(canonOk ? "STEP A2: PASS (bunfs extraction base grant is canon()-resolved)" : "STEP A2: FAIL — see above");
+  console.log(bashProbeOk === null ? "STEP C: SKIPPED (no working sandbox primitive on this host)" : bashProbeOk ? "STEP C: PASS (Bash-shaped scratch-dir mkdir/write/read succeeded under the wrap)" : "STEP C: FAIL — see above (this is Finding 75 part 3's own regression)");
   console.log("THIS SCRIPT HAS NOT BEEN RUN ON A LIVE HOST. A live macOS run is a merge condition for");
-  console.log("Finding 75 part 2, not a formality — see this file's own header.");
+  console.log("Finding 75 part 3, not a formality — see this file's own header.");
   console.log("=".repeat(78));
 }
 

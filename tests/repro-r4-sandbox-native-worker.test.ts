@@ -6,7 +6,7 @@
 // pure helpers directly rather than only ever running the script by hand.
 
 import { describe, expect, test } from "bun:test";
-import { nativeInheritsCliAcquittedGrants, CLI_ACQUITTED_LINES } from "../scripts/repro-r4-sandbox-native-worker.ts";
+import { nativeInheritsCliAcquittedGrants, nativeBunfsGrantIsCanonicalized, CLI_ACQUITTED_LINES } from "../scripts/repro-r4-sandbox-native-worker.ts";
 
 describe("nativeInheritsCliAcquittedGrants — the native worker's profile carries every one of cli's six already-acquitted grants", () => {
   test("passes — every acquitted line is present, byte-identical, in both the cli-shaped and native-shaped generated profiles", () => {
@@ -30,5 +30,21 @@ describe("nativeInheritsCliAcquittedGrants — the native worker's profile carri
       '(allow mach-lookup (global-name "com.apple.SecurityServer"))',
       "(allow network*)",
     ]);
+  });
+});
+
+// Finding 75 (part 3): always-run coverage of STEP A2 — proves `ensureNativeBunfsExtractionBase`'s
+// pre-creation actually closes `sandbox.ts#canon`'s ENOENT fallback gap for this specific grant, against
+// a scratch `CLAUDE_CODE_TMPDIR` never the real host temp dir. Construction-only, like STEP A's own
+// always-run test — real darwin symlink enforcement still needs the live host STEP C exercises.
+describe("nativeBunfsGrantIsCanonicalized — the pre-created bunfs extraction base is realpath-resolved before it's granted", () => {
+  test("passes — the generated profile names the realpath'd form, not the pre-resolution literal", () => {
+    const originalLog = console.log;
+    console.log = () => {};
+    try {
+      expect(nativeBunfsGrantIsCanonicalized()).toBe(true);
+    } finally {
+      console.log = originalLog;
+    }
   });
 });
