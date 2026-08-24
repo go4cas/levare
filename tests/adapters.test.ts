@@ -8,7 +8,22 @@ import { loadRepo } from "../src/repo.ts";
 import type { Repo } from "../src/repo.ts";
 import { assembleContext } from "../src/context.ts";
 import { loadPricing } from "../src/pricing.ts";
-import { AdapterRunner, AdapterError, createAsyncStdioRemoteBoundary, buildRemoteSandboxPolicy, NATIVE_SANDBOX_REASON, type CliSpawn, type InvokeRequest, type NativeBoundary, type RemoteBoundary, type SpawnResult } from "../src/adapters.ts";
+import {
+  AdapterRunner,
+  AdapterError,
+  createAsyncStdioRemoteBoundary,
+  createSdkNativeBoundary,
+  createAsyncSdkNativeBoundary,
+  buildRemoteSandboxPolicy,
+  buildNativeSandboxPolicy,
+  nativeBunfsExtractionBase,
+  type CliSpawn,
+  type InvokeRequest,
+  type NativeBoundary,
+  type RemoteBoundary,
+  type SpawnResult,
+} from "../src/adapters.ts";
+import type { SdkTransport, AsyncSdkTransport } from "../src/sdk-transport.ts";
 import { validateArtifactSource } from "../src/validate.ts";
 import { connectStdioMcpServer } from "../src/mcp-client.ts";
 import type { Agent, Connector } from "../src/types.ts";
@@ -719,6 +734,191 @@ describe("F17: a CLI member's own reported tokens are parsed, never discarded, a
     expect(receipt.unreported).toBe(true);
     expect(receipt.plan).toBeUndefined();
     expect(doc).not.toContain("usage:");
+  });
+});
+
+// Finding 75 (part 2, 2026-08-24): the sandbox mechanism is wired onto kind: native — the SDK worker's
+// own OS-level self-invocation spawn is now wrapped exactly like a `cli` member's spawn (Ruling 2) or an
+// implemented `remote` member's spawn (ruling R3). These tests never spawn a real worker (the actual
+// SDK/network call is out of scope for `bun test`, and none of these need it): a FAKE `transport`
+// stands in for the real `bunSdkTransport`/`asyncSdkTransport`, calling `opts.wrapWorkerSpawn` exactly
+// as the real one does (see sdk-transport.ts's own createBunSdkTransport/createAsyncSdkTransport) so
+// this describe block proves adapters.ts's OWN wiring — repo → policy → detection → wrapForSandbox →
+// the reported `sandbox` level — independent of the transport's own real-spawn plumbing (which
+// tests/sdk-transport-hermetic.test.ts covers separately).
+describe("native adapter — sandboxed real spawn (Finding 75, part 2)", () => {
+  test("createSdkNativeBoundary wraps the worker argv via wrapWorkerSpawn when repo is supplied, and reports the resulting level on the produced doc", () => {
+    const repo = loadRepo(ROOT);
+    const agent = repo.agents.get("lyra")!;
+    let seenWrappedArgv: string[] | undefined;
+    let seenRawArgv: string[] | undefined;
+    let seenCwd: string | undefined;
+    const transport: SdkTransport = {
+      run(_req, opts) {
+        seenRawArgv = ["bun", "cli.ts", "__worker"];
+        seenCwd = "/fake/worker/cwd";
+        const wrapped = opts.wrapWorkerSpawn?.(seenRawArgv, seenCwd);
+        seenWrappedArgv = wrapped?.argv;
+        wrapped?.cleanup?.();
+        return { ok: true, result: "native output" };
+      },
+    };
+    const boundary = createSdkNativeBoundary({
+      transport,
+      repo,
+      sandboxDetection: { platform: "linux", primitive: "bubblewrap", level: "full", bin: fakeWorkingPrimitive() },
+    });
+    const { doc, sandbox } = boundary.invoke(baseReq(agent, { agent, projectRepoPath: "/fake/worktree" }));
+    expect(sandbox).toBe("full");
+    expect(doc).toBe("native output");
+    // Genuinely composed bwrap argv (sandbox.ts#bubblewrapArgv), not a stand-in object — and the
+    // dispatch worktree (distinct from the worker's own OS-level spawn cwd, "/fake/worker/cwd") is
+    // granted its own read-write bind, exactly the cwd-vs-worktree distinction this unit's own goal names.
+    expect(seenWrappedArgv).toBeDefined();
+    expect(seenWrappedArgv).toContain("--tmpfs");
+    expect(seenWrappedArgv).toContain("--die-with-parent");
+    expect(seenWrappedArgv).toContain("/fake/worktree");
+    expect(seenWrappedArgv![seenWrappedArgv!.length - 1]).toBe("__worker");
+    expect(seenRawArgv).toEqual(["bun", "cli.ts", "__worker"]); // the wrap never mutates the input in place
+  });
+
+  test("no repo supplied → the transport is never even offered a wrapWorkerSpawn — the pre-this-unit behaviour, unchanged", () => {
+    const repo = loadRepo(ROOT);
+    const agent = repo.agents.get("lyra")!;
+    let sawWrap: boolean | undefined;
+    const transport: SdkTransport = {
+      run(_req, opts) {
+        sawWrap = opts.wrapWorkerSpawn !== undefined;
+        return { ok: true, result: "native output" };
+      },
+    };
+    const boundary = createSdkNativeBoundary({ transport });
+    const { doc, sandbox } = boundary.invoke(baseReq(agent, { agent }));
+    expect(sawWrap).toBe(false);
+    expect(sandbox).toBeUndefined();
+    expect(doc).toBe("native output");
+  });
+
+  test("the async boundary mirrors the sync one exactly", async () => {
+    const repo = loadRepo(ROOT);
+    const agent = repo.agents.get("lyra")!;
+    let seenWrappedArgv: string[] | undefined;
+    const transport: AsyncSdkTransport = {
+      async run(_req, opts) {
+        const wrapped = opts.wrapWorkerSpawn?.(["bun", "cli.ts", "__worker"], "/fake/worker/cwd");
+        seenWrappedArgv = wrapped?.argv;
+        wrapped?.cleanup?.();
+        return { ok: true, result: "async native output" };
+      },
+    };
+    const boundary = createAsyncSdkNativeBoundary({
+      transport,
+      repo,
+      sandboxDetection: { platform: "linux", primitive: "bubblewrap", level: "full", bin: fakeWorkingPrimitive() },
+    });
+    const { doc, sandbox } = await boundary.invoke(baseReq(agent, { agent }));
+    expect(sandbox).toBe("full");
+    expect(doc).toBe("async native output");
+    expect(seenWrappedArgv).toContain("--tmpfs");
+  });
+
+  test("a host with no working primitive reports 'none' — never left unwrapped-and-silent", () => {
+    const repo = loadRepo(ROOT);
+    const agent = repo.agents.get("lyra")!;
+    const transport: SdkTransport = {
+      run(_req, opts) {
+        opts.wrapWorkerSpawn?.(["bun", "cli.ts", "__worker"], "/fake/worker/cwd");
+        return { ok: true, result: "native output" };
+      },
+    };
+    const boundary = createSdkNativeBoundary({ transport, repo, sandboxDetection: { platform: "linux", primitive: "none", level: "none" } });
+    const { sandbox } = boundary.invoke(baseReq(agent, { agent }));
+    expect(sandbox).toBe("none");
+  });
+
+  // The goal's own item 3: never gated on `memberNetworkAllowed` the way a `cli` member's network reach
+  // is — every native dispatch calls the Anthropic API to do its one job.
+  test("allowNetwork is unconditionally true, even for a member holding no granted connectors at all", () => {
+    const repo = loadRepo(ROOT);
+    const agent = repo.agents.get("lyra")!;
+    const req = baseReq(agent, { agent, member: agent.name });
+    const policy = buildNativeSandboxPolicy(repo, req, "/fake/worker/cwd", undefined);
+    expect(policy.allowNetwork).toBe(true);
+  });
+
+  describe("buildNativeSandboxPolicy — the cwd-vs-worktree distinction and the two new grants (goal items 1/2)", () => {
+    function policyReq(overrides: Partial<InvokeRequest> = {}): { repo: Repo; req: InvokeRequest } {
+      const repo = loadRepo(ROOT);
+      const agent = repo.agents.get("lyra")!;
+      return { repo, req: baseReq(agent, { agent, ...overrides }) };
+    }
+
+    test("policy.cwd is the WORKER's own spawn cwd, never silently swapped for the worktree", () => {
+      const { repo, req } = policyReq({ projectRepoPath: "/dispatch/worktree" });
+      const policy = buildNativeSandboxPolicy(repo, req, "/worker/spawn/cwd", undefined);
+      expect(policy.cwd).toBe("/worker/spawn/cwd");
+    });
+
+    test("the dispatch worktree gets its OWN explicit read-write grant, independent of cwd", () => {
+      const { repo, req } = policyReq({ projectRepoPath: "/dispatch/worktree" });
+      const policy = buildNativeSandboxPolicy(repo, req, "/worker/spawn/cwd", undefined);
+      expect(policy.writablePaths).toContain("/dispatch/worktree");
+    });
+
+    test("no worktree this dispatch (no real local checkout) → no worktree entry, no crash", () => {
+      const { repo, req } = policyReq({ projectRepoPath: undefined });
+      const policy = buildNativeSandboxPolicy(repo, req, "/worker/spawn/cwd", undefined);
+      expect(policy.writablePaths).not.toContain(undefined);
+      expect(policy.writablePaths!.length).toBeGreaterThan(0); // LEVARE_CLAUDE_CONFIG_DIR is still there
+    });
+
+    // The one degenerate case where cwd and the worktree coincide: never double-granted.
+    test("a worktree that happens to equal cwd is not duplicated into writablePaths", () => {
+      const { repo, req } = policyReq({ projectRepoPath: "/same/path" });
+      const policy = buildNativeSandboxPolicy(repo, req, "/same/path", undefined);
+      expect(policy.writablePaths!.filter((p) => p === "/same/path").length).toBe(0);
+    });
+
+    test("LEVARE_CLAUDE_CONFIG_DIR is always granted read-write, on every run mode", () => {
+      const { repo, req } = policyReq();
+      const policy = buildNativeSandboxPolicy(repo, req, "/worker/spawn/cwd", undefined);
+      expect(policy.writablePaths!.some((p) => p.includes("levare-sdk-config"))).toBe(true);
+    });
+
+    // Goal item 1's other half — the bunfs extraction target — is compiled-build-only; this container's
+    // own `bun test` run is never compiled (isCompiledBuild() reads a build-time `--define` stamp that
+    // only `bun build --compile` sets), so it's proven absent here and covered directly by
+    // `nativeBunfsExtractionBase`'s own dedicated unit tests below instead of faking a compiled build.
+    test("the bunfs extraction base is absent from a source (non-compiled) run", () => {
+      const { repo, req } = policyReq();
+      const policy = buildNativeSandboxPolicy(repo, req, "/worker/spawn/cwd", undefined);
+      expect(policy.writablePaths!.some((p) => p.includes("claude-"))).toBe(false);
+    });
+
+    test("a source-mode resolved native binary path grants its own install tree read-only, exactly like a cli member's resolved argv[0]", () => {
+      const { repo, req } = policyReq();
+      const policy = buildNativeSandboxPolicy(repo, req, "/worker/spawn/cwd", "/resolved/claude-agent-sdk/bin/claude");
+      expect(policy.readOnlyPaths).toContain("/resolved/claude-agent-sdk/bin");
+      expect(policy.readOnlyPaths).toContain("/resolved/claude-agent-sdk");
+    });
+
+    test("the dispatch git-write grant threads through exactly like a cli member's", () => {
+      const grant = { root: "/repo/.git", subpaths: ["/repo/.git/objects", "/repo/.git/refs"] };
+      const { repo, req } = policyReq({ dispatchGitWriteGrant: grant, projectRepoPath: "/dispatch/worktree" });
+      const policy = buildNativeSandboxPolicy(repo, req, "/worker/spawn/cwd", undefined);
+      expect(policy.gitWriteGrant).toEqual(grant);
+      expect(policy.writablePaths).toEqual(expect.arrayContaining(grant.subpaths));
+    });
+  });
+
+  describe("nativeBunfsExtractionBase — the per-uid extraction target formula (goal item 1)", () => {
+    test("POSIX: {tmpdir()}/claude-{uid}, mirroring the vendored extractFromBunfs.js exactly", () => {
+      expect(nativeBunfsExtractionBase({ platform: "linux", getuid: () => 501 })).toBe(join(tmpdir(), "claude-501"));
+    });
+
+    test("win32: {tmpdir()}/claude — no per-uid suffix (the vendored file's own documented exception)", () => {
+      expect(nativeBunfsExtractionBase({ platform: "win32", getuid: () => 501 })).toBe(join(tmpdir(), "claude"));
+    });
   });
 });
 
@@ -2542,12 +2742,12 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
     }
   });
 
-  // Finding 75 (part 1, 2026-08-24): superseded — `native` used to be lumped in with `remote`'s own
-  // "mocked boundary, never wrapped" absence, but that conflated two different facts. `remote` (via the
-  // sync, mocked `RemoteBoundary` `produce()` exercises here) really does carry no sandbox line, because
-  // no real spawn boundary ran at all. `native` is different: levare's sandbox mechanism is never CALLED
-  // for this kind on any host (not "no process to wrap" — see adapters.ts#author's own doc), and that gap
-  // is now told on every native artifact rather than silently absent — see the two tests below.
+  // Finding 75 (part 2, 2026-08-24): `native` is no longer a special case here — its sandbox mechanism
+  // IS wired now (adapters.ts#createSdkNativeBoundary/createAsyncSdkNativeBoundary), so it follows the
+  // exact same rule `cli`/`remote` always did: a sandbox line is stamped only when the boundary that
+  // actually ran reported a level. `nativeMock`/`remoteMock` (this describe block's own mocked doubles)
+  // never wrap anything, so neither carries one — see the dedicated "native adapter — sandboxed real
+  // spawn" describe block below for the real-boundary case.
   test("a mocked remote member's sync produce() never carries a sandbox level — no real spawn boundary ran", () => {
     const repo = loadRepo(ROOT);
     // Synthesize a remote agent by cloning lyra's def with kind swapped, and enrol it in the team so
@@ -2560,17 +2760,12 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
     expect(doc).not.toContain("sandbox:");
   });
 
-  test("a native member always carries sandbox: not-wrapped + the fixed sandbox_reason — levare's sandbox mechanism is never called for this kind, on any host", () => {
+  test("a mocked native member's sync produce() never carries a sandbox level either — same rule as cli/remote", () => {
     const repo = loadRepo(ROOT);
     const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native: nativeMock, remote: remoteMock });
     const { doc } = runner.produce("lyra", "spec", "checkout-flow", "storefront");
-    expect(doc).toContain("sandbox: not-wrapped");
-    expect(doc).toContain(`sandbox_reason: ${NATIVE_SANDBOX_REASON}`);
-  });
-
-  test("the native sandbox_reason names levare's own gap, not a host capability — no 'tried'/'found'/'primitive' vocabulary that would suggest installing bubblewrap fixes it", () => {
-    expect(NATIVE_SANDBOX_REASON).not.toMatch(/tried|found|primitive|unavailable/i);
-    expect(NATIVE_SANDBOX_REASON).toMatch(/never wrapped/i);
+    expect(doc).not.toContain("sandbox:");
+    expect(doc).not.toContain("sandbox_reason:");
   });
 
   test("an injected (test-double) CliSpawn never gets its argv wrapped — sandboxing only ever touches the real spawn boundary", () => {

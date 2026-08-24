@@ -1245,7 +1245,10 @@ describe("validate.ts: SANDBOX_UNAVAILABLE (NOTES R4-SANDBOX, sibling to CLI_TOO
     }
   });
 
-  test("a native agent never carries this warning — Ruling 2 wraps only cli spawns", () => {
+  // Finding 75 (part 2, 2026-08-24): superseded — a native member's spawn IS wrapped now
+  // (adapters.ts#createSdkNativeBoundary/createAsyncSdkNativeBoundary), so it carries this warning
+  // exactly like a cli/implemented-remote agent when the host has nothing working.
+  test("a native agent DOES carry this warning now — Finding 75 part 2 wires the wrap onto kind: native too", () => {
     const dir = mkdtempSync(join(tmpdir(), "levare-sandbox-warn-native-"));
     try {
       mkdirSync(join(dir, "agents"), { recursive: true });
@@ -1254,7 +1257,9 @@ describe("validate.ts: SANDBOX_UNAVAILABLE (NOTES R4-SANDBOX, sibling to CLI_TOO
         ["---", "name: lyra", "kind: native", "produces: [spec]", "model: claude-sonnet-5", "style:", "  avatar: Ly", "---", "", "A native member.", ""].join("\n"),
       );
       const r = validatePath(dir, undefined, NONE);
-      expect(r.warnings.map((w) => w.code)).not.toContain("SANDBOX_UNAVAILABLE");
+      expect(r.warnings.map((w) => w.code)).toContain("SANDBOX_UNAVAILABLE");
+      const w = r.warnings.find((w) => w.code === "SANDBOX_UNAVAILABLE")!;
+      expect(w.message).toContain("lyra");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1405,64 +1410,14 @@ describe("doctor.ts: sandbox status line + the sibling warning (NOTES R4-SANDBOX
     });
   });
 
-  // Follow-up to Finding 75 (part 1, 2026-08-24): ONE line, NESTED directly under the `sandbox:` status
-  // line it qualifies (unlike `unsandboxedAgents` above, which is intentionally independent of
-  // `sandbox`) — naming every kind: native member. Collapsed from one ~250-char paragraph PER member,
-  // which read as N problems when it was one fact and buried doctor's own actually-actionable warnings
-  // (missing credentials) below the fold.
-  describe("nativeAgents — a kind: native member's missing sandbox, told once, nested under sandbox: (Finding 75, part 1 follow-up)", () => {
-    test("names every affected member in ONE line, even on a host WITH a working primitive", () => {
-      const out = formatDoctor([], undefined, undefined, undefined, undefined, undefined, FULL, ["finch"], undefined, ["lyra", "wren"]);
-      const nativeLines = out.split("\n").filter((l) => l.includes("never wrapped by this sandbox"));
-      expect(nativeLines.length).toBe(1);
-      expect(nativeLines[0]).toContain("2 native members");
-      expect(nativeLines[0]).toContain("lyra");
-      expect(nativeLines[0]).toContain("wren");
-    });
-
-    // Nested directly under the sandbox: status line — the immediately preceding line in the output —
-    // rather than printed as an independent, unattached block elsewhere in the report.
-    test("prints immediately after the sandbox: status line, not detached from it", () => {
-      const out = formatDoctor([], undefined, undefined, undefined, undefined, undefined, FULL, ["finch"], undefined, ["lyra"]);
-      const lines = out.split("\n");
-      const sandboxIdx = lines.findIndex((l) => l.startsWith("sandbox:"));
-      expect(sandboxIdx).toBeGreaterThan(-1);
-      expect(lines[sandboxIdx + 1]).toContain("never wrapped by this sandbox");
-    });
-
-    // The exact misconception this ruling refuses to invite: distinct vocabulary from the
-    // SANDBOX_UNAVAILABLE-equivalent host-capability line above (no "tried", "found", or "no working
-    // primitive"), so a Conductor reading this does not conclude installing bubblewrap/sandbox-exec
-    // would change anything for this member.
-    test("does not use SANDBOX_UNAVAILABLE's own vocabulary — installing a primitive would not fix this", () => {
-      const out = formatDoctor([], undefined, undefined, undefined, undefined, undefined, NONE, ["finch"], undefined, ["lyra"]);
-      const nativeLine = out.split("\n").find((l) => l.includes("never wrapped by this sandbox"))!;
-      expect(nativeLine).toBeTruthy();
-      expect(nativeLine).not.toMatch(/tried:|no working.*primitive|primitive was found/i);
-    });
-
-    test("prints alongside, never instead of, the host-capability warning for a DIFFERENT (cli) member", () => {
-      const out = formatDoctor([], undefined, undefined, undefined, undefined, undefined, NONE, ["finch"], undefined, ["lyra"]);
-      expect(out).toContain("run unconfined beyond env/HOME scoping: finch");
-      expect(out).toContain("never wrapped by this sandbox");
-    });
-
-    test("omitted entirely → no such line, and no crash", () => {
-      const out = formatDoctor([], undefined, undefined, undefined, undefined, undefined, FULL, ["finch"]);
-      expect(out).not.toContain("never wrapped by this sandbox");
-    });
-
-    test("empty array → no such line", () => {
-      const out = formatDoctor([], undefined, undefined, undefined, undefined, undefined, FULL, ["finch"], undefined, []);
-      expect(out).not.toContain("never wrapped by this sandbox");
-    });
-
-    // Nothing to attach the qualification to without a sandbox: line — stays silent rather than
-    // printing an unattached warning, the same "never assumed, only reported when asked" posture the
-    // host-capability warning above already takes.
-    test("no sandbox detection passed at all → no line, even with native agents given", () => {
-      const out = formatDoctor([], undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, ["lyra"]);
-      expect(out).not.toContain("never wrapped by this sandbox");
-    });
+  // Finding 75 (part 2, 2026-08-24): `kind: native` agents no longer get a separate, unconditional
+  // "never wrapped, on any host" line here — the wrap is wired (adapters.ts#createSdkNativeBoundary/
+  // createAsyncSdkNativeBoundary) — a native agent now folds straight into `sandboxedAgents` (cli.ts),
+  // earning the SAME "run unconfined" telling a cli/implemented-remote agent already gets when this
+  // host has no working primitive, never a kind-specific second line.
+  test("a native agent, passed in sandboxedAgents like any other, is named in the ordinary host-capability warning — no separate 'never wrapped' line exists anymore", () => {
+    const out = formatDoctor([], undefined, undefined, undefined, undefined, undefined, NONE, ["finch", "lyra"]);
+    expect(out).toContain("run unconfined beyond env/HOME scoping: finch, lyra");
+    expect(out).not.toContain("never wrapped by this sandbox");
   });
 });
