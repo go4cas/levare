@@ -23,12 +23,15 @@ import type { Receipt } from "./types.ts";
 import { loadRepo, loadStudioSettings } from "./repo.ts";
 import { buildStudioProjection } from "./orchestrator-projection.ts";
 import {
+  asSdkTransportResult,
   asyncSdkTransport,
   checkSdkPreconditionsCached,
   resolveNativeBinary,
   type AsyncSdkTransport,
   type SdkPreconditionOptions,
+  type SdkWorkerResponse,
 } from "./sdk-transport.ts";
+import { buildOrchestratorTrace, buildOrchestratorTraceStart, writeOrchestratorTrace, type OrchestratorCall } from "./dispatch-trace.ts";
 
 // `{ type: "file" }` import, not `new URL("../docs/orchestrator-prompt.md", import.meta.url).pathname`
 // (NOTES DIST1/DIST4): the latter resolves into Bun's virtual `$bunfs` tree under `bun build
@@ -92,6 +95,52 @@ function resolveOrchestratorModel(env: Record<string, string | undefined>, root?
  * observable"). `narrate()` intentionally does NOT throw on the same failure — see NOTES phase-7 K8.
  */
 export class OrchestratorSdkError extends Error {}
+
+// NOTES DISPATCH-TRACE / Finding 94: interpret()/narrate()/converse() are SDK calls through the exact
+// same transport a member dispatch uses, and were the one call a Conductor could never inspect
+// afterwards — `interpret()` failing twice at 45000ms left `.levare/dispatch-logs/` untouched, because
+// the trace only ever covered the member path. Mirrors adapters.ts's own
+// `traceNativeDispatchStart`/`traceNativeDispatchFinish` exactly: write before the transport call with
+// everything already known, amend in place once it resolves. A no-op when `studioRoot` is absent
+// (every test construction that doesn't pass `root`, exactly like the member path's `studioRoot`).
+interface OrchestratorTraceCtx {
+  model: string;
+  timeoutMs: number;
+  env: Record<string, string | undefined>;
+  startedAt: string;
+}
+
+function traceOrchestratorCallStart(studioRoot: string | undefined, call: OrchestratorCall, prompt: string, ctx: OrchestratorTraceCtx): void {
+  if (!studioRoot) return;
+  const record = buildOrchestratorTraceStart({
+    call,
+    model: ctx.model,
+    timeoutMs: ctx.timeoutMs,
+    env: ctx.env,
+    anthropicApiKeyPresent: typeof ctx.env.ANTHROPIC_API_KEY === "string",
+    startedAt: ctx.startedAt,
+    prompt,
+  });
+  writeOrchestratorTrace(studioRoot, record);
+}
+
+function traceOrchestratorCallFinish(studioRoot: string | undefined, call: OrchestratorCall, prompt: string, res: SdkWorkerResponse, ctx: OrchestratorTraceCtx): void {
+  if (!studioRoot) return;
+  const wide = asSdkTransportResult(res);
+  const record = buildOrchestratorTrace(
+    { ok: res.ok, error: res.ok ? undefined : res.error, timedOut: wide.timedOut, durationMs: wide.durationMs, stdout: wide.stdout, stderr: wide.stderr, receipt: res.ok ? res.receipt : undefined },
+    {
+      call,
+      model: ctx.model,
+      timeoutMs: ctx.timeoutMs,
+      env: ctx.env,
+      anthropicApiKeyPresent: typeof ctx.env.ANTHROPIC_API_KEY === "string",
+      startedAt: ctx.startedAt,
+      prompt,
+    },
+  );
+  writeOrchestratorTrace(studioRoot, record);
+}
 
 const VERBS: Verb[] = ["approve", "request", "reject", "start", "notyet", "rescope", "continue", "raise", "stop"];
 
@@ -256,12 +305,19 @@ export function createSdkOrchestratorBoundary(opts: SdkOrchestratorBoundaryOptio
   // actually uses that binary" can never diverge — they're the same function call.
   const br = opts.binaryResolution;
   const pathToClaudeCodeExecutable = opts.pathToClaudeCodeExecutable ?? resolveNativeBinary(br?.platform, br?.arch, br?.requireFrom) ?? undefined;
+  // NOTES DISPATCH-TRACE: captured at construction time exactly like `model` above — `opts.root` was
+  // already in scope for `resolveOrchestratorModel`; this just keeps it around for the trace writes.
+  const studioRoot = opts.root;
 
   return {
     async interpret(text: string): Promise<Intent> {
+      const startedAt = new Date().toISOString();
+      const prompt = INTERPRET_TASK_PREFIX + text;
+      const traceCtx: OrchestratorTraceCtx = { model, timeoutMs, env, startedAt };
+      traceOrchestratorCallStart(studioRoot, "interpret", prompt, traceCtx);
       const res = await transport.run(
         {
-          prompt: INTERPRET_TASK_PREFIX + text,
+          prompt,
           systemPrompt,
           model,
           tools: [],
@@ -271,6 +327,7 @@ export function createSdkOrchestratorBoundary(opts: SdkOrchestratorBoundaryOptio
         },
         { env, timeoutMs },
       );
+      traceOrchestratorCallFinish(studioRoot, "interpret", prompt, res, traceCtx);
       // A transport failure (worker never ran / exited non-zero / timed out / unparseable output) is
       // NOT a legitimate "unknown" intent — "unknown" is a real classification a live model can
       // genuinely return, and silently mapping a system failure onto it would be indistinguishable
@@ -285,7 +342,11 @@ export function createSdkOrchestratorBoundary(opts: SdkOrchestratorBoundaryOptio
       return coerceIntent(res.structuredOutput, text);
     },
     async narrate(prompt: string): Promise<string> {
+      const startedAt = new Date().toISOString();
+      const traceCtx: OrchestratorTraceCtx = { model, timeoutMs, env, startedAt };
+      traceOrchestratorCallStart(studioRoot, "narrate", prompt, traceCtx);
       const res = await transport.run({ prompt, systemPrompt, model, tools: [], allowedTools: [], pathToClaudeCodeExecutable }, { env, timeoutMs });
+      traceOrchestratorCallFinish(studioRoot, "narrate", prompt, res, traceCtx);
       // A transport failure must never surface as a fabricated Orchestrator line — fall back to the
       // plain computed fact (identical to the deterministic boundary's own narrate) rather than lie.
       if (!res.ok) return prompt;
@@ -313,7 +374,11 @@ export function createSdkOrchestratorBoundary(opts: SdkOrchestratorBoundaryOptio
       }
       const projection = buildStudioProjection(loadRepo(root));
       const prompt = `${projection}\n\nConductor: ${text}`;
+      const startedAt = new Date().toISOString();
+      const traceCtx: OrchestratorTraceCtx = { model, timeoutMs: converseTimeoutMs, env, startedAt };
+      traceOrchestratorCallStart(studioRoot, "converse", prompt, traceCtx);
       const res = await transport.run({ prompt, systemPrompt, model, tools: [], allowedTools: [], pathToClaudeCodeExecutable }, { env, timeoutMs: converseTimeoutMs });
+      traceOrchestratorCallFinish(studioRoot, "converse", prompt, res, traceCtx);
       // Same reasoning as interpret(): a transport failure must never be dressed up as a real answer.
       // Throwing here (rather than degrading in-place, unlike narrate()) reuses the EXISTING
       // board/serve.ts catch-and-degrade-to-offline path (K11) instead of inventing a second, ad-hoc
