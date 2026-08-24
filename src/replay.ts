@@ -139,8 +139,12 @@ export function productionAdapterRunner(repo: Repo, overrides: ProductionAdapter
     // NOTES DISPATCH-TRACE: `studioRoot` is what makes a real dispatch write a trace at all — every
     // test double/override skips this constructor entirely, so this is the one, real production wiring
     // point.
-    native: overrides.native ?? createSdkNativeBoundary({ studioRoot: repo.root }),
-    asyncNative: overrides.asyncNative ?? createAsyncSdkNativeBoundary({ studioRoot: repo.root }),
+    // Finding 75 (part 2): `repo` is what turns on the real sandbox wrap for the worker's own OS-level
+    // spawn (adapters.ts#createSdkNativeBoundary's own doc) — every real production construction
+    // supplies it, mirroring `createAsyncStdioRemoteBoundary(repo)`'s own required `repo` immediately
+    // below.
+    native: overrides.native ?? createSdkNativeBoundary({ studioRoot: repo.root, repo }),
+    asyncNative: overrides.asyncNative ?? createAsyncSdkNativeBoundary({ studioRoot: repo.root, repo }),
     remote: stubRemote,
     asyncRemote: overrides.asyncRemote ?? createAsyncStdioRemoteBoundary(repo),
     spawn: bunSpawn,
