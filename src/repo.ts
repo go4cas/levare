@@ -320,6 +320,7 @@ function toArtifact(d: Record<string, YamlValue>, body: string): Artifact {
     // Reserved for kind: review — absent (null) means NOT RECORDED, never fabricated as either enum
     // value (see types.ts's own doc on why that distinction matters).
     verdict: (d.verdict as Artifact["verdict"]) ?? null,
+    verdict_source: (d.verdict_source as Artifact["verdict_source"]) ?? null,
     sandbox: (d.sandbox as Artifact["sandbox"]) ?? null,
     registry: (d.registry as string | null) ?? null,
     code_commit: (d.code_commit as string | null) ?? null,

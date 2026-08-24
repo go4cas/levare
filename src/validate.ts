@@ -270,25 +270,40 @@ export const ARTIFACT_SCHEMA: Schema = {
       },
     },
     // Ruling 2026-08-23 ("the gate card is where decisions happen", Findings 104/105): reserved for
-    // kind: review — the critic's own bottom-line conclusion, DECLARED directly by the critic, never
-    // extracted from body prose. Phase 1 of this ruling audited every real review in one live studio
-    // (nine, across three units): all nine read CHANGES REQUESTED — no review has ever approved. An
-    // extractor built and tested entirely against that one negative case would meet a real APPROVED
-    // for the first time in production, exactly the kind of untested path this field exists to avoid.
-    // `status: approved` on a review artifact is NOT this — it means the CONDUCTOR approved the review
-    // AS AN ARTIFACT (accepted it into the record), never that the critic's own verdict was positive:
-    // one of the nine audited reviews is `status: approved` with `CHANGES REQUESTED` in its body.
-    // `verdict` is the one field actually answerable to "what did the critic conclude".
+    // kind: review — the critic's own bottom-line conclusion. Phase 1 of that ruling audited every real
+    // review in one live studio (nine, across three units): all nine read CHANGES REQUESTED — no review
+    // has ever approved. What that ruling actually rejected was SENTIMENT-GUESSING: an extractor tuned
+    // and tested entirely against that one negative case would meet a real APPROVED for the first time
+    // in production, exactly the kind of untested path this field exists to avoid. `status: approved` on
+    // a review artifact is NOT this — it means the CONDUCTOR approved the review AS AN ARTIFACT (accepted
+    // it into the record), never that the critic's own verdict was positive: one of the nine audited
+    // reviews is `status: approved` with `CHANGES REQUESTED` in its body. `verdict` is the one field
+    // actually answerable to "what did the critic conclude".
+    //
+    // Ruling 2026-08-24 (the verdict bridge, Finding 118) found the channel Ruling 2026-08-23 left open
+    // but unbuilt: a member has no way to WRITE frontmatter directly (Ruling C12 — levare authors the
+    // artifact from facts it already knows, never the member's own account of them), so without a bridge
+    // this field could never populate, on any review, ever. The bridge accepted is STRUCTURAL extraction,
+    // not sentiment-guessing: `adapters.ts#author`'s own read-only, whole-document scan for a line that
+    // IS, in its entirety, one of the two enum values (optionally `Verdict: `-prefixed) — never a
+    // substring match inside ordinary critique prose ("no changes requested" can never trip it). Every
+    // matching line in the document is counted, never just the first or the last: exactly one match is
+    // unambiguous and is accepted; zero means the critic never declared one; two or more — even two
+    // IDENTICAL values — is a conflict, resolved by neither position nor recency, never resolved by
+    // guessing. `verdict_source` (below) names this provenance, so a reader — and, eventually, a loop
+    // consumer — can always tell a structurally-extracted value from one a future channel reports
+    // directly, rather than reaching a bare `verdict` check that can't tell the difference.
     //
     // Nullable, never required: every review artifact this product has ever produced predates this
     // field. Findings 99 and 114 are both live outages from the same assumption — that artifacts on
     // disk were written by the current binary; 99 was a required field, 114 was a required sentence
     // (merge.ts's checkout-sync notice). A required flip here would brick every existing studio's
     // review history the instant this binary upgrades. Absence means NOT RECORDED — predates this
-    // field, or a critic whose own prompt hasn't been told about it yet (both collapse to the same
-    // state, deliberately: neither is "no verdict", and a card must render that as its own explicit
-    // third state, never guess one of the two enum values — Finding 105 is a card that said nothing
-    // where a fact belonged, and a confident wrong default would be worse than that silence).
+    // field, extraction found zero or more than one matching line, or a critic whose own prompt hasn't
+    // been told about the declared format yet (all collapse to the same state, deliberately: neither is
+    // "no verdict", and a card must render that as its own explicit third state, never guess one of the
+    // two enum values — Finding 105 is a card that said nothing where a fact belonged, and a confident
+    // wrong default would be worse than that silence).
     //
     // Deliberately NOT read by flow.ts#untilSatisfied or any loop-resolution path: `until:
     // review.approved` stays exactly what NOTES "loop until semantics" already established it always
@@ -296,14 +311,33 @@ export const ARTIFACT_SCHEMA: Schema = {
     // (or, now, this field). Wiring `verdict` into loop resolution would silently implement
     // docs/code-review.md's separately-named, deliberately-deferred "C1 style-2" (member-set verdict,
     // autonomous loop termination — NOTES D8/B3); that is a different, bigger ruling this unit does not
-    // make. `verdict` is advisory and card-only, exactly as declared here.
+    // make, and NOTES VERDICT-BRIDGE records that when it comes, it must decide EXPLICITLY whether
+    // `extracted` provenance counts for it — never reachable by writing the obvious `verdict ===
+    // "APPROVED"` check alone. `verdict` is advisory and card-only, exactly as declared here.
     verdict: {
       type: "enum",
       required: false,
       nullable: true,
       enum: ["APPROVED", "CHANGES REQUESTED"],
       description:
-        "Reserved for kind: review — the critic's own verdict on what it reviewed, declared directly (never extracted from body prose): APPROVED or CHANGES REQUESTED. Absent means not recorded — predates this field, or the critic's own prompt hasn't been updated to write it yet — and must never be treated as either enum value.",
+        "Reserved for kind: review — the critic's own verdict on what it reviewed: APPROVED or CHANGES REQUESTED. Populated by adapters.ts#author's read-only, whole-document extraction (never a guess: exactly one anchored line — optionally `Verdict: `-prefixed — must match the whole document, or this stays absent; see verdict_source). Absent means not recorded — predates this field, extraction found zero or more than one matching line, or the critic's own prompt hasn't been updated to declare it yet — and must never be treated as either enum value.",
+    },
+    // Ruling 2026-08-24 (the verdict bridge, Finding 118, Q3): sibling to `verdict` above — records HOW
+    // that value was obtained, present only when `verdict` itself is set (mirrors `sandbox`/
+    // `sandbox_reason`'s own "present only when relevant" shape). `extracted` is the only value this
+    // binary ever writes today (adapters.ts#author's read-only body scan). `declared` is reserved for a
+    // future structured channel a member's own boundary reports directly — never body prose — that does
+    // not exist yet (Ruling C12 gives no member a channel to write frontmatter at all). Exists so that
+    // when C1 style-2 (NOTES D8/B3) is separately ruled on, whether `extracted` provenance is trustworthy
+    // enough to gate autonomous loop continuation is a decision someone has to make on purpose — today's
+    // actual safeguard against that ("nobody wrote the reader yet") is exactly the kind of implicit
+    // assumption Findings 99 and 114 already showed this product cannot rely on.
+    verdict_source: {
+      type: "enum",
+      required: false,
+      enum: ["declared", "extracted"],
+      description:
+        "Present only when verdict is set. extracted — levare found exactly one anchored verdict line in the review body (the only value this binary writes today). declared — reserved for a future structured channel a member's boundary reports directly; not yet implemented, never written. Absent whenever verdict itself is absent.",
     },
     // NOTES R4-SANDBOX (v2, Ruling 2): the OS-sandbox enforcement level a `kind: cli` member's spawn
     // actually ran under, when it produced this artifact — independent of `usage`/`unreported` (see

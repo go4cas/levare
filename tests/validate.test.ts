@@ -182,6 +182,62 @@ describe("verdict (kind: review) — nullable, enum-checked, never required", ()
   });
 });
 
+// Ruling 2026-08-24 (the verdict bridge, Finding 118, Q3): `verdict_source` is `verdict`'s sibling —
+// present only when `verdict` is set, naming HOW it was obtained. Schema-shape only here (round-trip,
+// enum, absence); adapters.test.ts's own "verdict bridge" describe block covers the extraction that
+// actually populates it (adapters.ts#author is the only writer this binary has today).
+describe("verdict_source — nullable, enum-checked, sibling to verdict", () => {
+  function reviewDoc(extraFrontmatter: string): string {
+    return [
+      "---",
+      "kind: review",
+      "id: review-flow-v1",
+      "unit: flow",
+      "project: acme",
+      "status: in-review",
+      "produced_by: kestrel/finch",
+      "consumes: []",
+      "supersedes: null",
+      "approved_by: null",
+      "created: 2026-08-23",
+      "files: []",
+      extraFrontmatter,
+      "---",
+      "",
+      "CHANGES REQUESTED",
+      "",
+    ]
+      .filter((l) => l !== "")
+      .join("\n");
+  }
+
+  test("absent entirely — parses to null, never fabricated", () => {
+    const doc = reviewDoc("");
+    expect(validateArtifactSource(doc)).toEqual([]);
+    expect(parseArtifactDoc(doc).verdict_source).toBeNull();
+  });
+
+  test("verdict_source: extracted, alongside verdict, validates and round-trips", () => {
+    const doc = reviewDoc("verdict: CHANGES REQUESTED\nverdict_source: extracted");
+    expect(validateArtifactSource(doc)).toEqual([]);
+    const art = parseArtifactDoc(doc);
+    expect(art.verdict).toBe("CHANGES REQUESTED");
+    expect(art.verdict_source).toBe("extracted");
+  });
+
+  test("verdict_source: declared — reserved, not yet written by this binary, but schema-legal", () => {
+    const doc = reviewDoc("verdict: APPROVED\nverdict_source: declared");
+    expect(validateArtifactSource(doc)).toEqual([]);
+    expect(parseArtifactDoc(doc).verdict_source).toBe("declared");
+  });
+
+  test("an unrecognized value fails BAD_ENUM, naming the field", () => {
+    const doc = reviewDoc("verdict: APPROVED\nverdict_source: guessed");
+    const errs = validateArtifactSource(doc);
+    expect(errs.some((e) => e.code === "BAD_ENUM" && e.message.includes("verdict_source"))).toBe(true);
+  });
+});
+
 // NOTES F1: `levare validate` used to say "valid" about a studio that could not run a single step —
 // every per-file schema check passed while the one cross-entity fact the Runner rests on (a flow step
 // binds to a member that declares it produces a matching kind) went unchecked until runtime. These

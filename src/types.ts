@@ -389,15 +389,28 @@ export interface Artifact {
   merge?: MergeInfo | null;
   /** NOTES MERGE-1: reserved for `kind: merge` — set by levare only on a successful `approve`. */
   merge_result?: MergeResultRecord | null;
-  /** Ruling 2026-08-23 ("the gate card is where decisions happen"): reserved for `kind: review` — the
-   * critic's own verdict, declared directly by the critic, never extracted from body prose (see
-   * validate.ts's own schema doc for the full reasoning — extraction was rejected against real data
-   * where nine of nine reviews read CHANGES REQUESTED and `status: approved` means the CONDUCTOR
-   * approved the review artifact, never that the critic's verdict was positive). Absent means NOT
-   * RECORDED — predates this field, or a critic whose own prompt hasn't been updated to write it yet —
-   * a caller must render that as its own explicit state, never default it to either value. Advisory
-   * only: never read by flow.ts#untilSatisfied or any loop-resolution path. */
+  /** Ruling 2026-08-23 ("the gate card is where decisions happen"), bridged by Ruling 2026-08-24 (the
+   * verdict bridge, Finding 118): reserved for `kind: review` — the critic's own verdict. What the first
+   * ruling rejected was SENTIMENT-GUESSING an extractor tuned only against real data where nine of nine
+   * reviews read CHANGES REQUESTED would silently meet a real APPROVED for the first time in production
+   * (see validate.ts's own schema doc for the full reasoning). What the second ruling then built is
+   * STRUCTURAL extraction instead — `adapters.ts#author`'s own read-only, whole-document scan for a line
+   * that IS, in its entirety, one of the two enum values (never a substring match inside ordinary
+   * prose), accepted only when exactly one such line exists in the whole document. `status: approved`
+   * means the CONDUCTOR approved the review artifact, never that the critic's verdict was positive.
+   * Absent means NOT RECORDED — predates this field, extraction found zero or more than one matching
+   * line, or a critic whose own prompt hasn't been updated to declare it yet — a caller must render that
+   * as its own explicit state, never default it to either value. Advisory only: never read by
+   * flow.ts#untilSatisfied or any loop-resolution path — see `verdict_source` below for why a future
+   * consumer that DOES want to read it cannot reach that by accident. */
   verdict?: "APPROVED" | "CHANGES REQUESTED" | null;
+  /** Ruling 2026-08-24 (the verdict bridge, Finding 118, Q3): sibling to `verdict` — present only when
+   * `verdict` is set, records how the value was obtained. `extracted` is the only value this binary ever
+   * writes today (adapters.ts#author's read-only body scan); `declared` is reserved for a future
+   * structured channel a member's own boundary reports directly, not yet implemented. Exists so that a
+   * future C1 style-2 loop-resolution consumer (NOTES D8/B3) must explicitly decide whether extracted
+   * provenance counts, rather than reaching it by accident via a bare `verdict === "APPROVED"` check. */
+  verdict_source?: "declared" | "extracted" | null;
   /** NOTES R4-SANDBOX (v2, Ruling 2): the OS-level sandbox enforcement a `kind: cli` member's spawn
    * actually ran under, when this artifact was produced by one — "full" (filesystem AND network
    * confined), "fs-only" (a filesystem-only fallback — no working bubblewrap, but the kernel still
