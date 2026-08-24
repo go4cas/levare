@@ -1192,22 +1192,62 @@ export function buildRemoteSandboxPolicy(repo: Repo, req: InvokeRequest, connect
   };
 }
 
-// Finding 75 (part 2): the per-uid base directory `@anthropic-ai/claude-agent-sdk/extract#
-// extractFromBunfs` (vendored at `node_modules/@anthropic-ai/claude-agent-sdk/extractFromBunfs.js` —
-// read directly, never guessed) extracts a COMPILED worker's own embedded native binary into, before
+// Finding 75 (part 3 — regression from part 2): the per-uid base directory `@anthropic-ai/claude-agent-sdk/
+// extract#extractFromBunfs` (vendored at `node_modules/@anthropic-ai/claude-agent-sdk/extractFromBunfs.js`
+// — read directly, never guessed) extracts a COMPILED worker's own embedded native binary into, before
 // spawning it: `{tmpdir()}/claude-{uid}` on POSIX, `{tmpdir()}/claude` on win32 — computed here from the
 // SAME formula that file uses, never by calling extraction itself (only sdk-worker.ts's own process may
-// safely do that; see sdk-transport.ts's own module comment on why this parent process never can). The
-// per-VERSION content-hash subdirectory extraction actually writes into (and then executes, as the
-// resolved `pathToClaudeCodeExecutable`) isn't knowable without extracting, so the grant covers the
-// whole per-uid base, read-write — every version this host's worker might ever extract, across every
-// native dispatch it ever runs, not just this one.
+// safely do that; see sdk-transport.ts's own module comment on why this parent process never can).
+//
+// Part 2 claimed this mirrors that file's formula "exactly" but only ever tested `platform: "linux"` —
+// on POSIX it called plain `node:os`'s `tmpdir()` unconditionally. `extractFromBunfs.js`'s OWN `tmpdir()`
+// helper is NOT that: it honors `CLAUDE_CODE_TMPDIR` first, then hardcodes `/tmp` on darwin specifically
+// to bypass `os.tmpdir()` (its own comment: "macOS /tmp works fine; os.tmpdir() below is for
+// Android-on-Linux where /tmp isn't writable") — `os.tmpdir()` on a real macOS host returns `$TMPDIR`
+// (typically `/var/folders/xx/yyyy/T`), a directory tree with NO relationship to `/tmp` (unlike `/tmp`
+// itself, which is only ever a symlink to `/private/tmp` — the two are not the same path canonicalized
+// two ways, they are genuinely different trees). The prior formula therefore granted a directory the
+// inner CLI's own scratch machinery (bunfs extraction, and — sharing this identical per-uid base — the
+// Bash tool's own per-session scratch dirs) never uses on darwin at all, denying every real spawn. Fixed
+// to replicate `extractFromBunfs.js#tmpdir()` verbatim rather than reaching past it to Node's own.
+//
 // Exported (mirrors `resolveDarwinUserTempDir`'s own testable shape) so the formula itself has a direct
-// unit test, independent of `process.platform`/`process.getuid` on whatever host `bun test` runs on.
-export function nativeBunfsExtractionBase(opts: { platform?: string; getuid?: () => number } = {}): string {
+// unit test, independent of `process.platform`/`process.getuid`/`process.env` on whatever host `bun test`
+// runs on.
+export function nativeBunfsExtractionBase(opts: { platform?: string; getuid?: () => number; env?: Record<string, string | undefined> } = {}): string {
   const platform = opts.platform ?? process.platform;
   const getuid = opts.getuid ?? process.getuid?.bind(process) ?? (() => 0);
-  return pathJoin(tmpdir(), platform === "win32" ? "claude" : `claude-${getuid()}`);
+  const env = opts.env ?? process.env;
+  const base = env.CLAUDE_CODE_TMPDIR || (platform === "darwin" ? "/tmp" : tmpdir());
+  return pathJoin(base, platform === "win32" ? "claude" : `claude-${getuid()}`);
+}
+
+// Finding 75 (part 3): `sandbox.ts#canon` resolves every path it writes into a darwin profile through
+// `realpathSync` so a `(subpath ...)` rule matches the KERNEL-RESOLVED form of the path being accessed —
+// but `realpathSync` throws (ENOENT) if the target doesn't exist YET, and `canon` then falls back to the
+// literal, un-resolved string (deliberately, for this module's own pure fixture tests — see sandbox.ts's
+// own doc on `canon`). Every OTHER production grant this codebase makes is pre-created by levare itself
+// before the policy is built (a worktree, a scoped HOME, a git-logs dir — see `dispatchGitWriteGrant`'s
+// own `if (!existsSync(logs)) mkdirSync(...)` precedent, reused here) — `nativeBunfsExtractionBase`'s own
+// target is the one exception: it names a directory the INNER CLI creates lazily, possibly for the first
+// time ever on this host, which `canon`'s existing ENOENT fallback would silently defeat (granting the
+// pre-resolution `/tmp/claude-{uid}` spelling, which never matches the kernel's `/private/tmp/claude-
+// {uid}` once symlink-resolved). Pre-creating just the base (not the deeper, unpredictable per-run
+// subdirectories the inner CLI nests under it) is enough — a subpath/bind grant on it covers whatever
+// gets nested inside regardless of name. Best-effort, mirroring `sdk-transport.ts#hermeticSpawnEnv`'s own
+// posture for a directory this process creates only as scaffolding for another process to use: a create
+// failure here isn't a hard error, and the spawn will surface its own failure downstream if the
+// directory genuinely can't be made.
+// Exported (mirrors `nativeBunfsExtractionBase`'s own testable shape) so the pre-creation behavior has a
+// direct unit test against a scratch `CLAUDE_CODE_TMPDIR`, never the host's real per-uid temp dir.
+export function ensureNativeBunfsExtractionBase(opts: Parameters<typeof nativeBunfsExtractionBase>[0] = {}): string {
+  const dir = nativeBunfsExtractionBase(opts);
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch {
+    /* best-effort — see this function's own doc */
+  }
+  return dir;
 }
 
 /**
@@ -1234,10 +1274,21 @@ export function nativeBunfsExtractionBase(opts: { platform?: string; getuid?: ()
  * Every native dispatch calls the Anthropic API to do its one job; network is the mechanism this kind
  * runs on, not an optional connector grant.
  *
- * Two grants exist here and nowhere else: `nativeBunfsExtractionBase` (compiled builds only — written
- * AND executed by the worker itself) and `LEVARE_CLAUDE_CONFIG_DIR` (sdk-transport.ts — created by this
- * process, read/written by the SDK's own inner `claude` CLI subprocess, on every run mode). Neither has
- * an existing `SandboxPolicy` field any other kind ever points at.
+ * Two grants exist here and nowhere else: `nativeBunfsExtractionBase`, pre-created via
+ * `ensureNativeBunfsExtractionBase` (compiled builds only — written AND executed by the worker itself;
+ * Finding 75 part 3's own fix — see that function's doc) and `LEVARE_CLAUDE_CONFIG_DIR` (sdk-transport.ts
+ * — created by this process, read/written by the SDK's own inner `claude` CLI subprocess, on every run
+ * mode). Neither has an existing `SandboxPolicy` field any other kind ever points at.
+ *
+ * `isCompiledBuildFn` (Finding 75 part 3, round 2 — a live macOS run's own finding): defaults to the real
+ * `isCompiledBuild`, injectable so a PROBE can force the compiled-build branch without needing an actual
+ * `--define`-stamped binary. Without this, `scripts/repro-r4-sandbox-native-worker.ts`'s own STEP C —
+ * invoked via `bun run`, which is inherently a source run — could never exercise the
+ * `ensureNativeBunfsExtractionBase` grant at all: `isCompiledBuild()` reads real ambient state and is
+ * unconditionally false there, so the grant this whole unit exists to fix was silently absent from
+ * every profile the probe ever generated, and the probe passed for a reason production doesn't share.
+ * The exact same "the probe's own gap is part of the finding" lesson the original goal named, one layer
+ * deeper: closing the FIRST probe gap (auth) still left this SECOND one (build mode) unexercised.
  */
 export function buildNativeSandboxPolicy(
   repo: Repo,
@@ -1245,6 +1296,7 @@ export function buildNativeSandboxPolicy(
   cwd: string,
   pathToClaudeCodeExecutable: string | undefined,
   baseEnv?: Record<string, string | undefined>,
+  isCompiledBuildFn: () => boolean = isCompiledBuild,
 ): SandboxPolicy {
   const { readOnlyPaths, operatorHome, darwinTempDir } = baseSandboxContext(repo, cwd, undefined, req.env.PATH, baseEnv);
   const treeDirs = (p: string) => [dirname(p), dirname(dirname(p))];
@@ -1265,7 +1317,7 @@ export function buildNativeSandboxPolicy(
       ...(req.projectRepoPath && req.projectRepoPath !== cwd ? [req.projectRepoPath] : []),
       ...(req.dispatchGitWriteGrant?.subpaths ?? []),
       LEVARE_CLAUDE_CONFIG_DIR,
-      ...(isCompiledBuild() ? [nativeBunfsExtractionBase()] : []),
+      ...(isCompiledBuildFn() ? [ensureNativeBunfsExtractionBase()] : []),
     ],
     gitWriteGrant: req.dispatchGitWriteGrant,
     darwinXcrunTempDir: darwinTempDir,
