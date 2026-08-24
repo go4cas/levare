@@ -122,7 +122,7 @@ export function buildStudioProjection(repo: Repo, opts: StudioProjectionOptions 
 
   const limit = opts.timelineLimit ?? 20;
   const timelineRows = units
-    .flatMap((u) => buildTimeline(repo.root, u.dir))
+    .flatMap((u) => buildTimeline(repo.root, u.dir, repo.studio.conductorGitIdentity))
     .sort((a, b) => b.ts.localeCompare(a.ts))
     .slice(0, limit)
     .map((r) => `${r.ts} · ${stripHtml(r.text)}`);

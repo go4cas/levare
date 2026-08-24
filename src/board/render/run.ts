@@ -56,14 +56,20 @@ export { elapsedLabel };
 // Phase 2 cluster 3 part 3: "actor avatars — agent initials on team tint, the Conductor as the only
 // solid-filled disc, the Runner deliberately gray" (base brief, Run view). A ledger row's `actor.name`
 // for a "member" is already `team/member` (ledger.ndjson's own shape, the same convention
-// `artifact.produced_by` uses) — `memberAvatar` takes that directly, no extra lookup. Conductor/Runner
-// identities are resolved in timeline.ts from the exact git identities every real commit funnels
-// through (git.ts#CONDUCTOR_NAME/RUNNER_NAME) — never guessed here. "unknown" (a git author that is
-// neither) deliberately renders no avatar at all, same as before this feature existed: inventing a
-// fourth avatar treatment for an actor the design brief never named would be a fabricated channel, not
-// a faithful rendering of the vocabulary it does define.
+// `artifact.produced_by` uses) — `memberAvatar` takes that directly, no extra lookup. Conductor/Runner/
+// member identities are resolved in timeline.ts's `resolveGitActor`, exhaustive over every identity
+// shape the app itself produces — never guessed here. "unknown" (a git identity matching none of those)
+// deliberately renders no avatar at all, same as before this feature existed: inventing a fourth avatar
+// treatment for an actor the design brief never named would be a fabricated channel, not a faithful
+// rendering of the vocabulary it does define.
 function timelineActorAvatar(repo: Repo, actor: TimelineActor): string {
-  if (actor.kind === "conductor") return `<span class="avatar avatar--conductor sm" title="you">C</span>`;
+  // Finding 90: the SAME solid "C" disc for both — a studio-declared Conductor identity means "this is
+  // the same human", not "this is a different, lesser kind of Conductor action" — but the tooltip keeps
+  // the one distinction that must survive unification: whether levare's own commitAs made this exact
+  // commit, or the Conductor made it directly with their own git identity outside the app. See
+  // timeline.ts#TimelineActor's own doc on why collapsing that into one indistinguishable label would
+  // misrepresent git log as a record of human decisions.
+  if (actor.kind === "conductor") return `<span class="avatar avatar--conductor sm" title="${actor.stamped === false ? "you — direct git commit" : "you — via levare"}">C</span>`;
   if (actor.kind === "runner") return `<span class="avatar avatar--runner sm" title="runner">R</span>`;
   if (actor.kind === "member") return memberAvatar(repo, actor.name);
   return "";
@@ -179,7 +185,7 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
 
   const rail = railNav(repo, loadExtras(root));
 
-  const timeline = buildTimeline(root, unit.dir);
+  const timeline = buildTimeline(root, unit.dir, repo.studio.conductorGitIdentity);
   const timelineHtml = timeline.length
     ? timeline
         .map((t) => {

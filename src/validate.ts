@@ -756,9 +756,8 @@ const SKILL_SCHEMA: Schema = {
 };
 
 // The root `studio.md` singleton (NOTES F11) — studio-level declarations, distinct from a
-// `projects/*.md` product pointer. Currently one field: the Orchestrator's declared model, which
-// `validateKnownModels` below checks against `knowledge/model-pricing.md` exactly like an agent's own
-// `model:` field.
+// `projects/*.md` product pointer. `orchestrator_model` is checked by `validateKnownModels` below
+// against `knowledge/model-pricing.md`, exactly like an agent's own `model:` field.
 export const STUDIO_SCHEMA: Schema = {
   name: "studio",
   fields: {
@@ -766,6 +765,15 @@ export const STUDIO_SCHEMA: Schema = {
       type: "str",
       required: false,
       description: "The Orchestrator's declared model — the registry field that replaces LEVARE_ORCHESTRATOR_MODEL as the source of truth (the env var remains a runtime override).",
+    },
+    conductor_git_identity: {
+      type: "map",
+      required: false,
+      description: "Finding 90: the operator's own git identity (`git config user.name`/`user.email`) — declared so timeline.ts#gitLogRows can render a hand-committed edit and a levare-recorded Conductor action as the same actor instead of two.",
+      fields: {
+        name: { type: "str", required: true, description: "The operator's own `git config user.name`." },
+        email: { type: "str", required: true, description: "The operator's own `git config user.email`." },
+      },
     },
   },
 };

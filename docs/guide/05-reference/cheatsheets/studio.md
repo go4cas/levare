@@ -14,6 +14,9 @@ The root-level studio singleton — settings that apply across the whole studio.
 | Field | Type | Required | Nullable | Enum values | Description |
 |---|---|---|---|---|---|
 | `orchestrator_model` | string | — | — | — | The Orchestrator's declared model — the registry field that replaces LEVARE_ORCHESTRATOR_MODEL as the source of truth (the env var remains a runtime override). |
+| `conductor_git_identity` | map | — | — | — | Finding 90: the operator's own git identity (`git config user.name`/`user.email`) — declared so timeline.ts#gitLogRows can render a hand-committed edit and a levare-recorded Conductor action as the same actor instead of two. |
+| `conductor_git_identity.name` | string | ✅ | — | — | The operator's own `git config user.name`. |
+| `conductor_git_identity.email` | string | ✅ | — | — | The operator's own `git config user.email`. |
 
 ## Minimal valid skeleton
 
