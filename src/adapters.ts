@@ -1012,6 +1012,23 @@ function extractCliUsageTrailer(raw: string): { content: string; tokensUsed: num
   return { content, tokensUsed };
 }
 
+// Ruling 2026-08-24 (the verdict bridge, Finding 118): a critic has no channel to WRITE frontmatter
+// directly (Ruling C12 — the member's own account of levare-facts is never consulted), so `verdict`
+// (validate.ts's ARTIFACT_SCHEMA) can only ever populate by reading it out of what the critic already
+// writes — its own review body. Unlike `extractCliUsageTrailer` above, this is READ-ONLY: a verdict line
+// is the critic's genuine prose, not wrapper boilerplate, and stays in the body exactly as written (never
+// stripped). Anchored per whole line — never a substring match, so "no changes requested" inside ordinary
+// critique prose can never trip it — and scans the ENTIRE document, not just the first or last line:
+// every matching line is counted. Exactly one match is unambiguous and is accepted; zero means the critic
+// never declared one; two or more — even two IDENTICAL values — is a conflict, resolved by neither
+// position nor recency (never the first match, never the last — `[...matchAll]` up front, deliberately
+// never `.exec()`'s own first-match-only semantics, which has no way to notice a second one at all).
+const VERDICT_LINE_RE = /^[ \t]*(?:Verdict:[ \t]*)?(APPROVED|CHANGES REQUESTED)[ \t]*$/gm;
+function extractVerdict(content: string): "APPROVED" | "CHANGES REQUESTED" | null {
+  const matches = [...content.matchAll(VERDICT_LINE_RE)];
+  return matches.length === 1 ? (matches[0][1] as "APPROVED" | "CHANGES REQUESTED") : null;
+}
+
 /**
  * NOTES R4-SANDBOX-FIX-13 (live macOS gate: a ladder that could disagree with production — FIX-5's own
  * weak-canary lesson wearing a new coat). Extracted from `AdapterRunner#sandboxWrap` into its own,
@@ -1429,6 +1446,11 @@ export class AdapterRunner implements MemberRunner {
   private author(req: InvokeRequest, raw: string, receipt?: Receipt, extraConsumes: string[] = [], sandbox?: SandboxLevel, codeCommit?: DispatchCommitResult): { doc: string; receipt: Receipt } {
     const content = stripFrontmatter(raw);
     if (!content) throw new AdapterError(`member '${req.member}' produced no usable content`);
+    // Ruling 2026-08-24 (the verdict bridge, Finding 118): scoped to kind: review only — the exact
+    // predicate board/render/shell.ts's own card already uses to decide whether to show a verdict badge
+    // — so a non-review kind's last line is never coincidentally scanned for APPROVED/CHANGES REQUESTED.
+    // See extractVerdict's own doc for the scan itself.
+    const verdict = req.kind === "review" ? extractVerdict(content) : null;
     let finalReceipt = receipt ?? normalizeReceipt(null, this.opts.pricing);
     // NOTES C13/F17: a subscription-authenticated member's cost is flat-rate, not per-token — pricing
     // it from the token table would be a fiction. `usd` is forced null and the plan is named in its
@@ -1546,6 +1568,11 @@ export class AdapterRunner implements MemberRunner {
       const committerPart = committerDiffers ? ` (committer: ${a.committerName} <${a.committerEmail}>)` : "";
       lines.push(`code_commit_actor: ${a.authorName} <${a.authorEmail}>${committerPart}`);
     }
+    // Ruling 2026-08-24 (the verdict bridge, Finding 118): `verdict_source` always accompanies `verdict`
+    // — never emitted alone — and is `extracted` unconditionally, since author() has no other channel a
+    // member could have used to set it (Ruling C12; see validate.ts's own schema doc for `declared`'s
+    // reserved, not-yet-implemented meaning).
+    if (verdict) lines.push(`verdict: ${verdict}`, "verdict_source: extracted");
     lines.push("---", "");
     return { doc: lines.join("\n") + content + "\n", receipt: finalReceipt };
   }

@@ -17147,3 +17147,111 @@ integration test, plus the extended clean-merge assertions). `bunx tsc --noEmit`
 docs:generate` — regenerated `docs/guide/05-reference/cheatsheets/artifact.md` to add the new
 `merge_result.checkout_behind` row; committed as part of this change, byte-identical on a second run.
 No change to `sandbox.ts`.
+
+# NOTES VERDICT-BRIDGE — a member gets a channel to signal a verdict, and levare never guesses one
+
+Finding 118 (goal, 2026-08-24): `verdict` landed in PR #31 (Ruling 2026-08-23, Findings 104/105) —
+nullable, enum APPROVED/CHANGES REQUESTED, the gate card already renders three states — but nothing
+populated it. `adapters.ts#author()` builds frontmatter exclusively from levare-internal facts (Ruling
+C12); a member has no channel to write it at all.
+
+**Phase 1 (read, reported before writing anything).** Three questions, answered in prose to the
+Conductor before any code changed:
+
+1. **Where the bridge belongs.** `author()` — the one site uniform across native/cli/remote (both
+   `produce()` and `produceAsync()` call it as the last step, for every kind). `extractCliUsageTrailer`
+   (this file's own precedent for reading a fact out of a member's raw output) is CLI-only by
+   construction — wiring verdict extraction into that path specifically would mean it never fires for a
+   native critic, which is the kind every real review in this studio has actually been produced by
+   (NOTES "loop until semantics", 2026-08-16; `fixtures/rejections/loop-until-unreachable/agents/
+   corvid.md` declares `kind: native`).
+2. **Structural vs. positional.** The Conductor's own Phase 2 verification target ("seven or eight
+   populate, review-write-entry-v3 yields null") already requires accepting an unprefixed bare-enum
+   line — the majority real shape (7 of 9, per validate.ts's own audited-data comment) — so a fully
+   structural marker (a fixed prefix on every occurrence, a fenced block) was never reachable without
+   failing that target against today's data. Within that constraint: positional (check only the first
+   and last line) vs. whole-document line scan (count every anchored-line match anywhere in the body).
+   The whole-document scan reproduces the same three real-data outcomes while being strictly more
+   defensive against a stray fourth occurrence elsewhere in the body, and is "structural" in the sense
+   that actually matters — pattern-anchored, not position-privileged.
+3. **Whether the loop consumer (C1 style-2, NOTES D8/B3) should be able to read this field before a
+   separate ruling.** Recommended against a permissions system, and against leaving today's actual
+   safeguard — "nobody wrote the reader yet" (`flow.ts#untilSatisfied` has no code path to `verdict` at
+   all) — as the only one, since that is exactly the implicit-assumption shape Findings 99 and 114
+   already showed this product cannot rely on. Recommended instead: record provenance from day one, as a
+   sibling field, in the shape this schema already uses whenever a fact's authority differs from its
+   neighbor's (`sandbox`/`sandbox_reason`, `merge`/`merge_result`) — the same reasoning C1 itself applied
+   when it split `status` (Conductor-only) from `verdict` (member data).
+
+**Ruling (Conductor, same session).** All three adopted as recommended:
+- **Q1:** `author()`, read-only. A verdict line is the critic's own genuine prose, never wrapper
+  boilerplate like a usage trailer — never stripped from the body. Extraction counts every match
+  (`[...content.matchAll(...)]`), never takes-the-first (`RegExp#exec`'s own semantics, which rule 3
+  below forbids — it has no way to notice a second occurrence at all).
+- **Q2:** whole-document line scan. Anchored per line (`^...$`, multiline) so "no changes requested"
+  inside ordinary critique prose can never trip it. Zero matches → null. Exactly one → that's the
+  verdict. Two or more — even two IDENTICAL values — → null, never resolved by position
+  (`review-write-entry-v3`'s own real shape: the same value at both the first and last line is a
+  conflict, not a tiebreak).
+- **Q3:** provenance recorded from day one. New sibling field `verdict_source: "declared" |
+  "extracted"`, present only when `verdict` itself is set. `extracted` is the only value this binary
+  ever writes today (`author()`'s own scan); `declared` is reserved for a future structured channel a
+  member's own boundary reports directly — no such channel exists yet (Ruling C12 gives a member no way
+  to write frontmatter at all).
+
+**When C1 style-2 is separately ruled on** (NOTES D8/B3 — a loop terminating on a member-set `verdict`
+field, autonomous, no human in it), that ruling MUST decide explicitly whether `extracted` provenance is
+trustworthy enough to gate loop continuation. It must not be reachable by writing the obvious `until:
+review.verdict == APPROVED` / `verdict === "APPROVED"` check alone — `verdict_source` exists so that
+decision is forced into the open, never defaulted into by omission the way today's actual safeguard
+("nobody wrote the reader yet") would otherwise let it be.
+
+**The premise correction.** PR #31's own comments (validate.ts:306, types.ts:393-395, the generated
+`artifact.md` cheatsheet row) said extraction was rejected, flatly. What Ruling 2026-08-23 actually
+rejected was SENTIMENT-GUESSING — an extractor tuned and tested entirely against nine-of-nine CHANGES
+REQUESTED would meet a real APPROVED for the first time in production, untested. This unit's STRUCTURAL
+extraction (an anchored line, exactly one match required) is a different mechanism the earlier ruling
+never evaluated. All three comments rewritten to say what was actually rejected and what is now
+accepted, rather than leaving code that visibly contradicts the code one line below it.
+
+**Phase 2 (implemented).** `adapters.ts#extractVerdict` — the whole-document anchored-line scan
+described above (`VERDICT_LINE_RE = /^[ \t]*(?:Verdict:[ \t]*)?(APPROVED|CHANGES REQUESTED)[ \t]*$/gm`,
+`matchAll` not `exec`). Called from `author()`, scoped to `req.kind === "review"` — the exact predicate
+`board/render/shell.ts`'s own gate card already uses to decide whether to show a verdict badge, so a
+spec or brief ending in a coincidental "APPROVED" line is never scanned. `verdict`/`verdict_source:
+extracted` are pushed onto the frontmatter only when a single match is found — absent otherwise, exactly
+`sandbox`'s own "present only when relevant" shape, never a written `null`. `verdict_source` added to
+`ARTIFACT_SCHEMA` (validate.ts), `Artifact` (types.ts), and the repo.ts loader (`?? null`, matching every
+other optional artifact field). `docs/guide/04-workflow/06-first-loop.md` gains a short note after
+Corvid's own quoted `**CHANGES REQUESTED**` line, telling a studio author to give their own critic's
+prompt the same closing-line instruction — the "tell the critic the format" half of the ruling this repo
+can actually reach (real critic prompts live in each studio, outside this codebase).
+
+**Tests.** `tests/adapters.test.ts` — new "the verdict bridge" describe block (8 tests): bare-enum
+extraction, `Verdict: `-prefixed extraction, the first-and-last-line conflict (`review-write-entry-v3`'s
+own real shape) yielding no verdict at all, no declared line at all, a substring false-positive guard
+("no changes requested" inside prose never trips it), scoping to `kind: review` only, uniformity across
+a native and a cli member, and confirmation the verdict line is never stripped from the body (asserted
+by counting — it appears twice: once authored into frontmatter, once still in the critic's own prose).
+`tests/validate.test.ts` — new `verdict_source` describe block (4 tests): absence, round-trip for both
+enum values, BAD_ENUM on an unrecognized value.
+
+## Verification
+
+`bun test` → 1581 pass, 9 skip, 0 fail (adapters.test.ts: 110 pass, +8 new; validate.test.ts: 102 pass,
++4 new). `bunx tsc --noEmit` clean. `bun run docs:generate` — regenerated
+`docs/guide/05-reference/cheatsheets/artifact.md` to add the `verdict_source` row and reword `verdict`'s
+own row; committed as part of this change. `./levare validate fixtures/golden` → `valid` (the same
+pre-existing `SANDBOX_UNAVAILABLE`/`UNCOVERABLE_EXPECTED_KIND` warnings as every prior entry in this
+file, unrelated to this change).
+
+`levare validate ~/source/jot-studio` (the goal's own verification target — nine real reviews, seven or
+eight expected to populate, `review-write-entry-v3` expected to yield null) could not be run: this
+sandbox has no network access and `~/source/jot-studio` is not mounted here, the same known limitation
+recorded against every prior goal that named a `~/source/*` path. The mechanism was verified instead
+against the exact three shapes the Conductor's own earlier audit already recorded in validate.ts's
+schema doc (bare last line, `Verdict: `-prefixed, and the first-and-last conflict) as synthetic fixtures
+in `tests/adapters.test.ts`, reproducing all three outcomes the goal predicts. `bun run verify:head`
+could not run either — no `gh` on PATH in this sandbox, the same class of limitation, unrelated to this
+change's own correctness. A run against the real studio, and a real `gh`-backed CI check, settle both if
+either of these is wrong.
