@@ -17,6 +17,7 @@ import {
   buildRemoteSandboxPolicy,
   buildNativeSandboxPolicy,
   nativeBunfsExtractionBase,
+  ensureNativeBunfsExtractionBase,
   type CliSpawn,
   type InvokeRequest,
   type NativeBoundary,
@@ -912,12 +913,62 @@ describe("native adapter — sandboxed real spawn (Finding 75, part 2)", () => {
   });
 
   describe("nativeBunfsExtractionBase — the per-uid extraction target formula (goal item 1)", () => {
-    test("POSIX: {tmpdir()}/claude-{uid}, mirroring the vendored extractFromBunfs.js exactly", () => {
-      expect(nativeBunfsExtractionBase({ platform: "linux", getuid: () => 501 })).toBe(join(tmpdir(), "claude-501"));
+    test("linux: {os.tmpdir()}/claude-{uid} — extractFromBunfs.js's own POSIX branch calls plain os.tmpdir() here too", () => {
+      expect(nativeBunfsExtractionBase({ platform: "linux", getuid: () => 501, env: {} })).toBe(join(tmpdir(), "claude-501"));
+    });
+
+    // Finding 75 (part 3 — the regression this fixes): part 2's own formula called plain `node:os`'s
+    // `tmpdir()` unconditionally, which on a real macOS host returns `$TMPDIR` (typically
+    // `/var/folders/...`) — a directory tree with no relationship to `/tmp` at all (unlike `/tmp` itself,
+    // which is ONLY ever a symlink to `/private/tmp`; these are not the same path canonicalized two ways).
+    // `extractFromBunfs.js`'s own `tmpdir()` helper hardcodes `/tmp` on darwin specifically to bypass
+    // `os.tmpdir()` — this is the one platform branch part 2's own test never covered, and exactly the gap
+    // that shipped the bug: a live macOS `kind: native` dispatch granted a directory the inner CLI's own
+    // scratch machinery (bunfs extraction, and — sharing this identical per-uid base — the Bash tool's own
+    // per-session scratch dirs) never used, denying every real spawn.
+    test("darwin: hardcodes /tmp, never os.tmpdir() — the exact regression this fixes", () => {
+      expect(nativeBunfsExtractionBase({ platform: "darwin", getuid: () => 501, env: {} })).toBe(join("/tmp", "claude-501"));
+    });
+
+    test("CLAUDE_CODE_TMPDIR override wins over the platform default on every POSIX platform", () => {
+      expect(nativeBunfsExtractionBase({ platform: "darwin", getuid: () => 501, env: { CLAUDE_CODE_TMPDIR: "/custom/tmp" } })).toBe(join("/custom/tmp", "claude-501"));
+      expect(nativeBunfsExtractionBase({ platform: "linux", getuid: () => 501, env: { CLAUDE_CODE_TMPDIR: "/custom/tmp" } })).toBe(join("/custom/tmp", "claude-501"));
     });
 
     test("win32: {tmpdir()}/claude — no per-uid suffix (the vendored file's own documented exception)", () => {
-      expect(nativeBunfsExtractionBase({ platform: "win32", getuid: () => 501 })).toBe(join(tmpdir(), "claude"));
+      expect(nativeBunfsExtractionBase({ platform: "win32", getuid: () => 501, env: {} })).toBe(join(tmpdir(), "claude"));
+    });
+  });
+
+  // Finding 75 (part 3): `sandbox.ts#canon`'s own ENOENT fallback (falls back to the un-resolved literal
+  // path when the target doesn't exist yet) would silently defeat this grant on a host's first-ever native
+  // dispatch, before the inner CLI has ever created its own per-uid scratch dir — see
+  // `ensureNativeBunfsExtractionBase`'s own doc. Proven against a scratch `CLAUDE_CODE_TMPDIR`, never the
+  // real host temp dir.
+  describe("ensureNativeBunfsExtractionBase — pre-creates the base so canon() can realpath it (goal item 1 follow-on)", () => {
+    test("creates the directory when it doesn't exist yet, and returns the same path nativeBunfsExtractionBase computes", () => {
+      const scratchRoot = mkdtempSync(join(tmpdir(), "levare-bunfs-base-test-"));
+      try {
+        const opts = { platform: "linux" as const, getuid: () => 777, env: { CLAUDE_CODE_TMPDIR: scratchRoot } };
+        const expected = nativeBunfsExtractionBase(opts);
+        expect(existsSync(expected)).toBe(false);
+        const dir = ensureNativeBunfsExtractionBase(opts);
+        expect(dir).toBe(expected);
+        expect(existsSync(dir)).toBe(true);
+      } finally {
+        rmSync(scratchRoot, { recursive: true, force: true });
+      }
+    });
+
+    test("idempotent — calling it again when the directory already exists (a prior dispatch's own extraction) does not throw", () => {
+      const scratchRoot = mkdtempSync(join(tmpdir(), "levare-bunfs-base-test-"));
+      try {
+        const opts = { platform: "linux" as const, getuid: () => 777, env: { CLAUDE_CODE_TMPDIR: scratchRoot } };
+        ensureNativeBunfsExtractionBase(opts);
+        expect(() => ensureNativeBunfsExtractionBase(opts)).not.toThrow();
+      } finally {
+        rmSync(scratchRoot, { recursive: true, force: true });
+      }
     });
   });
 });
