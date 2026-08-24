@@ -43,10 +43,12 @@ you — add it to your shell profile.
 ### Installing by hand
 
 If you'd rather not pipe a script into `sh`: from the [releases page](https://github.com/go4cas/levare/releases),
-download the binary for your platform (`levare-darwin-arm64`, `levare-darwin-x64`, `levare-linux-x64`,
-or `levare-linux-arm64`) and the `SHA256SUMS` file alongside it, verify, then install:
+download the compressed binary for your platform (`levare-darwin-arm64.gz`, `levare-darwin-x64.gz`,
+`levare-linux-x64.gz`, or `levare-linux-arm64.gz`) and the `SHA256SUMS` file alongside it, decompress,
+verify, then install:
 
 ```sh
+gunzip levare-<platform>.gz
 sha256sum -c SHA256SUMS --ignore-missing   # macOS: shasum -a 256 -c
 chmod +x levare-<platform>
 mv levare-<platform> /usr/local/bin/levare
