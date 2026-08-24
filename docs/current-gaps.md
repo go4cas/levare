@@ -1413,3 +1413,29 @@ for what the evidence names and remains untested after this fix.
 Live verification is still owed — this fix, like part 2 itself, needs a live macOS run (STEP C passing,
 and a fresh `code` dispatch against a real merge-gated unit) before it can be called done, not merely
 constructed correctly.
+
+**Round 2 — the first live macOS run found a second bug, in the probe/policy boundary, not the formula.**
+STEP A and A2 passed; STEP C failed, with `claude-{uid}` absent from the generated profile ENTIRELY —
+not the wrong path, just gone. Root cause: `buildNativeSandboxPolicy` gates the whole grant behind the
+real, un-injected `isCompiledBuild()`, and `scripts/repro-r4-sandbox-native-worker.ts` can only ever be
+invoked via `bun run` — itself a source run, where that gate is unconditionally false. STEP C's own
+`buildNativeSandboxPolicy` call silently dropped the grant it exists to test, and A2 couldn't have caught
+this either: it builds a profile directly from a synthetic fixture, never routing through
+`buildNativeSandboxPolicy` at all, so it proved `canon()` resolution works in isolation while saying
+nothing about whether the real value reaches the real policy — a probe that can't fail for the reason
+production breaks. The `nativeBunfsExtractionBase` formula fix itself was confirmed correct throughout
+(the live dump showed the base `/tmp/claude-502` being computed right; it just never reached the profile).
+
+Fixed by adding `isCompiledBuildFn` — an injectable override on `buildNativeSandboxPolicy`, mirroring this
+module's own established pattern (`which`/`probe`/`getconf` elsewhere), defaulting to the real
+`isCompiledBuild` everywhere except where a probe explicitly forces the compiled-build branch. STEP C now
+passes `() => true` (mirroring a real compiled dispatch) instead of silently building a policy with the
+grant missing. A new STEP A3 (`nativeBunfsGrantReachesRealPolicy`, always-run, host-independent) closes
+the gap A2 left: it builds the policy through the real `buildNativeSandboxPolicy` with the same forced
+override and asserts the grant reaches both `policy.writablePaths` and the profile the generator emits
+from it — "does it reach the real policy" and "does the profile generator read it," not just "does
+canon() resolve a directory in a vacuum." `bun test` coverage was added at the same seam
+(`buildNativeSandboxPolicy`'s own test, forcing the override) so this is provable without any live host.
+
+Still owed: a SECOND live macOS run, now with STEP C actually exercising the grant it was meant to from
+the start.
