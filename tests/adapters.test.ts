@@ -2109,38 +2109,97 @@ describe("the verdict bridge (Ruling 2026-08-24, Finding 118) — author() reads
     expect(doc).toContain("verdict_source: extracted");
   });
 
-  test("a value declared at BOTH the first and last line is a conflict, never a tiebreak — yields no verdict at all (review-write-entry-v3's real shape)", () => {
+  test("a value declared at BOTH the first and last line is a conflict, never a tiebreak — yields no verdict, but verdict_source records that the scan ran and found nothing usable (Findings 118/133)", () => {
     const repo = loadRepo(ROOT);
     const native: NativeBoundary = { invoke: () => docWith("CHANGES REQUESTED\n\nRewrite the checkout handler before I can sign off.\n\nCHANGES REQUESTED") };
     const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "review" }], native, remote: remoteMock });
     const { doc } = runner.produce("lyra", "review", "checkout-flow", "storefront");
     expect(doc).not.toContain("verdict:");
-    expect(doc).not.toContain("verdict_source:");
+    expect(doc).toContain("verdict_source: not-found");
   });
 
-  test("no declared line at all leaves verdict absent, never guessed from the prose", () => {
+  test("no declared line at all leaves verdict absent, never guessed from the prose — verdict_source still records the miss (Findings 118/133)", () => {
     const repo = loadRepo(ROOT);
     const native: NativeBoundary = { invoke: () => docWith("This mostly looks fine, some nits to consider before shipping.") };
     const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "review" }], native, remote: remoteMock });
     const { doc } = runner.produce("lyra", "review", "checkout-flow", "storefront");
     expect(doc).not.toContain("verdict:");
+    expect(doc).toContain("verdict_source: not-found");
   });
 
-  test("the enum value appearing only as a substring inside ordinary prose never trips the scan", () => {
+  test("the enum value appearing only as a substring inside ordinary prose never trips the scan, but the miss is still recorded (Findings 118/133)", () => {
     const repo = loadRepo(ROOT);
     const native: NativeBoundary = { invoke: () => docWith("No changes requested — ship it as-is.") };
     const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "review" }], native, remote: remoteMock });
     const { doc } = runner.produce("lyra", "review", "checkout-flow", "storefront");
     expect(doc).not.toContain("verdict:");
+    expect(doc).toContain("verdict_source: not-found");
   });
 
-  test("scoped to kind: review only — a spec ending in the identical line is never scanned", () => {
+  test("scoped to kind: review only — a spec ending in the identical line is never scanned, and never gets a verdict_source either", () => {
     const repo = loadRepo(ROOT);
     const native: NativeBoundary = { invoke: () => docWith("Server-rendered checkout.\n\nAPPROVED") };
     const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native, remote: remoteMock });
     const { doc } = runner.produce("lyra", "spec", "checkout-flow", "storefront");
     expect(doc).toContain("kind: spec");
     expect(doc).not.toContain("verdict:");
+    expect(doc).not.toContain("verdict_source:");
+  });
+
+  // Findings 118/133: the matcher now tolerates markdown decoration around the token while keeping the
+  // strict whole-line anchor — the guard that stops ordinary prose mentioning the token from matching.
+  test("a backtick-wrapped verdict line is extracted the same as a bare one", () => {
+    const repo = loadRepo(ROOT);
+    const native: NativeBoundary = { invoke: () => docWith("One note before I sign off: name the idempotency key column.\n\n`CHANGES REQUESTED`") };
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "review" }], native, remote: remoteMock });
+    const { doc } = runner.produce("lyra", "review", "checkout-flow", "storefront");
+    expect(doc).toContain("verdict: CHANGES REQUESTED");
+    expect(doc).toContain("verdict_source: extracted");
+  });
+
+  test("a bold-wrapped verdict line is extracted the same as a bare one", () => {
+    const repo = loadRepo(ROOT);
+    const native: NativeBoundary = { invoke: () => docWith("Looks solid overall.\n\n**APPROVED**") };
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "review" }], native, remote: remoteMock });
+    const { doc } = runner.produce("lyra", "review", "checkout-flow", "storefront");
+    expect(doc).toContain("verdict: APPROVED");
+    expect(doc).toContain("verdict_source: extracted");
+  });
+
+  test("an italic (underscore) verdict line is extracted the same as a bare one", () => {
+    const repo = loadRepo(ROOT);
+    const native: NativeBoundary = { invoke: () => docWith("Ship it.\n\n_APPROVED_") };
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "review" }], native, remote: remoteMock });
+    const { doc } = runner.produce("lyra", "review", "checkout-flow", "storefront");
+    expect(doc).toContain("verdict: APPROVED");
+    expect(doc).toContain("verdict_source: extracted");
+  });
+
+  test("a `Verdict: `-prefixed line wrapped in bold is extracted too", () => {
+    const repo = loadRepo(ROOT);
+    const native: NativeBoundary = { invoke: () => docWith("Rewrite the checkout handler first.\n\n**Verdict: CHANGES REQUESTED**") };
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "review" }], native, remote: remoteMock });
+    const { doc } = runner.produce("lyra", "review", "checkout-flow", "storefront");
+    expect(doc).toContain("verdict: CHANGES REQUESTED");
+    expect(doc).toContain("verdict_source: extracted");
+  });
+
+  test("decoration stripping does not turn ordinary prose mentioning the token into a match", () => {
+    const repo = loadRepo(ROOT);
+    const native: NativeBoundary = { invoke: () => docWith("This code path renders `CHANGES REQUESTED` as a status label in the UI.") };
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "review" }], native, remote: remoteMock });
+    const { doc } = runner.produce("lyra", "review", "checkout-flow", "storefront");
+    expect(doc).not.toContain("verdict:");
+    expect(doc).toContain("verdict_source: not-found");
+  });
+
+  test("two conflicting decorated verdict lines still yield no verdict, even after stripping", () => {
+    const repo = loadRepo(ROOT);
+    const native: NativeBoundary = { invoke: () => docWith("`CHANGES REQUESTED`\n\nRewrite the checkout handler before I can sign off.\n\n**CHANGES REQUESTED**") };
+    const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "review" }], native, remote: remoteMock });
+    const { doc } = runner.produce("lyra", "review", "checkout-flow", "storefront");
+    expect(doc).not.toContain("verdict:");
+    expect(doc).toContain("verdict_source: not-found");
   });
 
   test("the bridge is uniform across member kinds — a cli critic's stdout is extracted exactly like a native critic's doc", () => {
