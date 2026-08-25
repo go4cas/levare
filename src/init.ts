@@ -262,6 +262,25 @@ Run by the Orchestrator to promote an idea into a project (§7): create the remo
 clone it locally, write the \`projects/<name>.md\` pointer, ask for the deploy target and
 house rules, commit. \`scripts/create-repo.sh\` is the remote-creation half of that recipe —
 swap it for whatever your host (GitHub, GitLab, a bare internal remote) actually needs.
+
+## House rules
+
+A project's house rules go in a \`## House rules\` section in its own pointer file. They are
+the studio's standing instructions for that project, and they reach every member that works
+on it — including the critic, which is what makes them enforceable rather than aspirational.
+
+When asking for house rules, propose this one and let the Conductor keep or drop it:
+
+> Every behaviour change ships with a test that fails without it, once the project has a
+> way to run tests. If a unit deliberately ships none, the spec says why.
+
+It earns its place from real runs, not taste: units built before it shipped specs listing
+manual verification steps and no tests at all; units built under it shipped tests the spec
+never asked for, because the builder knew the critic would check. The trailing clause
+matters — a project with no test command yet should not be held to a rule it cannot satisfy.
+
+House rules are per-project by design. A research or documentation project wants different
+ones, or none.
 `;
 
 const SCRIPT_CREATE_REPO = `#!/usr/bin/env bash
