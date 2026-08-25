@@ -435,7 +435,9 @@
       cap.className = 'turn__caption mono';
       var time = document.createElement('span');
       time.className = 'turn__time';
-      time.title = date.toISOString();
+      var iso = date.toISOString();
+      time.setAttribute('data-at', iso);
+      time.title = iso;
       time.textContent = relativeCaptionText(0);
       cap.appendChild(time);
       return cap;
@@ -527,7 +529,7 @@
         var body = form.closest('.orch').querySelector('.orch__body');
         // The Conductor's own message: right-aligned, accent bubble (item 3) \u2014 merges into the
         // previous turn if the last thing said was also the Conductor's (item 4).
-        appendTurnMessage(body, 'user', function () {
+        var userTurnEl = appendTurnMessage(body, 'user', function () {
           var p = document.createElement('p');
           p.className = 'turn__body';
           p.textContent = text;
@@ -535,8 +537,20 @@
         });
         input.value = '';
 
+        // NOTES V11-CONV-SYNC: a turn's `data-at` is stamped from THIS tab's own clock the moment it's
+        // built (`buildCaption`) \u2014 a guess, never exactly the server's `appendExchange` instant. Once
+        // the response confirms the exchange was actually persisted, its authoritative `at` values
+        // overwrite the guess in place, so a later `syncOrchTail` resync can recognize this exact turn
+        // in the fetched tail by identity instead of skipping the whole region (see `syncOrchTail`).
+        function restampTurn(turnEl, iso) {
+          var t = turnEl && turnEl.querySelector('.turn__time[data-at]');
+          if (!t || typeof iso !== 'string') return;
+          t.setAttribute('data-at', iso);
+          t.title = iso;
+        }
+
         function showReply(replyText) {
-          appendTurnMessage(body, 'orch', function () {
+          return appendTurnMessage(body, 'orch', function () {
             var p = document.createElement('p');
             p.className = 'turn__body';
             p.textContent = replyText;
@@ -583,8 +597,12 @@
         }).then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
           .then(function (r) {
             pendingTurn.remove();
-            if (r.ok && r.data && r.data.ok) { showReply(r.data.reply || ''); }
-            else { showError((r.data && (r.data.reason || r.data.error)) || 'The Orchestrator could not answer.'); }
+            if (r.ok && r.data && r.data.ok) {
+              restampTurn(userTurnEl, r.data.conductorAt);
+              restampTurn(showReply(r.data.reply || ''), r.data.orchestratorAt);
+            } else {
+              showError((r.data && (r.data.reason || r.data.error)) || 'The Orchestrator could not answer.');
+            }
           })
           .catch(function () {
             pendingTurn.remove();
@@ -667,7 +685,12 @@
        page's own extras — gate-summon templates, the registry editor overlay — swapped into a stable
        `[data-extras-host]` sibling) instead of a full page load. The app shell — header, rail, the
        Orchestrator panel (and thus its conversation), and the one persistent SSE connection below — is
-       never touched by a swap: only `.main` and `[data-extras-host]` are ever replaced. This fixes the
+       never REPLACED by a swap: only `.main` and `[data-extras-host]` ever get a real DOM replacement.
+       A few individual, marked regions within that untouched shell — the version chip (Finding 131),
+       the orch tail/action/briefing — do still get their CONTENTS resynced on every swap (see
+       `syncAppVersion`/`syncOrchTail`/`syncOrchAction`/`syncOrchBriefing` below); the rest of the
+       header and the whole rail carry no such marker yet and stay frozen at whatever was true on the
+       tab's last cold GET (a known sibling gap — NOTES V11-CONV-SYNC). This fixes the
        hang (rapid full navigations were exhausting Chrome's ~6-connections-per-origin HTTP/1.1 limit —
        curl answered the server in 0.138s during the episode; the browser just had nowhere left to
        queue the newest request), the conversation wipe, and the per-click asset/SSE churn, all at
@@ -755,21 +778,44 @@
       }, function () { return null; });
     }
 
-    /* NOTES V11-CONV: resyncs ONLY the persisted-tail region (`[data-orch-tail]`) when the destination
-       page's scope differs from the panel's current one — e.g. client-navigating from the studio into
-       a project. Deliberately gated on an actual scope CHANGE, not run on every swap: a same-scope
-       refresh (including the SSE `reload` → `refreshCurrent()` path that fires right after this very
-       tab sends a message) would otherwise re-render a persisted tail that now includes the exchange
-       this tab already appended live a moment ago, showing it twice. The live-appended turns for
-       whatever scope was showing before a genuine scope change stay in the DOM as-is (never cleared —
-       consistent with UI10's original choice to never touch `.orch__body`'s message history on a
-       swap); recorded as a known, accepted limitation in NOTES V11-CONV. */
+    /* NOTES V11-CONV-SYNC (Findings 57/131): resyncs the persisted-tail region (`[data-orch-tail]`) on
+       EVERY refresh, not just a scope change — `loadConversationTail` is re-derived fresh per request
+       same as everything else in this module (PRD §9, invariant 2), so a same-scope SSE `reload` (the
+       common case on the studio dashboard, whose scope never changes) fetches a genuinely newer tail
+       just as often as a scope change does; skipping it left Finding 57's rail card serving whatever
+       exchange was true at the last cold GET, sometimes days old.
+       The duplication risk the old scope-gate was guarding against is real but narrower than "any
+       resync": live-appended turns (`appendTurnMessage`) land as `.orch__body` children AFTER the tail
+       block, so once a resync includes an exchange this tab already showed live, that exchange would
+       render twice — once inside the freshly-applied tail, once as the live sibling still sitting below
+       it. Reconciled by IDENTITY instead of skipped wholesale: every turn caption (server-rendered via
+       `render/components.ts#turnCaption`, or client-built via `buildCaption` above) carries a `data-at`
+       — the server's own `conversation.ts#Turn.at` ISO stamp for a persisted turn, or this tab's local
+       clock guess for a turn not yet confirmed persisted, overwritten with the authoritative stamp once
+       `/orchestrator/message`'s response confirms it (see the composer's `restampTurn` above) — so a
+       live turn that's now also present in the fetched tail carries the EXACT same `data-at` the tail's
+       copy does, and can be told apart, by that identity, from any live turn the tail doesn't have yet
+       (a genuine in-flight race, or another scope's history left in the DOM per UI10's original
+       "never touch `.orch__body`'s history on a swap" choice — neither ever removed). */
     function syncOrchTail(data) {
       var orch = document.querySelector('.orch[data-scope]');
-      if (!orch || typeof data.scope !== 'string' || orch.getAttribute('data-scope') === data.scope) return;
-      orch.setAttribute('data-scope', data.scope);
+      if (!orch || typeof data.orchTail !== 'string') return;
+      if (typeof data.scope === 'string' && orch.getAttribute('data-scope') !== data.scope) {
+        orch.setAttribute('data-scope', data.scope);
+      }
       var tail = document.querySelector('[data-orch-tail]');
-      if (tail && typeof data.orchTail === 'string') tail.innerHTML = data.orchTail;
+      if (!tail) return;
+      tail.innerHTML = data.orchTail;
+      var covered = {};
+      tail.querySelectorAll('.turn__time[data-at]').forEach(function (t) { covered[t.getAttribute('data-at')] = true; });
+      var body = orch.querySelector('.orch__body');
+      if (!body) return;
+      Array.prototype.slice.call(body.children).forEach(function (child) {
+        if (!child.classList.contains('turn')) return; // not a live-appended turn (tail/action/briefing wrappers)
+        var stamps = child.querySelectorAll('.turn__time[data-at]');
+        var nowCoveredByTail = stamps.length > 0 && Array.prototype.every.call(stamps, function (s) { return covered[s.getAttribute('data-at')]; });
+        if (nowCoveredByTail) child.remove();
+      });
     }
 
     /* NOTES ORCH-STALE-CARD: resyncs the run view's own gate card (`[data-orch-action]`, board/
@@ -795,6 +841,17 @@
     function syncOrchBriefing(data) {
       var host = document.querySelector('[data-orch-briefing]');
       if (host && typeof data.orchBriefing === 'string') host.innerHTML = data.orchBriefing;
+    }
+
+    /* Finding 131: the header's version chip, unconditional every swap — same reasoning as
+       `syncOrchAction` above (a `--define`-stamped build constant carries no "already shown live" case
+       to guard against; it's the same string on every response this process ever serves). The header is
+       otherwise outside every swap region entirely (`swapFragment` only ever touches `.main` and
+       `[data-extras-host]`), so without this the chip stayed frozen at whatever the tab's own last cold
+       GET saw, even once the daemon had since restarted on a newer commit. */
+    function syncAppVersion(data) {
+      var host = document.querySelector('[data-app-version]');
+      if (host && typeof data.appVersion === 'string') host.innerHTML = data.appVersion;
     }
 
     /* amendment 1 §2 R4, tier 2 (card, 1-10s resolution/refetch): a same-URL refresh (the SSE reload
@@ -830,13 +887,17 @@
     }
 
     /* Replaces `.main` outright (its own opening-tag attributes, e.g. `data-highlight`, differ per
-       page) and re-fills `[data-extras-host]` — never the rail or the app header, which this function
-       never even looks at. The Orchestrator `<aside>` itself keeps UI10's own conversation-preserving
-       guarantee — its history in `.orch__body` is never rebuilt — except for three regions carved out
-       of it on purpose: the persisted-tail resync (scope-gated, see `syncOrchTail`), and the gate-card
-       action and briefing resyncs (both unconditional, see `syncOrchAction`/`syncOrchBriefing`, NOTES
-       ORCH-STALE-CARD) — the latter two apply together, on every swap, since the briefing sentence
-       names the same runner-side fact the action region's card renders. */
+       page) and re-fills `[data-extras-host]` — never the rail or the rest of the app header, which
+       this function never looks at (see NOTES V11-CONV-SYNC above: a known, still-open sibling gap).
+       The Orchestrator `<aside>` itself keeps UI10's own conversation-preserving guarantee — its
+       history in `.orch__body` is never rebuilt — except for three regions carved out of it on purpose:
+       the persisted-tail resync (identity-reconciled every swap, not merely scope-gated — see
+       `syncOrchTail`, Finding 57), and the gate-card action and briefing resyncs (unconditional, see
+       `syncOrchAction`/`syncOrchBriefing`, NOTES ORCH-STALE-CARD) — the latter two apply together, on
+       every swap, since the briefing sentence names the same runner-side fact the action region's card
+       renders. The header's version chip (Finding 131, see `syncAppVersion`) gets the same unconditional
+       treatment despite living outside `.orch`/`.main` entirely — it needs its own marker precisely
+       because this function never looks at the header. */
     function swapFragment(data, sameUrl) {
       var oldMain = document.querySelector('.main');
       if (!oldMain || !oldMain.parentNode) return false;
@@ -870,6 +931,7 @@
       syncOrchTail(data);
       syncOrchAction(data);
       syncOrchBriefing(data);
+      syncAppVersion(data);
 
       if (typeof data.title === 'string' && data.title) document.title = decodeTitleEntities(data.title);
       applyHighlight(newMain);

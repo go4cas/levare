@@ -1476,7 +1476,11 @@ describe("the app header carries the wordmark, version chip, orchestrator status
       expect((html.match(/<header class="apphead">/g) || []).length).toBe(1);
       expect(header).toContain('class="logo"');
       expect(header).toContain(">levare<");
-      expect(header).toMatch(/<span class="apphead__ver mono">v[\d.]+<\/span>/);
+      // Finding 131: wrapped in the `<!--appversion-->`/`<!--/appversion-->` markers and carries
+      // `data-app-version` — `board/serve.ts#extractFragment` slices it out the same way `orchAction`/
+      // `orchBriefing` already do, so `assets/app.js#syncAppVersion` can resync it on every client-side
+      // swap (the header itself sits outside every swap region otherwise).
+      expect(header).toMatch(/<span class="apphead__ver mono" data-app-version><!--appversion-->v[\d.]+<!--\/appversion--><\/span>/);
       expect((header.match(/data-theme-toggle/g) || []).length).toBe(1);
       expect(header).toContain('class="apphead__divider"');
     });

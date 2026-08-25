@@ -109,6 +109,16 @@ export function parseConversation(content: string): Turn[] {
   return turns;
 }
 
+/** `appendExchange`'s own return type: the plain `TxResult` plus, ONLY on success, the exact `at`
+ * stamps the two just-written turns carry on disk (NOTES V11-CONV-SYNC) — the identity
+ * `board/serve.ts#/orchestrator/message` hands back to the client so it can overwrite its own
+ * optimistic (client-clock) turn timestamps with the authoritative (server-clock) ones a later
+ * `syncOrchTail` resync will see in the persisted tail. Omitted on failure: nothing was written, so
+ * there is no identity to hand back, and the client's optimistic turn correctly never matches the tail
+ * (staying visible forever, as it should — see `appendExchange`'s own best-effort-persistence note at
+ * its call site). */
+export type AppendExchangeResult = TxResult & { conductorAt?: string; orchestratorAt?: string };
+
 /**
  * Append one COMPLETED exchange to `scope`'s current-month segment, creating the directory/file on
  * first use, and commit it as `levare-runner` via `transactionalWrite` — ONE commit per exchange,
@@ -117,7 +127,7 @@ export function parseConversation(content: string): Turn[] {
  * so this only ever catches a genuine, unrelated pre-existing problem elsewhere in the studio, never
  * the conversation file itself.
  */
-export function appendExchange(root: string, scope: string, conductorText: string, orchestratorText: string, now: Date = new Date()): TxResult {
+export function appendExchange(root: string, scope: string, conductorText: string, orchestratorText: string, now: Date = new Date()): AppendExchangeResult {
   const path = conversationPath(root, scope, now);
   const existing = existsSync(path) ? readFileSync(path, "utf8") : null;
   const conductorAt = now.toISOString();
@@ -130,10 +140,11 @@ export function appendExchange(root: string, scope: string, conductorText: strin
     formatTurn({ speaker: "orchestrator", at: orchestratorAt, text: orchestratorText });
 
   mkdirSync(dirname(path), { recursive: true });
-  return transactionalWrite(root, [{ path, content }], `conversation: ${scope} exchange`, runnerCommit, () => {
+  const result = transactionalWrite(root, [{ path, content }], `conversation: ${scope} exchange`, runnerCommit, () => {
     const v = validatePath(root);
     return v.ok ? null : formatValidationErrors(v.errors);
   });
+  return result.ok ? { ...result, conductorAt, orchestratorAt } : result;
 }
 
 /** Load `scope`'s CURRENT-month segment only — older months stay on disk, greppable (goal item 3's

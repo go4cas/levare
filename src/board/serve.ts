@@ -243,6 +243,13 @@ export interface Fragment {
    * stale count after the region below it had already resynced to zero. Applied on every refresh, same
    * as `orchAction`, for the same reason. */
   orchBriefing: string;
+  /** Finding 131: the app header's version chip, sliced from `<!--appversion-->`/`<!--/appversion-->`
+   * (render/shell.ts#appHeader) — the header itself sits outside `main`/`extras` (never touched by a
+   * swap, NOTES UI10), so this needs its own marker exactly like `orchAction`/`orchBriefing` above.
+   * Applied on every refresh: the value is a `--define`-stamped constant, identical for every request
+   * this process serves, so it carries no "already shown live" case to guard against — same reasoning
+   * as `orchAction`. */
+  appVersion: string;
 }
 
 const FRAGMENT_HEADER = "x-levare-fragment";
@@ -267,6 +274,7 @@ export function extractFragment(rendered: string): Fragment | null {
   const orchTailMatch = /<!--orchtail-->([\s\S]*?)<!--\/orchtail-->/.exec(rendered);
   const orchActionMatch = /<!--orchaction-->([\s\S]*?)<!--\/orchaction-->/.exec(rendered);
   const orchBriefingMatch = /<!--orchbriefing-->([\s\S]*?)<!--\/orchbriefing-->/.exec(rendered);
+  const appVersionMatch = /<!--appversion-->([\s\S]*?)<!--\/appversion-->/.exec(rendered);
   return {
     title: titleMatch[1],
     main: mainHtml,
@@ -279,6 +287,7 @@ export function extractFragment(rendered: string): Fragment | null {
     orchTail: orchTailMatch ? orchTailMatch[1] : "",
     orchAction: orchActionMatch ? orchActionMatch[1] : "",
     orchBriefing: orchBriefingMatch ? orchBriefingMatch[1] : "",
+    appVersion: appVersionMatch ? appVersionMatch[1] : "",
   };
 }
 function serveAsset(name: string): Response {
@@ -561,7 +570,11 @@ export const ROUTES: RouteDef[] = [
         console.error(`levare: failed to persist Orchestrator conversation exchange (scope '${scope}'): ${persisted.error}`);
       }
       ctx.broadcast(`orchestrator:${JSON.stringify({ text: reply })}`);
-      return json({ ok: true, reply });
+      // NOTES V11-CONV-SYNC: the authoritative `at` stamps `appendExchange` just wrote to disk, absent
+      // when persistence failed (nothing was written, so there's no identity to hand back — see
+      // `AppendExchangeResult`'s own comment). `syncOrchTail`'s later resync uses these to recognize the
+      // turns this tab already showed live, instead of skipping the whole tail region on every refresh.
+      return json({ ok: true, reply, conductorAt: persisted.ok ? persisted.conductorAt : null, orchestratorAt: persisted.ok ? persisted.orchestratorAt : null });
     },
   },
 ];

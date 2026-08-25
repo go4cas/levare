@@ -451,6 +451,14 @@ function flush(): Promise<void> {
 // already in it, to prove it survives), and the extras host.
 // ---------------------------------------------------------------------------
 function buildPage(doc: FakeDocument, opts: { path?: string } = {}) {
+  // Finding 131: the version chip lives in the app header, a sibling of `.app` (never inside it, per
+  // render/shell.ts#shell) — appended directly to `doc.body`, same as `.app` itself below.
+  const appVersion = doc.createElement("span");
+  appVersion.setAttribute("class", "apphead__ver mono");
+  appVersion.setAttribute("data-app-version", "");
+  appVersion.textContent = "v0.0.1-stale";
+  doc.body.appendChild(appVersion);
+
   const app = doc.createElement("div");
   app.setAttribute("class", "app");
   doc.body.appendChild(app);
@@ -532,7 +540,7 @@ function buildPage(doc: FakeDocument, opts: { path?: string } = {}) {
   extrasHost.appendChild(oldExtra);
   doc.body.appendChild(extrasHost);
 
-  return { app, rail, railLink, main, inAppLink, externalLink, downloadLink, orch, orchBody, existingTurn, orchTail, orchAction, orchBriefing, extrasHost };
+  return { app, rail, railLink, main, inAppLink, externalLink, downloadLink, orch, orchBody, existingTurn, orchTail, orchAction, orchBriefing, extrasHost, appVersion };
 }
 
 const NEW_FRAGMENT = {
@@ -731,13 +739,14 @@ describe("client-side navigation — in-app link clicks swap .main, push history
 });
 
 // ---------------------------------------------------------------------------
-// NOTES V11-CONV — client-nav resyncs ONLY the persisted-tail region when the destination page's
-// scope differs from the panel's current one (goal item 3's "and after client-nav scope changes"),
-// and deliberately does NOT when the scope is unchanged (a same-scope refresh — e.g. the SSE `reload`
-// path — must never re-render a tail that could now include an exchange this tab already appended
-// live, which would show it twice).
+// NOTES V11-CONV-SYNC (Findings 57/131) — client-nav resyncs the persisted-tail region on EVERY
+// refresh that carries one, not just a scope change (the old gate: Finding 57's rail card served a
+// four-day-old exchange on the studio dashboard, whose scope never changes, so a scope-only gate never
+// resynced it at all). Duplication is now avoided by IDENTITY (`data-at`, the same ISO stamp
+// `conversation.ts#appendExchange` writes to disk and `assets/app.js#restampTurn` copies onto a live
+// turn once persistence confirms it) rather than by skipping the whole region.
 // ---------------------------------------------------------------------------
-describe("client-side navigation — the persisted-tail region resyncs on a scope change, never otherwise", () => {
+describe("client-side navigation — the persisted-tail region resyncs on every refresh, reconciled by turn identity", () => {
   test("navigating from studio (scope=studio) to a fragment reporting scope=storefront replaces [data-orch-tail] and updates data-scope", async () => {
     let refs!: ReturnType<typeof buildPage>;
     const h = setup((doc) => {
@@ -758,33 +767,87 @@ describe("client-side navigation — the persisted-tail region resyncs on a scop
     const tail = h.doc.querySelector("[data-orch-tail]")!;
     expect(tail.querySelector("#storefront-tail-turn")).not.toBeNull();
     expect(tail.querySelector("#persisted-tail-turn")).toBeNull(); // the old scope's tail is gone
-    // Nothing else about the panel was touched — the pre-existing live turn survives untouched.
+    // Nothing else about the panel was touched — the pre-existing live turn survives untouched (it
+    // carries no `.turn__time[data-at]` at all, so it can never be mistaken for one the fresh tail covers).
     expect(h.doc.getElementById("persisted-turn")).not.toBeNull();
   });
 
-  test("navigating to a fragment reporting the SAME scope leaves [data-orch-tail] untouched (no duplicate risk)", async () => {
+  // The bug this test guards against directly: Finding 57's studio dashboard never changes scope, so a
+  // scope-only gate left this region frozen forever. A same-scope refresh must now apply fresh content.
+  test("navigating to a fragment reporting the SAME scope still applies the fresh [data-orch-tail] content (Finding 57)", async () => {
     let refs!: ReturnType<typeof buildPage>;
     const h = setup((doc) => {
       refs = buildPage(doc);
     });
-    const tailBefore = h.doc.querySelector("[data-orch-tail]");
 
     click(h.doc, refs.inAppLink);
     h.fetchCalls[0].resolveOk({
       ...NEW_FRAGMENT,
       scope: "studio", // unchanged from buildPage's initial data-scope="studio"
-      orchTail: '<div class="turn turn--orch" id="should-not-appear"><p>would duplicate</p></div>',
+      orchTail: '<div class="turn turn--orch" id="fresh-tail-turn"><p>fresher studio history</p></div>',
     });
     await flush();
 
     expect(refs.orch.getAttribute("data-scope")).toBe("studio");
-    const tailAfter = h.doc.querySelector("[data-orch-tail]");
-    expect(tailAfter).toBe(tailBefore); // the same node, never touched
-    expect(tailAfter!.querySelector("#persisted-tail-turn")).not.toBeNull(); // original content intact
-    expect(tailAfter!.querySelector("#should-not-appear")).toBeNull(); // the new tail was never applied
+    const tailAfter = h.doc.querySelector("[data-orch-tail]")!;
+    expect(tailAfter.querySelector("#fresh-tail-turn")).not.toBeNull(); // the newer tail WAS applied
+    expect(tailAfter.querySelector("#persisted-tail-turn")).toBeNull(); // the stale content is gone
   });
 
-  test("a fragment response with no scope field at all (e.g. an older server) is a safe no-op, never a crash", async () => {
+  // The duplication risk the old scope-gate existed to avoid, proven closed by identity instead: a
+  // live-appended turn whose `data-at` has since been confirmed (via `restampTurn`, once
+  // `/orchestrator/message` returned the persisted `at`) matches an entry in the freshly-fetched tail —
+  // it must be removed from its live position so the exchange shows exactly once (inside the tail),
+  // never twice.
+  test("a live turn whose data-at is now covered by the fresh tail is removed, never shown twice", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    const liveTurn = h.doc.createElement("div");
+    liveTurn.setAttribute("class", "turn turn--user");
+    liveTurn.setAttribute("id", "live-confirmed-turn");
+    liveTurn.innerHTML = '<div class="turn__row"><span class="turn__time" data-at="2026-08-25T10:00:00.000Z">now</span></div><p>hi</p>';
+    refs.orchBody.appendChild(liveTurn);
+
+    click(h.doc, refs.inAppLink);
+    h.fetchCalls[0].resolveOk({
+      ...NEW_FRAGMENT,
+      scope: "studio",
+      orchTail:
+        '<div class="turn turn--user" id="tail-copy-of-live-turn"><div class="turn__row"><span class="turn__time" data-at="2026-08-25T10:00:00.000Z">now</span></div><p>hi</p></div>',
+    });
+    await flush();
+
+    expect(h.doc.getElementById("live-confirmed-turn")).toBeNull(); // removed — now redundant with the tail
+    expect(h.doc.querySelector("[data-orch-tail]")!.querySelector("#tail-copy-of-live-turn")).not.toBeNull();
+  });
+
+  // The complementary case: a live turn whose `data-at` is NOT (yet) in the fetched tail — an in-flight
+  // exchange the server hasn't persisted yet, or simply a different exchange entirely — must survive.
+  test("a live turn whose data-at is NOT in the fresh tail survives the resync untouched", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    const liveTurn = h.doc.createElement("div");
+    liveTurn.setAttribute("class", "turn turn--user");
+    liveTurn.setAttribute("id", "live-unconfirmed-turn");
+    liveTurn.innerHTML = '<div class="turn__row"><span class="turn__time" data-at="2026-08-25T10:05:00.000Z">now</span></div><p>not persisted yet</p>';
+    refs.orchBody.appendChild(liveTurn);
+
+    click(h.doc, refs.inAppLink);
+    h.fetchCalls[0].resolveOk({
+      ...NEW_FRAGMENT,
+      scope: "studio",
+      orchTail: '<div class="turn turn--orch" id="unrelated-tail-turn"><div class="turn__row"><span class="turn__time" data-at="2026-08-25T09:00:00.000Z">now</span></div><p>older</p></div>',
+    });
+    await flush();
+
+    expect(h.doc.getElementById("live-unconfirmed-turn")).not.toBeNull(); // still there, not a duplicate of anything in the tail
+  });
+
+  test("a fragment response with no orchTail field at all (e.g. an older server) is a safe no-op, never a crash", async () => {
     let refs!: ReturnType<typeof buildPage>;
     const h = setup((doc) => {
       refs = buildPage(doc);
@@ -857,9 +920,10 @@ describe("client-side navigation — the orchestrator action region (the gate/di
     const h = setup((doc) => {
       refs = buildPage(doc);
     });
-    // The destination fragment reports the SAME scope as buildPage's initial "studio" — syncOrchTail
-    // would no-op here (proven by the describe block above); the action region must resync regardless,
-    // since (unlike a persisted conversation) a gate card is page-specific, not scope-specific.
+    // The destination fragment reports the SAME scope as buildPage's initial "studio", and carries no
+    // `orchTail` field at all (NEW_FRAGMENT), so syncOrchTail no-ops here; the action region must
+    // resync regardless, since (unlike a persisted conversation) a gate card is page-specific, not
+    // scope-specific.
     click(h.doc, refs.inAppLink);
     h.fetchCalls[0].resolveOk({
       ...NEW_FRAGMENT,
@@ -868,7 +932,7 @@ describe("client-side navigation — the orchestrator action region (the gate/di
     });
     await flush();
 
-    expect(refs.orch.getAttribute("data-scope")).toBe("studio"); // confirms the tail path took its no-op branch
+    expect(refs.orch.getAttribute("data-scope")).toBe("studio"); // confirms the tail path's no-orchTail no-op branch
     const actionHost = h.doc.querySelector("[data-orch-action]")!;
     expect(actionHost.querySelector("#stale-gate-card")).toBeNull(); // the old unit's card did not silently persist
     expect(actionHost.children.length).toBe(0); // replaced with the destination page's real (empty) action html
@@ -933,7 +997,7 @@ describe("client-side navigation — the orchestrator briefing sentence resyncs 
     });
     await flush();
 
-    expect(refs.orch.getAttribute("data-scope")).toBe("studio"); // confirms the tail path took its no-op branch
+    expect(refs.orch.getAttribute("data-scope")).toBe("studio"); // confirms the tail path's no-orchTail no-op branch
     const briefingHost = h.doc.querySelector("[data-orch-briefing]")!;
     expect(briefingHost.querySelector("#stale-briefing-turn")).toBeNull(); // the old page's sentence did not persist
     expect(briefingHost.querySelector("#destination-briefing-turn")).not.toBeNull();
@@ -949,5 +1013,61 @@ describe("client-side navigation — the orchestrator briefing sentence resyncs 
     await flush();
 
     expect(h.doc.querySelector("[data-orch-briefing]")!.querySelector("#stale-briefing-turn")).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 131 — the header's version chip sits entirely OUTSIDE `.main`/`[data-extras-host]`/`.orch`
+// (never touched by `swapFragment`'s own replacements), so a long-open tab kept showing whatever build
+// was running at the tab's last cold GET forever after, even once the daemon had since restarted on a
+// newer commit. Resynced unconditionally on every refresh, same reasoning as `syncOrchAction` — the
+// value is a `--define`-stamped constant, identical on every response this process ever serves, so it
+// carries no "already shown live" case to guard against.
+// ---------------------------------------------------------------------------
+describe("client-side navigation — the header's version chip resyncs on every refresh (Finding 131)", () => {
+  test("the SSE reload trigger replaces the version chip's content with the fragment's appVersion", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    expect(refs.appVersion.textContent).toBe("v0.0.1-stale");
+
+    const es = h.esInstances[0];
+    es.onmessage({ data: "reload" });
+    h.fetchCalls[0].resolveOk({
+      ok: true,
+      title: "t",
+      main: '<main class="main"></main>',
+      extras: "",
+      highlightId: null,
+      appVersion: "dev (build ebdb103)",
+    });
+    await flush();
+
+    expect(h.doc.querySelector("[data-app-version]")!.textContent).toBe("dev (build ebdb103)");
+  });
+
+  test("an in-app navigation to a different page resyncs the version chip too", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    click(h.doc, refs.inAppLink);
+    h.fetchCalls[0].resolveOk({ ...NEW_FRAGMENT, appVersion: "v1.2.3" });
+    await flush();
+
+    expect(h.doc.querySelector("[data-app-version]")!.textContent).toBe("v1.2.3");
+  });
+
+  test("a fragment response with no appVersion field at all (e.g. an older server) is a safe no-op, never a crash", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    click(h.doc, refs.inAppLink);
+    h.fetchCalls[0].resolveOk(NEW_FRAGMENT); // no `appVersion` field
+    await flush();
+
+    expect(h.doc.querySelector("[data-app-version]")!.textContent).toBe("v0.0.1-stale");
   });
 });

@@ -88,6 +88,23 @@ describe("extractFragment — pure string extraction", () => {
     ].join("");
     expect(extractFragment(html)!.orchBriefing).toBe("<p>Nothing needs you right now.</p>");
   });
+
+  // Finding 131: the header's version chip sits OUTSIDE the orch aside entirely (inside `<header
+  // class="apphead">`, never touched by any swap) — same `<!--marker-->` mechanism as `orchAction`/
+  // `orchBriefing` so a client resync has something to slice out at all.
+  test("pulls appVersion out of the app header, independent of every other region", () => {
+    const html = [
+      '<title>t</title><header class="apphead"><span class="apphead__ver mono" data-app-version>',
+      "<!--appversion-->dev (build abc1234)<!--/appversion--></span></header>",
+      '<!--main--><main class="main">HELLO</main><!--/main-->',
+    ].join("");
+    expect(extractFragment(html)!.appVersion).toBe("dev (build abc1234)");
+  });
+
+  test("appVersion is the empty string, not absent, when the header carries no marker (e.g. an older render path)", () => {
+    const html = '<title>t</title><!--main--><main class="main">x</main><!--/main--><!--extras--><!--/extras-->';
+    expect(extractFragment(html)!.appVersion).toBe("");
+  });
 });
 
 describe("isFragmentRequest", () => {
@@ -165,7 +182,19 @@ describe("levare serve — fragment GETs (NOTES UI10)", () => {
       // NOTES ORCH-STALE-CARD addendum: and now `orchBriefing` too, found stale one element up from
       // `orchAction` after that fix shipped.
       expect(fragBody.orchBriefing).toBe(extractedFromFull.orchBriefing);
+      // Finding 131: and now the header's version chip too — same guarantee, same reason.
+      expect(fragBody.appVersion).toBe(extractedFromFull.appVersion);
     }
+  });
+
+  // Finding 131: the fragment must actually carry the chip's real content (a `--define`-stamped build
+  // string, or a bare "vX.Y.Z" for a source run — see `src/version.ts#versionChip`), not just an empty
+  // marker, or `syncAppVersion` would have nothing to resync the header to.
+  test("every fragment GET carries a non-empty, version-shaped appVersion", async () => {
+    const res = await board.fetch(req("/studio", { headers: FRAG }));
+    const body = await res.json();
+    expect(body.appVersion.length).toBeGreaterThan(0);
+    expect(body.appVersion).toMatch(/^(v\d+\.\d+\.\d+|dev \(build .+\))$/);
   });
 
   // NOTES ORCH-STALE-CARD addendum: `orchBriefing` is populated on every screen (unlike `orchAction`,

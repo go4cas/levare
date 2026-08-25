@@ -50,11 +50,21 @@ const ASSETS = `<link rel="preconnect" href="https://fonts.googleapis.com"/>
 // here too (CSS hides it above 1080px, same breakpoint the old mobilebar used).
 // ---------------------------------------------------------------------------
 
+// Finding 131 / NOTES V11-CONV-SYNC: wrapped in the same `<!--marker-->` convention as the
+// orch__action/orch__briefing regions (`orchestratorPanel` above) so `board/serve.ts#extractFragment`
+// can slice it back out for `assets/app.js#syncAppVersion` to resync unconditionally on every client-
+// side swap — the header itself is otherwise OUTSIDE every swap region (never touched by `.main`/
+// `[data-extras-host]` replacement, see NOTES UI10), so a long-open tab kept showing whatever build was
+// running at the tab's own last cold GET forever after, even once the daemon had since restarted on a
+// newer commit (demonstrated: `curl` reporting the current build while an open tab showed one two
+// merges behind). The value itself is already correct-per-request (a `--define`-stamped module
+// constant, re-embedded fresh into every response's rendered HTML by the process actually serving it)
+// — the only gap was the client never re-fetching it, the identical root cause as Finding 57's tail.
 function appHeader(status: OrchestratorStatus, railToggleLabel: string): string {
   return `<header class="apphead">
   <button class="togglebtn apphead__railtoggle" data-rail-toggle aria-label="${esc(railToggleLabel)}">&#9776;</button>
   <a class="logo" href="/studio"><span class="logo__mark"><i></i><b></b></span><span class="logo__word">levare</span></a>
-  <span class="apphead__ver mono">${esc(LEVARE_VERSION_CHIP)}</span>
+  <span class="apphead__ver mono" data-app-version><!--appversion-->${esc(LEVARE_VERSION_CHIP)}<!--/appversion--></span>
   <span class="sp"></span>
   ${orchestratorIndicator(status)}
   <span class="apphead__divider" aria-hidden="true"></span>
