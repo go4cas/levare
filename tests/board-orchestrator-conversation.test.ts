@@ -45,8 +45,13 @@ describe("server-rendered Orchestrator panel — no per-message header, mark onc
 
     // NOTES UI11: the caption now wraps its relative-time text in its own `.turn__time` span, carrying
     // the full ISO timestamp as a hover `title` — the "short relative form, full stamp on hover" rule.
+    // NOTES V11-CONV-SYNC (Finding 57): and, duplicated onto `data-at`, the turn's stable identity —
+    // the same ISO stamp `assets/app.js#syncOrchTail` matches a live-appended turn against once a
+    // resync's fetched tail already includes it.
     test(`${name}: the first (and only server-rendered) message carries a quiet "briefing · now" caption with a full-timestamp title`, () => {
-      expect(html).toContain('class="turn__caption mono">briefing &middot; <span class="turn__time" title="2026-07-11T20:00:00.000Z">now</span></div>');
+      expect(html).toContain(
+        'class="turn__caption mono">briefing &middot; <span class="turn__time" data-at="2026-07-11T20:00:00.000Z" title="2026-07-11T20:00:00.000Z">now</span></div>',
+      );
       // Exactly one caption — this screen only ever server-renders a single opening turn.
       expect(html.match(/turn__caption/g)?.length).toBe(1);
     });

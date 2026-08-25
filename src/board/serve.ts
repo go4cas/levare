@@ -561,7 +561,11 @@ export const ROUTES: RouteDef[] = [
         console.error(`levare: failed to persist Orchestrator conversation exchange (scope '${scope}'): ${persisted.error}`);
       }
       ctx.broadcast(`orchestrator:${JSON.stringify({ text: reply })}`);
-      return json({ ok: true, reply });
+      // NOTES V11-CONV-SYNC: the authoritative `at` stamps `appendExchange` just wrote to disk, absent
+      // when persistence failed (nothing was written, so there's no identity to hand back — see
+      // `AppendExchangeResult`'s own comment). `syncOrchTail`'s later resync uses these to recognize the
+      // turns this tab already showed live, instead of skipping the whole tail region on every refresh.
+      return json({ ok: true, reply, conductorAt: persisted.ok ? persisted.conductorAt : null, orchestratorAt: persisted.ok ? persisted.orchestratorAt : null });
     },
   },
 ];

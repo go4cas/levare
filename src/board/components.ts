@@ -261,13 +261,16 @@ export function orchMark(): string {
 // opening briefing. `label` (e.g. "briefing") stays reserved for the one genuinely distinct opening
 // message — Phase 2 cluster 4: it now doubles as the role row's kind tag, sitting beside the speaker's
 // name rather than prefixing the timestamp on its own line. The relative text ("now"/"2m"/"1h") is the
-// only thing shown; the full ISO stamp lives in the `title` attribute (a hover, never a second line).
-// assets/app.js#buildCaption renders the identical markup client-side for turns appended after the
-// page loaded, so a server-rendered and a client-appended caption are indistinguishable.
+// only thing shown; the full ISO stamp lives in the `title` attribute (a hover, never a second line) —
+// and, duplicated onto `data-at` (NOTES V11-CONV-SYNC), doubles as the turn's stable identity: the same
+// ISO instant `conversation.ts#appendExchange` stamps a persisted Turn with, letting a client-side
+// resync (`assets/app.js#syncOrchTail`) tell a persisted turn apart from a live-appended one with the
+// same text. assets/app.js#buildCaption renders the identical markup client-side for turns appended
+// after the page loaded, so a server-rendered and a client-appended caption are indistinguishable.
 // ---------------------------------------------------------------------------
 export function turnCaption(time: { text: string; title: string }, label?: string): string {
   const prefix = label ? `${esc(label)} &middot; ` : "";
-  return `<div class="turn__caption mono">${prefix}<span class="turn__time" title="${esc(time.title)}">${esc(time.text)}</span></div>`;
+  return `<div class="turn__caption mono">${prefix}<span class="turn__time" data-at="${esc(time.title)}" title="${esc(time.title)}">${esc(time.text)}</span></div>`;
 }
 
 // ---------------------------------------------------------------------------

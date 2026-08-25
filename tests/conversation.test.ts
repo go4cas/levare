@@ -284,6 +284,11 @@ describe("POST /orchestrator/message — persists the completed exchange (NOTES 
       expect(turns.length).toBe(2);
       expect(turns[0]).toMatchObject({ speaker: "conductor", text: "what needs me?" });
       expect(turns[1]).toMatchObject({ speaker: "orchestrator", text: "3 gates are on you." });
+      // NOTES V11-CONV-SYNC (Finding 57): the response hands back the SAME `at` stamps just written to
+      // disk — the identity `assets/app.js#restampTurn` needs to recognize this exchange, by exact
+      // match, once a later `syncOrchTail` resync fetches it back out of the persisted tail.
+      expect(body.conductorAt).toBe(turns[0].at);
+      expect(body.orchestratorAt).toBe(turns[1].at);
 
       const log = gitLog1(root);
       expect(log.author).toBe("levare-runner");
