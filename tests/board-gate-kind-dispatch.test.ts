@@ -6,9 +6,13 @@
 import { test, expect, describe } from "bun:test";
 import { dispatchingFor, gateKindLabel, gateCardHtml } from "../src/board/render/shell.ts";
 import type { OpenGate } from "../src/derive.ts";
-import type { Artifact, Project, Team, TypeTemplate, WorkUnit } from "../src/types.ts";
+import type { Agent, Artifact, Project, Team, TypeTemplate, WorkUnit } from "../src/types.ts";
 import type { Repo } from "../src/repo.ts";
 import type { DaemonInvocation } from "../src/daemon.ts";
+
+function agent(over: Partial<Agent> = {}): Agent {
+  return { name: "lyra", kind: "native", produces: ["spec"], style: { avatar: "Ly" }, body: "", ...over };
+}
 
 function artifact(over: Partial<Artifact> = {}): Artifact {
   return {
@@ -31,16 +35,22 @@ function inv(over: Partial<DaemonInvocation> = {}): DaemonInvocation {
   return { project: "acme", unit: "flow", member: "lyra", kind: "spec", startedAt: "2026-07-17T01:59:00.000Z", ...over };
 }
 
+// dispatchingFor only reads repo.agents (Finding 81 part 3: resolving each invocation's member to its
+// declared timeout) — every other field is unused by the gate-matching logic under test here, so an
+// empty agents map is enough; `timeoutS` on the result is then always undefined, matching every
+// existing `toEqual` expectation below (toEqual treats an absent key and an explicit undefined alike).
+const repo = { root: "/tmp", teams: new Map(), agents: new Map(), types: new Map(), projects: new Map(), connectors: new Map(), units: [], artifacts: new Map(), studio: {} } as unknown as Repo;
+
 describe("dispatchingFor — matches the running invocation to the gate it actually belongs to (Finding 82/83/72)", () => {
   test("a plain (non-loop) artifact gate matches a running invocation of its OWN kind", () => {
     const gate: OpenGate = { type: "artifact", project: "acme", unit: "flow", target: "spec-flow-v1", artifact: artifact(), label: "spec" };
-    const d = dispatchingFor([inv({ kind: "spec" })], gate);
+    const d = dispatchingFor(repo, [inv({ kind: "spec" })], gate);
     expect(d).toEqual({ member: "lyra", kind: "spec", startedAt: "2026-07-17T01:59:00.000Z", loop: undefined });
   });
 
   test("a plain (non-loop) artifact gate does NOT match a running invocation of an unrelated kind for the same unit — the regression this fix guards against", () => {
     const gate: OpenGate = { type: "artifact", project: "acme", unit: "flow", target: "spec-flow-v1", artifact: artifact(), label: "spec" };
-    const d = dispatchingFor([inv({ kind: "docs" })], gate);
+    const d = dispatchingFor(repo, [inv({ kind: "docs" })], gate);
     expect(d).toBeUndefined();
   });
 
@@ -55,7 +65,7 @@ describe("dispatchingFor — matches the running invocation to the gate it actua
       loop: { round: 1, maxRounds: 3, until: "review.approved", exhausted: false, companionKind: "spec" },
     };
     // doRequest always re-invokes the AUTHOR kind ("spec"), never the gate's own kind ("review").
-    const d = dispatchingFor([inv({ kind: "spec", member: "lyra" })], gate);
+    const d = dispatchingFor(repo, [inv({ kind: "spec", member: "lyra" })], gate);
     expect(d).toEqual({ member: "lyra", kind: "spec", startedAt: "2026-07-17T01:59:00.000Z", loop: { round: 2, maxRounds: 3 } });
   });
 
@@ -69,19 +79,42 @@ describe("dispatchingFor — matches the running invocation to the gate it actua
       label: "review",
       loop: { round: 1, maxRounds: 3, until: "review.approved", exhausted: false, companionKind: "spec" },
     };
-    const d = dispatchingFor([inv({ kind: "docs" })], gate);
+    const d = dispatchingFor(repo, [inv({ kind: "docs" })], gate);
     expect(d).toBeUndefined();
   });
 
   test("a start gate (no kind of its own) matches ANY running invocation for the unit — unambiguous, since zero artifacts exist yet", () => {
     const gate: OpenGate = { type: "start", project: "acme", unit: "flow", target: "flow", label: "start" };
-    const d = dispatchingFor([inv({ kind: "product-brief", member: "wren" })], gate);
+    const d = dispatchingFor(repo, [inv({ kind: "product-brief", member: "wren" })], gate);
     expect(d).toEqual({ member: "wren", kind: "product-brief", startedAt: "2026-07-17T01:59:00.000Z", loop: undefined });
   });
 
   test("no running invocation for the unit at all → undefined", () => {
     const gate: OpenGate = { type: "artifact", project: "acme", unit: "flow", target: "spec-flow-v1", artifact: artifact(), label: "spec" };
-    expect(dispatchingFor([inv({ unit: "other-unit" })], gate)).toBeUndefined();
+    expect(dispatchingFor(repo, [inv({ unit: "other-unit" })], gate)).toBeUndefined();
+  });
+
+  // Finding 81 part 3: the board must show the exact bound a real dispatch would enforce, not a
+  // second guess at it — dispatchingFor resolves it the same way adapters.ts#resolveMemberTimeoutS
+  // would for a real dispatch of this member.
+  test("resolves timeoutS from the member's own declared agent.timeout", () => {
+    const withAgent = { root: "/tmp", teams: new Map(), agents: new Map([["lyra", agent({ timeout: 90 })]]), types: new Map(), projects: new Map(), connectors: new Map(), units: [], artifacts: new Map(), studio: {} } as unknown as Repo;
+    const gate: OpenGate = { type: "artifact", project: "acme", unit: "flow", target: "spec-flow-v1", artifact: artifact(), label: "spec" };
+    const d = dispatchingFor(withAgent, [inv({ kind: "spec" })], gate);
+    expect(d?.timeoutS).toBe(90);
+  });
+
+  test("falls back to the native default (1200s) when the agent declares no timeout of its own", () => {
+    const withAgent = { root: "/tmp", teams: new Map(), agents: new Map([["lyra", agent()]]), types: new Map(), projects: new Map(), connectors: new Map(), units: [], artifacts: new Map(), studio: {} } as unknown as Repo;
+    const gate: OpenGate = { type: "artifact", project: "acme", unit: "flow", target: "spec-flow-v1", artifact: artifact(), label: "spec" };
+    const d = dispatchingFor(withAgent, [inv({ kind: "spec" })], gate);
+    expect(d?.timeoutS).toBe(1200);
+  });
+
+  test("member no longer resolves to a known agent → timeoutS absent, not fabricated", () => {
+    const gate: OpenGate = { type: "artifact", project: "acme", unit: "flow", target: "spec-flow-v1", artifact: artifact(), label: "spec" };
+    const d = dispatchingFor(repo, [inv({ kind: "spec" })], gate); // `repo` above has an empty agents map
+    expect(d?.timeoutS).toBeUndefined();
   });
 });
 
@@ -181,6 +214,27 @@ describe("gate card dispatching state renders elapsed + round n/m, not just stat
     // ticks it client-side) rather than rendered as bare text — the label's other pieces are still
     // plain, escaped text around it.
     expect(html).toContain('class="pending__label">dispatching lyra · spec… · <span class="elapsed" data-started-at="2026-07-17T01:59:30.000Z">0m 30s</span></span>');
+  });
+
+  // Finding 81 part 3: "8m 20s / 20m" tells a Conductor whether a dispatch is near its own kill
+  // bound — "8m 20s" alone does not. The bound renders as a static sibling span (never inside the
+  // ticking `.elapsed` span itself, which app.js overwrites every second).
+  test("a dispatch with a known timeoutS shows the bound beside elapsed, as a static sibling — not inside the ticking span", () => {
+    const art = artifact();
+    const repo = makeRepo(art);
+    const gate: OpenGate = { type: "artifact", project: "acme", unit: "flow", target: art.id, artifact: art, label: "spec" };
+    const html = gateCardHtml(repo, gate, NOW, { dispatching: { member: "lyra", kind: "spec", startedAt: "2026-07-17T01:59:30.000Z", timeoutS: 1200 } });
+    expect(html).toContain(
+      '<span class="elapsed" data-started-at="2026-07-17T01:59:30.000Z">0m 30s</span> <span class="dim">/ 20m 00s</span>',
+    );
+  });
+
+  test("a dispatch with no known timeoutS (member no longer resolves to an agent) shows elapsed alone, never a fabricated bound", () => {
+    const art = artifact();
+    const repo = makeRepo(art);
+    const gate: OpenGate = { type: "artifact", project: "acme", unit: "flow", target: art.id, artifact: art, label: "spec" };
+    const html = gateCardHtml(repo, gate, NOW, { dispatching: { member: "lyra", kind: "spec", startedAt: "2026-07-17T01:59:30.000Z" } });
+    expect(html).not.toContain("dim");
   });
 });
 

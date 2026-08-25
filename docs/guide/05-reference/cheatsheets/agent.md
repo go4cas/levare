@@ -25,7 +25,7 @@ A member: what it can produce, and how to invoke it.
 | `context_via` | enum | — | — | `arg` · `stdin` | cli: how this member receives its assembled context — arg (default, substitutes {task} in the command template) or stdin (the full context is written to the child's stdin instead). Ignored for native/remote. |
 | `context_artifacts` | enum | — | — | `paths` · `inline` | How this member receives consumed artifacts: paths (default — root-relative paths only, for a member with filesystem access to the studio) or inline (the full text of every consumed artifact, for a member that cannot reach the studio filesystem). |
 | `cwd` | string | — | — | — | cli: the working directory this member's process spawns in. |
-| `timeout` | number | — | — | — | cli: the spawn timeout, in seconds. |
+| `timeout` | number | — | — | — | cli/native/remote: the spawn/dispatch timeout, in seconds. |
 | `result` | string | — | — | — | cli: required for kind: cli — how the member's result is read back. |
 | `server` | string | — | — | — | remote: the kind: mcp connector (by name) this member calls. |
 | `tool` | string | — | — | — | remote: the singular MCP tool this member invokes on server's connector via tools/call — the member's declared intent → server-call mapping. Distinct from native's tools: this names one chosen MCP tool, not an SDK vocabulary allowlist. |

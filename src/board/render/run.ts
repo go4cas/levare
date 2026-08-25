@@ -180,7 +180,7 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
         n.state === "active" && n.live
           ? `<div class="sstep__live"><span class="ld" aria-hidden="true"></span><span>${
               n.live.loop ? `<b>${n.live.loop.round}</b>/${n.live.loop.maxRounds} &middot; ` : ""
-            }${elapsedSpan(n.live.startedAt, now)}${
+            }${elapsedSpan(n.live.startedAt, now, n.live.timeoutS)}${
               n.live.loop ? ` &middot; until ${esc(n.live.loop.until)} &middot; on_exhaust: ${esc(n.live.loop.onExhaust)}` : ""
             }</span></div>`
           : "";
@@ -245,7 +245,7 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
     </section>
   </main>`;
 
-  const gateHtml = gates.map((g) => gateCardHtml(repo, g, now, { cta: true, dispatching: dispatchingFor(running, g) })).join("\n");
+  const gateHtml = gates.map((g) => gateCardHtml(repo, g, now, { cta: true, dispatching: dispatchingFor(repo, running, g) })).join("\n");
   const briefingBody = orchTurn(
     `<p class="turn__body">${gates.length ? gateBriefingSentence(gates[0]) : "No open gate on this unit right now."}</p>`,
     { captionTime: captionTime(now.toISOString(), now), captionLabel: "briefing" },

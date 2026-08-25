@@ -161,7 +161,7 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
       // shape (this row's own mini-score dots, right below, already go live via `scoreNodes(..., running)`
       // while this chip stayed blind to it). Now consults the same `dispatchingFor` the gate card itself
       // uses (kind-aware — see shell.ts's own doc comment) and names the gate's kind when it doesn't.
-      const gateDispatching = gate ? dispatchingFor(running, gate) : undefined;
+      const gateDispatching = gate ? dispatchingFor(repo, running, gate) : undefined;
       const chip = gate
         ? gateDispatching
           ? statusBadge("active", "dispatching")
@@ -257,7 +257,7 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
     .join("\n");
 
   const templates = gates
-    .map((g) => `<template id="tpl-gate-${esc(g.target)}">${gateCardHtml(repo, g, now, { cta: true, dispatching: dispatchingFor(running, g) })}</template>`)
+    .map((g) => `<template id="tpl-gate-${esc(g.target)}">${gateCardHtml(repo, g, now, { cta: true, dispatching: dispatchingFor(repo, running, g) })}</template>`)
     .join("\n");
 
   const reviewMedian = medianReviewRounds(repo, projectName);

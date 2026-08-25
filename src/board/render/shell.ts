@@ -22,6 +22,7 @@ import { loadConversationTail } from "../../conversation.ts";
 import { deriveTeamStyle } from "../team-color.ts";
 import { registryKindIconBody } from "./entity-icons.ts";
 import { isBlockingViolationLine } from "../../guardrails.ts";
+import { resolveMemberTimeoutS } from "../../adapters.ts";
 
 // levare's own release version (item 3: "the release version as a quiet muted mono chip" beside the
 // wordmark) — never from a project's data (that's the `pace`/`deploy`/release vocabulary, a
@@ -423,7 +424,7 @@ export function railNav(repo: Repo, extras: RegistryExtras, opts: { activeRegist
 // see that file's own comment for how it avoids binding to a node that an SSE `reload` swap discards.
 function dispatchingHtml(d: DispatchingInfo, now: Date): string {
   const roundText = d.loop ? `round ${d.loop.round}/${d.loop.maxRounds} · ` : "";
-  const labelHtml = `dispatching ${esc(d.member)} · ${esc(d.kind)}… · ${esc(roundText)}${elapsedSpan(d.startedAt, now)}`;
+  const labelHtml = `dispatching ${esc(d.member)} · ${esc(d.kind)}… · ${esc(roundText)}${elapsedSpan(d.startedAt, now, d.timeoutS)}`;
   return `<div class="gate__verbs gate__verbs--pending">${pendingState({ labelHtml })}</div>`;
 }
 
@@ -434,6 +435,11 @@ export interface DispatchingInfo {
   /** Set only when this gate's own artifact belongs to a loop — the round now being produced (one past
    * the currently-open, about-to-be-superseded round `gate.loop.round` already names). */
   loop?: { round: number; maxRounds: number };
+  /** Finding 81 part 3: the bound this dispatch will actually be killed at, in seconds — the exact
+   * number `resolveMemberTimeoutS` would hand a real dispatch of this member, so `8m 20s` beside it
+   * reads as `8m 20s / 20m` instead of leaving a Conductor to guess how close to the edge it is.
+   * Absent only when `member` no longer resolves to a known agent (a registry edit mid-dispatch). */
+  timeoutS?: number;
 }
 
 // The daemon's live in-flight projection (running()), narrowed to a single gate's own unit AND (for a
@@ -467,16 +473,18 @@ export function gateKindLabel(gate: OpenGate): string {
   return "step";
 }
 
-export function dispatchingFor(running: DaemonInvocation[], gate: OpenGate): DispatchingInfo | undefined {
+export function dispatchingFor(repo: Repo, running: DaemonInvocation[], gate: OpenGate): DispatchingInfo | undefined {
   const inv = running.find((r) => r.project === gate.project && r.unit === gate.unit);
   if (!inv) return undefined;
   const gateKind = gate.artifact?.kind;
   if (gateKind && inv.kind !== gateKind && inv.kind !== gate.loop?.companionKind) return undefined;
+  const agent = repo.agents.get(inv.member);
   return {
     member: inv.member,
     kind: inv.kind,
     startedAt: inv.startedAt,
     loop: gate.loop ? { round: gate.loop.round + 1, maxRounds: gate.loop.maxRounds } : undefined,
+    timeoutS: agent ? resolveMemberTimeoutS(agent) : undefined,
   };
 }
 

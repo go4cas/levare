@@ -14,6 +14,7 @@ import { firstParagraph, repoCapabilities } from "./repo.ts";
 import { isLoopCompanionKind, loopMembershipFor, responsibleTeamsFor, unreachableExpectedKinds } from "./gates.ts";
 import { roundOf } from "./runner.ts";
 import type { DaemonInvocation } from "./daemon.ts";
+import { resolveMemberTimeoutS } from "./adapters.ts";
 
 export function esc(s: string): string {
   return String(s)
@@ -53,17 +54,24 @@ export function tokLabel(n: number): string {
   return String(n);
 }
 
+// "1m 42s" / "1h 04m" — a raw second count formatted the same way whether it's elapsed time (counting
+// up from a real startedAt) or a static bound (counting nothing, just a duration). Shared so the two
+// never render in visibly different units next to each other (Finding 81 part 3: "8m 20s / 20m").
+function durationLabel(totalS: number): string {
+  const s = Math.max(0, Math.floor(totalS));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
+  return `${m}m ${String(sec).padStart(2, "0")}s`;
+}
+
 // "1m 42s" / "1h 04m" — elapsed since a live invocation's real `startedAt` (never a fabricated
 // number). Lives here, not in render/run.ts (its original home), so render/shell.ts's gate card can
 // use the exact same helper for its own dispatching-elapsed display (Phase 2 "gate card" goal, item 2)
 // without run.ts importing shell.ts importing run.ts back — derive.ts has no board/ dependents to cycle.
 export function elapsedLabel(startedAtIso: string, now: Date): string {
-  const totalS = Math.max(0, Math.floor((now.getTime() - new Date(startedAtIso).getTime()) / 1000));
-  const h = Math.floor(totalS / 3600);
-  const m = Math.floor((totalS % 3600) / 60);
-  const s = totalS % 60;
-  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
-  return `${m}m ${String(s).padStart(2, "0")}s`;
+  return durationLabel((now.getTime() - new Date(startedAtIso).getTime()) / 1000);
 }
 
 // Finding 79: wraps elapsedLabel's server-computed initial text in a span carrying the raw start
@@ -72,8 +80,15 @@ export function elapsedLabel(startedAtIso: string, now: Date): string {
 // run.ts's Tier-3 strip and shell.ts's gate card render through this, so they never diverge on the
 // data-attribute's shape. `class="elapsed"` + `data-started-at` is the whole contract with app.js;
 // no other client-side state rides along.
-export function elapsedSpan(startedAtIso: string, now: Date): string {
-  return `<span class="elapsed" data-started-at="${esc(startedAtIso)}">${elapsedLabel(startedAtIso, now)}</span>`;
+//
+// Finding 81 part 3: `timeoutS`, when known, renders as a static sibling span (never inside the
+// ticking `.elapsed` span itself — app.js's per-tick `textContent` write would otherwise wipe it out
+// every second) — "8m 20s / 20m" tells a Conductor whether a dispatch is near its own kill bound;
+// "8m 20s" alone does not. The bound never changes over a dispatch's lifetime, so it needs no client-
+// side re-render of its own — one server-computed string is correct for the dispatch's whole duration.
+export function elapsedSpan(startedAtIso: string, now: Date, timeoutS?: number): string {
+  const bound = typeof timeoutS === "number" ? ` <span class="dim">/ ${durationLabel(timeoutS)}</span>` : "";
+  return `<span class="elapsed" data-started-at="${esc(startedAtIso)}">${elapsedLabel(startedAtIso, now)}</span>${bound}`;
 }
 
 /**
@@ -294,7 +309,7 @@ export interface ScoreNode {
    * text inline without pulling the loop off the sequence. Hover hides it on touch, in screenshots, and
    * from anyone auditing the registry — so the SAME two facts render unconditionally here, where the
    * loop is actually executing and the round counter is already live, never behind an interaction. */
-  live?: { startedAt: string; loop?: { round: number; maxRounds: number; until: string; onExhaust: string } };
+  live?: { startedAt: string; timeoutS?: number; loop?: { round: number; maxRounds: number; until: string; onExhaust: string } };
   /** Finding 59: set only on a "gate" node whose in-review artifact is a loop's companion kind
    * (`gates.ts#isLoopCompanionKind`) — it ran and was consumed by the round's other side, but this
    * round's actual decision sits on the artifact the loop's `until` names, not here. The node stays
@@ -336,12 +351,13 @@ export function scoreNodes(repo: Repo, unit: WorkUnit, running: DaemonInvocation
         const loop = membership
           ? { round: live.length + 1, maxRounds: membership.loop.maxRounds, until: membership.loop.until, onExhaust: membership.loop.onExhaust }
           : undefined;
+        const agent = repo.agents.get(inv.member);
         return {
           kind,
           shape: "dot",
           state: "active",
           producedBy: team ? `${team.name}/${inv.member}` : inv.member,
-          live: { startedAt: inv.startedAt, loop },
+          live: { startedAt: inv.startedAt, timeoutS: agent ? resolveMemberTimeoutS(agent) : undefined, loop },
         };
       }
       // Fault 1: a kind no member of the responsible team can ever produce is not "wait" — nothing
