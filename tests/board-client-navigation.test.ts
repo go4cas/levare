@@ -451,6 +451,14 @@ function flush(): Promise<void> {
 // already in it, to prove it survives), and the extras host.
 // ---------------------------------------------------------------------------
 function buildPage(doc: FakeDocument, opts: { path?: string } = {}) {
+  // Finding 131: the version chip lives in the app header, a sibling of `.app` (never inside it, per
+  // render/shell.ts#shell) — appended directly to `doc.body`, same as `.app` itself below.
+  const appVersion = doc.createElement("span");
+  appVersion.setAttribute("class", "apphead__ver mono");
+  appVersion.setAttribute("data-app-version", "");
+  appVersion.textContent = "v0.0.1-stale";
+  doc.body.appendChild(appVersion);
+
   const app = doc.createElement("div");
   app.setAttribute("class", "app");
   doc.body.appendChild(app);
@@ -532,7 +540,7 @@ function buildPage(doc: FakeDocument, opts: { path?: string } = {}) {
   extrasHost.appendChild(oldExtra);
   doc.body.appendChild(extrasHost);
 
-  return { app, rail, railLink, main, inAppLink, externalLink, downloadLink, orch, orchBody, existingTurn, orchTail, orchAction, orchBriefing, extrasHost };
+  return { app, rail, railLink, main, inAppLink, externalLink, downloadLink, orch, orchBody, existingTurn, orchTail, orchAction, orchBriefing, extrasHost, appVersion };
 }
 
 const NEW_FRAGMENT = {
@@ -1005,5 +1013,61 @@ describe("client-side navigation — the orchestrator briefing sentence resyncs 
     await flush();
 
     expect(h.doc.querySelector("[data-orch-briefing]")!.querySelector("#stale-briefing-turn")).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 131 — the header's version chip sits entirely OUTSIDE `.main`/`[data-extras-host]`/`.orch`
+// (never touched by `swapFragment`'s own replacements), so a long-open tab kept showing whatever build
+// was running at the tab's last cold GET forever after, even once the daemon had since restarted on a
+// newer commit. Resynced unconditionally on every refresh, same reasoning as `syncOrchAction` — the
+// value is a `--define`-stamped constant, identical on every response this process ever serves, so it
+// carries no "already shown live" case to guard against.
+// ---------------------------------------------------------------------------
+describe("client-side navigation — the header's version chip resyncs on every refresh (Finding 131)", () => {
+  test("the SSE reload trigger replaces the version chip's content with the fragment's appVersion", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    expect(refs.appVersion.textContent).toBe("v0.0.1-stale");
+
+    const es = h.esInstances[0];
+    es.onmessage({ data: "reload" });
+    h.fetchCalls[0].resolveOk({
+      ok: true,
+      title: "t",
+      main: '<main class="main"></main>',
+      extras: "",
+      highlightId: null,
+      appVersion: "dev (build ebdb103)",
+    });
+    await flush();
+
+    expect(h.doc.querySelector("[data-app-version]")!.textContent).toBe("dev (build ebdb103)");
+  });
+
+  test("an in-app navigation to a different page resyncs the version chip too", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    click(h.doc, refs.inAppLink);
+    h.fetchCalls[0].resolveOk({ ...NEW_FRAGMENT, appVersion: "v1.2.3" });
+    await flush();
+
+    expect(h.doc.querySelector("[data-app-version]")!.textContent).toBe("v1.2.3");
+  });
+
+  test("a fragment response with no appVersion field at all (e.g. an older server) is a safe no-op, never a crash", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    click(h.doc, refs.inAppLink);
+    h.fetchCalls[0].resolveOk(NEW_FRAGMENT); // no `appVersion` field
+    await flush();
+
+    expect(h.doc.querySelector("[data-app-version]")!.textContent).toBe("v0.0.1-stale");
   });
 });

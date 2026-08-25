@@ -685,7 +685,12 @@
        page's own extras — gate-summon templates, the registry editor overlay — swapped into a stable
        `[data-extras-host]` sibling) instead of a full page load. The app shell — header, rail, the
        Orchestrator panel (and thus its conversation), and the one persistent SSE connection below — is
-       never touched by a swap: only `.main` and `[data-extras-host]` are ever replaced. This fixes the
+       never REPLACED by a swap: only `.main` and `[data-extras-host]` ever get a real DOM replacement.
+       A few individual, marked regions within that untouched shell — the version chip (Finding 131),
+       the orch tail/action/briefing — do still get their CONTENTS resynced on every swap (see
+       `syncAppVersion`/`syncOrchTail`/`syncOrchAction`/`syncOrchBriefing` below); the rest of the
+       header and the whole rail carry no such marker yet and stay frozen at whatever was true on the
+       tab's last cold GET (a known sibling gap — NOTES V11-CONV-SYNC). This fixes the
        hang (rapid full navigations were exhausting Chrome's ~6-connections-per-origin HTTP/1.1 limit —
        curl answered the server in 0.138s during the episode; the browser just had nowhere left to
        queue the newest request), the conversation wipe, and the per-click asset/SSE churn, all at
@@ -838,6 +843,17 @@
       if (host && typeof data.orchBriefing === 'string') host.innerHTML = data.orchBriefing;
     }
 
+    /* Finding 131: the header's version chip, unconditional every swap — same reasoning as
+       `syncOrchAction` above (a `--define`-stamped build constant carries no "already shown live" case
+       to guard against; it's the same string on every response this process ever serves). The header is
+       otherwise outside every swap region entirely (`swapFragment` only ever touches `.main` and
+       `[data-extras-host]`), so without this the chip stayed frozen at whatever the tab's own last cold
+       GET saw, even once the daemon had since restarted on a newer commit. */
+    function syncAppVersion(data) {
+      var host = document.querySelector('[data-app-version]');
+      if (host && typeof data.appVersion === 'string') host.innerHTML = data.appVersion;
+    }
+
     /* amendment 1 §2 R4, tier 2 (card, 1-10s resolution/refetch): a same-URL refresh (the SSE reload
        trigger below, a post-save content refresh) is a card RESOLVING, not a page transition — the
        Conductor's scroll position and reading context should survive it, and whatever visibly changed
@@ -871,13 +887,17 @@
     }
 
     /* Replaces `.main` outright (its own opening-tag attributes, e.g. `data-highlight`, differ per
-       page) and re-fills `[data-extras-host]` — never the rail or the app header, which this function
-       never even looks at. The Orchestrator `<aside>` itself keeps UI10's own conversation-preserving
-       guarantee — its history in `.orch__body` is never rebuilt — except for three regions carved out
-       of it on purpose: the persisted-tail resync (scope-gated, see `syncOrchTail`), and the gate-card
-       action and briefing resyncs (both unconditional, see `syncOrchAction`/`syncOrchBriefing`, NOTES
-       ORCH-STALE-CARD) — the latter two apply together, on every swap, since the briefing sentence
-       names the same runner-side fact the action region's card renders. */
+       page) and re-fills `[data-extras-host]` — never the rail or the rest of the app header, which
+       this function never looks at (see NOTES V11-CONV-SYNC above: a known, still-open sibling gap).
+       The Orchestrator `<aside>` itself keeps UI10's own conversation-preserving guarantee — its
+       history in `.orch__body` is never rebuilt — except for three regions carved out of it on purpose:
+       the persisted-tail resync (identity-reconciled every swap, not merely scope-gated — see
+       `syncOrchTail`, Finding 57), and the gate-card action and briefing resyncs (unconditional, see
+       `syncOrchAction`/`syncOrchBriefing`, NOTES ORCH-STALE-CARD) — the latter two apply together, on
+       every swap, since the briefing sentence names the same runner-side fact the action region's card
+       renders. The header's version chip (Finding 131, see `syncAppVersion`) gets the same unconditional
+       treatment despite living outside `.orch`/`.main` entirely — it needs its own marker precisely
+       because this function never looks at the header. */
     function swapFragment(data, sameUrl) {
       var oldMain = document.querySelector('.main');
       if (!oldMain || !oldMain.parentNode) return false;
@@ -911,6 +931,7 @@
       syncOrchTail(data);
       syncOrchAction(data);
       syncOrchBriefing(data);
+      syncAppVersion(data);
 
       if (typeof data.title === 'string' && data.title) document.title = decodeTitleEntities(data.title);
       applyHighlight(newMain);
