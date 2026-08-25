@@ -1443,6 +1443,27 @@ describe("the rail is identical navigation on every screen", () => {
       expect(section).not.toContain(">ok<");
       expect(section).not.toContain("missing-env");
     });
+
+    // Finding 40 (REOPENED): the project list/unit counts, connector dots, and ideas list each carry
+    // their own `<!--marker-->`, unlike the Registry section beside them (deliberately unmarked — out
+    // of this finding's scope, reported as a remaining sibling gap per Finding 129) — so
+    // `board/serve.ts#extractFragment` has something to slice out and `assets/app.js`'s new
+    // `syncRailProjects`/`syncRailConnectors`/`syncRailIdeas` have something to resync.
+    test(`${name}: the rail's Projects, Connectors, and Ideas sections each carry their own resync marker; Registry carries none`, () => {
+      const rail = railOf(html);
+      expect(rail).toContain("data-rail-projects");
+      expect(rail).toContain("<!--railprojects-->");
+      expect(rail).toContain("<!--/railprojects-->");
+      expect(rail).toContain("data-rail-connectors");
+      expect(rail).toContain("<!--railconnectors-->");
+      expect(rail).toContain("<!--/railconnectors-->");
+      expect(rail).toContain("data-rail-ideas");
+      expect(rail).toContain("<!--railideas-->");
+      expect(rail).toContain("<!--/railideas-->");
+      const registrySection = /<h3 class="railsec__h">Registry<\/h3>([\s\S]*?)<\/section>/.exec(rail)![1];
+      expect(registrySection).not.toContain("<!--");
+      expect(registrySection).not.toContain("data-rail-");
+    });
   }
 
   test("the rail's structure (sections, classes, order) is byte-identical across all six screens — only the registry sub-nav's is-active highlight legitimately varies", () => {
@@ -1505,6 +1526,18 @@ describe("the app header carries the wordmark, version chip, orchestrator status
     expect(header).toContain('class="chip is-waiting"');
     expect(header).not.toContain('class="status-dot is-danger"');
     expect(header).not.toContain("is-failed");
+  });
+
+  // Finding 40 (REOPENED): the badge alone — not the whole `<details class="orchind">` — carries the
+  // `<!--orchind-->`/`<!--/orchind-->` marker and `data-orchind-badge`, so `extractFragment` can slice
+  // it out and `assets/app.js#syncOrchIndicator` can resync it without ever closing an open popover.
+  test("the Orchestrator dot's badge (not the whole popover) carries the orchind marker", () => {
+    const html = renderStudio(repo, root, now, [], { available: true, reason: "ok", envVar: "ANTHROPIC_API_KEY" });
+    const header = headerOf(html);
+    expect(header).toMatch(/<span data-orchind-badge><!--orchind--><span class="chip is-done">orchestrator: on<\/span><!--\/orchind--><\/span>/);
+    // The popover body (reason text, env var row) sits outside the marker — resyncing the badge must
+    // never touch it.
+    expect(header.indexOf("orchind__pop")).toBeGreaterThan(header.indexOf("<!--/orchind-->"));
   });
 
   test("the header's structure is byte-identical across all six screens (only the rail-toggle aria-label legitimately varies)", () => {

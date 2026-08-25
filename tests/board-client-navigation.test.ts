@@ -459,6 +459,13 @@ function buildPage(doc: FakeDocument, opts: { path?: string } = {}) {
   appVersion.textContent = "v0.0.1-stale";
   doc.body.appendChild(appVersion);
 
+  // Finding 40 (REOPENED): the header's Orchestrator-availability dot, scoped to just the badge span —
+  // a sibling of the version chip above, same "outside every swap region" shell furniture.
+  const orchIndicator = doc.createElement("span");
+  orchIndicator.setAttribute("data-orchind-badge", "");
+  orchIndicator.innerHTML = '<span class="chip is-waiting" id="stale-orchind-badge">orchestrator: off</span>';
+  doc.body.appendChild(orchIndicator);
+
   const app = doc.createElement("div");
   app.setAttribute("class", "app");
   doc.body.appendChild(app);
@@ -469,6 +476,22 @@ function buildPage(doc: FakeDocument, opts: { path?: string } = {}) {
   const railLink = doc.createElement("a");
   railLink.setAttribute("href", "/registry/agents");
   rail.appendChild(railLink);
+
+  // Finding 40 (REOPENED): the rail's three resynced regions — each a stand-in for "what a cold GET
+  // rendered at some earlier moment," same seeding shape as orchAction/orchBriefing above, so a test can
+  // assert each actually gets replaced by a later refresh's own fragment field.
+  const railProjects = doc.createElement("div");
+  railProjects.setAttribute("data-rail-projects", "");
+  railProjects.innerHTML = '<a class="rel" id="stale-project-row" href="/project/storefront"><span class="nm">storefront</span><span class="ag">3</span></a>';
+  rail.appendChild(railProjects);
+  const railConnectors = doc.createElement("div");
+  railConnectors.setAttribute("data-rail-connectors", "");
+  railConnectors.innerHTML = '<a class="crow" id="stale-connector-row" href="/registry/connectors/github"><span class="status-dot is-idle"></span><span class="nm">github</span></a>';
+  rail.appendChild(railConnectors);
+  const railIdeas = doc.createElement("div");
+  railIdeas.setAttribute("data-rail-ideas", "");
+  railIdeas.innerHTML = '<a class="idea" id="stale-idea-row" href="/idea/loyalty-program">loyalty-program</a>';
+  rail.appendChild(railIdeas);
 
   const main = doc.createElement("main");
   main.setAttribute("class", "main");
@@ -540,7 +563,27 @@ function buildPage(doc: FakeDocument, opts: { path?: string } = {}) {
   extrasHost.appendChild(oldExtra);
   doc.body.appendChild(extrasHost);
 
-  return { app, rail, railLink, main, inAppLink, externalLink, downloadLink, orch, orchBody, existingTurn, orchTail, orchAction, orchBriefing, extrasHost, appVersion };
+  return {
+    app,
+    rail,
+    railLink,
+    main,
+    inAppLink,
+    externalLink,
+    downloadLink,
+    orch,
+    orchBody,
+    existingTurn,
+    orchTail,
+    orchAction,
+    orchBriefing,
+    extrasHost,
+    appVersion,
+    orchIndicator,
+    railProjects,
+    railConnectors,
+    railIdeas,
+  };
 }
 
 const NEW_FRAGMENT = {
@@ -1069,5 +1112,278 @@ describe("client-side navigation — the header's version chip resyncs on every 
     await flush();
 
     expect(h.doc.querySelector("[data-app-version]")!.textContent).toBe("v0.0.1-stale");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 40 (REOPENED) — the header's Orchestrator-availability dot sits entirely OUTSIDE `.main`/
+// `[data-extras-host]`/`.orch` (never touched by `swapFragment`'s own replacements), the identical root
+// cause Finding 131 already fixed for its sibling, the version chip. Closed once already on a misread (a
+// sidebar count seen changing across two screenshots with a hard refresh between them); the first test
+// here is the actual probe that reopened it: an SSE `reload` alone, no click, no manual reload, must
+// move the dot.
+// ---------------------------------------------------------------------------
+describe("client-side navigation — the header's Orchestrator dot resyncs on every refresh (Finding 40, REOPENED)", () => {
+  test("the SSE reload trigger — a same-URL refresh, no click, no manual reload — replaces the badge's content with the fragment's orchIndicator", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    expect(refs.orchIndicator.querySelector("#stale-orchind-badge")).not.toBeNull();
+
+    const es = h.esInstances[0];
+    es.onmessage({ data: "reload" });
+    h.fetchCalls[0].resolveOk({
+      ok: true,
+      title: "t",
+      main: '<main class="main"></main>',
+      extras: "",
+      highlightId: null,
+      orchIndicator: '<span class="chip is-done" id="fresh-orchind-badge">orchestrator: on</span>',
+    });
+    await flush();
+
+    expect(refs.orchIndicator.querySelector("#fresh-orchind-badge")).not.toBeNull();
+    expect(refs.orchIndicator.querySelector("#stale-orchind-badge")).toBeNull();
+  });
+
+  test("an in-app navigation to a different page resyncs the badge too — it is header shell furniture, not page content", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    click(h.doc, refs.inAppLink);
+    h.fetchCalls[0].resolveOk({ ...NEW_FRAGMENT, orchIndicator: '<span class="chip is-waiting" id="destination-orchind-badge">orchestrator: off</span>' });
+    await flush();
+
+    expect(refs.orchIndicator.querySelector("#destination-orchind-badge")).not.toBeNull();
+    expect(refs.orchIndicator.querySelector("#stale-orchind-badge")).toBeNull();
+  });
+
+  test("a fragment response with no orchIndicator field at all (e.g. an older server) is a safe no-op, never a crash", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    click(h.doc, refs.inAppLink);
+    h.fetchCalls[0].resolveOk(NEW_FRAGMENT); // no `orchIndicator` field
+    await flush();
+
+    expect(refs.orchIndicator.querySelector("#stale-orchind-badge")).not.toBeNull();
+  });
+
+  // Finding 40's own "comparable reason to skip reapplication" check: the header's Orchestrator
+  // indicator is a `<details>` popover the Conductor can have open mid-read. The marker is scoped to
+  // just the badge span (not the whole `<details>`) precisely so a resync never touches the ancestor's
+  // `open` state — proven directly here, not just by marker placement in the source.
+  test("resyncing the badge never touches the popover's own open/closed state", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    // Graft the badge under a real `<details open>` ancestor, same nesting the real markup has
+    // (`.remove()` first — this harness's `appendChild` doesn't detach a node from its previous parent
+    // on its own), so the test can check the resync never reaches up to touch it.
+    refs.orchIndicator.remove();
+    const details = h.doc.createElement("details");
+    details.setAttribute("class", "orchind");
+    details.setAttribute("open", "");
+    details.appendChild(refs.orchIndicator);
+    h.doc.body.appendChild(details);
+
+    const es = h.esInstances[0];
+    es.onmessage({ data: "reload" });
+    h.fetchCalls[0].resolveOk({
+      ok: true,
+      title: "t",
+      main: '<main class="main"></main>',
+      extras: "",
+      highlightId: null,
+      orchIndicator: '<span class="chip is-done" id="fresh-orchind-badge">orchestrator: on</span>',
+    });
+    await flush();
+
+    expect(refs.orchIndicator.querySelector("#fresh-orchind-badge")).not.toBeNull(); // still resynced
+    expect(details.hasAttribute("open")).toBe(true); // the popover the Conductor had open stayed open
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 40 (REOPENED), continued — the rail's project list/unit counts, connector health dots, and
+// ideas list have the identical gap the header's Orchestrator dot suite above already covers: outside
+// every swap region, cold-GET only.
+// ---------------------------------------------------------------------------
+describe("client-side navigation — the rail's Projects, Connectors, and Ideas sections resync on every refresh (Finding 40, REOPENED)", () => {
+  const RAIL_RELOAD_FRAGMENT = {
+    ok: true,
+    title: "t",
+    main: '<main class="main"></main>',
+    extras: "",
+    highlightId: null,
+    railProjects: '<a class="rel" id="fresh-project-row" href="/project/storefront"><span class="nm">storefront</span><span class="ag">4</span></a>',
+    railConnectors: '<a class="crow" id="fresh-connector-row" href="/registry/connectors/github"><span class="status-dot is-ok"></span><span class="nm">github</span></a>',
+    railIdeas: '<a class="idea" id="fresh-idea-row" href="/idea/loyalty-program">loyalty-program</a>',
+  };
+
+  test("the SSE reload trigger — a same-URL refresh, no click, no manual reload — resyncs all three sections (the exact probe that reopened Finding 40: a unit committed from the shell moves the sidebar count only on refresh, never unaided, until this fix)", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+
+    const es = h.esInstances[0];
+    es.onmessage({ data: "reload" });
+    h.fetchCalls[0].resolveOk(RAIL_RELOAD_FRAGMENT);
+    await flush();
+
+    expect(refs.railProjects.querySelector("#fresh-project-row")).not.toBeNull();
+    expect(refs.railProjects.querySelector("#stale-project-row")).toBeNull();
+    expect(refs.railConnectors.querySelector("#fresh-connector-row")).not.toBeNull();
+    expect(refs.railConnectors.querySelector("#stale-connector-row")).toBeNull();
+    expect(refs.railIdeas.querySelector("#fresh-idea-row")).not.toBeNull();
+    expect(refs.railIdeas.querySelector("#stale-idea-row")).toBeNull();
+  });
+
+  test("an in-app navigation to a different page resyncs all three sections too — they are rail shell furniture, not page content, so a same-scope destination must not skip them", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    click(h.doc, refs.inAppLink);
+    h.fetchCalls[0].resolveOk({ ...NEW_FRAGMENT, ...RAIL_RELOAD_FRAGMENT });
+    await flush();
+
+    expect(refs.railProjects.querySelector("#fresh-project-row")).not.toBeNull();
+    expect(refs.railConnectors.querySelector("#fresh-connector-row")).not.toBeNull();
+    expect(refs.railIdeas.querySelector("#fresh-idea-row")).not.toBeNull();
+  });
+
+  test("a fragment response with none of the three fields at all (e.g. an older server) is a safe no-op for each, never a crash", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    click(h.doc, refs.inAppLink);
+    h.fetchCalls[0].resolveOk(NEW_FRAGMENT); // none of railProjects/railConnectors/railIdeas
+    await flush();
+
+    expect(refs.railProjects.querySelector("#stale-project-row")).not.toBeNull();
+    expect(refs.railConnectors.querySelector("#stale-connector-row")).not.toBeNull();
+    expect(refs.railIdeas.querySelector("#stale-idea-row")).not.toBeNull();
+  });
+
+  // The one piece of local state either region can carry: NOTES UI11's "+ N more" reveal
+  // (`data-rail-expand`) toggles a `railsec__overflow` band from `hidden` to visible entirely
+  // client-side. A plain unconditional innerHTML replace would silently re-collapse it on the very next
+  // SSE tick — this is the "does not lose local state a swap region would have preserved" requirement.
+  test("resyncing railProjects while its '+ N more' overflow is already expanded keeps it expanded, instead of silently re-collapsing it", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    // Simulate the Conductor already having clicked "+ N more" on the ORIGINAL (stale) list — the
+    // overflow band is visible, its reveal button already removed, same end-state the real
+    // `data-rail-expand` click handler leaves behind (this harness has no attribute<->`.hidden`
+    // reflection on parsed markup, so the "before" state is set directly on the property, matching the
+    // existing UI11 client-side test's own approach).
+    const overflow = h.doc.createElement("div");
+    overflow.setAttribute("class", "railsec__overflow");
+    overflow.hidden = false;
+    overflow.innerHTML = '<a class="rel" id="stale-overflow-row" href="/project/zeta">zeta</a>';
+    refs.railProjects.appendChild(overflow);
+
+    const es = h.esInstances[0];
+    es.onmessage({ data: "reload" });
+    h.fetchCalls[0].resolveOk({
+      ...RAIL_RELOAD_FRAGMENT,
+      railProjects:
+        '<a class="rel" id="fresh-project-row" href="/project/storefront">storefront</a>' +
+        '<div class="railsec__overflow" hidden><a class="rel" id="fresh-overflow-row" href="/project/zeta">zeta</a></div>' +
+        '<button type="button" class="railsec__more" data-rail-expand>+ 1 more</button>',
+    });
+    await flush();
+
+    const newOverflow = refs.railProjects.querySelector(".railsec__overflow")!;
+    expect(newOverflow.hidden).toBe(false); // still expanded, not re-collapsed by the resync
+    expect(newOverflow.querySelector("#fresh-overflow-row")).not.toBeNull();
+    expect(refs.railProjects.querySelector("[data-rail-expand]")).toBeNull(); // the reveal button stays gone, matching the pre-resync state
+  });
+
+  test("resyncing railProjects while its overflow is still collapsed leaves the fresh '+ N more' button in place", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    // No prior expand — the default fixture state (railProjects carries a single row, no overflow at all).
+    const es = h.esInstances[0];
+    es.onmessage({ data: "reload" });
+    h.fetchCalls[0].resolveOk({
+      ...RAIL_RELOAD_FRAGMENT,
+      railProjects:
+        '<a class="rel" id="fresh-project-row" href="/project/storefront">storefront</a>' +
+        '<div class="railsec__overflow" hidden><a class="rel" id="fresh-overflow-row" href="/project/zeta">zeta</a></div>' +
+        '<button type="button" class="railsec__more" data-rail-expand>+ 1 more</button>',
+    });
+    await flush();
+
+    expect(refs.railProjects.querySelector("[data-rail-expand]")).not.toBeNull();
+    // This harness's innerHTML parser doesn't reflect a parsed boolean `hidden` attribute onto the real
+    // `.hidden` IDL property the way a real browser does (same limitation the existing UI11 client-side
+    // suite works around by setting `.hidden` directly) — the fresh markup's own `hidden` attribute
+    // string, left untouched by `preserveRailExpand`'s no-op skip path, is what's actually observable
+    // here, and confirms the freshly-fetched (still-collapsed) HTML applied unmodified.
+    const overflow = refs.railProjects.querySelector(".railsec__overflow")!;
+    expect(overflow.hasAttribute("hidden")).toBe(true);
+  });
+
+  // Same expand-preserving treatment applies to railIdeas — a distinct code path (its own
+  // `preserveRailExpand` call), not free-riding on railProjects's own test coverage.
+  test("resyncing railIdeas while its '+ N more' overflow is already expanded keeps it expanded", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    const overflow = h.doc.createElement("div");
+    overflow.setAttribute("class", "railsec__overflow");
+    overflow.hidden = false;
+    refs.railIdeas.appendChild(overflow);
+
+    const es = h.esInstances[0];
+    es.onmessage({ data: "reload" });
+    h.fetchCalls[0].resolveOk({
+      ...RAIL_RELOAD_FRAGMENT,
+      railIdeas:
+        '<a class="idea" id="fresh-idea-row" href="/idea/loyalty-program">loyalty-program</a>' +
+        '<div class="railsec__overflow" hidden><a class="idea" id="fresh-idea-overflow-row" href="/idea/other">other</a></div>' +
+        '<button type="button" class="railsec__more" data-rail-expand>+ 1 more</button>',
+    });
+    await flush();
+
+    const newOverflow = refs.railIdeas.querySelector(".railsec__overflow")!;
+    expect(newOverflow.hidden).toBe(false);
+    expect(refs.railIdeas.querySelector("[data-rail-expand]")).toBeNull();
+  });
+
+  // Integration check: by this point in the suite, every one of Finding 40's four named regions
+  // (header dot + three rail sections) resyncs independently. This test proves they all move together
+  // off a SINGLE SSE tick, exactly as a real background refresh would deliver them in one fragment.
+  test("a single SSE reload resyncs all four of Finding 40's named regions at once", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+
+    const es = h.esInstances[0];
+    es.onmessage({ data: "reload" });
+    h.fetchCalls[0].resolveOk({
+      ...RAIL_RELOAD_FRAGMENT,
+      orchIndicator: '<span class="chip is-done" id="fresh-orchind-badge">orchestrator: on</span>',
+    });
+    await flush();
+
+    expect(refs.orchIndicator.querySelector("#fresh-orchind-badge")).not.toBeNull();
+    expect(refs.railProjects.querySelector("#fresh-project-row")).not.toBeNull();
+    expect(refs.railConnectors.querySelector("#fresh-connector-row")).not.toBeNull();
+    expect(refs.railIdeas.querySelector("#fresh-idea-row")).not.toBeNull();
   });
 });

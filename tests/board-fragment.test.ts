@@ -105,6 +105,52 @@ describe("extractFragment — pure string extraction", () => {
     const html = '<title>t</title><!--main--><main class="main">x</main><!--/main--><!--extras--><!--/extras-->';
     expect(extractFragment(html)!.appVersion).toBe("");
   });
+
+  // Finding 40 (REOPENED): the header's Orchestrator-availability dot, scoped to just the badge span
+  // (not the whole `<details class="orchind">`) so a resync can never close a popover the Conductor has
+  // open — same marker mechanism as `appVersion`, same reasoning (a header-level fact outside every
+  // swap region).
+  test("pulls orchIndicator out of the app header, scoped to the badge alone", () => {
+    const html = [
+      '<title>t</title><header class="apphead"><details class="orchind"><summary class="orchind__sum">',
+      '<span data-orchind-badge><!--orchind--><span class="chip is-done">orchestrator: on</span><!--/orchind--></span>',
+      "</summary><div class=\"orchind__pop\">POPOVER</div></details></header>",
+      '<!--main--><main class="main">HELLO</main><!--/main-->',
+    ].join("");
+    expect(extractFragment(html)!.orchIndicator).toBe('<span class="chip is-done">orchestrator: on</span>');
+  });
+
+  test("orchIndicator is the empty string, not absent, when the page carries no marker", () => {
+    const html = '<title>t</title><!--main--><main class="main">x</main><!--/main--><!--extras--><!--/extras-->';
+    expect(extractFragment(html)!.orchIndicator).toBe("");
+  });
+
+  // Finding 40 (REOPENED): the rail's project list (with live unit counts), connector health dots, and
+  // ideas list — the three named regions from the corrected finding — each sliced independently, same
+  // mechanism as `orchIndicator` above. The rail's Registry section carries no marker (deliberately out
+  // of this finding's scope, Finding 129) and so is never present in a fragment.
+  test("pulls railProjects, railConnectors, and railIdeas out of the rail, independent of each other and of main", () => {
+    const html = [
+      '<title>t</title><aside class="rail">',
+      '<section class="railsec"><h3 class="railsec__h">Projects</h3><div data-rail-projects><!--railprojects--><a class="rel">acme<span class="ag">3</span></a><!--/railprojects--></div></section>',
+      '<section class="railsec"><h3 class="railsec__h">Connectors</h3><div data-rail-connectors><!--railconnectors--><a class="crow">github</a><!--/railconnectors--></div></section>',
+      '<section class="railsec"><h3 class="railsec__h">Ideas</h3><div data-rail-ideas><!--railideas--><a class="idea">loyalty</a><!--/railideas--></div></section>',
+      "</aside>",
+      '<!--main--><main class="main">HELLO</main><!--/main-->',
+    ].join("");
+    const frag = extractFragment(html)!;
+    expect(frag.railProjects).toBe('<a class="rel">acme<span class="ag">3</span></a>');
+    expect(frag.railConnectors).toBe('<a class="crow">github</a>');
+    expect(frag.railIdeas).toBe('<a class="idea">loyalty</a>');
+  });
+
+  test("railProjects/railConnectors/railIdeas are the empty string, not absent, when the page carries no markers", () => {
+    const html = '<title>t</title><!--main--><main class="main">x</main><!--/main--><!--extras--><!--/extras-->';
+    const frag = extractFragment(html)!;
+    expect(frag.railProjects).toBe("");
+    expect(frag.railConnectors).toBe("");
+    expect(frag.railIdeas).toBe("");
+  });
 });
 
 describe("isFragmentRequest", () => {
@@ -184,7 +230,25 @@ describe("levare serve — fragment GETs (NOTES UI10)", () => {
       expect(fragBody.orchBriefing).toBe(extractedFromFull.orchBriefing);
       // Finding 131: and now the header's version chip too — same guarantee, same reason.
       expect(fragBody.appVersion).toBe(extractedFromFull.appVersion);
+      // Finding 40 (REOPENED): and now the header's Orchestrator dot and the rail's three resynced
+      // regions — same guarantee, same reason: one render call, sliced four more ways.
+      expect(fragBody.orchIndicator).toBe(extractedFromFull.orchIndicator);
+      expect(fragBody.railProjects).toBe(extractedFromFull.railProjects);
+      expect(fragBody.railConnectors).toBe(extractedFromFull.railConnectors);
+      expect(fragBody.railIdeas).toBe(extractedFromFull.railIdeas);
     }
+  });
+
+  // Finding 40 (REOPENED): each region must carry real content, not just an empty marker, or the
+  // corresponding `assets/app.js#sync*` function would have nothing to resync the rail/header to.
+  // fixtures/golden has at least one project and one connector (see other suites), and the Orchestrator
+  // indicator always renders a chip regardless of availability.
+  test("every fragment GET carries non-empty orchIndicator, railProjects, and railConnectors content", async () => {
+    const res = await board.fetch(req("/studio", { headers: FRAG }));
+    const body = await res.json();
+    expect(body.orchIndicator).toContain('class="chip');
+    expect(body.railProjects).toContain('class="rel"');
+    expect(body.railConnectors).toContain('class="crow"');
   });
 
   // Finding 131: the fragment must actually carry the chip's real content (a `--define`-stamped build
