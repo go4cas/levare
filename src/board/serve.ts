@@ -250,6 +250,11 @@ export interface Fragment {
    * this process serves, so it carries no "already shown live" case to guard against — same reasoning
    * as `orchAction`. */
   appVersion: string;
+  /** Finding 40 (REOPENED): the header's Orchestrator-availability dot, sliced from
+   * `<!--orchind-->`/`<!--/orchind-->` (render/shell.ts#orchestratorIndicator) — same reasoning as
+   * `appVersion` (a header-level fact outside every swap region), scoped to just the badge span so a
+   * resync can never close an open popover out from under the Conductor reading it. */
+  orchIndicator: string;
 }
 
 const FRAGMENT_HEADER = "x-levare-fragment";
@@ -275,6 +280,7 @@ export function extractFragment(rendered: string): Fragment | null {
   const orchActionMatch = /<!--orchaction-->([\s\S]*?)<!--\/orchaction-->/.exec(rendered);
   const orchBriefingMatch = /<!--orchbriefing-->([\s\S]*?)<!--\/orchbriefing-->/.exec(rendered);
   const appVersionMatch = /<!--appversion-->([\s\S]*?)<!--\/appversion-->/.exec(rendered);
+  const orchIndicatorMatch = /<!--orchind-->([\s\S]*?)<!--\/orchind-->/.exec(rendered);
   return {
     title: titleMatch[1],
     main: mainHtml,
@@ -288,6 +294,7 @@ export function extractFragment(rendered: string): Fragment | null {
     orchAction: orchActionMatch ? orchActionMatch[1] : "",
     orchBriefing: orchBriefingMatch ? orchBriefingMatch[1] : "",
     appVersion: appVersionMatch ? appVersionMatch[1] : "",
+    orchIndicator: orchIndicatorMatch ? orchIndicatorMatch[1] : "",
   };
 }
 function serveAsset(name: string): Response {

@@ -105,6 +105,25 @@ describe("extractFragment — pure string extraction", () => {
     const html = '<title>t</title><!--main--><main class="main">x</main><!--/main--><!--extras--><!--/extras-->';
     expect(extractFragment(html)!.appVersion).toBe("");
   });
+
+  // Finding 40 (REOPENED): the header's Orchestrator-availability dot, scoped to just the badge span
+  // (not the whole `<details class="orchind">`) so a resync can never close a popover the Conductor has
+  // open — same marker mechanism as `appVersion`, same reasoning (a header-level fact outside every
+  // swap region).
+  test("pulls orchIndicator out of the app header, scoped to the badge alone", () => {
+    const html = [
+      '<title>t</title><header class="apphead"><details class="orchind"><summary class="orchind__sum">',
+      '<span data-orchind-badge><!--orchind--><span class="chip is-done">orchestrator: on</span><!--/orchind--></span>',
+      "</summary><div class=\"orchind__pop\">POPOVER</div></details></header>",
+      '<!--main--><main class="main">HELLO</main><!--/main-->',
+    ].join("");
+    expect(extractFragment(html)!.orchIndicator).toBe('<span class="chip is-done">orchestrator: on</span>');
+  });
+
+  test("orchIndicator is the empty string, not absent, when the page carries no marker", () => {
+    const html = '<title>t</title><!--main--><main class="main">x</main><!--/main--><!--extras--><!--/extras-->';
+    expect(extractFragment(html)!.orchIndicator).toBe("");
+  });
 });
 
 describe("isFragmentRequest", () => {
@@ -184,7 +203,18 @@ describe("levare serve — fragment GETs (NOTES UI10)", () => {
       expect(fragBody.orchBriefing).toBe(extractedFromFull.orchBriefing);
       // Finding 131: and now the header's version chip too — same guarantee, same reason.
       expect(fragBody.appVersion).toBe(extractedFromFull.appVersion);
+      // Finding 40 (REOPENED): and now the header's Orchestrator dot — same guarantee, same reason.
+      expect(fragBody.orchIndicator).toBe(extractedFromFull.orchIndicator);
     }
+  });
+
+  // Finding 40 (REOPENED): must carry real content, not just an empty marker, or
+  // `assets/app.js#syncOrchIndicator` would have nothing to resync the header to. The badge always
+  // renders regardless of availability (on or off both produce a `.chip`).
+  test("every fragment GET carries a non-empty orchIndicator", async () => {
+    const res = await board.fetch(req("/studio", { headers: FRAG }));
+    const body = await res.json();
+    expect(body.orchIndicator).toContain('class="chip');
   });
 
   // Finding 131: the fragment must actually carry the chip's real content (a `--define`-stamped build

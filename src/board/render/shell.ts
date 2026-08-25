@@ -140,12 +140,20 @@ function reasonSentence(reason: string): string {
   return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
 
+// Finding 40 (REOPENED): the badge alone, not the whole `<details>`, carries the marker — scoping it
+// this narrow means a resync can never blow away the popover's own open/closed state (a Conductor
+// mid-read of "why is it off" loses nothing), the same "don't clobber local UI state a swap would have
+// preserved" concern NOTES UI10 raised for the registry editor overlay. The header itself sits outside
+// every swap region (`swapFragment` only ever touches `.main`/`[data-extras-host]`, NOTES UI10), so
+// without this marker the dot stayed frozen at whatever was configured at the tab's last cold GET, even
+// after the daemon restarted with ANTHROPIC_API_KEY newly set or unset — the identical gap Finding 131
+// already fixed for the version chip one element to its left.
 function orchestratorIndicator(status: OrchestratorStatus): string {
   const badge = status.available
     ? statusBadge("done", "orchestrator: on")
     : statusBadge("waiting", "orchestrator: off");
   return `<details class="orchind">
-    <summary class="orchind__sum">${badge}</summary>
+    <summary class="orchind__sum"><span data-orchind-badge><!--orchind-->${badge}<!--/orchind--></span></summary>
     <div class="orchind__pop" role="group" aria-label="Orchestrator status">
       <div class="orchind__pop-head">
         <span class="orchind__pop-title">Orchestrator</span>

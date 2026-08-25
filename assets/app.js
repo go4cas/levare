@@ -686,11 +686,11 @@
        `[data-extras-host]` sibling) instead of a full page load. The app shell — header, rail, the
        Orchestrator panel (and thus its conversation), and the one persistent SSE connection below — is
        never REPLACED by a swap: only `.main` and `[data-extras-host]` ever get a real DOM replacement.
-       A few individual, marked regions within that untouched shell — the version chip (Finding 131),
-       the orch tail/action/briefing — do still get their CONTENTS resynced on every swap (see
-       `syncAppVersion`/`syncOrchTail`/`syncOrchAction`/`syncOrchBriefing` below); the rest of the
-       header and the whole rail carry no such marker yet and stay frozen at whatever was true on the
-       tab's last cold GET (a known sibling gap — NOTES V11-CONV-SYNC). This fixes the
+       A few individual, marked regions within that untouched shell — the version chip and Orchestrator
+       dot in the header (Findings 131/40), the orch tail/action/briefing — do still get their CONTENTS
+       resynced on every swap (see `syncAppVersion`/`syncOrchIndicator`/`syncOrchTail`/`syncOrchAction`/
+       `syncOrchBriefing` below); the whole rail carries no such marker yet and stays frozen at whatever
+       was true on the tab's last cold GET (a known, still-open sibling gap — NOTES V11-CONV-SYNC). This fixes the
        hang (rapid full navigations were exhausting Chrome's ~6-connections-per-origin HTTP/1.1 limit —
        curl answered the server in 0.138s during the episode; the browser just had nowhere left to
        queue the newest request), the conversation wipe, and the per-click asset/SSE churn, all at
@@ -854,6 +854,21 @@
       if (host && typeof data.appVersion === 'string') host.innerHTML = data.appVersion;
     }
 
+    /* Finding 40 (REOPENED — closed stale once already on a misread of a hard-refreshed screenshot
+       pair; settled by probe: a shell-side change moved a header/rail fact only on manual refresh,
+       never live). The header's Orchestrator-availability dot has the identical gap `syncAppVersion`
+       above already closed for its sibling, the version chip: outside every swap region entirely, so a
+       long-open tab kept showing whichever on/off state was true at its own last cold GET, even after
+       the daemon restarted with ANTHROPIC_API_KEY newly set or unset.
+       Scoped to just the badge span — `<span data-orchind-badge>`, NOT the whole `<details
+       class="orchind">` — so a resync can never close a popover the Conductor has open mid-read (the
+       exact "don't clobber local UI state a swap would have preserved" concern NOTES UI10 raised for
+       the registry editor overlay, avoided here by marker placement instead of a skip-the-swap check). */
+    function syncOrchIndicator(data) {
+      var host = document.querySelector('[data-orchind-badge]');
+      if (host && typeof data.orchIndicator === 'string') host.innerHTML = data.orchIndicator;
+    }
+
     /* amendment 1 §2 R4, tier 2 (card, 1-10s resolution/refetch): a same-URL refresh (the SSE reload
        trigger below, a post-save content refresh) is a card RESOLVING, not a page transition — the
        Conductor's scroll position and reading context should survive it, and whatever visibly changed
@@ -887,8 +902,11 @@
     }
 
     /* Replaces `.main` outright (its own opening-tag attributes, e.g. `data-highlight`, differ per
-       page) and re-fills `[data-extras-host]` — never the rail or the rest of the app header, which
-       this function never looks at (see NOTES V11-CONV-SYNC above: a known, still-open sibling gap).
+       page) and re-fills `[data-extras-host]` — this function itself never looks at the rail or the app
+       header at all; the header's version chip and Orchestrator dot (Findings 131/40, below) resync
+       through their own marker queries, independent of this replacement. The rail carries no marker yet
+       and stays frozen at whatever was true on the tab's last cold GET — a known, still-open sibling gap
+       (see NOTES V11-CONV-SYNC's original diagnosis).
        The Orchestrator `<aside>` itself keeps UI10's own conversation-preserving guarantee — its
        history in `.orch__body` is never rebuilt — except for three regions carved out of it on purpose:
        the persisted-tail resync (identity-reconciled every swap, not merely scope-gated — see
@@ -932,6 +950,7 @@
       syncOrchAction(data);
       syncOrchBriefing(data);
       syncAppVersion(data);
+      syncOrchIndicator(data);
 
       if (typeof data.title === 'string' && data.title) document.title = decodeTitleEntities(data.title);
       applyHighlight(newMain);

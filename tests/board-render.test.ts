@@ -1507,6 +1507,18 @@ describe("the app header carries the wordmark, version chip, orchestrator status
     expect(header).not.toContain("is-failed");
   });
 
+  // Finding 40 (REOPENED): the badge alone — not the whole `<details class="orchind">` — carries the
+  // `<!--orchind-->`/`<!--/orchind-->` marker and `data-orchind-badge`, so `extractFragment` can slice
+  // it out and `assets/app.js#syncOrchIndicator` can resync it without ever closing an open popover.
+  test("the Orchestrator dot's badge (not the whole popover) carries the orchind marker", () => {
+    const html = renderStudio(repo, root, now, [], { available: true, reason: "ok", envVar: "ANTHROPIC_API_KEY" });
+    const header = headerOf(html);
+    expect(header).toMatch(/<span data-orchind-badge><!--orchind--><span class="chip is-done">orchestrator: on<\/span><!--\/orchind--><\/span>/);
+    // The popover body (reason text, env var row) sits outside the marker — resyncing the badge must
+    // never touch it.
+    expect(header.indexOf("orchind__pop")).toBeGreaterThan(header.indexOf("<!--/orchind-->"));
+  });
+
   test("the header's structure is byte-identical across all six screens (only the rail-toggle aria-label legitimately varies)", () => {
     const normalize = (h: string) => h.replace(/aria-label="[^"]*"/, 'aria-label=""');
     const headers = screens.map(([, html]) => normalize(headerOf(html)));

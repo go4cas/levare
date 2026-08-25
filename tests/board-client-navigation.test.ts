@@ -459,6 +459,13 @@ function buildPage(doc: FakeDocument, opts: { path?: string } = {}) {
   appVersion.textContent = "v0.0.1-stale";
   doc.body.appendChild(appVersion);
 
+  // Finding 40 (REOPENED): the header's Orchestrator-availability dot, scoped to just the badge span —
+  // a sibling of the version chip above, same "outside every swap region" shell furniture.
+  const orchIndicator = doc.createElement("span");
+  orchIndicator.setAttribute("data-orchind-badge", "");
+  orchIndicator.innerHTML = '<span class="chip is-waiting" id="stale-orchind-badge">orchestrator: off</span>';
+  doc.body.appendChild(orchIndicator);
+
   const app = doc.createElement("div");
   app.setAttribute("class", "app");
   doc.body.appendChild(app);
@@ -540,7 +547,7 @@ function buildPage(doc: FakeDocument, opts: { path?: string } = {}) {
   extrasHost.appendChild(oldExtra);
   doc.body.appendChild(extrasHost);
 
-  return { app, rail, railLink, main, inAppLink, externalLink, downloadLink, orch, orchBody, existingTurn, orchTail, orchAction, orchBriefing, extrasHost, appVersion };
+  return { app, rail, railLink, main, inAppLink, externalLink, downloadLink, orch, orchBody, existingTurn, orchTail, orchAction, orchBriefing, extrasHost, appVersion, orchIndicator };
 }
 
 const NEW_FRAGMENT = {
@@ -1069,5 +1076,98 @@ describe("client-side navigation — the header's version chip resyncs on every 
     await flush();
 
     expect(h.doc.querySelector("[data-app-version]")!.textContent).toBe("v0.0.1-stale");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 40 (REOPENED) — the header's Orchestrator-availability dot sits entirely OUTSIDE `.main`/
+// `[data-extras-host]`/`.orch` (never touched by `swapFragment`'s own replacements), the identical root
+// cause Finding 131 already fixed for its sibling, the version chip. Closed once already on a misread (a
+// sidebar count seen changing across two screenshots with a hard refresh between them); the first test
+// here is the actual probe that reopened it: an SSE `reload` alone, no click, no manual reload, must
+// move the dot.
+// ---------------------------------------------------------------------------
+describe("client-side navigation — the header's Orchestrator dot resyncs on every refresh (Finding 40, REOPENED)", () => {
+  test("the SSE reload trigger — a same-URL refresh, no click, no manual reload — replaces the badge's content with the fragment's orchIndicator", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    expect(refs.orchIndicator.querySelector("#stale-orchind-badge")).not.toBeNull();
+
+    const es = h.esInstances[0];
+    es.onmessage({ data: "reload" });
+    h.fetchCalls[0].resolveOk({
+      ok: true,
+      title: "t",
+      main: '<main class="main"></main>',
+      extras: "",
+      highlightId: null,
+      orchIndicator: '<span class="chip is-done" id="fresh-orchind-badge">orchestrator: on</span>',
+    });
+    await flush();
+
+    expect(refs.orchIndicator.querySelector("#fresh-orchind-badge")).not.toBeNull();
+    expect(refs.orchIndicator.querySelector("#stale-orchind-badge")).toBeNull();
+  });
+
+  test("an in-app navigation to a different page resyncs the badge too — it is header shell furniture, not page content", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    click(h.doc, refs.inAppLink);
+    h.fetchCalls[0].resolveOk({ ...NEW_FRAGMENT, orchIndicator: '<span class="chip is-waiting" id="destination-orchind-badge">orchestrator: off</span>' });
+    await flush();
+
+    expect(refs.orchIndicator.querySelector("#destination-orchind-badge")).not.toBeNull();
+    expect(refs.orchIndicator.querySelector("#stale-orchind-badge")).toBeNull();
+  });
+
+  test("a fragment response with no orchIndicator field at all (e.g. an older server) is a safe no-op, never a crash", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    click(h.doc, refs.inAppLink);
+    h.fetchCalls[0].resolveOk(NEW_FRAGMENT); // no `orchIndicator` field
+    await flush();
+
+    expect(refs.orchIndicator.querySelector("#stale-orchind-badge")).not.toBeNull();
+  });
+
+  // Finding 40's own "comparable reason to skip reapplication" check: the header's Orchestrator
+  // indicator is a `<details>` popover the Conductor can have open mid-read. The marker is scoped to
+  // just the badge span (not the whole `<details>`) precisely so a resync never touches the ancestor's
+  // `open` state — proven directly here, not just by marker placement in the source.
+  test("resyncing the badge never touches the popover's own open/closed state", async () => {
+    let refs!: ReturnType<typeof buildPage>;
+    const h = setup((doc) => {
+      refs = buildPage(doc);
+    });
+    // Graft the badge under a real `<details open>` ancestor, same nesting the real markup has
+    // (`.remove()` first — this harness's `appendChild` doesn't detach a node from its previous parent
+    // on its own), so the test can check the resync never reaches up to touch it.
+    refs.orchIndicator.remove();
+    const details = h.doc.createElement("details");
+    details.setAttribute("class", "orchind");
+    details.setAttribute("open", "");
+    details.appendChild(refs.orchIndicator);
+    h.doc.body.appendChild(details);
+
+    const es = h.esInstances[0];
+    es.onmessage({ data: "reload" });
+    h.fetchCalls[0].resolveOk({
+      ok: true,
+      title: "t",
+      main: '<main class="main"></main>',
+      extras: "",
+      highlightId: null,
+      orchIndicator: '<span class="chip is-done" id="fresh-orchind-badge">orchestrator: on</span>',
+    });
+    await flush();
+
+    expect(refs.orchIndicator.querySelector("#fresh-orchind-badge")).not.toBeNull(); // still resynced
+    expect(details.hasAttribute("open")).toBe(true); // the popover the Conductor had open stayed open
   });
 });
