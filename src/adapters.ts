@@ -1144,8 +1144,20 @@ function extractCliUsageTrailer(raw: string): { content: string; tokensUsed: num
 // position nor recency (never the first match, never the last — `[...matchAll]` up front, deliberately
 // never `.exec()`'s own first-match-only semantics, which has no way to notice a second one at all).
 const VERDICT_LINE_RE = /^[ \t]*(?:Verdict:[ \t]*)?(APPROVED|CHANGES REQUESTED)[ \t]*$/gm;
+// Findings 118/133: a critic writing `` `CHANGES REQUESTED` `` or **APPROVED** is still declaring the
+// verdict on its own line — the backticks/asterisks/underscores are the member's own markdown habit, not
+// a second sentence sharing the line with it. Stripped per-line before VERDICT_LINE_RE ever runs, so the
+// whole-line anchor above keeps doing its real job unchanged: prose merely mentioning the token still has
+// other words left on the line after stripping and still fails to match.
+const MARKDOWN_DECORATION_RE = /[`*_]/g;
+function stripVerdictLineDecoration(content: string): string {
+  return content
+    .split("\n")
+    .map((line) => line.replace(MARKDOWN_DECORATION_RE, ""))
+    .join("\n");
+}
 function extractVerdict(content: string): "APPROVED" | "CHANGES REQUESTED" | null {
-  const matches = [...content.matchAll(VERDICT_LINE_RE)];
+  const matches = [...stripVerdictLineDecoration(content).matchAll(VERDICT_LINE_RE)];
   return matches.length === 1 ? (matches[0][1] as "APPROVED" | "CHANGES REQUESTED") : null;
 }
 
