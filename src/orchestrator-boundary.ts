@@ -126,9 +126,12 @@ function traceOrchestratorCallStart(studioRoot: string | undefined, call: Orches
 
 function traceOrchestratorCallFinish(studioRoot: string | undefined, call: OrchestratorCall, prompt: string, res: SdkWorkerResponse, ctx: OrchestratorTraceCtx): void {
   if (!studioRoot) return;
+  // Same capture discipline as `adapters.ts#traceNativeDispatchFinish` — real wall clock at the point
+  // the transport call resolved, not an arithmetic reconstruction from `duration_ms`.
+  const endedAt = new Date().toISOString();
   const wide = asSdkTransportResult(res);
   const record = buildOrchestratorTrace(
-    { ok: res.ok, error: res.ok ? undefined : res.error, timedOut: wide.timedOut, durationMs: wide.durationMs, stdout: wide.stdout, stderr: wide.stderr, receipt: res.ok ? res.receipt : undefined },
+    { ok: res.ok, error: res.ok ? undefined : res.error, timedOut: wide.timedOut, durationMs: wide.durationMs, endedAt, stdout: wide.stdout, stderr: wide.stderr, receipt: res.ok ? res.receipt : undefined },
     {
       call,
       model: ctx.model,
