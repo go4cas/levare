@@ -101,6 +101,12 @@ export interface DispatchTraceRecord {
    * until the dispatch finishes is correspondingly optional, populated only by the amend write. */
   outcome: "in_progress" | "ok" | "timeout" | "error";
   duration_ms?: number;
+  /** Wall-clock timestamp captured at the SAME call site that resolves `duration_ms`/`outcome` (the
+   * finish builder, `buildDispatchTrace`) — not derived by adding `duration_ms` to `started_at`, so it
+   * reflects when the dispatch actually finished rather than an arithmetic reconstruction of it. `null`
+   * for exactly as long as `outcome` stays `"in_progress"` — the amend write is what turns both fields
+   * real at once, so a trace can never carry a terminal `outcome` with a null `ended_at`, or vice versa. */
+  ended_at: string | null;
   error?: string;
   context: string;
   context_truncated: boolean;
@@ -116,6 +122,9 @@ export interface NativeDispatchOutcome {
   error?: string;
   timedOut: boolean;
   durationMs: number;
+  /** Wall-clock ISO timestamp taken by the caller at the moment the transport call resolved — see
+   * `DispatchTraceRecord.ended_at`'s own doc for why this is captured, not computed from `durationMs`. */
+  endedAt: string;
   stdout: string;
   stderr: string;
   receipt?: Receipt;
@@ -174,7 +183,7 @@ function buildDispatchTraceIdentity(req: InvokeRequest, opts: DispatchTraceIdent
  * unambiguously as "started, never finished", not as a completed dispatch that produced nothing.
  */
 export function buildDispatchTraceStart(req: InvokeRequest, opts: DispatchTraceIdentityOpts): DispatchTraceRecord {
-  return { ...buildDispatchTraceIdentity(req, opts), outcome: "in_progress" };
+  return { ...buildDispatchTraceIdentity(req, opts), outcome: "in_progress", ended_at: null };
 }
 
 /** What `buildDispatchTrace` (the finish builder) always produces — the outcome-dependent fields
@@ -204,6 +213,7 @@ export function buildDispatchTrace(req: InvokeRequest, outcome: NativeDispatchOu
     ...buildDispatchTraceIdentity(req, opts),
     duration_ms: outcome.durationMs,
     outcome: outcome.timedOut ? "timeout" : outcome.ok ? "ok" : "error",
+    ended_at: outcome.endedAt,
     error: outcome.error,
     worker_stdout: stdout.value,
     worker_stdout_truncated: stdout.truncated,
@@ -318,6 +328,9 @@ export interface OrchestratorTraceRecord {
    * `buildOrchestratorTraceStart`, never a terminal state. */
   outcome: "in_progress" | "ok" | "timeout" | "error";
   duration_ms?: number;
+  /** Same fact, same capture discipline, as `DispatchTraceRecord.ended_at` — a sibling record, not a
+   * shared shape, but this field's meaning and its `in_progress` → real transition are identical. */
+  ended_at: string | null;
   error?: string;
   prompt: string;
   prompt_truncated: boolean;
@@ -356,7 +369,7 @@ function buildOrchestratorTraceIdentity(opts: OrchestratorTraceIdentityOpts) {
 /** The start-of-call trace (Finding 94): written before the transport call, mirroring
  * `buildDispatchTraceStart` — everything known up front, `outcome: "in_progress"` until amended. */
 export function buildOrchestratorTraceStart(opts: OrchestratorTraceIdentityOpts): OrchestratorTraceRecord {
-  return { ...buildOrchestratorTraceIdentity(opts), outcome: "in_progress" };
+  return { ...buildOrchestratorTraceIdentity(opts), outcome: "in_progress", ended_at: null };
 }
 
 export type OrchestratorTraceFinishedRecord = OrchestratorTraceRecord & {
@@ -379,6 +392,7 @@ export function buildOrchestratorTrace(outcome: NativeDispatchOutcome, opts: Orc
     ...buildOrchestratorTraceIdentity(opts),
     duration_ms: outcome.durationMs,
     outcome: outcome.timedOut ? "timeout" : outcome.ok ? "ok" : "error",
+    ended_at: outcome.endedAt,
     error: outcome.error,
     worker_stdout: stdout.value,
     worker_stdout_truncated: stdout.truncated,

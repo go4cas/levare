@@ -41,7 +41,15 @@ function baseReq(extra: Partial<InvokeRequest> = {}): InvokeRequest {
 }
 
 function okOutcome(extra: Partial<NativeDispatchOutcome> = {}): NativeDispatchOutcome {
-  return { ok: true, timedOut: false, durationMs: 1234, stdout: '{"ok":true,"result":"done"}', stderr: "levare: sdk worker query() finished in 1234ms", ...extra };
+  return {
+    ok: true,
+    timedOut: false,
+    durationMs: 1234,
+    endedAt: "2026-08-19T00:00:01.234Z",
+    stdout: '{"ok":true,"result":"done"}',
+    stderr: "levare: sdk worker query() finished in 1234ms",
+    ...extra,
+  };
 }
 
 describe("buildDispatchTrace — invariant 1: env NAMES only, never a value, never a connector's env: value", () => {
@@ -106,15 +114,38 @@ describe("buildDispatchTrace — outcome/timing/truncation shape", () => {
     const req = baseReq();
     const record = buildDispatchTrace(
       req,
-      { ok: false, error: "sdk worker timed out after 600000ms", timedOut: true, durationMs: 600_000, stdout: "", stderr: "levare: sdk worker query() retrying (attempt 1/3...)" },
+      { ok: false, error: "sdk worker timed out after 600000ms", timedOut: true, durationMs: 600_000, endedAt: "2026-08-19T00:10:00.000Z", stdout: "", stderr: "levare: sdk worker query() retrying (attempt 1/3...)" },
       { homeScoped: false, anthropicApiKeyPresent: true, nativeBinaryResolved: true, startedAt: "2026-08-19T00:00:00.000Z", timeoutMs: 600_000 },
     );
     expect(record.outcome).toBe("timeout");
     expect(record.error).toBe("sdk worker timed out after 600000ms");
     expect(record.timeout_ms).toBe(600_000);
     expect(record.duration_ms).toBe(600_000);
+    expect(record.ended_at).toBe("2026-08-19T00:10:00.000Z");
     expect(record.worker_stderr).toContain("retrying");
     expect(record.worker_stderr_truncated).toBe(false);
+  });
+
+  test("an in-progress trace carries a null ended_at; a finished one (ok path) carries a real one", () => {
+    const startRecord = buildDispatchTraceStart(baseReq(), {
+      homeScoped: false,
+      anthropicApiKeyPresent: true,
+      nativeBinaryResolved: true,
+      startedAt: "2026-08-19T00:00:00.000Z",
+      timeoutMs: 600_000,
+    });
+    expect(startRecord.outcome).toBe("in_progress");
+    expect(startRecord.ended_at).toBeNull();
+
+    const finishRecord = buildDispatchTrace(baseReq(), okOutcome(), {
+      homeScoped: false,
+      anthropicApiKeyPresent: true,
+      nativeBinaryResolved: true,
+      startedAt: "2026-08-19T00:00:00.000Z",
+      timeoutMs: 600_000,
+    });
+    expect(finishRecord.outcome).toBe("ok");
+    expect(finishRecord.ended_at).toBe("2026-08-19T00:00:01.234Z");
   });
 
   test("a field longer than the cap is truncated and flagged, never silently dropped or silently shortened", () => {
@@ -353,6 +384,7 @@ describe("buildOrchestratorTrace / buildOrchestratorTraceStart — Finding 94: a
   test("the start record carries no unit/project/member/kind/agent_kind/home_scoped at all — genuinely a different shape", () => {
     const record = buildOrchestratorTraceStart(orchIdentityOpts);
     expect(record.outcome).toBe("in_progress");
+    expect(record.ended_at).toBeNull();
     expect(record.call).toBe("interpret");
     expect(record.model).toBe("claude-sonnet-5");
     expect("unit" in record).toBe(false);
@@ -378,13 +410,14 @@ describe("buildOrchestratorTrace / buildOrchestratorTraceStart — Finding 94: a
       expect(afterStart.length).toBe(1);
       expect(JSON.parse(readFileSync(join(dir, afterStart[0]), "utf8")).outcome).toBe("in_progress");
 
-      const finishRecord = buildOrchestratorTrace({ ok: true, timedOut: false, durationMs: 900, stdout: "", stderr: "" }, orchIdentityOpts);
+      const finishRecord = buildOrchestratorTrace({ ok: true, timedOut: false, durationMs: 900, endedAt: "2026-08-20T00:00:00.900Z", stdout: "", stderr: "" }, orchIdentityOpts);
       writeOrchestratorTrace(studioRoot, finishRecord);
       const afterFinish = readdirSync(dir).filter((f) => f.endsWith(".json"));
       expect(afterFinish).toEqual(afterStart);
       const amended = JSON.parse(readFileSync(join(dir, afterFinish[0]), "utf8"));
       expect(amended.outcome).toBe("ok");
       expect(amended.duration_ms).toBe(900);
+      expect(amended.ended_at).toBe("2026-08-20T00:00:00.900Z");
     } finally {
       rmSync(studioRoot, { recursive: true, force: true });
     }
@@ -393,8 +426,9 @@ describe("buildOrchestratorTrace / buildOrchestratorTraceStart — Finding 94: a
   test("a timed-out call is filed under outcome: timeout, and the filename never collides with a member trace's own naming scheme", () => {
     const studioRoot = mkdtempSync(join(tmpdir(), "levare-trace-studio-"));
     try {
-      const record = buildOrchestratorTrace({ ok: false, error: "sdk worker timed out after 45000ms", timedOut: true, durationMs: 45_000, stdout: "", stderr: "" }, orchIdentityOpts);
+      const record = buildOrchestratorTrace({ ok: false, error: "sdk worker timed out after 45000ms", timedOut: true, durationMs: 45_000, endedAt: "2026-08-20T00:00:45.000Z", stdout: "", stderr: "" }, orchIdentityOpts);
       expect(record.outcome).toBe("timeout");
+      expect(record.ended_at).toBe("2026-08-20T00:00:45.000Z");
       writeOrchestratorTrace(studioRoot, record);
       const dir = join(studioRoot, DISPATCH_LOG_DIR_NAME);
       const files = readdirSync(dir).filter((f) => f.endsWith(".json"));

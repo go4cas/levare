@@ -545,10 +545,14 @@ function traceNativeDispatchStart(studioRoot: string | undefined, req: InvokeReq
 // live studio has a consistent record either way. A no-op when `studioRoot` was never supplied.
 function traceNativeDispatchFinish(studioRoot: string | undefined, req: InvokeRequest, res: SdkWorkerResponse, ctx: NativeDispatchTraceCtx): void {
   if (!studioRoot) return;
+  // Captured here, at the call site closest to the transport call actually resolving (both
+  // `createSdkNativeBoundary`/`createAsyncSdkNativeBoundary` call this immediately after `transport.run`
+  // returns) — the same "real wall clock, not arithmetic" discipline `startedAt` already uses.
+  const endedAt = new Date().toISOString();
   const wide = asSdkTransportResult(res);
   const record = buildDispatchTrace(
     req,
-    { ok: res.ok, error: res.ok ? undefined : res.error, timedOut: wide.timedOut, durationMs: wide.durationMs, stdout: wide.stdout, stderr: wide.stderr, receipt: res.ok ? res.receipt : undefined },
+    { ok: res.ok, error: res.ok ? undefined : res.error, timedOut: wide.timedOut, durationMs: wide.durationMs, endedAt, stdout: wide.stdout, stderr: wide.stderr, receipt: res.ok ? res.receipt : undefined },
     nativeDispatchTraceIdentityOpts(req, ctx, nativeDispatchFinishNativeBinaryResolved(res, ctx)),
   );
   writeDispatchTrace(studioRoot, record);
