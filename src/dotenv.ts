@@ -47,6 +47,17 @@ export function loadDotenvFile(root: string): DotenvEntry[] {
 
 export type EnvProvenance = "dotenv" | "shell";
 
+// Findings 31/32: `applyStudioEnv` is called again on every page/mutating board request (serve.ts)
+// so an edited `.env` takes effect without a restart, not just once at `levare serve` startup. A
+// variable this function itself set from `.env` on an earlier call is, by the second call, "already
+// present" in `target` — indistinguishable from a genuinely shell-exported one by presence alone. This
+// per-target set remembers which names THIS function put there, so a re-invocation can still refresh
+// its own value (picking up an edit) while a name it never touched — the real shell-wins case — stays
+// permanently protected and permanently reported as `'shell'`. Keyed by object identity (`target`),
+// not by root: every test constructs its own scratch target, so nothing here leaks across tests or
+// across two studios sharing no target object.
+const dotenvOwnedNames = new WeakMap<object, Set<string>>();
+
 /**
  * Load `<root>/.env` into `target` (default `process.env`). A variable already present and non-empty
  * in `target` — genuinely exported in the shell — always wins; `.env` only fills gaps, so a CI/host
@@ -54,6 +65,11 @@ export type EnvProvenance = "dotenv" | "shell";
  * Returns the provenance of every variable named by `.env` — 'dotenv' when this call set it, 'shell'
  * when it was already present and therefore left untouched — so a caller (doctor.ts) can report "why
  * does this work on my machine and not in CI" instead of leaving that invisible.
+ *
+ * Safe to call repeatedly against the SAME `target` (the whole point — see the module-level comment
+ * above): a name this function set from `.env` before is still its own to refresh on a later call,
+ * picking up an edited value; a name it has never set is treated as shell on every call, never
+ * overwritten and never relabeled, no matter how many times this runs.
  *
  * This changes nothing about scoping: `target` is the whole process environment, and env.ts's
  * `buildMemberEnv` allowlist still governs what any member's spawned process actually sees — a
@@ -63,13 +79,17 @@ export type EnvProvenance = "dotenv" | "shell";
  */
 export function applyStudioEnv(root: string, target: Record<string, string | undefined> = process.env): Map<string, EnvProvenance> {
   const provenance = new Map<string, EnvProvenance>();
+  let owned = dotenvOwnedNames.get(target);
   for (const { name, value } of loadDotenvFile(root)) {
-    if (typeof target[name] === "string" && target[name] !== "") {
+    const present = typeof target[name] === "string" && target[name] !== "";
+    if (present && !owned?.has(name)) {
       provenance.set(name, "shell");
       continue;
     }
     target[name] = value;
     provenance.set(name, "dotenv");
+    if (!owned) dotenvOwnedNames.set(target, (owned = new Set()));
+    owned.add(name);
   }
   return provenance;
 }
