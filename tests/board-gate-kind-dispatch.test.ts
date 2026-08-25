@@ -260,6 +260,69 @@ describe("gate card dispatching state renders elapsed + round n/m, not just stat
   });
 });
 
+// Finding 30: the artifact-blocked branch's `gate__ctx` and `is-blocked` badge used to render straight
+// from the stale (failed) artifact no matter what, even while `verbs` right below had already switched
+// to the live dispatching state for a retry in flight — a Conductor mid-retry saw "Blocked: <old
+// reason>" and a red "blocked" badge sitting directly above a "dispatching…" progress row. Mirrors the
+// sibling start-gate branch, which has always toggled both on `dispatching`.
+describe("Finding 30: the artifact-blocked gate card's headline follows a live retry, not the stale artifact", () => {
+  const NOW = new Date("2026-07-17T02:00:00.000Z");
+
+  function blockedGate(art: Artifact): OpenGate {
+    return { type: "artifact-blocked", project: "acme", unit: "flow", target: art.id, artifact: art, label: "spec", member: "lyra" };
+  }
+
+  test("no retry in flight: renders the stale Blocked reason and the blocked badge, as before", () => {
+    const art = artifact({ status: "blocked", body: "# design\n\nsimulated member timeout" });
+    const html = gateCardHtml(makeRepo(art), blockedGate(art), NOW);
+    expect(html).toContain("Blocked: simulated member timeout");
+    expect(html).toContain('<span class="gate__badge is-blocked">blocked</span>');
+    expect(html).not.toContain("is-dispatching");
+  });
+
+  test("a retry in flight: neither the ctx text nor the badge says blocked — both follow the live dispatch", () => {
+    const art = artifact({ status: "blocked", body: "# design\n\nsimulated member timeout" });
+    const html = gateCardHtml(makeRepo(art), blockedGate(art), NOW, {
+      dispatching: { member: "lyra", kind: "spec", startedAt: "2026-07-17T01:59:30.000Z" },
+    });
+    expect(html).toContain("is-dispatching");
+    expect(html).toContain("Dispatching now");
+    expect(html).not.toContain("Blocked: simulated member timeout");
+    expect(html).toContain('<span class="gate__badge is-blocked">dispatching</span>');
+    expect(html).not.toContain('<span class="gate__badge is-blocked">blocked</span>');
+  });
+});
+
+// Same sibling defect, found in the sweep this fix's own goal required (Finding 30's directive):
+// gateCardHtml's generic review/loop branch had the identical shape — `ctx` and the card's `status`
+// badge read straight off the (possibly superseded-by-a-redo) artifact/loop state, never consulting
+// `dispatching`, while `verbs` already did. Exercised via a loop's request-changes redo (F16), the same
+// scenario the "renders elapsed + round n/m" describe block above already dispatches against.
+describe("Finding 30 sibling: the generic review/loop gate card also follows a live retry, not the stale round", () => {
+  const NOW = new Date("2026-07-17T02:00:00.000Z");
+
+  test("a loop redo in flight: ctx and the status badge both read 'dispatching', not the prior round's text/label", () => {
+    const art = artifact({ kind: "review", id: "review-flow-v2" });
+    const repo = makeRepo(art);
+    const gate: OpenGate = {
+      type: "artifact",
+      project: "acme",
+      unit: "flow",
+      target: art.id,
+      artifact: art,
+      label: "review",
+      loop: { round: 2, maxRounds: 3, until: "review.approved", exhausted: false, companionKind: "spec" },
+    };
+    const html = gateCardHtml(repo, gate, NOW, {
+      dispatching: { member: "lyra", kind: "spec", startedAt: "2026-07-17T01:58:15.000Z", loop: { round: 3, maxRounds: 3 } },
+    });
+    expect(html).toContain("Dispatching now");
+    expect(html).toContain('<span class="gate__badge">dispatching</span>');
+    expect(html).not.toContain('<span class="gate__badge">loop &middot; 2/3</span>');
+    expect(html).not.toContain('<span class="gate__badge">loop · 2/3</span>');
+  });
+});
+
 // Ruling 2026-08-23 ("the gate card is where decisions happen", Findings 104/105): the review's own
 // verdict, declared in frontmatter, renders directly on the card — never buried in truncated prose,
 // never silently omitted, and never guessed when absent. A card is a pure function of on-disk data
