@@ -9,9 +9,10 @@ import { Daemon } from "../src/daemon.ts";
 import { resolveGate } from "../src/board/gateops.ts";
 import { stubAdapterRunner } from "../src/replay.ts";
 import { loadRepo } from "../src/repo.ts";
-import { scoreNodes } from "../src/derive.ts";
+import { scoreNodes, leadingArtifact } from "../src/derive.ts";
 import { renderRun } from "../src/board/render/run.ts";
 import { renderArtifact } from "../src/board/render/artifact.ts";
+import { renderProject } from "../src/board/render/project.ts";
 import type { Verb } from "../src/runner.ts";
 
 // Finding 59: at a loop's review gate, the score rail showed "needs you" on BOTH the loop's real gate
@@ -113,6 +114,45 @@ describe("Finding 59: a loop's companion turn is not a second open gate", () => 
       const companionHtml = renderArtifact(repo, "storefront", "loyalty-flow", "review-loyalty-flow-v1", root, new Date("2026-07-12T00:00:00Z"));
       expect(companionHtml).toContain("under review");
       expect(companionHtml).not.toContain("at gate");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("leadingArtifact picks the loop's real gate, not whichever in-review artifact sorts first", async () => {
+    const root = seedGoldenScratch();
+    try {
+      await driveToOpenLoopRound(root);
+      const repo = loadRepo(root, { validate: false });
+      const unit = repo.units.find((u) => u.project === "storefront" && u.unit === "loyalty-flow")!;
+
+      // Pre-fix this returned review-loyalty-flow-v1 (the companion) every time: "review" sorts before
+      // "spec" in repo.ts's own filename order, and the prior code picked the first in-review artifact
+      // unconditionally. spec-loyalty-flow-v1 is the loop's real gate (until: spec.approved).
+      const art = leadingArtifact(repo, unit);
+      expect(art?.id).toBe("spec-loyalty-flow-v1");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("the project view's artifact list chips the companion neutrally too, not as a second gate", async () => {
+    const root = seedGoldenScratch();
+    try {
+      await driveToOpenLoopRound(root);
+      const repo = loadRepo(root, { validate: false });
+      const html = renderProject(repo, "storefront", root, new Date("2026-07-12T00:00:00Z"));
+
+      // fixtures/golden ships checkout-flow already mid-loop-round by default, so scope the assertion
+      // to loyalty-flow's own two rows rather than a whole-page count.
+      const rowStart = html.indexOf('href="/artifact/storefront/loyalty-flow/spec-loyalty-flow-v1"');
+      const rowEnd = html.indexOf("</div>", html.indexOf('href="/artifact/storefront/loyalty-flow/review-loyalty-flow-v1"'));
+      const section = html.slice(rowStart - 200, rowEnd);
+
+      expect(section).toContain("ind-gate-companion");
+      // The real gate's row keeps its brass "st gate" chip; the companion's row reads "under review".
+      expect(section).toContain('href="/artifact/storefront/loyalty-flow/spec-loyalty-flow-v1">spec-loyalty-flow-v1.md</a><span class="st gate">');
+      expect(section).toContain('href="/artifact/storefront/loyalty-flow/review-loyalty-flow-v1">review-loyalty-flow-v1.md</a><span class="st" title="this round');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

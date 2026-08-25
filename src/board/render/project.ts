@@ -3,7 +3,8 @@
 // ---------------------------------------------------------------------------
 
 import type { Repo } from "../../repo.ts";
-import { firstParagraph } from "../../repo.ts";
+import { firstParagraph, repoCapabilities } from "../../repo.ts";
+import { isLoopCompanionKind } from "../../gates.ts";
 import {
   esc,
   renderInline,
@@ -140,6 +141,10 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
   const membersRunningHere = running.filter((r) => r.project === projectName).length;
   const projectHeaderStatus = projectStatusChip(gates.length, anyUnitActive, membersRunningHere);
 
+  // Finding 59: shared across every artifact row below (isLoopCompanionKind's own signature already
+  // takes it) — computed once here rather than per row.
+  const capabilities = repoCapabilities(repo);
+
   const unitRows = units
     .map((u) => {
       const type = repo.types.get(u.type);
@@ -166,7 +171,20 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
       const artifacts = [...(repo.artifacts.get(`${u.project}/${u.unit}`)?.values() ?? [])].sort((a, b) => a.created.localeCompare(b.created));
       const artifactRows = artifacts
         .map((a) => {
-          const ind = a.status === "approved" ? "ind-done" : a.status === "in-review" ? "ind-gate" : a.status === "superseded" ? "ind-super" : "ind-prog";
+          // Finding 59: an in-review artifact that's a loop's companion kind (F16) isn't at gate — see
+          // the correction appended to the Finding 116 comment below.
+          const isLoopCompanion =
+            a.status === "in-review"
+              ? (() => {
+                  const team = repo.teams.get(a.produced_by.split("/")[0]);
+                  return team ? isLoopCompanionKind(team, a.kind, capabilities) : false;
+                })()
+              : false;
+          const ind =
+            a.status === "approved" ? "ind-done"
+            : a.status === "in-review" ? (isLoopCompanion ? "ind-gate-companion" : "ind-gate")
+            : a.status === "superseded" ? "ind-super"
+            : "ind-prog";
           // Finding 116: this row used to read a flat "at gate" for every open gate, the exact defect
           // Finding 97 already fixed on the unit chip above (`gateKindLabel(gate)`) — reuses that SAME
           // `gate`, already in scope, rather than a second lookup: only one gate is ever open per unit
@@ -175,12 +193,23 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
           // fallback string is defensive only, matching this file's own "never throw on live data"
           // posture elsewhere.
           //
+          // Finding 59 correction (the invariant just above is mine, and it's wrong): "only one gate
+          // is ever open per unit" is true of GATES — it is NOT true that `a.status === "in-review"`
+          // implies `a.id === gate.target`. A loop round has TWO in-review artifacts by design
+          // (dagwalk.ts:152's own halt: "both members of this round already sit in-review"); only the
+          // one the loop's `until` names is `gate.target`, its companion is the other. Left visible
+          // rather than deleted — the reasoning was plausible and the artifact-only invariant IS true,
+          // it just doesn't cover the loop-round case this file's own artifact list also renders.
+          //
           // Finding 84: a plain-step artifact a member failed to produce (dagwalk.ts#writeBlocked) is
           // marked `superseded` the instant a retry succeeds — the SAME status a genuine content
           // revision gets — with nothing left in `a.status` to tell them apart. `a.blocked_reason` is
           // set once at write time and never cleared by that supersession, so it's the real signal.
           const st =
-            a.status === "in-review" ? `<span class="st gate">${esc(gate ? gateKindLabel(gate) : "at gate")}</span>`
+            a.status === "in-review"
+              ? isLoopCompanion
+                ? `<span class="st" title="this round's decision is on the other artifact, not this one">under review</span>`
+                : `<span class="st gate">${esc(gate ? gateKindLabel(gate) : "at gate")}</span>`
             : a.status === "superseded" && a.blocked_reason ? `<span class="st blocked" title="${esc(a.blocked_reason)}">failed dispatch</span>`
             : `<span class="st">${esc(a.status)}</span>`;
           const label = a.status === "superseded" ? `<s>${esc(artifactFileName(a))}</s>` : esc(artifactFileName(a));

@@ -436,8 +436,23 @@ export function leadingArtifact(repo: Repo, unit: WorkUnit): Artifact | undefine
   const m = repo.artifacts.get(`${unit.project}/${unit.unit}`);
   if (!m) return undefined;
   const all = [...m.values()];
-  const gate = all.find((a) => a.status === "in-review");
-  if (gate) return gate;
+  const inReview = all.filter((a) => a.status === "in-review");
+  if (inReview.length) {
+    // Finding 59: during an open loop round, BOTH members sit in-review at once (dagwalk.ts#nextAction)
+    // — `m`'s own insertion order (repo.ts#loadUnitArtifacts: filenames, sorted) has no relationship to
+    // which one the loop's `until` actually names, so picking the first in-review artifact unconditionally
+    // silently surfaced the companion instead of the real gate whenever its kind's filename sorts first
+    // (kestrel's spec/review loop: "review" < "spec", so this was every round, not a rare case). Same
+    // isLoopCompanionKind check as openGates/gateops.ts/scoreNodes/artifact.ts — prefer whichever
+    // in-review artifact ISN'T the companion; if a repo's raw data somehow has none (shouldn't happen),
+    // fall back to the first rather than returning nothing.
+    const capabilities = repoCapabilities(repo);
+    const realGate = inReview.find((a) => {
+      const team = repo.teams.get(a.produced_by.split("/")[0]);
+      return !team || !isLoopCompanionKind(team, a.kind, capabilities);
+    });
+    return realGate ?? inReview[0];
+  }
   return all.filter((a) => a.status !== "superseded").sort((a, b) => a.created.localeCompare(b.created)).pop();
 }
 
