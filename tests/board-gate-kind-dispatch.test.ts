@@ -177,7 +177,10 @@ describe("gate card dispatching state renders elapsed + round n/m, not just stat
     const gate: OpenGate = { type: "artifact", project: "acme", unit: "flow", target: art.id, artifact: art, label: "spec" };
     const html = gateCardHtml(repo, gate, NOW, { dispatching: { member: "lyra", kind: "spec", startedAt: "2026-07-17T01:59:30.000Z" } });
     expect(html).toContain("is-dispatching");
-    expect(html).toContain('class="pending__label">dispatching lyra · spec… · 0m 30s</span>');
+    // Finding 79: the elapsed text is wrapped in a `data-started-at`-carrying span (assets/app.js
+    // ticks it client-side) rather than rendered as bare text — the label's other pieces are still
+    // plain, escaped text around it.
+    expect(html).toContain('class="pending__label">dispatching lyra · spec… · <span class="elapsed" data-started-at="2026-07-17T01:59:30.000Z">0m 30s</span></span>');
   });
 });
 

@@ -10,7 +10,7 @@
 import type { Repo } from "../../repo.ts";
 import type { Artifact } from "../../types.ts";
 import { firstParagraph } from "../../repo.ts";
-import { esc, costLabel, ageLabel, elapsedLabel, projectLastActivity, diffstatSummary, type OpenGate } from "../../derive.ts";
+import { esc, costLabel, ageLabel, elapsedSpan, projectLastActivity, diffstatSummary, type OpenGate } from "../../derive.ts";
 import type { RegistryExtras } from "../../extra.ts";
 import { diagnose } from "../../doctor.ts";
 import type { DaemonInvocation } from "../../daemon.ts";
@@ -415,16 +415,16 @@ export function railNav(repo: Repo, extras: RegistryExtras, opts: { activeRegist
 // below), so the board acknowledges a Start/Request-changes click immediately instead of sitting
 // static for however long the member takes.
 //
-// Phase 2 "gate card" goal, item 2: carries the SAME `elapsedLabel` vocabulary run.ts's Tier-3 live
-// strip already renders, plus round n/m for a loop redo — never a fabricated number, only what
-// `DispatchingInfo` actually knows (see `dispatchingFor` below). This is server-rendered HTML with no
-// client-side ticking (checked assets/app.js: no `setInterval` anywhere) — like the Tier-3 strip it
-// mirrors, it updates only on the next fragment refetch (an SSE `reload` broadcast or a manual
-// navigation), not continuously in the browser. That per-render staleness is Finding 79/40's own
-// territory, deliberately untouched here.
+// Phase 2 "gate card" goal, item 2: carries the SAME `elapsedSpan`/`elapsedLabel` vocabulary run.ts's
+// Tier-3 live strip already renders, plus round n/m for a loop redo — never a fabricated number, only
+// what `DispatchingInfo` actually knows (see `dispatchingFor` below). Finding 79: the server still
+// renders one correct-at-render-time value via `elapsedSpan`, but that span now also carries the raw
+// `data-started-at`, so assets/app.js's client-side tick keeps it live between fragment refetches —
+// see that file's own comment for how it avoids binding to a node that an SSE `reload` swap discards.
 function dispatchingHtml(d: DispatchingInfo, now: Date): string {
   const roundText = d.loop ? `round ${d.loop.round}/${d.loop.maxRounds} · ` : "";
-  return `<div class="gate__verbs gate__verbs--pending">${pendingState({ label: `dispatching ${d.member} · ${d.kind}… · ${roundText}${elapsedLabel(d.startedAt, now)}` })}</div>`;
+  const labelHtml = `dispatching ${esc(d.member)} · ${esc(d.kind)}… · ${esc(roundText)}${elapsedSpan(d.startedAt, now)}`;
+  return `<div class="gate__verbs gate__verbs--pending">${pendingState({ labelHtml })}</div>`;
 }
 
 export interface DispatchingInfo {

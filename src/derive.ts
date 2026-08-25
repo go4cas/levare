@@ -66,6 +66,16 @@ export function elapsedLabel(startedAtIso: string, now: Date): string {
   return `${m}m ${String(s).padStart(2, "0")}s`;
 }
 
+// Finding 79: wraps elapsedLabel's server-computed initial text in a span carrying the raw start
+// timestamp, so assets/app.js's client-side tick can re-derive the same string from Date.now()
+// without a round trip. The ONE emission point for a live startedAt reaching the client — both
+// run.ts's Tier-3 strip and shell.ts's gate card render through this, so they never diverge on the
+// data-attribute's shape. `class="elapsed"` + `data-started-at` is the whole contract with app.js;
+// no other client-side state rides along.
+export function elapsedSpan(startedAtIso: string, now: Date): string {
+  return `<span class="elapsed" data-started-at="${esc(startedAtIso)}">${elapsedLabel(startedAtIso, now)}</span>`;
+}
+
 /**
  * "14m", "2h", "3d" — coarse age from an ISO-ish timestamp to `now`.
  *
