@@ -239,6 +239,17 @@ describe("a gate card renders an immediate dispatching state while its unit is i
     expect(html).toContain('class="chip is-active">dispatching</span>');
     expect(html).not.toContain('class="chip is-gate">loop · 1/3</span>');
   });
+
+  // Finding 30's own sweep: the artifact list row directly below the unit chip just above had the
+  // identical gap — Finding 116 gave it `gateKindLabel(gate)` (kind-aware) but never wired it to
+  // `dispatchingFor` the way the unit chip (Finding 97, test just above) already was, so it kept
+  // reading the stale "loop · 1/3" label through a live redo instead of following it like its sibling.
+  test("the in-review artifact row's own status span also goes 'dispatching' the instant the loop's companion kind is in flight", () => {
+    const running = [{ project: "storefront", unit: "checkout-flow", member: "finch", kind: "review", startedAt: now.toISOString() }];
+    const html = renderProject(repo, "storefront", root, now, running);
+    expect(html).toContain('class="st gate">dispatching</span>');
+    expect(html).not.toContain('class="st gate">loop · 1/3</span>');
+  });
 });
 
 describe("projectStatusChip — gate count wins, then active, else idle (NOTES UI1: canonical palette)", () => {
