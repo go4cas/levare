@@ -217,6 +217,46 @@
       verbsRow.appendChild(retry);
     }
 
+    /* Finding 71's root fix: a validation-style failure on `request`/`rescope`'s Send keeps the
+       operator IN the form, distinct from settleFailure's single-shot collapse above. The note (and
+       whatever the operator typed into it) is never touched; the reason lands as an inline notice
+       beside it, never in place of the Send/Cancel controls (rebuilt live, since beginPending disabled
+       or — once the spinner delay elapsed — wholesale replaced the originals); and the real decision
+       row (Approve/Request changes/Reject, or a start-gate/loop-exhaust row's own equivalents) is
+       un-hidden alongside it, so the operator was never funneled through a single dead-end path. */
+    function settleNoteFailure(card, verbsRow, message) {
+      card.classList.remove('is-dispatching'); // `request` is a dispatch verb (isDispatchVerb) — undo its optimistic flip
+      verbsRow.classList.remove('gate__verbs--pending');
+      var wrap = card._note;
+      var note = wrap ? wrap.querySelector('.gate__note') : null;
+      if (note) note.disabled = false;
+      if (wrap) {
+        var existingNotice = wrap.querySelector('.gate__note-error');
+        if (existingNotice) existingNotice.remove();
+        var notice = document.createElement('div');
+        notice.className = 'notice notice--danger gate__note-error';
+        var text = document.createElement('span');
+        text.className = 'notice__text';
+        text.textContent = message || 'that could not be sent';
+        notice.appendChild(text);
+        wrap.insertBefore(notice, verbsRow);
+      }
+      verbsRow.textContent = '';
+      var send = document.createElement('button');
+      send.className = 'verb is-gate';
+      send.setAttribute('data-verb', 'send');
+      send.textContent = card._pendingVerb === 'rescope' ? 'Send re-scope' : 'Send changes';
+      var cancel = document.createElement('button');
+      cancel.className = 'verb';
+      cancel.setAttribute('data-verb', 'cancel');
+      cancel.textContent = 'Cancel';
+      verbsRow.appendChild(send);
+      verbsRow.appendChild(cancel);
+      card.querySelectorAll('.gate__verbs').forEach(function (row) {
+        if (row !== verbsRow) row.style.display = '';
+      });
+    }
+
     document.addEventListener('click', function (e) {
       var btn = e.target.closest('.gate [data-verb]');
       if (!btn) return;
@@ -237,6 +277,15 @@
       var dispatchVerb = isDispatchVerb(realVerb, isMergeGate);
       var retryVerb = isMergeApprove ? 'recheck' : realVerb;
       var retryLabel = isMergeApprove ? 'Re-check' : 'Retry';
+      // Mirrors the orchestrator composer's own empty-input guard (below): `request` requires a note
+      // server-side (doRequest, board/gateops.ts) — checking it here keeps the common case off the
+      // network entirely. `rescope` has no such server-side requirement and deliberately gets none
+      // here either (NOTES F20: a re-scope decision needs no accompanying note to be valid).
+      var isNoteSend = verb === 'send' && (realVerb === 'request' || realVerb === 'rescope');
+      if (isNoteSend && realVerb === 'request' && (!note || !note.trim())) {
+        settleNoteFailure(card, verbsRow, 'add a note before sending changes');
+        return;
+      }
 
       card._inflight = true;
       if (dispatchVerb) {
@@ -262,8 +311,25 @@
         pending.cancel();
         var failed = !result || result.ok === false;
         if (failed) {
+          // The root fix (Finding 71): a validation-style failure — the board actually responded, with
+          // a reason `request`/`rescope` can't proceed as sent — keeps the operator in the form (note
+          // preserved and editable, error inline, every real decision still live) instead of collapsing
+          // to the single-shot Retry path below, whose re-open trips openNote's re-entrancy guard on
+          // the still-live note and silently does nothing.
+          if (isNoteSend && result) {
+            settleNoteFailure(card, verbsRow, result.error || 'that could not be sent');
+            return;
+          }
           var message = (result && result.error) || 'could not reach the board — check your connection and try again.';
-          settleFailure(card, verbsRow, message, retryVerb, retryLabel);
+          // A genuine transport failure (no response at all) DOES get the generic retry treatment — but
+          // for a note verb, the stale note must be cleared first so the Retry button's re-entry into
+          // openNote below builds a fresh one instead of silently no-op'ing on the old one.
+          var targetRow = verbsRow;
+          if (isNoteSend) {
+            closeNote(card);
+            targetRow = card.querySelector('.gate__verbs');
+          }
+          settleFailure(card, targetRow, message, retryVerb, retryLabel);
           return;
         }
         // A dispatch verb's production continues asynchronously server-side; the SSE reload below
@@ -278,7 +344,11 @@
     function openNote(card, verb) {
       card._pendingVerb = verb;
       var verbs = card.querySelector('.gate__verbs');
-      if (card.querySelector('.gate__note')) return;
+      // Defensive, not load-bearing for Finding 71's fix (the failure paths above always clear a stale
+      // note before a verb could re-open one) — but re-entrancy here must never silently no-op: a note
+      // already open just gets refocused, rather than swallowing the click with no visible effect.
+      var existingNote = card.querySelector('.gate__note');
+      if (existingNote) { existingNote.disabled = false; existingNote.focus(); return; }
       var container = verbs.parentNode;
       var wrap = document.createElement('div');
       wrap.style.display = 'flex';
