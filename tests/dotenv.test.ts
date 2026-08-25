@@ -65,6 +65,30 @@ describe("applyStudioEnv", () => {
     }
   });
 
+  // Findings 121/31/32: a runtime (Bun) can auto-load `.env` into the process environment before this
+  // function's first call ever runs. That value is "already present" but its source WAS `.env` — it
+  // must not be locked in as a permanent, unrefreshable 'shell' value just because presence alone
+  // can't otherwise distinguish it from a real shell export.
+  test("a variable already present in the target but EQUAL to .env's value is reported as dotenv, and refreshes on a later edit", () => {
+    const root = scratchRoot();
+    try {
+      writeFileSync(join(root, ".env"), "ANTHROPIC_API_KEY=sk-ant-loaded-by-runtime\n");
+      // Simulates Bun having already loaded .env into `target` before applyStudioEnv's first call.
+      const target: Record<string, string | undefined> = { ANTHROPIC_API_KEY: "sk-ant-loaded-by-runtime" };
+      const first = applyStudioEnv(root, target);
+      expect(target.ANTHROPIC_API_KEY).toBe("sk-ant-loaded-by-runtime");
+      expect(first.get("ANTHROPIC_API_KEY")).toBe("dotenv");
+
+      // A rotated key on disk must reach a long-running process (e.g. a daemon) on the next call.
+      writeFileSync(join(root, ".env"), "ANTHROPIC_API_KEY=sk-ant-rotated\n");
+      const second = applyStudioEnv(root, target);
+      expect(target.ANTHROPIC_API_KEY).toBe("sk-ant-rotated");
+      expect(second.get("ANTHROPIC_API_KEY")).toBe("dotenv");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("a variable already present (exported) in the target wins over .env, and is reported as shell", () => {
     const root = scratchRoot();
     try {
