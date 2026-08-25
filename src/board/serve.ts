@@ -255,6 +255,18 @@ export interface Fragment {
    * `appVersion` (a header-level fact outside every swap region), scoped to just the badge span so a
    * resync can never close an open popover out from under the Conductor reading it. */
   orchIndicator: string;
+  /** Finding 40 (REOPENED): the rail's project list (with each project's live unit count), sliced from
+   * `<!--railprojects-->`/`<!--/railprojects-->` (render/shell.ts#railNav) — the rail is never touched
+   * by a swap at all (NOTES UI10), so without this a long-open tab's sidebar counts stayed exactly as
+   * they were at the tab's last cold GET, confirmed by probe: a unit committed from the shell moved the
+   * count only on a manual refresh, never live. */
+  railProjects: string;
+  /** Finding 40 (REOPENED): the rail's connector health dots, sliced from
+   * `<!--railconnectors-->`/`<!--/railconnectors-->` — same gap, same fix, as `railProjects`. */
+  railConnectors: string;
+  /** Finding 40 (REOPENED): the rail's ideas list, sliced from `<!--railideas-->`/`<!--/railideas-->` —
+   * same gap, same fix, as `railProjects`. */
+  railIdeas: string;
 }
 
 const FRAGMENT_HEADER = "x-levare-fragment";
@@ -281,6 +293,9 @@ export function extractFragment(rendered: string): Fragment | null {
   const orchBriefingMatch = /<!--orchbriefing-->([\s\S]*?)<!--\/orchbriefing-->/.exec(rendered);
   const appVersionMatch = /<!--appversion-->([\s\S]*?)<!--\/appversion-->/.exec(rendered);
   const orchIndicatorMatch = /<!--orchind-->([\s\S]*?)<!--\/orchind-->/.exec(rendered);
+  const railProjectsMatch = /<!--railprojects-->([\s\S]*?)<!--\/railprojects-->/.exec(rendered);
+  const railConnectorsMatch = /<!--railconnectors-->([\s\S]*?)<!--\/railconnectors-->/.exec(rendered);
+  const railIdeasMatch = /<!--railideas-->([\s\S]*?)<!--\/railideas-->/.exec(rendered);
   return {
     title: titleMatch[1],
     main: mainHtml,
@@ -295,6 +310,9 @@ export function extractFragment(rendered: string): Fragment | null {
     orchBriefing: orchBriefingMatch ? orchBriefingMatch[1] : "",
     appVersion: appVersionMatch ? appVersionMatch[1] : "",
     orchIndicator: orchIndicatorMatch ? orchIndicatorMatch[1] : "",
+    railProjects: railProjectsMatch ? railProjectsMatch[1] : "",
+    railConnectors: railConnectorsMatch ? railConnectorsMatch[1] : "",
+    railIdeas: railIdeasMatch ? railIdeasMatch[1] : "",
   };
 }
 function serveAsset(name: string): Response {

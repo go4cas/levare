@@ -86,7 +86,7 @@ ${appHeader(status, railToggleLabel)}
 ${body}
 ${confirmModal()}
 ${toastViewport()}
-<script src="/app.js?v=9"></script>
+<script src="/app.js?v=10"></script>
 </body>
 </html>
 `;
@@ -382,6 +382,16 @@ function railLongList(rows: string[]): string {
   return `${visible}<div class="railsec__overflow" hidden>${overflow}</div><button type="button" class="railsec__more" data-rail-expand>+ ${more} more</button>`;
 }
 
+// Finding 40 (REOPENED — was closed stale on a misread; a shell-side commit was probed to confirm the
+// rail truly never moved without a manual refresh). The rail sits entirely outside every swap region
+// (`swapFragment` only ever replaces `.main`/`[data-extras-host]`, NOTES UI10) — its DOM node is never
+// even touched by a client-side navigation, let alone the SSE `reload` tick, so every value here stayed
+// frozen at whatever was true on the tab's own last cold GET. Three of its four sections carry the same
+// `<!--marker-->`/unconditional-resync treatment `orchAction`/`orchBriefing`/the version chip already
+// established (NOTES ORCH-STALE-CARD, Finding 131): `railprojects` (the project list and its per-project
+// unit counts), `railconnectors` (the health dots), `railideas`. The Registry section (registry entity
+// counts) is deliberately left unmarked here — out of THIS finding's named scope — and reported as a
+// remaining sibling gap instead of folded in silently (Finding 129's standing sweep instruction).
 export function railNav(repo: Repo, extras: RegistryExtras, opts: { activeRegistryEntity?: RegistryKind } = {}): string {
   // NOTES UI11: ordered by real recency (the newest artifact `created` anywhere in the project),
   // most recently active first — never filesystem mtime (see `projectLastActivity`'s own doc comment).
@@ -413,10 +423,10 @@ export function railNav(repo: Repo, extras: RegistryExtras, opts: { activeRegist
     : [`<div class="idea" style="color:var(--fg-mute)">no ideas captured yet</div>`];
 
   return `<aside class="rail">
-    <section class="railsec"><h3 class="railsec__h">Projects</h3>${railLongList(projectRows)}</section>
+    <section class="railsec"><h3 class="railsec__h">Projects</h3><div data-rail-projects><!--railprojects-->${railLongList(projectRows)}<!--/railprojects--></div></section>
     <section class="railsec"><h3 class="railsec__h">Registry</h3><nav class="reg-nav">${registryNavLinks(repo, extras, opts.activeRegistryEntity)}</nav></section>
-    <section class="railsec"><h3 class="railsec__h">Connectors</h3>${connectorRows}</section>
-    <section class="railsec"><h3 class="railsec__h">Ideas</h3>${railLongList(ideaRows)}</section>
+    <section class="railsec"><h3 class="railsec__h">Connectors</h3><div data-rail-connectors><!--railconnectors-->${connectorRows}<!--/railconnectors--></div></section>
+    <section class="railsec"><h3 class="railsec__h">Ideas</h3><div data-rail-ideas><!--railideas-->${railLongList(ideaRows)}<!--/railideas--></div></section>
   </aside>`;
 }
 

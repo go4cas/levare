@@ -687,10 +687,12 @@
        Orchestrator panel (and thus its conversation), and the one persistent SSE connection below — is
        never REPLACED by a swap: only `.main` and `[data-extras-host]` ever get a real DOM replacement.
        A few individual, marked regions within that untouched shell — the version chip and Orchestrator
-       dot in the header (Findings 131/40), the orch tail/action/briefing — do still get their CONTENTS
-       resynced on every swap (see `syncAppVersion`/`syncOrchIndicator`/`syncOrchTail`/`syncOrchAction`/
-       `syncOrchBriefing` below); the whole rail carries no such marker yet and stays frozen at whatever
-       was true on the tab's last cold GET (a known, still-open sibling gap — NOTES V11-CONV-SYNC). This fixes the
+       dot in the header (Findings 131/40), the orch tail/action/briefing, and the rail's project list/
+       connector dots/ideas list (Finding 40) — do still get their CONTENTS resynced on every swap (see
+       `syncAppVersion`/`syncOrchIndicator`/`syncOrchTail`/`syncOrchAction`/`syncOrchBriefing`/
+       `syncRailProjects`/`syncRailConnectors`/`syncRailIdeas` below). The rail's Registry section (entity
+       counts) carries no such marker yet and stays frozen at whatever was true on the tab's last cold GET
+       (a known, still-open sibling gap — see NOTES V11-CONV-SYNC's original diagnosis). This fixes the
        hang (rapid full navigations were exhausting Chrome's ~6-connections-per-origin HTTP/1.1 limit —
        curl answered the server in 0.138s during the episode; the browser just had nowhere left to
        queue the newest request), the conversation wipe, and the per-click asset/SSE churn, all at
@@ -869,6 +871,50 @@
       if (host && typeof data.orchIndicator === 'string') host.innerHTML = data.orchIndicator;
     }
 
+    /* Finding 40 (REOPENED), continued: the rail's project list, connector health dots, and ideas list
+       have the identical gap `syncOrchIndicator` above closes for the header dot — outside every swap
+       region, cold-GET only. Same unconditional-every-swap treatment: the server always re-derives these
+       from a fresh `loadRepo` per request (PRD invariant 2), so there is no "already shown live" case to
+       guard against, only a client reapplication gap to close.
+
+       `syncRailProjects`/`syncRailIdeas` guard the ONE piece of local state their regions can carry:
+       NOTES UI11's "+ N more" reveal (`data-rail-expand`) toggles a `railsec__overflow` band from
+       `hidden` to visible entirely client-side, with no server round-trip — a plain unconditional
+       innerHTML replace would silently re-hide it on the next SSE tick, the same class of regression
+       UI10 guards its own editor-overlay against. Snapshotting "was it expanded" before the replace and
+       reapplying it after is the same before/after-snapshot shape `snapshotLiveValues`/`flashLiveChanges`
+       already use above for the score rail — expansion state, not literal DOM nodes, survives the
+       resync. `syncRailConnectors` carries no such local state, so it's a plain unconditional replace. */
+    function preserveRailExpand(host) {
+      var oldOverflow = host.querySelector('.railsec__overflow');
+      var wasExpanded = !!oldOverflow && !oldOverflow.hidden;
+      return function () {
+        if (!wasExpanded) return;
+        var overflow = host.querySelector('.railsec__overflow');
+        var more = host.querySelector('[data-rail-expand]');
+        if (overflow) overflow.hidden = false;
+        if (more) more.remove();
+      };
+    }
+    function syncRailProjects(data) {
+      var host = document.querySelector('[data-rail-projects]');
+      if (!host || typeof data.railProjects !== 'string') return;
+      var reapplyExpand = preserveRailExpand(host);
+      host.innerHTML = data.railProjects;
+      reapplyExpand();
+    }
+    function syncRailConnectors(data) {
+      var host = document.querySelector('[data-rail-connectors]');
+      if (host && typeof data.railConnectors === 'string') host.innerHTML = data.railConnectors;
+    }
+    function syncRailIdeas(data) {
+      var host = document.querySelector('[data-rail-ideas]');
+      if (!host || typeof data.railIdeas !== 'string') return;
+      var reapplyExpand = preserveRailExpand(host);
+      host.innerHTML = data.railIdeas;
+      reapplyExpand();
+    }
+
     /* amendment 1 §2 R4, tier 2 (card, 1-10s resolution/refetch): a same-URL refresh (the SSE reload
        trigger below, a post-save content refresh) is a card RESOLVING, not a page transition — the
        Conductor's scroll position and reading context should survive it, and whatever visibly changed
@@ -903,10 +949,10 @@
 
     /* Replaces `.main` outright (its own opening-tag attributes, e.g. `data-highlight`, differ per
        page) and re-fills `[data-extras-host]` — this function itself never looks at the rail or the app
-       header at all; the header's version chip and Orchestrator dot (Findings 131/40, below) resync
-       through their own marker queries, independent of this replacement. The rail carries no marker yet
-       and stays frozen at whatever was true on the tab's last cold GET — a known, still-open sibling gap
-       (see NOTES V11-CONV-SYNC's original diagnosis).
+       header at all; every region of either that DOES resync (Findings 131/40, below) does so through
+       its own marker query, independent of this replacement. The rail's Registry section (entity counts)
+       carries no marker yet and stays frozen at whatever was true on the tab's last cold GET — a known,
+       still-open sibling gap (see NOTES V11-CONV-SYNC's original diagnosis).
        The Orchestrator `<aside>` itself keeps UI10's own conversation-preserving guarantee — its
        history in `.orch__body` is never rebuilt — except for three regions carved out of it on purpose:
        the persisted-tail resync (identity-reconciled every swap, not merely scope-gated — see
@@ -951,6 +997,9 @@
       syncOrchBriefing(data);
       syncAppVersion(data);
       syncOrchIndicator(data);
+      syncRailProjects(data);
+      syncRailConnectors(data);
+      syncRailIdeas(data);
 
       if (typeof data.title === 'string' && data.title) document.title = decodeTitleEntities(data.title);
       applyHighlight(newMain);
