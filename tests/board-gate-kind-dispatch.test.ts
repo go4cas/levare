@@ -219,14 +219,36 @@ describe("gate card dispatching state renders elapsed + round n/m, not just stat
   // Finding 81 part 3: "8m 20s / 20m" tells a Conductor whether a dispatch is near its own kill
   // bound — "8m 20s" alone does not. The bound renders as a static sibling span (never inside the
   // ticking `.elapsed` span itself, which app.js overwrites every second).
-  test("a dispatch with a known timeoutS shows the bound beside elapsed, as a static sibling — not inside the ticking span", () => {
+  //
+  // 2026-08-25: the bound uses its own formatter (derive.ts#boundLabel), not the elapsed one. A bound
+  // is a CONFIGURED value, not a measurement — `20m` is what the operator declared, and `20m 00s`
+  // implies a precision the field does not carry. Observed live: the orphaned `00s` wrapped onto its
+  // own line beside the ticking elapsed.
+  test("a whole-minute bound renders bare — `20m`, not the elapsed formatter's `20m 00s`", () => {
     const art = artifact();
     const repo = makeRepo(art);
     const gate: OpenGate = { type: "artifact", project: "acme", unit: "flow", target: art.id, artifact: art, label: "spec" };
     const html = gateCardHtml(repo, gate, NOW, { dispatching: { member: "lyra", kind: "spec", startedAt: "2026-07-17T01:59:30.000Z", timeoutS: 1200 } });
     expect(html).toContain(
-      '<span class="elapsed" data-started-at="2026-07-17T01:59:30.000Z">0m 30s</span> <span class="dim">/ 20m 00s</span>',
+      '<span class="elapsed" data-started-at="2026-07-17T01:59:30.000Z">0m 30s</span> <span class="dim">/ 20m</span>',
     );
+    expect(html).not.toContain("20m 00s");
+  });
+
+  test("a whole-hour bound renders as hours — `1h`, not `60m` and not `1h 00m`", () => {
+    const art = artifact();
+    const gate: OpenGate = { type: "artifact", project: "acme", unit: "flow", target: art.id, artifact: art, label: "spec" };
+    const html = gateCardHtml(makeRepo(art), gate, NOW, { dispatching: { member: "lyra", kind: "spec", startedAt: "2026-07-17T01:59:30.000Z", timeoutS: 3600 } });
+    expect(html).toContain('<span class="dim">/ 1h</span>');
+  });
+
+  // Dropping SPURIOUS zeros, not real precision: a bound an operator actually declared with a
+  // seconds component still shows it.
+  test("a bound with a real seconds component keeps them — `timeout: 90` reads `1m 30s`", () => {
+    const art = artifact();
+    const gate: OpenGate = { type: "artifact", project: "acme", unit: "flow", target: art.id, artifact: art, label: "spec" };
+    const html = gateCardHtml(makeRepo(art), gate, NOW, { dispatching: { member: "lyra", kind: "spec", startedAt: "2026-07-17T01:59:30.000Z", timeoutS: 90 } });
+    expect(html).toContain('<span class="dim">/ 1m 30s</span>');
   });
 
   test("a dispatch with no known timeoutS (member no longer resolves to an agent) shows elapsed alone, never a fabricated bound", () => {

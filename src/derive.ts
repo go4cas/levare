@@ -54,9 +54,8 @@ export function tokLabel(n: number): string {
   return String(n);
 }
 
-// "1m 42s" / "1h 04m" — a raw second count formatted the same way whether it's elapsed time (counting
-// up from a real startedAt) or a static bound (counting nothing, just a duration). Shared so the two
-// never render in visibly different units next to each other (Finding 81 part 3: "8m 20s / 20m").
+// "1m 42s" / "1h 04m" — a raw second count formatted for a MEASUREMENT: something counted up from a
+// real start, where the seconds are meaningful and change.
 function durationLabel(totalS: number): string {
   const s = Math.max(0, Math.floor(totalS));
   const h = Math.floor(s / 3600);
@@ -64,6 +63,18 @@ function durationLabel(totalS: number): string {
   const sec = s % 60;
   if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
   return `${m}m ${String(sec).padStart(2, "0")}s`;
+}
+
+// "20m" / "1h" / "1m 30s" — a BOUND is a configured value, not a measurement. `20m` is what the
+// operator declared; `20m 00s` implies a precision the field does not carry, and — observed live on
+// 2026-08-25 — wraps its orphaned `00s` onto a second line beside the ticking elapsed. Whole minutes
+// and whole hours render bare; a bound that genuinely has a seconds component (`timeout: 90`) still
+// renders it via durationLabel, so this drops spurious zeros rather than truncating real precision.
+function boundLabel(totalS: number): string {
+  const s = Math.max(0, Math.floor(totalS));
+  if (s >= 60 && s % 3600 === 0) return `${s / 3600}h`;
+  if (s >= 60 && s % 60 === 0) return `${s / 60}m`;
+  return durationLabel(s);
 }
 
 // "1m 42s" / "1h 04m" — elapsed since a live invocation's real `startedAt` (never a fabricated
@@ -87,7 +98,7 @@ export function elapsedLabel(startedAtIso: string, now: Date): string {
 // "8m 20s" alone does not. The bound never changes over a dispatch's lifetime, so it needs no client-
 // side re-render of its own — one server-computed string is correct for the dispatch's whole duration.
 export function elapsedSpan(startedAtIso: string, now: Date, timeoutS?: number): string {
-  const bound = typeof timeoutS === "number" ? ` <span class="dim">/ ${durationLabel(timeoutS)}</span>` : "";
+  const bound = typeof timeoutS === "number" ? ` <span class="dim">/ ${boundLabel(timeoutS)}</span>` : "";
   return `<span class="elapsed" data-started-at="${esc(startedAtIso)}">${elapsedLabel(startedAtIso, now)}</span>${bound}`;
 }
 
