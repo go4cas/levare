@@ -1869,11 +1869,15 @@ export class AdapterRunner implements MemberRunner {
       const committerPart = committerDiffers ? ` (committer: ${a.committerName} <${a.committerEmail}>)` : "";
       lines.push(`code_commit_actor: ${a.authorName} <${a.authorEmail}>${committerPart}`);
     }
-    // Ruling 2026-08-24 (the verdict bridge, Finding 118): `verdict_source` always accompanies `verdict`
-    // — never emitted alone — and is `extracted` unconditionally, since author() has no other channel a
-    // member could have used to set it (Ruling C12; see validate.ts's own schema doc for `declared`'s
-    // reserved, not-yet-implemented meaning).
+    // Ruling 2026-08-25 (Findings 118/133): `verdict_source` is `extracted` when the scan found exactly
+    // one anchored line, since author() has no other channel a member could have used to set it (Ruling
+    // C12; see validate.ts's own schema doc for `declared`'s reserved, not-yet-implemented meaning). For
+    // kind: review specifically, the scan RAN even when it found nothing — `not-found` records that,
+    // so a critic whose verdict line was lost to a matching failure (or genuinely never wrote one) is no
+    // longer indistinguishable from a review artifact this field predates. `verdict` itself stays absent
+    // in that case: the scan found no unambiguous verdict, so there is nothing to name.
     if (verdict) lines.push(`verdict: ${verdict}`, "verdict_source: extracted");
+    else if (req.kind === "review") lines.push("verdict_source: not-found");
     lines.push("---", "");
     return { doc: lines.join("\n") + content + "\n", receipt: finalReceipt };
   }

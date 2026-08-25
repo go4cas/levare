@@ -333,21 +333,29 @@ export const ARTIFACT_SCHEMA: Schema = {
         "Reserved for kind: review — the critic's own verdict on what it reviewed: APPROVED or CHANGES REQUESTED. Populated by adapters.ts#author's read-only, whole-document extraction (never a guess: exactly one anchored line — optionally `Verdict: `-prefixed — must match the whole document, or this stays absent; see verdict_source). Absent means not recorded — predates this field, extraction found zero or more than one matching line, or the critic's own prompt hasn't been updated to declare it yet — and must never be treated as either enum value.",
     },
     // Ruling 2026-08-24 (the verdict bridge, Finding 118, Q3): sibling to `verdict` above — records HOW
-    // that value was obtained, present only when `verdict` itself is set (mirrors `sandbox`/
-    // `sandbox_reason`'s own "present only when relevant" shape). `extracted` is the only value this
-    // binary ever writes today (adapters.ts#author's read-only body scan). `declared` is reserved for a
-    // future structured channel a member's own boundary reports directly — never body prose — that does
-    // not exist yet (Ruling C12 gives no member a channel to write frontmatter at all). Exists so that
-    // when C1 style-2 (NOTES D8/B3) is separately ruled on, whether `extracted` provenance is trustworthy
-    // enough to gate autonomous loop continuation is a decision someone has to make on purpose — today's
-    // actual safeguard against that ("nobody wrote the reader yet") is exactly the kind of implicit
-    // assumption Findings 99 and 114 already showed this product cannot rely on.
+    // that value was obtained (mirrors `sandbox`/`sandbox_reason`'s own "present only when relevant"
+    // shape, with one deliberate difference — see `not-found` below). `extracted` is the only value this
+    // binary ever writes for a found verdict (adapters.ts#author's read-only body scan). `declared` is
+    // reserved for a future structured channel a member's own boundary reports directly — never body
+    // prose — that does not exist yet (Ruling C12 gives no member a channel to write frontmatter at all).
+    // Exists so that when C1 style-2 (NOTES D8/B3) is separately ruled on, whether `extracted` provenance
+    // is trustworthy enough to gate autonomous loop continuation is a decision someone has to make on
+    // purpose — today's actual safeguard against that ("nobody wrote the reader yet") is exactly the kind
+    // of implicit assumption Findings 99 and 114 already showed this product cannot rely on.
+    //
+    // Ruling 2026-08-25 (Findings 118/133): `not-found` is written WITHOUT `verdict` — the one case where
+    // this field is present while its sibling is absent. Before this ruling, a critic whose verdict line
+    // was lost to a matching failure (Finding 118's own `` `CHANGES REQUESTED` `` backtick case, lost
+    // silently for a full day against a live gate) was indistinguishable on disk from a review this field
+    // predates, or a critic whose prompt never asked for one. `not-found` names specifically "the scan
+    // ran, on this artifact, and found no unambiguous verdict line" — still not either enum value, but no
+    // longer silence.
     verdict_source: {
       type: "enum",
       required: false,
-      enum: ["declared", "extracted"],
+      enum: ["declared", "extracted", "not-found"],
       description:
-        "Present only when verdict is set. extracted — levare found exactly one anchored verdict line in the review body (the only value this binary writes today). declared — reserved for a future structured channel a member's boundary reports directly; not yet implemented, never written. Absent whenever verdict itself is absent.",
+        "extracted — levare found exactly one anchored verdict line in the review body, and verdict carries it. not-found — the kind: review scan ran on this artifact and found zero or more than one matching line; verdict stays absent. declared — reserved for a future structured channel a member's boundary reports directly; not yet implemented, never written. Absent entirely means this field predates the artifact (verdict is then absent too, but for a different reason: the scan never ran).",
     },
     // NOTES R4-SANDBOX (v2, Ruling 2): the OS-sandbox enforcement level a `kind: cli`/`kind: remote`/
     // `kind: native` member's spawn actually ran under, when it produced this artifact — independent of

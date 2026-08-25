@@ -419,13 +419,15 @@ export interface Artifact {
    * flow.ts#untilSatisfied or any loop-resolution path — see `verdict_source` below for why a future
    * consumer that DOES want to read it cannot reach that by accident. */
   verdict?: "APPROVED" | "CHANGES REQUESTED" | null;
-  /** Ruling 2026-08-24 (the verdict bridge, Finding 118, Q3): sibling to `verdict` — present only when
-   * `verdict` is set, records how the value was obtained. `extracted` is the only value this binary ever
-   * writes today (adapters.ts#author's read-only body scan); `declared` is reserved for a future
-   * structured channel a member's own boundary reports directly, not yet implemented. Exists so that a
+  /** Ruling 2026-08-24 (the verdict bridge, Finding 118, Q3), amended 2026-08-25 (Findings 118/133):
+   * sibling to `verdict` — records how the value was obtained. `extracted` is the only value this binary
+   * ever writes for a found verdict (adapters.ts#author's read-only body scan); `declared` is reserved for
+   * a future structured channel a member's own boundary reports directly, not yet implemented. `not-found`
+   * is written WITHOUT `verdict` — the scan ran on this `kind: review` artifact and found zero or more
+   * than one matching line, distinguishing that from an artifact this field predates. Exists so that a
    * future C1 style-2 loop-resolution consumer (NOTES D8/B3) must explicitly decide whether extracted
    * provenance counts, rather than reaching it by accident via a bare `verdict === "APPROVED"` check. */
-  verdict_source?: "declared" | "extracted" | null;
+  verdict_source?: "declared" | "extracted" | "not-found" | null;
   /** NOTES R4-SANDBOX (v2, Ruling 2): the OS-level sandbox enforcement a `kind: cli`/`kind: remote`/
    * `kind: native` member's spawn actually ran under, when this artifact was produced by one — "full"
    * (filesystem AND network confined), "fs-only" (a filesystem-only fallback — no working bubblewrap,
