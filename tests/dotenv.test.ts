@@ -89,6 +89,65 @@ describe("applyStudioEnv", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  // Findings 31/32: applyStudioEnv is now called repeatedly against the SAME target (serve.ts re-runs
+  // it per request) so a corrected `.env` takes effect without a restart. These two cases are exactly
+  // what a naive "just call it again" would get wrong: a value it set itself must be free to refresh,
+  // but a genuinely shell-exported value must never be touched or relabeled, no matter how many calls.
+  test("re-invocation against the same target picks up an edited .env value it previously set", () => {
+    const root = scratchRoot();
+    try {
+      writeFileSync(join(root, ".env"), "GEMINI_API_KEY=first-value\n");
+      const target: Record<string, string | undefined> = {};
+      const first = applyStudioEnv(root, target);
+      expect(target.GEMINI_API_KEY).toBe("first-value");
+      expect(first.get("GEMINI_API_KEY")).toBe("dotenv");
+
+      writeFileSync(join(root, ".env"), "GEMINI_API_KEY=corrected-value\n");
+      const second = applyStudioEnv(root, target);
+      expect(target.GEMINI_API_KEY).toBe("corrected-value"); // the edit takes effect...
+      expect(second.get("GEMINI_API_KEY")).toBe("dotenv"); // ...and provenance never flips to 'shell'
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("re-invocation never overwrites a genuinely shell-exported value or relabels its provenance", () => {
+    const root = scratchRoot();
+    try {
+      writeFileSync(join(root, ".env"), "GEMINI_API_KEY=from-dotenv\n");
+      const target: Record<string, string | undefined> = { GEMINI_API_KEY: "from-shell" };
+      const first = applyStudioEnv(root, target);
+      expect(target.GEMINI_API_KEY).toBe("from-shell");
+      expect(first.get("GEMINI_API_KEY")).toBe("shell");
+
+      // Even if the operator now edits .env, a genuinely shell-exported value still always wins.
+      writeFileSync(join(root, ".env"), "GEMINI_API_KEY=still-should-not-win\n");
+      const second = applyStudioEnv(root, target);
+      expect(target.GEMINI_API_KEY).toBe("from-shell");
+      expect(second.get("GEMINI_API_KEY")).toBe("shell");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a name applyStudioEnv has never touched is treated as shell on every call, even after a name it does own is added", () => {
+    const root = scratchRoot();
+    try {
+      writeFileSync(join(root, ".env"), "OWNED=set-by-dotenv\n");
+      const target: Record<string, string | undefined> = { UNOWNED: "genuinely-exported" };
+      applyStudioEnv(root, target);
+
+      writeFileSync(join(root, ".env"), "OWNED=set-by-dotenv\nUNOWNED=should-not-win\n");
+      const provenance = applyStudioEnv(root, target);
+      expect(target.UNOWNED).toBe("genuinely-exported");
+      expect(provenance.get("UNOWNED")).toBe("shell");
+      expect(target.OWNED).toBe("set-by-dotenv");
+      expect(provenance.get("OWNED")).toBe("dotenv");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 // The acceptance criterion itself: a .env-loaded credential is visible to process.env-reading code

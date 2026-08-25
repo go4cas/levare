@@ -9,6 +9,7 @@ import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, extname, dirname, resolve, relative, sep } from "node:path";
 import { loadRepo } from "../repo.ts";
+import { applyStudioEnv } from "../dotenv.ts";
 import { renderStudio, renderProject, renderRun, renderRegistry, renderArtifact, renderIdea } from "./render.ts";
 import { resolveGate } from "./gateops.ts";
 import type { AsyncMemberRunner } from "../dagwalk.ts";
@@ -810,6 +811,15 @@ export function createBoard(
       const url = new URL(req.url);
       const matched = matchRoute(req.method, url.pathname);
       if (!matched) return json({ ok: false, error: "not found" }, 404);
+      // Findings 31/32: re-derive the studio's `.env` into process.env before any route that can
+      // actually consume it runs — a page render reads it (the Orchestrator status banner), and a
+      // mutating route reads it (orchestrator boundary selection, member/connector env for a gate's
+      // dispatch). This is the same "re-derive per request" principle `/orchestrator/message` already
+      // follows (below) and `loadRepo(ctx.root)` follows on every GET — `applyStudioEnv` was the one
+      // holdout still only run once, at `levare serve` startup. Skipped for asset/SSE routes, which
+      // read no env. `applyStudioEnv` is itself safe to call repeatedly (dotenv.ts) — a shell-exported
+      // value still always wins, and a `.env` value it set before still refreshes on edit.
+      if (matched.route.page || matched.route.mutating) applyStudioEnv(ctx.root);
       // First-run experience (phase 6b): a repo-projecting screen against a root that isn't yet a
       // studio explains that and suggests `levare init`, instead of loadRepo throwing on a missing
       // root or every screen rendering its ordinary "nothing here" empty state with no next step.
