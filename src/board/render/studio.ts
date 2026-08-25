@@ -56,7 +56,7 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date(), r
   const rail = railNav(repo, extras);
 
   const gateCards = gates.length
-    ? gates.map((g) => gateCardHtml(repo, g, now, { dispatching: dispatchingFor(running, g) })).join("\n")
+    ? gates.map((g) => gateCardHtml(repo, g, now, { dispatching: dispatchingFor(repo, running, g) })).join("\n")
     : emptyState({ message: "Nothing needs you right now." });
 
   // UI2 item 6: the Studio "Projects" section becomes an IN-FLIGHT worklist, not the project index —

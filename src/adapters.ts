@@ -183,6 +183,10 @@ export interface AsyncRemoteBoundary {
 export interface SdkNativeBoundaryOptions {
   transport?: SdkTransport;
   env?: Record<string, string | undefined>;
+  /** Test-only override, taking precedence over the dispatched agent's own `timeout:` — mirrors
+   * `StdioRemoteBoundaryOptions.timeoutMs`'s identical role for the remote boundary. Production never
+   * sets this; a real dispatch's bound comes from `req.agent.timeout` (Finding 81), defaulting to
+   * `DEFAULT_NATIVE_TIMEOUT_S` when the agent declares none. */
   timeoutMs?: number;
   /** Test-only override for the resolved native-binary path — see `resolveNativeBinary` default below. */
   pathToClaudeCodeExecutable?: string;
@@ -217,6 +221,7 @@ export interface SdkNativeBoundaryOptions {
 export interface AsyncSdkNativeBoundaryOptions {
   transport?: AsyncSdkTransport;
   env?: Record<string, string | undefined>;
+  /** See `SdkNativeBoundaryOptions.timeoutMs` — identical role, async boundary. */
   timeoutMs?: number;
   /** Test-only override for the resolved native-binary path — see `resolveNativeBinary` default below. */
   pathToClaudeCodeExecutable?: string;
@@ -390,6 +395,29 @@ function nativeWorkerRequest(req: InvokeRequest, pathToClaudeCodeExecutable: str
   return { prompt: req.context, model: req.agent.model, tools: req.tools, allowedTools: req.tools, cwd, pathToClaudeCodeExecutable };
 }
 
+// Finding 81: the native member dispatch default, in seconds — used by both createSdkNativeBoundary
+// and createAsyncSdkNativeBoundary when the dispatched agent declares no `timeout:` of its own. Raised
+// from the prior 600s: five real dispatches were measured against that bound (four killed, one success
+// at 554,108ms — a 46-second margin), so a flat 600s killed more real native dispatches than it
+// permitted. 1200s is not a principled number — it is that one real measurement, doubled — chosen over
+// leaving the default alone and requiring per-agent config because every new studio would otherwise
+// inherit a bound already shown to kill most real native work. Deliberately does NOT touch `cli`'s or
+// `remote`'s own 600s defaults (adapters.ts#cliInvocation, #createAsyncStdioRemoteBoundary) — the
+// evidence and the ruling are both scoped to native dispatch alone.
+const DEFAULT_NATIVE_TIMEOUT_S = 1200;
+
+// The cli/remote dispatch default, in seconds — unchanged by Finding 81 (the evidence and the ruling
+// are both scoped to native dispatch alone; see DEFAULT_NATIVE_TIMEOUT_S's own doc above).
+const DEFAULT_CLI_REMOTE_TIMEOUT_S = 600;
+
+/** The bound a real dispatch of `agent` will actually run under, in seconds — `agent.timeout` when
+ * declared, else the kind-appropriate default. The one place this resolution rule lives, so the board
+ * (Finding 81 part 3: showing the bound beside a dispatch's elapsed time) can display the exact same
+ * number a real dispatch would enforce, never a second, independently-maintained copy of the rule. */
+export function resolveMemberTimeoutS(agent: Agent): number {
+  return agent.timeout ?? (agent.kind === "native" ? DEFAULT_NATIVE_TIMEOUT_S : DEFAULT_CLI_REMOTE_TIMEOUT_S);
+}
+
 /**
  * The real Claude Agent SDK backing for `NativeBoundary` (phase 7) — a synchronous call behind the
  * exact same `invoke(req): { doc: string }` shape the mocked boundary already implements, via the
@@ -405,7 +433,6 @@ function nativeWorkerRequest(req: InvokeRequest, pathToClaudeCodeExecutable: str
 export function createSdkNativeBoundary(opts: SdkNativeBoundaryOptions = {}): NativeBoundary {
   const transport = opts.transport ?? bunSdkTransport;
   const baseEnv = opts.env ?? process.env;
-  const timeoutMs = opts.timeoutMs ?? 600_000;
   // Resolved ONCE, explicitly — never left to the SDK's own implicit resolution inside the worker
   // (NOTES phase-7 K14: a live host showed that implicit lookup fail to find a platform binary that
   // genuinely existed as a sibling node_modules package).
@@ -413,6 +440,12 @@ export function createSdkNativeBoundary(opts: SdkNativeBoundaryOptions = {}): Na
   const pathToClaudeCodeExecutable = opts.pathToClaudeCodeExecutable ?? resolveNativeBinary(br?.platform, br?.arch, br?.requireFrom) ?? undefined;
   return {
     invoke(req: InvokeRequest): { doc: string; receipt?: Receipt; sandbox?: SandboxLevel } {
+      // Finding 81: reads the dispatched agent's own `timeout:` per-call — a boundary is constructed
+      // once for the whole server lifetime, so this can never be resolved at construction time the way
+      // `pathToClaudeCodeExecutable` above is. Mirrors `createAsyncStdioRemoteBoundary`'s identical
+      // precedence (StdioRemoteBoundaryOptions.timeoutMs's own doc): a test-only opts override beats
+      // the agent's declared value, which beats the default.
+      const timeoutMs = opts.timeoutMs ?? resolveMemberTimeoutS(req.agent) * 1000;
       const startedAt = new Date().toISOString();
       const traceCtx = { startedAt, timeoutMs, baseEnv, pathToClaudeCodeExecutable };
       traceNativeDispatchStart(opts.studioRoot, req, traceCtx);
@@ -439,11 +472,13 @@ export function createSdkNativeBoundary(opts: SdkNativeBoundaryOptions = {}): Na
 export function createAsyncSdkNativeBoundary(opts: AsyncSdkNativeBoundaryOptions = {}): AsyncNativeBoundary {
   const transport = opts.transport ?? asyncSdkTransport;
   const baseEnv = opts.env ?? process.env;
-  const timeoutMs = opts.timeoutMs ?? 600_000;
   const br = opts.binaryResolution;
   const pathToClaudeCodeExecutable = opts.pathToClaudeCodeExecutable ?? resolveNativeBinary(br?.platform, br?.arch, br?.requireFrom) ?? undefined;
   return {
     async invoke(req: InvokeRequest): Promise<{ doc: string; receipt?: Receipt; sandbox?: SandboxLevel }> {
+      // Finding 81: see createSdkNativeBoundary's identical comment above — same per-call resolution,
+      // same precedence, async boundary.
+      const timeoutMs = opts.timeoutMs ?? resolveMemberTimeoutS(req.agent) * 1000;
       const startedAt = new Date().toISOString();
       const traceCtx = { startedAt, timeoutMs, baseEnv, pathToClaudeCodeExecutable };
       traceNativeDispatchStart(opts.studioRoot, req, traceCtx);
@@ -623,7 +658,7 @@ export function createAsyncStdioRemoteBoundary(repo: Repo, opts: StdioRemoteBoun
       const tool = agent.tool;
       if (!tool) throw new AdapterError(`remote member '${req.member}' declares no 'tool'`);
       const args = buildMcpToolArguments(agent.params, req.context);
-      const timeoutMs = opts.timeoutMs ?? (agent.timeout ?? 600) * 1000;
+      const timeoutMs = opts.timeoutMs ?? resolveMemberTimeoutS(agent) * 1000;
 
       // NOTES MCP-1C: only the REAL boundary (default `connect`) ever sandboxes — see this function's
       // own doc for why a test-injected `opts.connect` double must never be wrapped.
@@ -1830,7 +1865,7 @@ export class AdapterRunner implements MemberRunner {
   // Shared argv/cwd/stdin derivation for both the sync and async CLI spawn paths.
   private cliInvocation(agent: Agent, req: InvokeRequest): { argv: string[]; cwd: string | undefined; timeoutMs: number; stdin: string | undefined } {
     const argv = (this.opts.cliCommand ?? defaultCliCommand)(req);
-    const timeoutMs = (agent.timeout ?? 600) * 1000;
+    const timeoutMs = resolveMemberTimeoutS(agent) * 1000;
     // NOTES MERGE-1: resolve `{feature_repo}` before checking for a leftover `{…}` — a cwd template
     // like finch's own `"{feature_repo}"` now resolves to the real project checkout when one exists
     // (req.projectRepoPath), and spawns there instead of falling back to the default cwd. A `cwd`
