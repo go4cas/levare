@@ -11,6 +11,7 @@ import { stubAdapterRunner } from "../src/replay.ts";
 import { loadRepo } from "../src/repo.ts";
 import { scoreNodes } from "../src/derive.ts";
 import { renderRun } from "../src/board/render/run.ts";
+import { renderArtifact } from "../src/board/render/artifact.ts";
 import type { Verb } from "../src/runner.ts";
 
 // Finding 59: at a loop's review gate, the score rail showed "needs you" on BOTH the loop's real gate
@@ -92,6 +93,26 @@ describe("Finding 59: a loop's companion turn is not a second open gate", () => 
       expect(needsYouCount).toBe(1);
       // The companion's node still reads as informational, not an error or a warning.
       expect(html).toContain("under review");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("the artifact detail page chips the companion the same way — 'under review', not 'at gate'", async () => {
+    const root = seedGoldenScratch();
+    try {
+      await driveToOpenLoopRound(root);
+      const repo = loadRepo(root, { validate: false });
+
+      // spec-loyalty-flow-v1 is the loop's real gate (until: spec.approved).
+      const gateHtml = renderArtifact(repo, "storefront", "loyalty-flow", "spec-loyalty-flow-v1", root, new Date("2026-07-12T00:00:00Z"));
+      expect(gateHtml).toContain("at gate");
+      expect(gateHtml).not.toContain("under review");
+
+      // review-loyalty-flow-v1 is the companion — already consumed, not this round's decision.
+      const companionHtml = renderArtifact(repo, "storefront", "loyalty-flow", "review-loyalty-flow-v1", root, new Date("2026-07-12T00:00:00Z"));
+      expect(companionHtml).toContain("under review");
+      expect(companionHtml).not.toContain("at gate");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

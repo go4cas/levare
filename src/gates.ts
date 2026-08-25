@@ -34,9 +34,11 @@ export function loopUntilKind(loop: FlowLoop): string {
  * an author/critic loop whose `until` names the CRITIC's kind (e.g. `review.approved`) violates. Used
  * by `derive.ts#openGates` (visibility: never list the companion as an open gate), `board/gateops.ts`
  * (resolution: the companion-approval cascade, and which member "request" re-runs, both key off this
- * same "is `kind` the loop's real gate" question, not off role), and `derive.ts#scoreNodes` (Finding
- * 59: the score rail's per-kind node needs the same answer to avoid rendering the companion's node as
- * a second, false "needs you" gate).
+ * same "is `kind` the loop's real gate" question, not off role), `derive.ts#scoreNodes` (Finding 59:
+ * the score rail's per-kind node needs the same answer to avoid rendering the companion's node as a
+ * second, false "needs you" gate), and `board/render/artifact.ts#renderArtifact` (same finding, the
+ * artifact detail page's own status chip — a fourth independent "is this in-review artifact actually
+ * at gate" check that needs this same answer, not a reimplementation of it).
  */
 export function isLoopCompanionKind(team: Team, kind: string, capabilities: Array<{ member: string; kind: string }>): boolean {
   const membership = loopMembershipFor(team, kind, capabilities);
