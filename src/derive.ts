@@ -285,6 +285,14 @@ export interface ScoreNode {
    * from anyone auditing the registry — so the SAME two facts render unconditionally here, where the
    * loop is actually executing and the round counter is already live, never behind an interaction. */
   live?: { startedAt: string; loop?: { round: number; maxRounds: number; until: string; onExhaust: string } };
+  /** Finding 59: set only on a "gate" node whose in-review artifact is a loop's companion kind
+   * (`gates.ts#isLoopCompanionKind`) — it ran and was consumed by the round's other side, but this
+   * round's actual decision sits on the artifact the loop's `until` names, not here. The node stays
+   * `state: "gate"` and `shape: "diamond"` (ruling C2 still holds for the round as a whole; this is
+   * the same kind of thing as the round's real gate, just not the half awaiting a decision) — this
+   * flag exists so a renderer can choose different chip wording for the two halves of one round
+   * without inventing a second NodeState for what is, at the state-machine level, one state. */
+  loopCompanion?: boolean;
 }
 
 /**
@@ -333,12 +341,21 @@ export function scoreNodes(repo: Repo, unit: WorkUnit, running: DaemonInvocation
       return { kind, shape: "dot", state: "wait" };
     }
     const state = nodeStateFor(current.status);
+    // Finding 59: an in-review artifact is a gate (ruling C2) — but when it belongs to a loop, F16
+    // already established that only the artifact the loop's `until` names is the round's real,
+    // Conductor-facing gate; its companion is in-review too (both sides of a round sit in-review
+    // simultaneously — dagwalk.ts#nextAction) without being the decision surface. `openGates` and
+    // `board/gateops.ts` already consult `isLoopCompanionKind` for exactly this; scoreNodes previously
+    // didn't, so a loop's non-current turn rendered as a second, false "needs you".
+    const team = state === "gate" ? repo.teams.get(current.produced_by.split("/")[0]) : undefined;
+    const loopCompanion = team ? isLoopCompanionKind(team, kind, capabilities) : false;
     return {
       kind,
       shape: state === "gate" ? "diamond" : "dot",
       state,
       artifact: current,
       producedBy: current.produced_by,
+      ...(loopCompanion ? { loopCompanion: true as const } : {}),
     };
   });
 
