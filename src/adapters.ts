@@ -406,6 +406,18 @@ function nativeWorkerRequest(req: InvokeRequest, pathToClaudeCodeExecutable: str
 // evidence and the ruling are both scoped to native dispatch alone.
 const DEFAULT_NATIVE_TIMEOUT_S = 1200;
 
+// The cli/remote dispatch default, in seconds — unchanged by Finding 81 (the evidence and the ruling
+// are both scoped to native dispatch alone; see DEFAULT_NATIVE_TIMEOUT_S's own doc above).
+const DEFAULT_CLI_REMOTE_TIMEOUT_S = 600;
+
+/** The bound a real dispatch of `agent` will actually run under, in seconds — `agent.timeout` when
+ * declared, else the kind-appropriate default. The one place this resolution rule lives, so the board
+ * (Finding 81 part 3: showing the bound beside a dispatch's elapsed time) can display the exact same
+ * number a real dispatch would enforce, never a second, independently-maintained copy of the rule. */
+export function resolveMemberTimeoutS(agent: Agent): number {
+  return agent.timeout ?? (agent.kind === "native" ? DEFAULT_NATIVE_TIMEOUT_S : DEFAULT_CLI_REMOTE_TIMEOUT_S);
+}
+
 /**
  * The real Claude Agent SDK backing for `NativeBoundary` (phase 7) — a synchronous call behind the
  * exact same `invoke(req): { doc: string }` shape the mocked boundary already implements, via the
@@ -433,7 +445,7 @@ export function createSdkNativeBoundary(opts: SdkNativeBoundaryOptions = {}): Na
       // `pathToClaudeCodeExecutable` above is. Mirrors `createAsyncStdioRemoteBoundary`'s identical
       // precedence (StdioRemoteBoundaryOptions.timeoutMs's own doc): a test-only opts override beats
       // the agent's declared value, which beats the default.
-      const timeoutMs = opts.timeoutMs ?? (req.agent.timeout ?? DEFAULT_NATIVE_TIMEOUT_S) * 1000;
+      const timeoutMs = opts.timeoutMs ?? resolveMemberTimeoutS(req.agent) * 1000;
       const startedAt = new Date().toISOString();
       const traceCtx = { startedAt, timeoutMs, baseEnv, pathToClaudeCodeExecutable };
       traceNativeDispatchStart(opts.studioRoot, req, traceCtx);
@@ -466,7 +478,7 @@ export function createAsyncSdkNativeBoundary(opts: AsyncSdkNativeBoundaryOptions
     async invoke(req: InvokeRequest): Promise<{ doc: string; receipt?: Receipt; sandbox?: SandboxLevel }> {
       // Finding 81: see createSdkNativeBoundary's identical comment above — same per-call resolution,
       // same precedence, async boundary.
-      const timeoutMs = opts.timeoutMs ?? (req.agent.timeout ?? DEFAULT_NATIVE_TIMEOUT_S) * 1000;
+      const timeoutMs = opts.timeoutMs ?? resolveMemberTimeoutS(req.agent) * 1000;
       const startedAt = new Date().toISOString();
       const traceCtx = { startedAt, timeoutMs, baseEnv, pathToClaudeCodeExecutable };
       traceNativeDispatchStart(opts.studioRoot, req, traceCtx);
@@ -646,7 +658,7 @@ export function createAsyncStdioRemoteBoundary(repo: Repo, opts: StdioRemoteBoun
       const tool = agent.tool;
       if (!tool) throw new AdapterError(`remote member '${req.member}' declares no 'tool'`);
       const args = buildMcpToolArguments(agent.params, req.context);
-      const timeoutMs = opts.timeoutMs ?? (agent.timeout ?? 600) * 1000;
+      const timeoutMs = opts.timeoutMs ?? resolveMemberTimeoutS(agent) * 1000;
 
       // NOTES MCP-1C: only the REAL boundary (default `connect`) ever sandboxes — see this function's
       // own doc for why a test-injected `opts.connect` double must never be wrapped.
@@ -1853,7 +1865,7 @@ export class AdapterRunner implements MemberRunner {
   // Shared argv/cwd/stdin derivation for both the sync and async CLI spawn paths.
   private cliInvocation(agent: Agent, req: InvokeRequest): { argv: string[]; cwd: string | undefined; timeoutMs: number; stdin: string | undefined } {
     const argv = (this.opts.cliCommand ?? defaultCliCommand)(req);
-    const timeoutMs = (agent.timeout ?? 600) * 1000;
+    const timeoutMs = resolveMemberTimeoutS(agent) * 1000;
     // NOTES MERGE-1: resolve `{feature_repo}` before checking for a leftover `{…}` — a cwd template
     // like finch's own `"{feature_repo}"` now resolves to the real project checkout when one exists
     // (req.projectRepoPath), and spawns there instead of falling back to the default cwd. A `cwd`
