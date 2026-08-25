@@ -304,6 +304,8 @@ function setup(build?: (doc: FakeDocument) => void, fetchImpl?: (url: string, op
     },
     setTimeout: () => 0,
     clearTimeout: () => {},
+    setInterval: () => 0,
+    clearInterval: () => {},
     console,
   };
   vm.createContext(context);

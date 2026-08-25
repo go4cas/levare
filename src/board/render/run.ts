@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { Repo } from "../../repo.ts";
-import { esc, openGates, scoreNodes, captionTime, gateBriefingSentence, elapsedLabel, type ScoreNode, type NodeState } from "../../derive.ts";
+import { esc, openGates, scoreNodes, captionTime, gateBriefingSentence, elapsedLabel, elapsedSpan, type ScoreNode, type NodeState } from "../../derive.ts";
 import { loadExtras } from "../../extra.ts";
 import { buildTimeline, type TimelineActor } from "../../timeline.ts";
 import type { DaemonInvocation } from "../../daemon.ts";
@@ -169,7 +169,7 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
         n.state === "active" && n.live
           ? `<div class="sstep__live"><span class="ld" aria-hidden="true"></span><span>${
               n.live.loop ? `<b>${n.live.loop.round}</b>/${n.live.loop.maxRounds} &middot; ` : ""
-            }${elapsedLabel(n.live.startedAt, now)}${
+            }${elapsedSpan(n.live.startedAt, now)}${
               n.live.loop ? ` &middot; until ${esc(n.live.loop.until)} &middot; on_exhaust: ${esc(n.live.loop.onExhaust)}` : ""
             }</span></div>`
           : "";

@@ -489,6 +489,8 @@ function setupOverlay() {
     fetch: fakeFetch,
     setTimeout: fakeSetTimeout,
     clearTimeout: fakeClearTimeout,
+    setInterval: () => 0,
+    clearInterval: () => {},
     console,
   };
   vm.createContext(context);
@@ -933,6 +935,8 @@ describe("swapFragment must not destroy an OPEN editor overlay on a background r
       fetch: fakeFetch,
       setTimeout: fakeSetTimeout,
       clearTimeout: fakeClearTimeout,
+      setInterval: () => 0,
+      clearInterval: () => {},
       console,
     };
     vm.createContext(context);

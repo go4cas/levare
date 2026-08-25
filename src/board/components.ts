@@ -231,8 +231,12 @@ export function emptyState(opts: { message: string; action?: string }): string {
 // wiping the card, so the immediate client-side feedback and the eventual server-rendered state read
 // identically.
 // ---------------------------------------------------------------------------
-export function pendingState(opts: { label: string }): string {
-  return `<span class="pending"><span class="turn--pending"><span class="turn__dots"><span></span><span></span><span></span></span></span><span class="pending__label">${esc(opts.label)}</span></span>`;
+// `labelHtml` bypasses the default esc(): needed by the gate card's dispatching state (Finding 79),
+// whose label embeds derive.ts's own elapsedSpan markup (a live-ticking <span data-started-at>) —
+// callers passing it own escaping every plain-text piece themselves before assembling labelHtml.
+export function pendingState(opts: { label?: string; labelHtml?: string }): string {
+  const inner = opts.labelHtml ?? esc(opts.label ?? "");
+  return `<span class="pending"><span class="turn--pending"><span class="turn__dots"><span></span><span></span><span></span></span></span><span class="pending__label">${inner}</span></span>`;
 }
 
 // ---------------------------------------------------------------------------

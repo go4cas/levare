@@ -402,6 +402,8 @@ function setup(build?: (doc: FakeDocument) => void) {
       return 0;
     },
     clearTimeout: () => {},
+    setInterval: () => 0,
+    clearInterval: () => {},
     console,
   };
   vm.createContext(context);
