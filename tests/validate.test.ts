@@ -183,10 +183,11 @@ describe("verdict (kind: review) — nullable, enum-checked, never required", ()
   });
 });
 
-// Ruling 2026-08-24 (the verdict bridge, Finding 118, Q3): `verdict_source` is `verdict`'s sibling —
-// present only when `verdict` is set, naming HOW it was obtained. Schema-shape only here (round-trip,
-// enum, absence); adapters.test.ts's own "verdict bridge" describe block covers the extraction that
-// actually populates it (adapters.ts#author is the only writer this binary has today).
+// Ruling 2026-08-24 (the verdict bridge, Finding 118, Q3), amended 2026-08-25 (Findings 118/133):
+// `verdict_source` is `verdict`'s sibling, naming HOW it was obtained — `not-found` is the one case where
+// it is legal WITHOUT `verdict` (the scan ran and found nothing usable). Schema-shape only here
+// (round-trip, enum, absence); adapters.test.ts's own "verdict bridge" describe block covers the
+// extraction that actually populates it (adapters.ts#author is the only writer this binary has today).
 describe("verdict_source — nullable, enum-checked, sibling to verdict", () => {
   function reviewDoc(extraFrontmatter: string): string {
     return [
@@ -236,6 +237,14 @@ describe("verdict_source — nullable, enum-checked, sibling to verdict", () => 
     const doc = reviewDoc("verdict: APPROVED\nverdict_source: guessed");
     const errs = validateArtifactSource(doc);
     expect(errs.some((e) => e.code === "BAD_ENUM" && e.message.includes("verdict_source"))).toBe(true);
+  });
+
+  test("verdict_source: not-found is legal WITHOUT verdict — the scan ran and found nothing usable (Findings 118/133)", () => {
+    const doc = reviewDoc("verdict_source: not-found");
+    expect(validateArtifactSource(doc)).toEqual([]);
+    const art = parseArtifactDoc(doc);
+    expect(art.verdict).toBeNull();
+    expect(art.verdict_source).toBe("not-found");
   });
 });
 
