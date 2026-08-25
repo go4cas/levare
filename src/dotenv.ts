@@ -62,14 +62,23 @@ const dotenvOwnedNames = new WeakMap<object, Set<string>>();
  * Load `<root>/.env` into `target` (default `process.env`). A variable already present and non-empty
  * in `target` — genuinely exported in the shell — always wins; `.env` only fills gaps, so a CI/host
  * environment that already sets a credential is never silently shadowed by a stray studio `.env`.
- * Returns the provenance of every variable named by `.env` — 'dotenv' when this call set it, 'shell'
- * when it was already present and therefore left untouched — so a caller (doctor.ts) can report "why
- * does this work on my machine and not in CI" instead of leaving that invisible.
+ * Returns the provenance of every variable named by `.env` — 'dotenv' when this call set it (or
+ * confirmed it), 'shell' when it was already present with a DIFFERENT value and therefore left
+ * untouched — so a caller (doctor.ts) can report "why does this work on my machine and not in CI"
+ * instead of leaving that invisible.
+ *
+ * Findings 121/31/32: presence alone can't tell a shell export from a value Bun (or any other runtime)
+ * already auto-loaded from this same `.env` before this function's first call ever runs — both look
+ * identical as "already present in `target`". Value equality can: if what's already present matches
+ * what `.env` holds for that name right now, `.env` is the only plausible source regardless of what
+ * put it there, so it's labelled 'dotenv' and adopted as owned (free to refresh on a later edit) rather
+ * than being locked in as 'shell' forever. Only a present value that DIFFERS from `.env` is a genuine
+ * shell export, and only that case is protected and reported as 'shell'.
  *
  * Safe to call repeatedly against the SAME `target` (the whole point — see the module-level comment
- * above): a name this function set from `.env` before is still its own to refresh on a later call,
- * picking up an edited value; a name it has never set is treated as shell on every call, never
- * overwritten and never relabeled, no matter how many times this runs.
+ * above): a name this function has adopted (set or confirmed from `.env`) is still its own to refresh
+ * on a later call, picking up an edited value; a name that's present and differs from `.env` is treated
+ * as shell on every call, never overwritten and never relabeled, no matter how many times this runs.
  *
  * This changes nothing about scoping: `target` is the whole process environment, and env.ts's
  * `buildMemberEnv` allowlist still governs what any member's spawned process actually sees — a
@@ -82,7 +91,7 @@ export function applyStudioEnv(root: string, target: Record<string, string | und
   let owned = dotenvOwnedNames.get(target);
   for (const { name, value } of loadDotenvFile(root)) {
     const present = typeof target[name] === "string" && target[name] !== "";
-    if (present && !owned?.has(name)) {
+    if (present && !owned?.has(name) && target[name] !== value) {
       provenance.set(name, "shell");
       continue;
     }
