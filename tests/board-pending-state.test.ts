@@ -611,6 +611,137 @@ describe("gate-card verb interaction safety (amendment 1 §2 R4/R5)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Finding 71 (and its rescope sibling): the gate note flow's two-phase Send collapses to a dead
+// generic Retry on ANY failure — clicking it re-enters openNote, whose re-entrancy guard silently
+// no-ops on the still-live (but hidden-controls) note left behind by settleFailure. The fix distinguishes
+// a validation-style failure (the board actually responded with a reason) from a genuine transport
+// failure (no response at all): the former keeps the operator in the form — note preserved and
+// editable, error inline, the real decision row un-hidden alongside it, never a control labelled
+// Retry — the latter still collapses to the existing generic Retry path, which must now actually work.
+// ---------------------------------------------------------------------------
+describe("gate note flow: a validation error keeps you in the form (Finding 71)", () => {
+  function noResponseButton(card: FakeElement, text: string): FakeElement | undefined {
+    return card.querySelectorAll(".gate__verbs button").find((b) => b.textContent === text);
+  }
+
+  test("an empty note on Request changes is refused client-side — no network call, note stays editable, error inline, real verbs restored, nothing labelled Retry", () => {
+    const { doc, fetchCalls } = setup();
+    const card = buildDefaultGateCard(doc);
+    click(doc, card.querySelector('[data-verb="request"]')!);
+    const note = card.querySelector(".gate__note")!;
+    note.value = "   "; // whitespace-only — the same case doRequest's own server check refuses
+
+    click(doc, card.querySelector('[data-verb="send"]')!);
+
+    // The common case never reaches the network (mirrors the orchestrator composer's own guard).
+    expect(fetchCalls.length).toBe(0);
+
+    expect(note.disabled).toBe(false);
+    expect(note.value).toBe("   "); // preserved, not wiped
+
+    const wrap = card.querySelectorAll(".gate__verbs").find((r) => r.querySelector('[data-verb="send"]'))!;
+    const errorNotice = wrap.parent!.querySelector(".gate__note-error");
+    expect(errorNotice).not.toBeNull();
+    expect(errorNotice!.textContent).toContain("add a note");
+
+    // The real decision row — never removed from the DOM, only hidden by openNote — is un-hidden again.
+    const realRow = card.querySelectorAll(".gate__verbs").find((r) => r !== wrap)!;
+    expect(realRow.style.display).not.toBe("none");
+    expect(realRow.querySelector('[data-verb="approve"]')).not.toBeNull();
+    expect(realRow.querySelector('[data-verb="request"]')).not.toBeNull();
+    expect(realRow.querySelector('[data-verb="reject"]')).not.toBeNull();
+
+    // Send/Cancel are still there, live — not disabled, not replaced by a generic Retry.
+    expect(wrap.querySelector('[data-verb="send"]')!.disabled).toBe(false);
+    expect(wrap.querySelector('[data-verb="cancel"]')!.disabled).toBe(false);
+    expect(noResponseButton(card, "Retry")).toBeUndefined();
+  });
+
+  test("a validation-style failure from the server on Request changes' Send keeps the note editable and preserved, shows the reason inline, restores the real verbs row, and never labels a control Retry", async () => {
+    const { doc } = setupWithControls(() =>
+      Promise.resolve({ json: () => Promise.resolve({ ok: false, error: "request-changes requires a note" }) }),
+    );
+    const card = buildDefaultGateCard(doc);
+    click(doc, card.querySelector('[data-verb="request"]')!);
+    const note = card.querySelector(".gate__note")!;
+    note.value = "tighten the payments section";
+    click(doc, card.querySelector('[data-verb="send"]')!);
+    await drain();
+
+    expect(note.disabled).toBe(false);
+    expect(note.value).toBe("tighten the payments section"); // never wiped
+
+    const wrap = card.querySelectorAll(".gate__verbs").find((r) => r.querySelector('[data-verb="send"]'))!;
+    const errorNotice = wrap.parent!.querySelector(".gate__note-error");
+    expect(errorNotice).not.toBeNull();
+    expect(errorNotice!.textContent).toContain("request-changes requires a note");
+
+    const realRow = card.querySelectorAll(".gate__verbs").find((r) => r !== wrap)!;
+    expect(realRow.style.display).not.toBe("none");
+    expect(realRow.querySelector('[data-verb="approve"]')!.disabled).toBe(false);
+    expect(realRow.querySelector('[data-verb="request"]')!.disabled).toBe(false);
+    expect(realRow.querySelector('[data-verb="reject"]')!.disabled).toBe(false);
+
+    expect(wrap.querySelector('[data-verb="send"]')!.disabled).toBe(false);
+    expect(wrap.querySelector('[data-verb="cancel"]')!.disabled).toBe(false);
+    expect(noResponseButton(card, "Retry")).toBeUndefined();
+    expect(card.classList.contains("is-dispatching")).toBe(false); // request is a dispatch verb — undone honestly
+  });
+
+  test("rescope's sibling collapse: a non-empty-note failure (409/404/422/500 from the board) on Re-scope's Send gets the identical keep-in-form treatment, even though rescope has no note requirement of its own", async () => {
+    const { doc } = setupWithControls(() =>
+      Promise.resolve({ json: () => Promise.resolve({ ok: false, error: "unit 'loyalty-flow' still has unmet after: [spec-flow]" }) }),
+    );
+    const card = buildStartGateCard(doc);
+    click(doc, card.querySelector('[data-verb="rescope"]')!);
+    const note = card.querySelector(".gate__note")!;
+    note.value = ""; // rescope allows an empty note — no client-side block expected
+
+    click(doc, card.querySelector('[data-verb="send"]')!);
+    await drain();
+
+    const wrap = card.querySelectorAll(".gate__verbs").find((r) => r.querySelector('[data-verb="send"]'))!;
+    expect(note.disabled).toBe(false);
+    const errorNotice = wrap.parent!.querySelector(".gate__note-error");
+    expect(errorNotice).not.toBeNull();
+    expect(errorNotice!.textContent).toContain("unmet after");
+
+    const realRow = card.querySelectorAll(".gate__verbs").find((r) => r !== wrap)!;
+    expect(realRow.style.display).not.toBe("none");
+    expect(realRow.querySelector('[data-verb="start"]')).not.toBeNull();
+    expect(realRow.querySelector('[data-verb="rescope"]')).not.toBeNull();
+    expect(noResponseButton(card, "Retry")).toBeUndefined();
+  });
+
+  test("a genuine transport failure on Request changes' Send still gets the generic Retry treatment, and clicking Retry actually reopens the note instead of silently doing nothing", async () => {
+    const { doc } = setupWithControls(() => Promise.reject(new Error("network down")));
+    const card = buildDefaultGateCard(doc);
+    click(doc, card.querySelector('[data-verb="request"]')!);
+    card.querySelector(".gate__note")!.value = "please revise";
+    click(doc, card.querySelector('[data-verb="send"]')!);
+    await drain();
+
+    // The generic single-shot Retry treatment — same as any other verb's transport failure.
+    const notice = card.querySelector(".notice--danger")!;
+    expect(notice).not.toBeNull();
+    expect(notice.textContent).toContain("could not reach the board");
+    const retryBtn = card.querySelector('[data-verb="request"]')!;
+    expect(retryBtn).not.toBeNull();
+    expect(retryBtn.textContent).toBe("Retry");
+
+    // The stale note was cleared, not left behind — proof the re-entrancy trap is actually closed.
+    expect(card.querySelector(".gate__note")).toBeNull();
+
+    // Clicking Retry re-enters openNote — this must build a FRESH note, not silently no-op.
+    click(doc, retryBtn);
+    const freshNote = card.querySelector(".gate__note");
+    expect(freshNote).not.toBeNull();
+    expect(freshNote!.disabled).toBe(false);
+    expect(freshNote!.value).toBe(""); // a fresh buffer, not last attempt's leftover text
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Finding 79: assets/app.js's client-side elapsed tick — the one exception to "server-rendered, no
 // client-side state" (derive.ts#elapsedSpan's own doc comment). Exercises the REAL setInterval
 // callback registered by app.js against a `.elapsed[data-started-at]` fixture, proving: (1) it
