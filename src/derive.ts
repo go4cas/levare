@@ -295,6 +295,14 @@ export interface ScoreNode {
    * from anyone auditing the registry — so the SAME two facts render unconditionally here, where the
    * loop is actually executing and the round counter is already live, never behind an interaction. */
   live?: { startedAt: string; loop?: { round: number; maxRounds: number; until: string; onExhaust: string } };
+  /** Finding 59: set only on a "gate" node whose in-review artifact is a loop's companion kind
+   * (`gates.ts#isLoopCompanionKind`) — it ran and was consumed by the round's other side, but this
+   * round's actual decision sits on the artifact the loop's `until` names, not here. The node stays
+   * `state: "gate"` and `shape: "diamond"` (ruling C2 still holds for the round as a whole; this is
+   * the same kind of thing as the round's real gate, just not the half awaiting a decision) — this
+   * flag exists so a renderer can choose different chip wording for the two halves of one round
+   * without inventing a second NodeState for what is, at the state-machine level, one state. */
+  loopCompanion?: boolean;
 }
 
 /**
@@ -343,12 +351,21 @@ export function scoreNodes(repo: Repo, unit: WorkUnit, running: DaemonInvocation
       return { kind, shape: "dot", state: "wait" };
     }
     const state = nodeStateFor(current.status);
+    // Finding 59: an in-review artifact is a gate (ruling C2) — but when it belongs to a loop, F16
+    // already established that only the artifact the loop's `until` names is the round's real,
+    // Conductor-facing gate; its companion is in-review too (both sides of a round sit in-review
+    // simultaneously — dagwalk.ts#nextAction) without being the decision surface. `openGates` and
+    // `board/gateops.ts` already consult `isLoopCompanionKind` for exactly this; scoreNodes previously
+    // didn't, so a loop's non-current turn rendered as a second, false "needs you".
+    const team = state === "gate" ? repo.teams.get(current.produced_by.split("/")[0]) : undefined;
+    const loopCompanion = team ? isLoopCompanionKind(team, kind, capabilities) : false;
     return {
       kind,
       shape: state === "gate" ? "diamond" : "dot",
       state,
       artifact: current,
       producedBy: current.produced_by,
+      ...(loopCompanion ? { loopCompanion: true as const } : {}),
     };
   });
 
@@ -429,8 +446,23 @@ export function leadingArtifact(repo: Repo, unit: WorkUnit): Artifact | undefine
   const m = repo.artifacts.get(`${unit.project}/${unit.unit}`);
   if (!m) return undefined;
   const all = [...m.values()];
-  const gate = all.find((a) => a.status === "in-review");
-  if (gate) return gate;
+  const inReview = all.filter((a) => a.status === "in-review");
+  if (inReview.length) {
+    // Finding 59: during an open loop round, BOTH members sit in-review at once (dagwalk.ts#nextAction)
+    // — `m`'s own insertion order (repo.ts#loadUnitArtifacts: filenames, sorted) has no relationship to
+    // which one the loop's `until` actually names, so picking the first in-review artifact unconditionally
+    // silently surfaced the companion instead of the real gate whenever its kind's filename sorts first
+    // (kestrel's spec/review loop: "review" < "spec", so this was every round, not a rare case). Same
+    // isLoopCompanionKind check as openGates/gateops.ts/scoreNodes/artifact.ts — prefer whichever
+    // in-review artifact ISN'T the companion; if a repo's raw data somehow has none (shouldn't happen),
+    // fall back to the first rather than returning nothing.
+    const capabilities = repoCapabilities(repo);
+    const realGate = inReview.find((a) => {
+      const team = repo.teams.get(a.produced_by.split("/")[0]);
+      return !team || !isLoopCompanionKind(team, a.kind, capabilities);
+    });
+    return realGate ?? inReview[0];
+  }
   return all.filter((a) => a.status !== "superseded").sort((a, b) => a.created.localeCompare(b.created)).pop();
 }
 

@@ -607,6 +607,10 @@ button{ font-family:inherit; }
 .ind-super{ border:1.5px solid var(--fg-mute); background:transparent; }
 .ind-prog{ background:var(--active); }
 .ind-gate{ width:9px; height:9px; background:var(--gate); transform:rotate(45deg); border-radius:0; }
+/* Finding 59: a loop's companion artifact is genuinely in-review (same diamond geometry as ind-gate,
+   ruling C2) but isn't the round's decision surface — neutral fill, not brass, same distinction the
+   score rail and the artifact page's own chip make. */
+.ind-gate-companion{ width:9px; height:9px; background:var(--fg-mute); transform:rotate(45deg); border-radius:0; }
 .unit__foot{ padding:12px 17px 4px 44px; font-family:var(--mono); font-size:11.5px; color:var(--fg-mute); }
 .unit__actions{ display:flex; gap:8px; padding:8px 17px 16px 44px; }
 .rail .prow{ flex-direction:column; align-items:flex-start; gap:2px; }

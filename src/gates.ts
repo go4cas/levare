@@ -31,10 +31,27 @@ export function loopUntilKind(loop: FlowLoop): string {
  * actually names may raise a gate; its companion never independently gates, regardless of whether it
  * happens to be the loop's "first" (author) or "second" (critic) role. Two open gates for one round —
  * the live defect this closes — came from treating "first" as the gate unconditionally, an assumption
- * an author/critic loop whose `until` names the CRITIC's kind (e.g. `review.approved`) violates. Used
- * by both `derive.ts#openGates` (visibility: never list the companion as an open gate) and
- * `board/gateops.ts` (resolution: the companion-approval cascade, and which member "request" re-runs,
- * both key off this same "is `kind` the loop's real gate" question, not off role).
+ * an author/critic loop whose `until` names the CRITIC's kind (e.g. `review.approved`) violates.
+ *
+ * Seven call sites need this same "is `kind` the loop's real gate" answer, and every one of them
+ * calls this function directly rather than re-deriving it from raw `status === "in-review"` (Finding
+ * 59 found three of these the hard way, one at a time — an in-review check with no loop-companion
+ * awareness is exactly the shape to watch for in any future one):
+ * - `derive.ts#openGates` — visibility: never list the companion as an open gate.
+ * - `board/gateops.ts` — resolution: the companion-approval cascade, and which member "request"
+ *   re-runs, both key off this same question, not off role.
+ * - `derive.ts#scoreNodes` — the score rail's per-kind node; without this the companion's node
+ *   rendered as a second, false "needs you" gate.
+ * - `board/render/artifact.ts#renderArtifact` — the artifact detail page's own status chip; same
+ *   false "at gate" on a direct visit to the companion's own page.
+ * - `derive.ts#leadingArtifact` — "the unit's leading artifact" picked the first in-review artifact by
+ *   Map insertion order (repo.ts's own filename sort), which has no relationship to which one the
+ *   loop's `until` names — on kestrel's spec/review loop this silently and deterministically returned
+ *   the companion (review) every round, never the real gate (spec), because "review" sorts first.
+ *   Feeds unit summaries and unit-recency sort (project.ts's releases list, studio.ts).
+ * - `board/render/project.ts`'s per-artifact row, twice — the `ind-gate`/`ind-gate-companion` dot
+ *   class and the `<span class="st gate">`/"under review" text both need it independently (one
+ *   artifact, two separate render decisions).
  */
 export function isLoopCompanionKind(team: Team, kind: string, capabilities: Array<{ member: string; kind: string }>): boolean {
   const membership = loopMembershipFor(team, kind, capabilities);

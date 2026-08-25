@@ -9,11 +9,13 @@
 
 import type { Repo } from "../../repo.ts";
 import type { Artifact } from "../../types.ts";
+import { repoCapabilities } from "../../repo.ts";
 import { esc, ageLabel, costLabel, findArtifactInProject, supersededByOf, citedByOf, captionTime } from "../../derive.ts";
+import { isLoopCompanionKind } from "../../gates.ts";
 import { loadExtras } from "../../extra.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
 import { fromArtifactStatus } from "../status.ts";
-import { statusBadge, orchTurn } from "../components.ts";
+import { statusBadge, neutralChip, orchTurn } from "../components.ts";
 import {
   shell,
   pageBody,
@@ -42,8 +44,17 @@ export function renderArtifact(repo: Repo, project: string, unit: string, id: st
   // NOTES UI1: routed through the canonical status→colour map — "rejected" used to be a bespoke red
   // inline style, "superseded"/"draft"/"skipped" a mix of ad hoc classes; the label text for each is
   // preserved verbatim, only the colour decision moved to status.ts.
+  //
+  // Finding 59: an in-review artifact isn't automatically "at gate" — a loop's companion kind (F16)
+  // is in-review too, without being the round's decision surface. Same `isLoopCompanionKind` check
+  // openGates/gateops.ts/scoreNodes already use, not a fourth reimplementation of it.
+  const artTeam = repo.teams.get(art.produced_by.split("/")[0]);
+  const artIsLoopCompanion = art.status === "in-review" && artTeam ? isLoopCompanionKind(artTeam, art.kind, repoCapabilities(repo)) : false;
   const artStatusChip =
-    art.status === "in-review" ? statusBadge("needs-you", "at gate")
+    art.status === "in-review"
+      ? artIsLoopCompanion
+        ? neutralChip("under review", undefined, { text: "this round's decision is on the other artifact, not this one", id: `loopcompanion-${esc(project)}-${esc(unit)}-${esc(id)}` })
+        : statusBadge("needs-you", "at gate")
     : art.status === "superseded" ? statusBadge("waiting", "superseded")
     : statusBadge(fromArtifactStatus(art.status), art.status);
 

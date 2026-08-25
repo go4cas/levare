@@ -122,6 +122,17 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
       // rejected is genuinely `failed` (red stays); blocked is genuinely `blocked` (neutral gray).
       const chip =
         n.state === "done" ? statusBadge("done", "approved", "sstep__chip")
+        // Finding 59: a "gate" node whose in-review artifact is a loop's companion kind (F16 — the
+        // round's real, decision-bearing gate is the OTHER side, the one the loop's `until` names)
+        // is not a second thing the Conductor must act on. It's still genuinely in-review and still
+        // part of one open round (diamond shape, ruling C2, is unchanged) — just neutral like "not
+        // covered" below, not brass: this turn already did its job, nothing here is broken or waiting
+        // on this Conductor specifically.
+        : n.state === "gate" && n.loopCompanion
+          ? neutralChip("under review", "sstep__chip", {
+              text: "this round's decision is on the other artifact, not this one",
+              id: `loopcompanion-${esc(project)}-${esc(unitId)}-${esc(n.kind)}`,
+            })
         : n.state === "gate" ? statusBadge("needs-you", "needs you", "sstep__chip")
         : n.state === "rejected" ? statusBadge("failed", "rejected", "sstep__chip")
         // NOTES F3: a blocked-status artifact (a member ran and failed) previously showed only a small
