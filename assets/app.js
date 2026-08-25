@@ -863,6 +863,34 @@
       } catch (e) { /* no SSE support; the board still works as plain server-rendered pages */ }
     }
 
+    /* ---------- elapsed: client-side tick (Finding 79) ----------
+       The one value on the board derivable entirely in the browser from data the server already
+       sends (derive.ts#elapsedSpan's `data-started-at`) plus Date.now() — no round trip, no periodic
+       SSE broadcast. Deliberately the one exception to "no client-side state" (see derive.ts's own
+       comment on elapsedSpan): this reads a timestamp and formats a string, nothing more.
+
+       A single page-lifetime interval that re-queries `.elapsed[data-started-at]` fresh on every
+       tick, rather than a per-element interval holding a direct node reference, on purpose: swapFragment
+       above does a real `replaceChild` on `.main` on every SSE reload, which destroys the old node
+       outright. A reference-holding timer would either update a detached node forever (a leak) or,
+       worse, keep writing a stale startedAt into a REUSED element id if a later dispatch's fragment
+       reused it — overwriting a live, correct tick with a wrong one. Re-querying by attribute avoids
+       both: a finished dispatch's element either carries no data-started-at in the new fragment (chip
+       moved on) or isn't in the DOM at all, so the next tick simply finds nothing to update for it. */
+    function elapsedText(startedAtIso, nowMs) {
+      var totalS = Math.max(0, Math.floor((nowMs - new Date(startedAtIso).getTime()) / 1000));
+      var h = Math.floor(totalS / 3600);
+      var m = Math.floor((totalS % 3600) / 60);
+      var s = totalS % 60;
+      if (h > 0) return h + 'h ' + String(m).padStart(2, '0') + 'm';
+      return m + 'm ' + String(s).padStart(2, '0') + 's';
+    }
+    setInterval(function () {
+      document.querySelectorAll('.elapsed[data-started-at]').forEach(function (el) {
+        el.textContent = elapsedText(el.getAttribute('data-started-at'), Date.now());
+      });
+    }, 1000);
+
     /* ---------- registry: overlay editor (UI3) ----------
        "Edit source" opens the ONE shared overlay (render.ts#editorOverlay) instead of an inline,
        card-cramped textarea. As the Conductor types, the buffer is debounced (~250ms after the last

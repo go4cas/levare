@@ -481,6 +481,8 @@ function setup(fetchImpl?: (url: string) => Promise<any>) {
     },
     setTimeout: () => 0,
     clearTimeout: () => {},
+    setInterval: () => 0,
+    clearInterval: () => {},
     console,
   };
   vm.createContext(context);

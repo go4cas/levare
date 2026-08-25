@@ -412,6 +412,8 @@ function setup(build: (doc: FakeDocument) => void) {
     fetch: () => new Promise(() => {}),
     setTimeout: () => 0,
     clearTimeout: () => {},
+    setInterval: () => 0,
+    clearInterval: () => {},
     console,
   };
   vm.createContext(context);

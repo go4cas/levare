@@ -380,6 +380,8 @@ function setup() {
     },
     setTimeout: () => 0,
     clearTimeout: () => {},
+    setInterval: () => 0,
+    clearInterval: () => {},
     console,
   };
   vm.createContext(context);
@@ -414,6 +416,8 @@ function setupWithControls(fetchImpl?: (url: string) => Promise<any>) {
       const t = timers[id - 1];
       if (t) t.fn = null;
     },
+    setInterval: () => 0,
+    clearInterval: () => {},
     console,
   };
   vm.createContext(context);
@@ -603,5 +607,103 @@ describe("gate-card verb interaction safety (amendment 1 §2 R4/R5)", () => {
     expect(notice).not.toBeNull();
     expect(notice.textContent).toContain("nothing left for team");
     expect(card.querySelector('[data-verb="start"]')).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 79: assets/app.js's client-side elapsed tick — the one exception to "server-rendered, no
+// client-side state" (derive.ts#elapsedSpan's own doc comment). Exercises the REAL setInterval
+// callback registered by app.js against a `.elapsed[data-started-at]` fixture, proving: (1) it
+// recomputes the same "Xm YYs" / "Xh YYm" text elapsedLabel renders server-side, from nothing but the
+// timestamp already in the markup and a controlled clock; (2)/(3) it re-queries the DOM by attribute
+// on every tick rather than holding a node reference, so a node that appears only AFTER the interval
+// was registered (an SSE fragment swap's replaceChild) still ticks correctly, and a node removed from
+// the DOM (the dispatch ending) is simply no longer found — proving the leak/stale-write hazard the
+// goal flagged (an orphaned timer overwriting a REUSED element id with a stale dispatch's time) can't
+// arise from this design, since there is no reference to go stale.
+// ---------------------------------------------------------------------------
+function setupElapsedTick() {
+  const doc = new FakeDocument();
+  let tickFn: (() => void) | null = null;
+  const context: any = {
+    document: doc,
+    window: { matchMedia: undefined, EventSource: undefined },
+    location: { reload: () => {} },
+    fetch: () => new Promise(() => {}),
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+    setInterval: (fn: () => void) => {
+      tickFn = fn;
+      return 1;
+    },
+    clearInterval: () => {},
+    console,
+  };
+  vm.createContext(context);
+  vm.runInContext(APP_JS_SOURCE, context);
+  (doc as any).dispatchEvent({ type: "DOMContentLoaded" });
+  return {
+    doc,
+    tick(nowMs: number) {
+      // Pins the sandbox realm's OWN Date.now — never Node's real global Date — so the tick's elapsed
+      // math is deterministic. Everything else about Date (ISO parsing via `new Date(iso)`) is the
+      // real, spec-standard implementation: every vm context gets its own fresh built-ins without
+      // needing them passed in explicitly, unlike non-standard globals such as setInterval itself.
+      vm.runInContext(`Date.now = function () { return ${nowMs}; };`, context);
+      expect(tickFn).not.toBeNull();
+      tickFn!();
+    },
+  };
+}
+
+function elapsedEl(doc: FakeDocument, startedAtIso: string): FakeElement {
+  const el = doc.createElement("span");
+  el.className = "elapsed";
+  el.setAttribute("data-started-at", startedAtIso);
+  el.textContent = "0m 00s"; // the server-rendered initial value, before any tick
+  doc.body.appendChild(el);
+  return el;
+}
+
+describe("elapsed ticks client-side (Finding 79)", () => {
+  test("a tick recomputes the same Xm YYs / Xh YYm text elapsedLabel renders server-side, from the timestamp alone", () => {
+    const { doc, tick } = setupElapsedTick();
+    const el = elapsedEl(doc, "2026-07-17T01:58:15.000Z");
+
+    tick(new Date("2026-07-17T02:00:00.000Z").getTime()); // 1m 45s later
+    expect(el.textContent).toBe("1m 45s");
+
+    tick(new Date("2026-07-17T03:03:20.000Z").getTime()); // past the hour boundary
+    expect(el.textContent).toBe("1h 05m");
+  });
+
+  test("an element whose dispatch has already ended (no data-started-at — the chip moved on) is never matched, never touched", () => {
+    const { doc, tick } = setupElapsedTick();
+    const finished = doc.createElement("span");
+    finished.className = "elapsed"; // same class, but no data-started-at
+    finished.textContent = "final: 9m 12s";
+    doc.body.appendChild(finished);
+
+    tick(new Date("2026-07-17T02:00:00.000Z").getTime());
+    expect(finished.textContent).toBe("final: 9m 12s");
+  });
+
+  test("re-queries the DOM fresh on every tick instead of holding a node reference — a node added after setInterval was registered still ticks, and one removed mid-dispatch is simply no longer found (no leak, no stale write)", () => {
+    const { doc, tick } = setupElapsedTick();
+
+    // Nothing live yet when the interval fires the first time — nothing to update.
+    expect(() => tick(new Date("2026-07-17T02:00:00.000Z").getTime())).not.toThrow();
+
+    // A later "fragment swap" (an SSE reload's replaceChild) adds a fresh live element — the SAME id
+    // space an orphaned per-node timer could have collided with. This interval holds no reference at
+    // all, so it simply finds the new node next tick.
+    const el = elapsedEl(doc, "2026-07-17T01:59:00.000Z");
+    tick(new Date("2026-07-17T02:00:30.000Z").getTime());
+    expect(el.textContent).toBe("1m 30s");
+
+    // The dispatch ends: the "fragment swap" removes the node. The next tick must not throw and must
+    // not write anywhere — there is no stale reference left to write through.
+    el.remove();
+    expect(() => tick(new Date("2026-07-17T02:05:00.000Z").getTime())).not.toThrow();
   });
 });
