@@ -784,6 +784,55 @@ describe("native adapter — sandboxed real spawn (Finding 75, part 2)", () => {
     expect(seenRawArgv).toEqual(["bun", "cli.ts", "__worker"]); // the wrap never mutates the input in place
   });
 
+  // Finding 81: native previously ignored `agent.timeout` entirely, always passing a flat 600_000ms
+  // to the transport regardless of what the dispatched agent declared — the defect a real dispatch
+  // (jot/remove-entry) hit in production. Both the sync and async boundary now resolve it per-call.
+  test("createSdkNativeBoundary passes the dispatched agent's own timeout (seconds → ms) to the transport", () => {
+    const repo = loadRepo(ROOT);
+    const agent = { ...repo.agents.get("lyra")!, timeout: 5 };
+    let seenTimeoutMs: number | undefined;
+    const transport: SdkTransport = {
+      run(_req, opts) {
+        seenTimeoutMs = opts.timeoutMs;
+        return { ok: true, result: "native output" };
+      },
+    };
+    const boundary = createSdkNativeBoundary({ transport });
+    boundary.invoke(baseReq(agent, { agent }));
+    expect(seenTimeoutMs).toBe(5_000);
+  });
+
+  test("createSdkNativeBoundary defaults to 1,200,000ms when the agent declares no timeout", () => {
+    const repo = loadRepo(ROOT);
+    const agent = repo.agents.get("lyra")!;
+    expect(agent.timeout).toBeUndefined();
+    let seenTimeoutMs: number | undefined;
+    const transport: SdkTransport = {
+      run(_req, opts) {
+        seenTimeoutMs = opts.timeoutMs;
+        return { ok: true, result: "native output" };
+      },
+    };
+    const boundary = createSdkNativeBoundary({ transport });
+    boundary.invoke(baseReq(agent, { agent }));
+    expect(seenTimeoutMs).toBe(1_200_000);
+  });
+
+  test("createAsyncSdkNativeBoundary mirrors the sync boundary's timeout resolution", async () => {
+    const repo = loadRepo(ROOT);
+    const agent = { ...repo.agents.get("lyra")!, timeout: 5 };
+    let seenTimeoutMs: number | undefined;
+    const transport: AsyncSdkTransport = {
+      async run(_req, opts) {
+        seenTimeoutMs = opts.timeoutMs;
+        return { ok: true, result: "async native output" };
+      },
+    };
+    const boundary = createAsyncSdkNativeBoundary({ transport });
+    await boundary.invoke(baseReq(agent, { agent }));
+    expect(seenTimeoutMs).toBe(5_000);
+  });
+
   test("no repo supplied → the transport is never even offered a wrapWorkerSpawn — the pre-this-unit behaviour, unchanged", () => {
     const repo = loadRepo(ROOT);
     const agent = repo.agents.get("lyra")!;

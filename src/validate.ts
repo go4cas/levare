@@ -563,7 +563,7 @@ const AGENT_SCHEMA: Schema = {
       description: "How this member receives consumed artifacts: paths (default — root-relative paths only, for a member with filesystem access to the studio) or inline (the full text of every consumed artifact, for a member that cannot reach the studio filesystem).",
     },
     cwd: { type: "str", required: false, description: "cli: the working directory this member's process spawns in." },
-    timeout: { type: "num", required: false, description: "cli: the spawn timeout, in seconds." },
+    timeout: { type: "num", required: false, description: "cli/native/remote: the spawn/dispatch timeout, in seconds." },
     result: { type: "str", required: false, description: "cli: required for kind: cli — how the member's result is read back." },
     // remote
     server: { type: "str", required: false, description: "remote: the kind: mcp connector (by name) this member calls." },
