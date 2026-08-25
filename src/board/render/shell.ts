@@ -567,10 +567,10 @@ export function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?
         <div class="gate__body">
           ${gateUnitTitle(gate.project, gate.unit)}
           <div class="gate__name-row">${artifactTokenLink(gate.project, gate.unit, art.id, artifactFileName(art))}<span class="gate__producer">member/<b>${esc(gate.member ?? "")}</b></span></div>
-          <p class="gate__ctx">Blocked: ${ctx}</p>
+          <p class="gate__ctx">${dispatching ? "Dispatching now &mdash; the unit is being produced." : `Blocked: ${ctx}`}</p>
           <div class="gate__meta"><span>${esc(age)}</span></div>
         </div>
-        <span class="gate__badge is-blocked">blocked</span>
+        <span class="gate__badge is-blocked">${dispatching ? "dispatching" : "blocked"}</span>
       </div>
       ${verbs}
     </article>`;
@@ -599,9 +599,11 @@ export function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?
   // the Conductor's text, and the server silently discarded it. The card now says so up front and
   // presents the loop's ACTUAL on_exhaust decision (approve over the critic's objection, reject, or
   // re-scope) instead of a verb that can never succeed.
-  const ctx = gate.loop?.exhausted
-    ? `${gate.loop.round} of ${gate.loop.maxRounds} rounds used — this loop cannot continue without \`${esc(gate.loop.until)}\`.`
-    : esc(firstParagraph(art.body ?? ""));
+  const ctx = dispatching
+    ? "Dispatching now &mdash; the unit is being produced."
+    : gate.loop?.exhausted
+      ? `${gate.loop.round} of ${gate.loop.maxRounds} rounds used — this loop cannot continue without \`${esc(gate.loop.until)}\`.`
+      : esc(firstParagraph(art.body ?? ""));
   const roundBadge = gate.loop ? `<span class="gate__round">round ${gate.loop.round}/${gate.loop.maxRounds}</span>` : "";
   // Ruling 2026-08-23 ("the gate card is where decisions happen", Findings 104/105): the decision-
   // relevant fact — CHANGES REQUESTED, or an approval — rendered directly, never buried below the
@@ -666,7 +668,7 @@ export function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?
     bodyWrapCls: "gate__body",
     title: nameRow,
     titleExtra: `${verdictBadge}<p class="gate__ctx">${ctx}</p>${consumesHtml}${meta}`,
-    status: `<span class="gate__badge${gate.loop?.exhausted ? " is-exhausted" : ""}">${gate.loop?.exhausted ? statusLabel("exhausted") : gateKindLabel(gate)}</span>`,
+    status: `<span class="gate__badge${gate.loop?.exhausted ? " is-exhausted" : ""}">${dispatching ? "dispatching" : gate.loop?.exhausted ? statusLabel("exhausted") : gateKindLabel(gate)}</span>`,
     meta: verbs,
   });
 }

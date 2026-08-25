@@ -209,7 +209,7 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
             a.status === "in-review"
               ? isLoopCompanion
                 ? `<span class="st" title="this round's decision is on the other artifact, not this one">under review</span>`
-                : `<span class="st gate">${esc(gate ? gateKindLabel(gate) : "at gate")}</span>`
+                : `<span class="st gate">${esc(gate ? (gateDispatching ? "dispatching" : gateKindLabel(gate)) : "at gate")}</span>`
             : a.status === "superseded" && a.blocked_reason ? `<span class="st blocked" title="${esc(a.blocked_reason)}">failed dispatch</span>`
             : `<span class="st">${esc(a.status)}</span>`;
           const label = a.status === "superseded" ? `<s>${esc(artifactFileName(a))}</s>` : esc(artifactFileName(a));
