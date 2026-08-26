@@ -201,6 +201,32 @@ export function assistantContentLogLines(content: unknown): string[] {
   return lines;
 }
 
+/**
+ * Finding 92 (REOPENED): the retry loop itself lives entirely inside `@anthropic-ai/claude-agent-sdk`'s
+ * `query()` — this worker has no predicate of its own and never did; it only observes each
+ * `SDKAPIRetryMessage` as it streams (see the `api_retry` branch below) and, until now, just logged it.
+ * The SDK's own retry policy treats 401/403 (invalid or expired credentials) as retryable exactly like
+ * 429/5xx — an auth failure can never succeed on retry, so that seven-attempt, 41-second backoff run
+ * (evidence: `.levare/dispatch-logs/2026-08-26T09-24-36-148Z-orchestrator-interpret.json`) was always
+ * going to end in the SAME 45s wall-clock kill (sdk-transport.ts), reported as a bare timeout with the
+ * real cause discarded. This predicate is the one place "retryable" is decided for member dispatch: a
+ * `false` here tells the loop below to abort on the FIRST attempt instead of waiting for the SDK to
+ * exhaust its own ten retries. Deliberately narrow — only 401/403 are terminal; everything else
+ * (429, 5xx, and `null` connection errors) keeps the SDK's existing retry behavior untouched.
+ */
+export function isNonRetryableAuthStatus(errorStatus: number | null | undefined): boolean {
+  return errorStatus === 401 || errorStatus === 403;
+}
+
+/** The operator-facing message for an aborted auth failure — factored out (mirrors `deriveReceipt`'s
+ * own precedent) so a test can assert it names authentication explicitly, without spawning the real
+ * SDK. Deliberately says "aborted without retrying", never "timed out": the whole point of Finding 92
+ * is that this failure must not be confused with the wall-clock bound (sdk-transport.ts) killing a
+ * call that was still legitimately retrying. */
+export function formatAuthFailureError(status: number, attempt: number): string {
+  return `sdk worker: authentication failure (HTTP ${status}) on attempt ${attempt} — aborted without retrying, credentials are invalid or expired`;
+}
+
 /** Read one `SdkWorkerRequest` from stdin, run it through the real SDK, print one `SdkWorkerResponse`
  * line of JSON to stdout. Never throws — every failure path (malformed input, transport/SDK error) is
  * reported via `respond({ ok: false, ... })` instead, so a caller awaiting this can always exit 0. */
@@ -246,12 +272,17 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
     let sawSuccess = false;
     let failure: string | undefined;
     let retryCount = 0;
+    // Finding 92: set the moment a non-retryable status is seen (below), then checked right after the
+    // loop exits — takes precedence over both the success/failure result branches and the generic catch,
+    // so an auth failure is always reported as itself, never as whatever the abort happens to surface.
+    let authFailure: { status: number; attempt: number } | undefined;
+    const abortController = new AbortController();
     // NOTES F11: see `deriveReceipt`'s own doc for why this is tracked from `assistant` messages
     // rather than trusted to `modelUsage`'s key order.
     let respondingModel: string | null = null;
     for await (const message of query({
       prompt: req.prompt,
-      options: buildQueryOptions({ ...req, pathToClaudeCodeExecutable: resolvedBinaryPath }),
+      options: { ...buildQueryOptions({ ...req, pathToClaudeCodeExecutable: resolvedBinaryPath }), abortController },
     })) {
       if (message.type === "system" && message.subtype === "api_retry") {
         retryCount++;
@@ -260,6 +291,15 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
             `error_status=${message.error_status ?? "null (connection error, no HTTP response)"}, ` +
             `retry_delay_ms=${message.retry_delay_ms}) — ${Date.now() - startedAt}ms elapsed so far`,
         );
+        if (isNonRetryableAuthStatus(message.error_status)) {
+          authFailure = { status: message.error_status as number, attempt: message.attempt };
+          console.error(
+            `levare: sdk worker query() aborting — error_status=${message.error_status} is not retryable ` +
+              `(auth failure), refusing the SDK's remaining ${message.max_retries - message.attempt} retries`,
+          );
+          abortController.abort();
+          break;
+        }
       }
       if (message.type === "assistant") {
         if (typeof message.message?.model === "string") respondingModel = message.message.model;
@@ -280,6 +320,10 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
       }
     }
     console.error(`levare: sdk worker query() finished in ${Date.now() - startedAt}ms (${retryCount} retr${retryCount === 1 ? "y" : "ies"}, ${sawSuccess ? "success" : "no success result"})`);
+    if (authFailure) {
+      respond({ ok: false, error: formatAuthFailureError(authFailure.status, authFailure.attempt), nativeBinaryResolved });
+      return;
+    }
     if (!sawSuccess) {
       respond({ ok: false, error: failure ?? "sdk query produced no result message", nativeBinaryResolved });
       return;
