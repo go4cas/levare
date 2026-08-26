@@ -6,7 +6,7 @@ nav_order: 4
 
 # 5.3 · The CLI
 
-levare has six commands. Five run once and exit; `serve` runs until you stop it.
+levare has seven commands. Six run once and exit; `serve` runs until you stop it.
 
 Every command takes a **studio path** as its first argument. These docs write the binary as `levare`;
 if you built from source and haven't put it on your `PATH`, call it by path (`~/source/levare/levare`)
@@ -29,6 +29,37 @@ switched off, so `init` never leaves you without one.
 
 The scaffolded studio **validates and runs out of the box**: its agents declare real, priced models,
 and its example team's flow binds end to end.
+
+---
+
+## `levare new <project> <unit> [--type <type>] [--team <team>] [--budget <usd>] [--root <path>]`
+
+Create a work unit — no hand-editing `unit.md` required.
+
+```sh
+levare new todo-cli add-command --type feature
+```
+
+```
+levare new · work/todo-cli/add-command/unit.md
+  type: feature
+  team: press (inferred)
+  git: committed 3f9a1c2e0b7d
+Next: levare validate .
+```
+
+`--type` and `--team` are only required when your studio leaves more than one candidate — with
+exactly one, `new` infers it and says so. `--budget` falls back to the project's own
+`overrides: { budget: ... }` when the project declares one; otherwise the unit carries no budget.
+
+Every failure is a diagnosis, never a guess: an unknown project or type names the ones that do
+exist, an ambiguous type or team names every candidate and asks you to pick, and a studio that
+doesn't already `validate` is refused rather than built on top of.
+
+`new` commits the file under your own resolved git identity (the same `git config user.name`/
+`user.email` `init`'s founding commit uses) when one resolves and this studio has git history —
+otherwise the file is still written (files are the truth), and the command tells you it wasn't
+committed.
 
 ---
 

@@ -102,8 +102,9 @@ levare doctor .       # connector env-presence + CLI/MCP reachability report
 optional (the board, registry, and every gate work without it); connector variables are scoped to
 whichever team/agent explicitly grants that connector, even once set.
 
-Open a work unit by creating \`work/<project>/<unit>/unit.md\` (see \`types/\` for what each unit
-type expects and which artifacts its flow gates on), or capture a pitch as a new file under
+Open a work unit with \`levare new <project> <unit>\` (see \`types/\` for what each unit type
+expects and which artifacts its flow gates on) — it infers \`--type\`/\`--team\` when your studio
+leaves no ambiguity, and asks explicitly when it doesn't. Or capture a pitch as a new file under
 \`ideas/\`.
 
 ## Git
