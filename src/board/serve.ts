@@ -240,6 +240,11 @@ export interface Fragment {
    * frozen at whatever was enabled/disabled at the tab's last cold GET even after the daemon restarted
    * with ANTHROPIC_API_KEY newly set or unset. */
   orchComposer: string;
+  /** Finding 136 item 2: the panel header's own "{scope} scope" label, sliced from
+   * `<!--orchscope-->`/`<!--/orchscope-->` (render/shell.ts#orchHead) — the SAME `scope` value the
+   * `<aside>`'s `data-scope` attribute already carries (and `syncOrchTail` already resyncs on a scope
+   * change), rendered a second time as visible text with no marker of its own until now. */
+  orchScope: string;
   /** The rendered persisted-tail HTML for `scope`, sliced from the `<!--orchtail-->`/`<!--/orchtail-->`
    * markers `orchestratorPanel` (render/shell.ts) wraps it in — same mechanism as `main`/`extras`. */
   orchTail: string;
@@ -304,6 +309,7 @@ export function extractFragment(rendered: string): Fragment | null {
   const scopeMatch = /<aside class="orch[^"]*" data-scope="([^"]*)"/.exec(rendered);
   const orchDisabledMatch = /<aside class="orch[^"]*" data-scope="[^"]*" data-orch-disabled="(true|false)"/.exec(rendered);
   const orchComposerMatch = /<!--orchcomposer-->([\s\S]*?)<!--\/orchcomposer-->/.exec(rendered);
+  const orchScopeMatch = /<!--orchscope-->([\s\S]*?)<!--\/orchscope-->/.exec(rendered);
   const orchTailMatch = /<!--orchtail-->([\s\S]*?)<!--\/orchtail-->/.exec(rendered);
   const orchActionMatch = /<!--orchaction-->([\s\S]*?)<!--\/orchaction-->/.exec(rendered);
   const orchBriefingMatch = /<!--orchbriefing-->([\s\S]*?)<!--\/orchbriefing-->/.exec(rendered);
@@ -323,6 +329,7 @@ export function extractFragment(rendered: string): Fragment | null {
     scope: scopeMatch ? scopeMatch[1] : STUDIO_SCOPE,
     orchDisabled: orchDisabledMatch ? orchDisabledMatch[1] === "true" : false,
     orchComposer: orchComposerMatch ? orchComposerMatch[1] : "",
+    orchScope: orchScopeMatch ? orchScopeMatch[1] : "",
     orchTail: orchTailMatch ? orchTailMatch[1] : "",
     orchAction: orchActionMatch ? orchActionMatch[1] : "",
     orchBriefing: orchBriefingMatch ? orchBriefingMatch[1] : "",

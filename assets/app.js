@@ -881,6 +881,17 @@
       if (host && typeof data.orchIndicator === 'string') host.innerHTML = data.orchIndicator;
     }
 
+    /* Finding 136 item 2: the panel header's own "{scope} scope" label renders the SAME `scope` value
+       `syncOrchTail` already resyncs onto the `<aside>`'s `data-scope` attribute on every scope-changing
+       navigation (see `syncOrchTail` above) — but as visible text in a sibling span, with no marker of
+       its own until now, so half of one line (the attribute) updated while the other half (what the
+       Conductor actually reads) sat frozen at the previous scope. Same unconditional plain-text swap as
+       `syncOrchIndicator`/`syncAppVersion` — no local state, nothing to rebind. */
+    function syncOrchScope(data) {
+      var host = document.querySelector('[data-orch-scope]');
+      if (host && typeof data.orchScope === 'string') host.innerHTML = data.orchScope;
+    }
+
     /* Finding 136 item 3 (REGRESSION, 2026-08-25): the panel's OWN reflection of the exact fact
        `syncOrchIndicator` above just resynced for the header dot — `status.available`, same source,
        same request (render/shell.ts#orchestratorPanel) — had the identical gap and didn't get Finding
@@ -1012,12 +1023,14 @@
        `syncOrchTail`, Finding 57), the gate-card action and briefing resyncs (unconditional, see
        `syncOrchAction`/`syncOrchBriefing`, NOTES ORCH-STALE-CARD) — the latter two apply together, on
        every swap, since the briefing sentence names the same runner-side fact the action region's card
-       renders — and, as of Finding 136 item 3, the disabled-state class and the composer (see
-       `syncOrchDisabled`/`syncOrchComposer` below): the header dot's own `status.available` fact,
-       reflected a second time inside this same `<aside>`, with the identical "outside every swap
-       region" gap Finding 40 already fixed for the dot. The header's version chip (Finding 131, see
-       `syncAppVersion`) gets the same unconditional treatment despite living outside `.orch`/`.main`
-       entirely — it needs its own marker precisely because this function never looks at the header. */
+       renders — and, as of Finding 136 items 2/3, the scope label, the disabled-state class, and the
+       composer (see `syncOrchScope`/`syncOrchDisabled`/`syncOrchComposer` below): each one an
+       attribute or fact the `<aside>` already carries and resyncs (`data-scope`/`status.available`),
+       rendered a SECOND time inside this same `<aside>` with no marker of its own, the identical
+       "outside every swap region" gap Finding 40 already fixed for the header dot. The header's
+       version chip (Finding 131, see `syncAppVersion`) gets the same unconditional treatment despite
+       living outside `.orch`/`.main` entirely — it needs its own marker precisely because this
+       function never looks at the header. */
     function swapFragment(data, sameUrl) {
       var oldMain = document.querySelector('.main');
       if (!oldMain || !oldMain.parentNode) return false;
@@ -1055,6 +1068,7 @@
       syncOrchIndicator(data);
       syncOrchDisabled(data);
       syncOrchComposer(data);
+      syncOrchScope(data);
       syncRailProjects(data);
       syncRailConnectors(data);
       syncRailIdeas(data);

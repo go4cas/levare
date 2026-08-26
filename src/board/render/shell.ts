@@ -86,7 +86,7 @@ ${appHeader(status, railToggleLabel)}
 ${body}
 ${confirmModal()}
 ${toastViewport()}
-<script src="/app.js?v=11"></script>
+<script src="/app.js?v=12"></script>
 </body>
 </html>
 `;
@@ -106,8 +106,14 @@ export function pageBody(rail: string, main: string, orch: string, extras: strin
   return `<div class="app">${rail}<!--main-->${main}<!--/main-->${orch}</div><div data-extras-host><!--extras-->${extras}<!--/extras--></div>`;
 }
 
+// Finding 136 item 2: the SAME `scope` the `<aside>`'s own `data-scope` attribute carries (already
+// resynced by `syncOrchTail` on every scope-changing navigation — assets/app.js) rendered a second
+// time here as this label's TEXT, with no marker of its own — so a navigation that moved scope (e.g.
+// jot → studio) updated `data-scope` silently while this visible "jot scope"/"studio scope" label sat
+// frozen, half of one line agreeing with the URL and half not. Same wrapper shape as `orchIndicator`/
+// `appVersion`: a bare label, no local state to preserve, resynced unconditionally on every swap.
 function orchHead(scope: string): string {
-  return `<header class="orch__head"><span class="orch__mark"><i></i><b></b></span><span class="orch__title">Orchestrator</span><span class="orch__scope">${esc(scope)} scope</span></header>`;
+  return `<header class="orch__head"><span class="orch__mark"><i></i><b></b></span><span class="orch__title">Orchestrator</span><span class="orch__scope" data-orch-scope><!--orchscope-->${esc(scope)} scope<!--/orchscope--></span></header>`;
 }
 
 function composer(opts: { disabled?: boolean } = {}): string {

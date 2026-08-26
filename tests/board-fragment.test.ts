@@ -190,6 +190,26 @@ describe("extractFragment — pure string extraction", () => {
     expect(frag.orchDisabled).toBe(false);
     expect(frag.orchComposer).toBe("");
   });
+
+  // Finding 136 item 2: the panel header's own "{scope} scope" label — the SAME `scope` value the
+  // `<aside>`'s `data-scope` attribute carries, rendered a second time as text, sliced independently
+  // via its own `<!--orchscope-->` marker.
+  test("pulls orchScope out of the orch header, independent of data-scope", () => {
+    const html = [
+      '<title>t</title><!--main--><main class="main">HELLO</main><!--/main-->',
+      '<aside class="orch" data-scope="jot" data-orch-disabled="false">',
+      '<header class="orch__head"><span class="orch__scope" data-orch-scope><!--orchscope-->jot scope<!--/orchscope--></span></header>',
+      "</aside>",
+    ].join("");
+    const frag = extractFragment(html)!;
+    expect(frag.scope).toBe("jot");
+    expect(frag.orchScope).toBe("jot scope");
+  });
+
+  test("orchScope is the empty string, not absent, when the page carries no marker", () => {
+    const html = '<title>t</title><!--main--><main class="main">x</main><!--/main--><!--extras--><!--/extras-->';
+    expect(extractFragment(html)!.orchScope).toBe("");
+  });
 });
 
 describe("isFragmentRequest", () => {
@@ -278,6 +298,19 @@ describe("levare serve — fragment GETs (NOTES UI10)", () => {
       // Finding 136 item 3: and now the panel's own disabled-state reflection too — same guarantee.
       expect(fragBody.orchDisabled).toBe(extractedFromFull.orchDisabled);
       expect(fragBody.orchComposer).toBe(extractedFromFull.orchComposer);
+      // Finding 136 item 2: and the panel header's own scope label — same guarantee.
+      expect(fragBody.orchScope).toBe(extractedFromFull.orchScope);
+    }
+  });
+
+  // Finding 136 item 2: `scope` (the `<aside>`'s `data-scope` attribute, already resynced by
+  // `syncOrchTail` on a scope-changing navigation) and `orchScope` (the header's visible label) name
+  // the same fact and must always agree, never just the attribute alone.
+  test("scope and orchScope always agree — the label text is derived from the same value as the attribute", async () => {
+    for (const url of ["/studio", "/project/storefront", "/run/storefront/checkout-flow"]) {
+      const res = await board.fetch(req(url, { headers: FRAG }));
+      const body = await res.json();
+      expect(body.orchScope).toBe(`${body.scope} scope`);
     }
   });
 
