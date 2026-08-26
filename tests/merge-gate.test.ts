@@ -16,6 +16,8 @@ import { validatePath } from "../src/validate.ts";
 import { loadRepo } from "../src/repo.ts";
 import { advanceUnit, type AsyncMemberRunner } from "../src/dagwalk.ts";
 import { openGates } from "../src/derive.ts";
+import { renderRun } from "../src/board/render/run.ts";
+import { renderProject } from "../src/board/render/project.ts";
 import type { Verb } from "../src/runner.ts";
 
 const HERMETIC_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
@@ -547,6 +549,60 @@ describe("M4/M5: a clean approval merges, preserves history, and closes the unit
     const mergeAfter = [...repoAfter.artifacts.get("acme/widget-1")!.values()].find((a) => a.kind === "merge")!;
     expect(mergeAfter.merge_result?.checkout_behind).toBe(false);
     expect(mergeAfter.body).not.toContain("Checkout out of sync");
+  });
+});
+
+describe("Finding 140: the checkout-sync notice reaches the board, not just the merge artifact's own body", () => {
+  test("a merge that leaves the checkout behind renders the notice, via callout(), on both the unit's run view and its row on the project page — the artifact body stays exactly what doApproveMerge wrote", async () => {
+    dirs = buildStudio();
+    await startAndApproveTask(dirs.root);
+    commitToWorkBranch(dirs.projectRepo, "levare/widget-1", "feature.txt", "shipped content\n");
+    await advanceOnce(dirs.root);
+    const repo = loadRepo(dirs.root, { validate: false });
+    const merge = [...repo.artifacts.get("acme/widget-1")!.values()].find((a) => a.kind === "merge")!;
+    const approve = await resolveGate(dirs.root, "acme", merge.id, "approve", { today: TODAY });
+    expect(approve.ok).toBe(true);
+    if (!approve.ok) return;
+
+    const repoAfter = loadRepo(dirs.root, { validate: false });
+    const mergeAfter = [...repoAfter.artifacts.get("acme/widget-1")!.values()].find((a) => a.kind === "merge")!;
+    expect(mergeAfter.merge_result?.checkout_behind).toBe(true);
+    const bodyBefore = mergeAfter.body;
+
+    const runHtml = renderRun(repoAfter, "acme", "widget-1", dirs.root);
+    expect(runHtml).toContain("notice notice--warning");
+    expect(runHtml).toContain("Checkout out of sync");
+    expect(runHtml).toContain("git stash -u &amp;&amp; git reset --hard HEAD");
+
+    const projectHtml = renderProject(repoAfter, "acme", dirs.root);
+    expect(projectHtml).toContain("notice notice--warning");
+    expect(projectHtml).toContain("Checkout out of sync");
+
+    // The artifact body — the durable record — is untouched by rendering it onto the board.
+    const mergeStill = [...loadRepo(dirs.root, { validate: false }).artifacts.get("acme/widget-1")!.values()].find((a) => a.kind === "merge")!;
+    expect(mergeStill.body).toBe(bodyBefore);
+  });
+
+  test("a merge that does NOT leave the checkout behind renders no notice on either surface", async () => {
+    dirs = buildStudio();
+    await startAndApproveTask(dirs.root);
+    commitToWorkBranch(dirs.projectRepo, "levare/widget-1", "feature.txt", "shipped content\n");
+    await advanceOnce(dirs.root);
+    const repo = loadRepo(dirs.root, { validate: false });
+    const merge = [...repo.artifacts.get("acme/widget-1")!.values()].find((a) => a.kind === "merge")!;
+    git(dirs.projectRepo, ["checkout", "-q", "-b", "operator-scratch"]);
+    const approve = await resolveGate(dirs.root, "acme", merge.id, "approve", { today: TODAY });
+    expect(approve.ok).toBe(true);
+    if (!approve.ok) return;
+
+    const repoAfter = loadRepo(dirs.root, { validate: false });
+    expect([...repoAfter.artifacts.get("acme/widget-1")!.values()].find((a) => a.kind === "merge")!.merge_result?.checkout_behind).toBe(false);
+
+    const runHtml = renderRun(repoAfter, "acme", "widget-1", dirs.root);
+    expect(runHtml).not.toContain("Checkout out of sync");
+
+    const projectHtml = renderProject(repoAfter, "acme", dirs.root);
+    expect(projectHtml).not.toContain("Checkout out of sync");
   });
 });
 

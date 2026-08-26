@@ -15,6 +15,7 @@ import { isLoopCompanionKind, loopMembershipFor, responsibleTeamsFor, unreachabl
 import { roundOf } from "./runner.ts";
 import type { DaemonInvocation } from "./daemon.ts";
 import { resolveMemberTimeoutS } from "./adapters.ts";
+import { formatCheckoutSyncNotice } from "./merge.ts";
 
 export function esc(s: string): string {
   return String(s)
@@ -544,6 +545,24 @@ export function unitSummary(repo: Repo, unit: WorkUnit): string {
   }
   if (art && art.body) return firstParagraph(art.body);
   return "";
+}
+
+/**
+ * Finding 140: the board's own read-back of `merge_result.checkout_behind` (board/gateops.ts#doApproveMerge
+ * records it once, at execution time — `checkoutBehindMerge` there is a live git check against the
+ * project repo's own primary checkout, which the render path has no access to and no business re-running
+ * on every page load). Returns the exact pinned notice text (`merge.ts#formatCheckoutSyncNotice`,
+ * byte-for-byte — never reworded here) when this unit's own merge left the checkout behind, else
+ * undefined. Deliberately NOT re-derived live: the flag is a fact about what THAT merge left behind, not
+ * a live "is it still behind right now" indicator — re-deriving would answer a different question, and
+ * silently go stale the moment a future merge (or an unrelated checkout) changes the live state.
+ */
+export function checkoutSyncNotice(repo: Repo, unit: WorkUnit): string | undefined {
+  const art = leadingArtifact(repo, unit);
+  if (unit.status !== "shipped" || art?.kind !== "merge" || !art.merge_result?.checkout_behind) return undefined;
+  const project = repo.projects.get(unit.project);
+  if (!project) return undefined;
+  return formatCheckoutSyncNotice(project.default_branch);
 }
 
 // ---------------------------------------------------------------------------

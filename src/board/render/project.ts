@@ -19,13 +19,14 @@ import {
   medianReviewRounds,
   recentReleases,
   captionTime,
+  checkoutSyncNotice,
   type ScoreNode,
 } from "../../derive.ts";
 import { loadExtras } from "../../extra.ts";
 import type { DaemonInvocation } from "../../daemon.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
 import { dotClass, fromNodeState, fromWorkUnitStatus } from "../status.ts";
-import { statusBadge, paceBadge, iconLink, statStrip, card, orchTurn, leadText } from "../components.ts";
+import { statusBadge, paceBadge, iconLink, statStrip, card, orchTurn, leadText, callout } from "../components.ts";
 import {
   shell,
   pageBody,
@@ -221,6 +222,13 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
         ? `<button class="verb is-secondary" data-summon="tpl-gate-${esc(gate.target)}">Review gate</button>`
         : "";
       const openCls = gate ? " is-open" : "";
+      // Finding 140: right where the operator lands on THIS unit's own row immediately after clicking
+      // Merge (this row, in this list, on this project page) — the merge gate card that was just
+      // approved sat in this exact list a moment ago. `checkoutSyncNotice` (derive.ts) reads the flag
+      // `doApproveMerge` recorded at execution time; undefined, no callout, on every unit whose merge
+      // never left the checkout behind.
+      const checkoutSync = checkoutSyncNotice(repo, u);
+      const checkoutSyncHtml = checkoutSync ? callout("warning", renderInline(checkoutSync)) : "";
       // The work-unit row: `card()`'s row variant — a type glyph as `pre`, the title/path wrapper as a
       // pre-built `title` block (already self-contained, so no extra `titleCls` wrap), the status chip
       // top-right, and the collapsed summary (desc + mini-score) plus the expand-in-place detail as
@@ -243,7 +251,7 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
         // Fault 4: routed through renderInline, not plain esc() — a member-authored summary's own
         // `**bold**` (e.g. adapters.ts's own stub brief: "**Problem.** ...") must render as emphasis
         // here, the same as it would if the reader opened the artifact itself.
-        body: `<div class="unit__desc">${renderInline(unitSummary(repo, u))}</div>\n        ${miniScoreHtml(nodes)}`,
+        body: `<div class="unit__desc">${renderInline(unitSummary(repo, u))}</div>\n        ${checkoutSyncHtml}\n        ${miniScoreHtml(nodes)}`,
         meta: `<div class="unit__detail">
           ${artifactRows}
           <div class="unit__foot">${reviewRounds} review round${reviewRounds === 1 ? "" : "s"} &middot; ${gates.filter((g) => g.unit === u.unit).length} gate${gates.filter((g) => g.unit === u.unit).length === 1 ? "" : "s"} <span class="cost">&middot; ${spend.tokens} tok &middot; ~$${spend.usd.toFixed(2)}</span></div>
