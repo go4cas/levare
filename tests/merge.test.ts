@@ -13,6 +13,7 @@ import {
   workBranchName,
   resolveProjectRepoPath,
   branchExists,
+  projectLog,
   createWorkBranch,
   trialMerge,
   executeMerge,
@@ -169,6 +170,43 @@ describe("resolveProjectRepoPath", () => {
     } finally {
       rmrf(home);
       rmrf(studio);
+    }
+  });
+});
+
+// Goal "the timeline reads the project repo" (Findings 86/89): the range idiom `trialMerge`'s own
+// `commitsAhead` already uses, replayed as full commit rows for timeline.ts's second source.
+describe("projectLog", () => {
+  test("returns every commit on branch that default_branch doesn't have, oldest first", () => {
+    const repo = makeProjectRepo();
+    try {
+      plantWorkBranch(repo, "levare/unit-a");
+      const entries = projectLog(repo, "levare/unit-a", "main");
+      expect(entries).toHaveLength(1);
+      expect(entries?.[0]?.subject).toBe("member work");
+      expect(entries?.[0]?.author).toBe("member");
+    } finally {
+      rmrf(repo);
+    }
+  });
+
+  test("an empty range (branch has no commits main lacks) reads as [], not undefined — a real read, not a failure", () => {
+    const repo = makeProjectRepo();
+    try {
+      git(repo, ["branch", "levare/unit-a", "main"]);
+      expect(projectLog(repo, "levare/unit-a", "main")).toEqual([]);
+    } finally {
+      rmrf(repo);
+    }
+  });
+
+  test("undefined when default_branch itself doesn't resolve — a git failure, distinct from an empty range", () => {
+    const repo = makeProjectRepo();
+    try {
+      plantWorkBranch(repo, "levare/unit-a");
+      expect(projectLog(repo, "levare/unit-a", "does-not-exist")).toBeUndefined();
+    } finally {
+      rmrf(repo);
     }
   });
 });

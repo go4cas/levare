@@ -9,7 +9,7 @@ import { buildTimeline, type TimelineActor } from "../../timeline.ts";
 import type { DaemonInvocation } from "../../daemon.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
 import { snodeClass, fromNodeState } from "../status.ts";
-import { statusBadge, neutralChip, orchTurn, emptyState } from "../components.ts";
+import { statusBadge, neutralChip, orchTurn, emptyState, callout } from "../components.ts";
 import {
   shell,
   pageBody,
@@ -208,7 +208,7 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
 
   const rail = railNav(repo, loadExtras(root));
 
-  const timeline = buildTimeline(root, unit.dir, repo.studio.conductorGitIdentity);
+  const { rows: timeline, unavailable: timelineUnavailable } = buildTimeline(root, unit, repo.projects.get(project), repo.studio.conductorGitIdentity);
   const timelineHtml = timeline.length
     ? timeline
         .map((t) => {
@@ -230,8 +230,10 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
     <div class="sec__h"><h2>Score</h2></div>
     <div class="score2" style="margin-top:14px">${scoreSteps}</div>
   </div>`;
+  const timelineNotice = timelineUnavailable ? callout("note", `timeline is incomplete &mdash; ${esc(timelineUnavailable)}`) : "";
   const timelineCol = `<div style="flex:2 1 360px;min-width:280px">
     <div class="sec__h"><h2>Timeline <span class="mono" style="color:var(--fg-mute);font-weight:400">&middot; from git log + runner events</span></h2></div>
+    ${timelineNotice}
     <div class="timeline">${timelineHtml}</div>
   </div>`;
 

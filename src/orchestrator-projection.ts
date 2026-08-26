@@ -121,12 +121,22 @@ export function buildStudioProjection(repo: Repo, opts: StudioProjectionOptions 
   );
 
   const limit = opts.timelineLimit ?? 20;
-  const timelineRows = units
-    .flatMap((u) => buildTimeline(repo.root, u.dir, repo.studio.conductorGitIdentity))
-    .sort((a, b) => b.ts.localeCompare(a.ts))
+  const timelines = units.map((u) => ({ unit: u, ...buildTimeline(repo.root, u, repo.projects.get(u.project), repo.studio.conductorGitIdentity) }));
+  const timelineRows = timelines
+    .flatMap((t) => t.rows)
+    .sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts))
     .slice(0, limit)
     .map((r) => `${r.ts} · ${stripHtml(r.text)}`);
   section(out, "recent timeline", timelineRows);
+  // Findings 86/89: the board renders an unread project source via `callout()`; this projection has
+  // no note primitive (bare `section()` lines only — see this goal's own ruling), so it gets its own
+  // heading instead. Always shown, "(none)" included, so its absence reads as confirmation the project
+  // source WAS read for every unit — never as this section having been silently skipped.
+  section(
+    out,
+    "recent timeline: project repo unavailable",
+    timelines.filter((t) => t.unavailable).map((t) => `${t.unit.project}/${t.unit.unit} · ${t.unavailable}`),
+  );
 
   const health = diagnose(connectors, env, cliProbe);
   section(

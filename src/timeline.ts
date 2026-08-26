@@ -1,12 +1,16 @@
 // Run-view timeline: "every runner walk, member spawn, and gate event" (design brief) — built from
-// the two sources of truth that actually exist on disk for a unit: the append-only usage ledger
-// (§10 `ledger.ndjson`, one line per member invocation) and `git log` on the unit's directory. No
-// separate event store; both are re-derived from the repo on every request (invariant 2).
+// the sources of truth that actually exist on disk for a unit: the append-only usage ledger (§10
+// `ledger.ndjson`, one line per member invocation), `git log` on the unit's directory in the STUDIO's
+// own repo, and — Findings 86/89 — `git log` on `levare/<unit>` in the PROJECT's own repo, the work a
+// member actually did against the product itself. No separate event store; all three are re-derived
+// from disk on every request (invariant 2).
 
 import { existsSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { spawnSync } from "node:child_process";
 import { CONDUCTOR_EMAIL, RUNNER_EMAIL } from "./git.ts";
+import { resolveProjectRepoPath, workBranchName, branchExists, projectLog } from "./merge.ts";
+import type { Project, WorkUnit } from "./types.ts";
 
 /** Phase 2 cluster 3 part 3: who a timeline row is attributed to, structured rather than baked only
  * into `text`'s HTML — the run view uses this to render the design brief's own actor-avatar rule
@@ -105,7 +109,41 @@ export function gitLogRows(root: string, unitDir: string, declaredConductor?: { 
     });
 }
 
-export function buildTimeline(root: string, unitDir: string, declaredConductor?: { name: string; email: string }): TimelineRow[] {
-  const rows = [...ledgerRows(unitDir), ...gitLogRows(root, unitDir, declaredConductor)];
-  return rows.sort((a, b) => a.ts.localeCompare(b.ts));
+export interface TimelineResult {
+  rows: TimelineRow[];
+  /** Set when the project repo's own commit history (the second source — Findings 86/89) could not be
+   * read for this unit: no usable `repo:` at all, or `levare/<unit>` doesn't exist there yet. Absent
+   * only when that source was genuinely read (even if it read as zero commits) — never conflated with
+   * "no project commits happened", which is the exact Finding 77 class this exists to keep separate.
+   * Prose, not a code: the two callers (board's `callout()`, orchestrator-projection's bare
+   * `section()` lines) each present the same fact in their own idiom — see this goal's own ruling. */
+  unavailable?: string;
+}
+
+/** The project repo's own commits on `levare/<unit>` that `default_branch` doesn't have yet — the
+ * second timeline source. `project` is undefined exactly when `unit.project` names a project this
+ * repo doesn't actually have (should never happen in a validated repo, but this is a read, not an
+ * assumption); treated the same as "no usable repo" rather than assumed impossible. */
+function projectLogRows(studioRoot: string, project: Pick<Project, "repo" | "default_branch"> | undefined, unitName: string, declaredConductor?: { name: string; email: string }): TimelineResult {
+  const projectRepoPath = project ? resolveProjectRepoPath(studioRoot, project) : undefined;
+  if (!projectRepoPath) return { rows: [], unavailable: "project repo not readable — no usable repo: declared for this project" };
+
+  const branch = workBranchName(unitName);
+  if (!branchExists(projectRepoPath, branch)) return { rows: [], unavailable: `work branch '${branch}' does not exist yet in the project repo` };
+
+  const entries = projectLog(projectRepoPath, branch, project!.default_branch);
+  if (!entries) return { rows: [], unavailable: `could not read '${branch}' commit history from the project repo` };
+
+  const rows: TimelineRow[] = entries.map((e) => {
+    const actor = resolveGitActor(e.author, e.email, declaredConductor);
+    return { ts: e.ts, kind: "commit" as const, text: `<span class="who">${actor.name}</span> committed to the project repo &mdash; ${e.subject}`, actor };
+  });
+  return { rows };
+}
+
+export function buildTimeline(root: string, unit: Pick<WorkUnit, "dir" | "unit">, project: Pick<Project, "repo" | "default_branch"> | undefined, declaredConductor?: { name: string; email: string }): TimelineResult {
+  const projectResult = projectLogRows(root, project, unit.unit, declaredConductor);
+  const rows = [...ledgerRows(unit.dir), ...gitLogRows(root, unit.dir, declaredConductor), ...projectResult.rows];
+  rows.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+  return { rows, unavailable: projectResult.unavailable };
 }

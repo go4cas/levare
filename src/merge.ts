@@ -110,6 +110,34 @@ export function branchExists(repoPath: string, branch: string): boolean {
   return git(repoPath, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).status === 0;
 }
 
+export interface ProjectLogEntry {
+  ts: string; // %aI
+  author: string;
+  email: string;
+  subject: string;
+}
+
+/** Goal "the timeline reads the project repo" (Findings 86/89): every commit `branch` carries that
+ * `defaultBranch` doesn't yet — the exact range idiom `trialMerge`'s own `commitsAhead` already uses
+ * (`<default_branch>..<branch>`, never a bare `git log <branch>`, which would replay the branch's
+ * entire upstream history through the fork point, not just this unit's own commits). Returns undefined
+ * only on a git failure (e.g. `defaultBranch` itself doesn't resolve) — distinct from `[]`, a genuinely
+ * empty range. The caller (timeline.ts) must not conflate the two: `branchExists` already gates the
+ * "branch doesn't exist at all" case before this ever runs, so a failure here means something else
+ * (Finding 77's own class — a read that fails must never render as "nothing happened"). */
+export function projectLog(repoPath: string, branch: string, defaultBranch: string): ProjectLogEntry[] | undefined {
+  const r = git(repoPath, ["log", "--format=%aI|%an|%ae|%s", `${defaultBranch}..${branch}`]);
+  if (r.status !== 0) return undefined;
+  if (!r.stdout.trim()) return [];
+  return r.stdout
+    .trim()
+    .split("\n")
+    .map((line) => {
+      const [ts, author, email, ...subjectParts] = line.split("|");
+      return { ts, author, email, subject: subjectParts.join("|") };
+    });
+}
+
 export type CreateWorkBranchResult = { ok: true; created: boolean } | { ok: false; error: string };
 
 /** M1: create `levare/<unit>` from `default_branch`'s tip, idempotently. A plain ref creation — never
