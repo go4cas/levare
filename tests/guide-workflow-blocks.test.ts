@@ -21,17 +21,46 @@ import { validatePath } from "../src/validate.ts";
 
 const HEREDOC_RE = /cat > (\S+) <<'EOF'\n([\s\S]*?)\nEOF/g;
 
-function extractHeredocs(src: string): Array<{ path: string; body: string }> {
-  const out: Array<{ path: string; body: string }> = [];
+type Action = { pos: number; kind: "write"; path: string; body: string } | { pos: number; kind: "new"; args: string[] };
+
+function extractHeredocs(src: string): Array<{ pos: number; kind: "write"; path: string; body: string }> {
+  const out: Array<{ pos: number; kind: "write"; path: string; body: string }> = [];
   let m: RegExpExecArray | null;
   HEREDOC_RE.lastIndex = 0;
   while ((m = HEREDOC_RE.exec(src))) {
-    out.push({ path: m[1], body: m[2] });
+    out.push({ pos: m.index, kind: "write", path: m[1], body: m[2] });
   }
   return out;
 }
 
+// `levare new` (Finding 93) is executable content exactly like a heredoc — a reader types it
+// verbatim — but it's a real CLI invocation, not a file write, so it needs its own extraction.
+// Scoped to ```sh fenced blocks specifically: 04-first-gate.md's own OUTPUT blocks (untagged ```)
+// echo lines starting with "levare new · ..." (the command's own report) that would otherwise
+// false-match a bare `/^levare new /` scan across the whole document.
+const SH_BLOCK_RE = /```sh\n([\s\S]*?)```/g;
+const LEVARE_NEW_RE = /^levare new (.+)$/gm;
+
+function extractLevareNewCalls(src: string): Array<{ pos: number; kind: "new"; args: string[] }> {
+  const out: Array<{ pos: number; kind: "new"; args: string[] }> = [];
+  SH_BLOCK_RE.lastIndex = 0;
+  let block: RegExpExecArray | null;
+  while ((block = SH_BLOCK_RE.exec(src))) {
+    LEVARE_NEW_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = LEVARE_NEW_RE.exec(block[1]))) {
+      out.push({ pos: block.index + m.index, kind: "new", args: m[1].trim().split(/\s+/) });
+    }
+  }
+  return out;
+}
+
+function extractActions(src: string): Action[] {
+  return [...extractHeredocs(src), ...extractLevareNewCalls(src)].sort((a, b) => a.pos - b.pos);
+}
+
 const GUIDE_DIR = "docs/guide/04-workflow";
+const LEVARE_BIN = join(import.meta.dir, "..", "levare");
 
 // Reading order a reader actually follows — README's precondition setup, then 4.1 through 4.8.
 const CHAPTERS = [
@@ -57,19 +86,30 @@ describe("docs/guide/04-workflow's pasteable blocks produce a valid studio", () 
 
   for (const chapter of CHAPTERS) {
     const src = readFileSync(join(GUIDE_DIR, chapter), "utf8");
-    const blocks = extractHeredocs(src);
-    for (const { path, body } of blocks) {
-      test(`${chapter} → ${path} parses and validates clean`, () => {
-        const full = join(root, path);
-        mkdirSync(dirname(full), { recursive: true });
-        writeFileSync(full, body + "\n");
+    const actions = extractActions(src);
+    for (const action of actions) {
+      const label = action.kind === "write" ? action.path : `levare new ${action.args.join(" ")}`;
+      test(`${chapter} → ${label} parses and validates clean`, () => {
+        if (action.kind === "write") {
+          const full = join(root, action.path);
+          mkdirSync(dirname(full), { recursive: true });
+          writeFileSync(full, action.body + "\n");
+        } else {
+          // A real subprocess, exactly what a reader who pasted this line gets — not a call into
+          // createUnit directly, for the same reason D10/D11 (init.test.ts) run `./levare init` as a
+          // real subprocess rather than calling `initStudio`.
+          const r = spawnSync(LEVARE_BIN, ["new", ...action.args], { cwd: root, encoding: "utf8" });
+          if (r.status !== 0) {
+            throw new Error(`after running \`levare new ${action.args.join(" ")}\` from ${chapter}, it exited ${r.status}:\n${r.stderr}`);
+          }
+        }
 
         const r = validatePath(root);
         if (!r.ok) {
           const detail = r.errors
             .map((e) => `  ${e.code} ${e.file}${e.line ? ":" + e.line : ""} — ${e.message}`)
             .join("\n");
-          throw new Error(`after pasting ${chapter}'s ${path} block, \`levare validate\` fails:\n${detail}`);
+          throw new Error(`after pasting ${chapter}'s ${label} block, \`levare validate\` fails:\n${detail}`);
         }
         expect(r.errors).toEqual([]);
         // A chapter's own narration is the source of truth for which warnings a reader should expect

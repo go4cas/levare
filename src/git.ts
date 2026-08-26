@@ -43,7 +43,7 @@ const HERMETIC_GIT_ENV: NodeJS.ProcessEnv = {
   GIT_COMMITTER_EMAIL: undefined,
 };
 
-function commitAs(root: string, files: string[], message: string, identity: { name: string; email: string }): string {
+export function commitAs(root: string, files: string[], message: string, identity: { name: string; email: string }): string {
   const gitArgs = (args: string[]) => [
     "-C",
     root,
@@ -174,7 +174,10 @@ export interface FoundingCommitResult {
   commit: string | null;
 }
 
-function resolveGitIdentity(root: string, env: NodeJS.ProcessEnv): { name: string; email: string } | null {
+// Exported for `new.ts`'s own commit (`levare new`, Finding 93): a freshly created work unit is the
+// operator's own act — same reasoning as the founding commit below — so it commits under the
+// operator's resolved identity too, never CONDUCTOR_NAME/RUNNER_NAME.
+export function resolveGitIdentity(root: string, env: NodeJS.ProcessEnv): { name: string; email: string } | null {
   const get = (key: string) => spawnSync("git", ["-C", root, "config", "--get", key], { encoding: "utf8", env });
   const name = get("user.name");
   const email = get("user.email");

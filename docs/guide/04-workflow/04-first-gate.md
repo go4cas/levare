@@ -15,36 +15,30 @@ the project it belongs to.
 
 ```sh
 cd ~/studio
-mkdir -p work/todo-cli/add-command
-
-cat > work/todo-cli/add-command/unit.md <<'EOF'
----
-type: feature
-team: press
-status: active
-budget: 2.00
----
-
-# add-command
-
-The first command: `todo add "buy milk"`. Appends a task to the store and confirms it.
-This is the smallest thing that makes the tool useful — everything else builds on it.
-EOF
-
-levare validate .
+levare new todo-cli add-command --type feature --team press --budget 2.00
 ```
 
-The `team:` field is optional — but if two teams in your studio both produce `product-brief`,
-levare will refuse to guess:
+```
+levare new · work/todo-cli/add-command/unit.md
+  type: feature
+  team: press
+  budget: 2
+  git: committed 3f9a1c2e0b7d
+Next: levare validate .
+```
+
+`--team` is optional — infer it and levare will, as long as exactly one team in your studio could
+produce something `feature` expects. Two candidates and it refuses to guess:
 
 ```
-AMBIGUOUS_PRODUCER  work/todo-cli/add-command/unit.md
-  unit 'add-command' (type 'feature') needs kind(s) [product-brief], each produced by
-  more than one team (kestrel, press); levare never guesses which team is responsible —
-  add 'team:' to work/todo-cli/add-command/unit.md naming one
+levare new: AMBIGUOUS_TEAM — --team is required — more than one team in this studio could
+produce something type 'feature' expects [product-brief, design, spec, code, review]:
+kestrel, press
 ```
 
-The `budget: 2.00` is a ceiling. Cross it and the unit raises a gate rather than a bill.
+The `budget: 2.00` is a ceiling. Cross it and the unit raises a gate rather than a bill. Edit
+`work/todo-cli/add-command/unit.md`'s body afterward for a human-readable brief — nothing reads it
+back, but the next person (including you, in six months) will.
 
 ## Nothing happens
 
