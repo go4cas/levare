@@ -519,8 +519,17 @@
     /* ---------- composer ---------- */
     /* A disabled composer (no ANTHROPIC_API_KEY — see render.ts#orchestratorPanel) never attaches a
        submit listener at all: the server-rendered `disabled` input already can't receive focus or
-       Enter, and this is the client-side half of the same "never pretend to talk" rule (NOTES C11). */
-    document.querySelectorAll('.composer:not(.is-disabled) form').forEach(function (form) {
+       Enter, and this is the client-side half of the same "never pretend to talk" rule (NOTES C11).
+
+       Finding 136 item 3: pulled out of the page-load-only `forEach` below into a named function so
+       `syncOrchComposer` (further down) can call it again after resyncing the composer's markup —
+       the resynced `<form>` is a brand-new DOM node with no listener of its own, the same "rebind
+       after a swap" step `bindEditorOverlay()` already does for the registry overlay. Guarded by
+       `data-bound` so a page-load bind and a same-form resync (disabled state unchanged, HTML
+       identical) never double-attach the listener. */
+    function bindComposerForm(form) {
+      if (form.getAttribute('data-bound') === '1') return;
+      form.setAttribute('data-bound', '1');
       form.addEventListener('submit', function (e) {
         e.preventDefault();
         var input = form.querySelector('input');
@@ -610,7 +619,8 @@
           })
           .then(function () { input.disabled = false; input.focus(); });
       });
-    });
+    }
+    document.querySelectorAll('.composer:not(.is-disabled) form').forEach(bindComposerForm);
 
     /* ---------- confirm modal (reusable primitive) ----------
        Replaces the browser's native confirm()/alert() everywhere in the product (UI4 item 1): a small
@@ -871,6 +881,49 @@
       if (host && typeof data.orchIndicator === 'string') host.innerHTML = data.orchIndicator;
     }
 
+    /* Finding 136 item 3 (REGRESSION, 2026-08-25): the panel's OWN reflection of the exact fact
+       `syncOrchIndicator` above just resynced for the header dot — `status.available`, same source,
+       same request (render/shell.ts#orchestratorPanel) — had the identical gap and didn't get Finding
+       40's fix: the `<aside class="orch">` sits outside every swap region same as the header, and is
+       never rebuilt wholesale by a client-side refresh (NOTES UI10 — the Orchestrator panel persists
+       untouched across navigations on purpose, to keep its conversation history alive), so its
+       `is-disabled` class and the composer's disabled markup both stayed frozen at whatever was true
+       on the tab's last cold GET, silently disagreeing with a dot that now correctly moved.
+
+       `syncOrchDisabled` just toggles a class on the persisted `<aside>` node itself — no innerHTML
+       touched, nothing to rebind, nothing to preserve. */
+    function syncOrchDisabled(data) {
+      var host = document.querySelector('.orch[data-scope]');
+      if (host && typeof data.orchDisabled === 'boolean') host.classList.toggle('is-disabled', data.orchDisabled);
+    }
+
+    /* `syncOrchComposer` is the half of the same fact that DOES need new markup (disabled input vs a
+       live form) — unconditional every swap, same as `syncOrchIndicator`, since it's a direct
+       reflection of `status.available` with no "already shown live" case to guard against.
+
+       Two things a naive unconditional replace would break, same class of regression `preserveRailExpand`
+       and NOTES UI10's editor-overlay guard already exist for:
+       - Local state: an operator mid-typing a message when a refresh lands (e.g. an unrelated SSE
+         `reload` tick) must not lose those keystrokes. Snapshotted before the replace, reapplied after
+         — only when the new composer is still enabled; a transition INTO disabled has no live input to
+         restore the text into, and the message couldn't have sent anyway.
+       - The rebind: the old `<form>` (and the `submit` listener `bindComposerForm` attached to it,
+         page load only, never delegated) is discarded along with the innerHTML. `bindComposerForm` is
+         idempotent (`data-bound` guard) so calling it again after every resync is always safe, and is
+         the ONLY way a disabled→enabled transition ever gets a working composer without a full page
+         reload. */
+    function syncOrchComposer(data) {
+      var host = document.querySelector('[data-orch-composer]');
+      if (!host || typeof data.orchComposer !== 'string') return;
+      var oldInput = host.querySelector('.composer:not(.is-disabled) input');
+      var typed = oldInput ? oldInput.value : '';
+      host.innerHTML = data.orchComposer;
+      var newInput = host.querySelector('.composer:not(.is-disabled) input');
+      if (newInput && typed) newInput.value = typed;
+      var newForm = host.querySelector('.composer:not(.is-disabled) form');
+      if (newForm) bindComposerForm(newForm);
+    }
+
     /* Finding 40 (REOPENED), continued: the rail's project list, connector health dots, and ideas list
        have the identical gap `syncOrchIndicator` above closes for the header dot — outside every swap
        region, cold-GET only. Same unconditional-every-swap treatment: the server always re-derives these
@@ -954,14 +1007,17 @@
        carries no marker yet and stays frozen at whatever was true on the tab's last cold GET — a known,
        still-open sibling gap (see NOTES V11-CONV-SYNC's original diagnosis).
        The Orchestrator `<aside>` itself keeps UI10's own conversation-preserving guarantee — its
-       history in `.orch__body` is never rebuilt — except for three regions carved out of it on purpose:
+       history in `.orch__body` is never rebuilt — except for the regions carved out of it on purpose:
        the persisted-tail resync (identity-reconciled every swap, not merely scope-gated — see
-       `syncOrchTail`, Finding 57), and the gate-card action and briefing resyncs (unconditional, see
+       `syncOrchTail`, Finding 57), the gate-card action and briefing resyncs (unconditional, see
        `syncOrchAction`/`syncOrchBriefing`, NOTES ORCH-STALE-CARD) — the latter two apply together, on
        every swap, since the briefing sentence names the same runner-side fact the action region's card
-       renders. The header's version chip (Finding 131, see `syncAppVersion`) gets the same unconditional
-       treatment despite living outside `.orch`/`.main` entirely — it needs its own marker precisely
-       because this function never looks at the header. */
+       renders — and, as of Finding 136 item 3, the disabled-state class and the composer (see
+       `syncOrchDisabled`/`syncOrchComposer` below): the header dot's own `status.available` fact,
+       reflected a second time inside this same `<aside>`, with the identical "outside every swap
+       region" gap Finding 40 already fixed for the dot. The header's version chip (Finding 131, see
+       `syncAppVersion`) gets the same unconditional treatment despite living outside `.orch`/`.main`
+       entirely — it needs its own marker precisely because this function never looks at the header. */
     function swapFragment(data, sameUrl) {
       var oldMain = document.querySelector('.main');
       if (!oldMain || !oldMain.parentNode) return false;
@@ -997,6 +1053,8 @@
       syncOrchBriefing(data);
       syncAppVersion(data);
       syncOrchIndicator(data);
+      syncOrchDisabled(data);
+      syncOrchComposer(data);
       syncRailProjects(data);
       syncRailConnectors(data);
       syncRailIdeas(data);
