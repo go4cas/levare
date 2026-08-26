@@ -10,6 +10,7 @@ import { detectSandbox } from "./sandbox.ts";
 import { remoteAgentImplemented } from "./env.ts";
 import { serve } from "./board/serve.ts";
 import { initStudio, GIT_IDENTITY_NOTE } from "./init.ts";
+import { createUnit } from "./new.ts";
 import { applyStudioEnv } from "./dotenv.ts";
 import { resolveOrchestratorStatus, ORCHESTRATOR_ENV_VAR } from "./orchestrator-status.ts";
 import { loadOrchestratorPromptSource, ORCHESTRATOR_PROMPT_PATH } from "./orchestrator-boundary.ts";
@@ -212,6 +213,63 @@ export function runInitCmd(rest: string[]): number {
   return 0;
 }
 
+// `levare new <project> <unit> [--type T] [--team T] [--budget N] [--root path]` — create
+// `work/<project>/<unit>/unit.md` without hand-editing a file (Finding 93, RELEASE R1). `--type`/
+// `--team` infer when the studio leaves exactly one candidate, and fail loudly naming every candidate
+// when it doesn't (see src/new.ts for the exact inference rules — the same produces/expects data
+// validate.ts#validateResponsibleTeam reasons about).
+function originLabel(source: "flag" | "inferred" | "default"): string {
+  return source === "flag" ? "" : source === "inferred" ? " (inferred)" : " (project default)";
+}
+
+export function runNewCmd(rest: string[]): number {
+  // The first two args not consumed as a flag's own value are project/unit.
+  const args: string[] = [];
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i]!;
+    if (a.startsWith("--")) {
+      i++; // skip this flag's value
+      continue;
+    }
+    args.push(a);
+  }
+  const [project, unit] = args;
+  if (!project || !unit) {
+    console.error("usage: levare new <project> <unit> [--type <type>] [--team <team>] [--budget <usd>] [--root <path>]");
+    return 2;
+  }
+  const root = flag(rest, "--root") ?? ".";
+  const typeFlag = flag(rest, "--type");
+  const teamFlag = flag(rest, "--team");
+  const budgetFlag = flag(rest, "--budget");
+  let budget: number | undefined;
+  if (budgetFlag !== undefined) {
+    budget = Number(budgetFlag);
+    if (Number.isNaN(budget)) {
+      console.error(`levare new: --budget must be a number, got '${budgetFlag}'`);
+      return 2;
+    }
+  }
+
+  const result = createUnit({ root, project, unit, type: typeFlag, team: teamFlag, budget });
+  if (!result.ok) {
+    console.error(`levare new: ${result.code} — ${result.message}`);
+    return 1;
+  }
+
+  console.log(`levare new · ${result.file}`);
+  console.log(`  type: ${result.type.value}${originLabel(result.type.source)}`);
+  if (result.team) console.log(`  team: ${result.team.value}${originLabel(result.team.source)}`);
+  if (result.budget) console.log(`  budget: ${result.budget.value}${originLabel(result.budget.source)}`);
+  if (result.committed) {
+    console.log(`  git: committed ${result.commit?.slice(0, 12)}`);
+  } else {
+    console.log(`  ⚠ ${result.commitNote}`);
+  }
+  console.log(`Next: levare validate ${root}`);
+  return 0;
+}
+
 function wrap(text: string, width: number): string[] {
   const words = text.split(/\s+/);
   const lines: string[] = [];
@@ -292,6 +350,7 @@ export function runVersionCmd(): number {
 function usage(): number {
   console.error(
     "usage: levare init [path]\n" +
+      "       levare new <project> <unit> [--type <type>] [--team <team>] [--budget <usd>] [--root <path>]\n" +
       "       levare validate <path>\n" +
       "       levare replay <path> --stubs\n" +
       "       levare context <agent> --unit <unit> [--step <step>] [--root <path>] [--dry-run]\n" +
@@ -307,6 +366,8 @@ export function main(argv: string[]): number {
   switch (command) {
     case "init":
       return runInitCmd(rest);
+    case "new":
+      return runNewCmd(rest);
     case "validate": {
       const path = rest[0];
       if (!path) return usage();
