@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { Repo } from "../../repo.ts";
-import { esc, openGates, scoreNodes, captionTime, gateBriefingSentence, elapsedLabel, elapsedSpan, type ScoreNode, type NodeState } from "../../derive.ts";
+import { esc, renderInline, openGates, scoreNodes, captionTime, gateBriefingSentence, elapsedLabel, elapsedSpan, checkoutSyncNotice, type ScoreNode, type NodeState } from "../../derive.ts";
 import { loadExtras } from "../../extra.ts";
 import { buildTimeline, type TimelineActor } from "../../timeline.ts";
 import type { DaemonInvocation } from "../../daemon.ts";
@@ -237,11 +237,19 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
     <div class="timeline">${timelineHtml}</div>
   </div>`;
 
+  // Finding 140: the ONE place a checkout-sync notice reaches the operator instead of staying buried
+  // in the merge artifact's own body (gateops.ts#doApproveMerge appends it there too — that copy is
+  // the durable record; this is the delivery). `checkoutSyncNotice` reads the flag `doApproveMerge`
+  // already recorded at execution time, never re-derives it live (derive.ts's own doc comment).
+  const checkoutSync = checkoutSyncNotice(repo, unit);
+  const checkoutSyncHtml = checkoutSync ? callout("warning", renderInline(checkoutSync)) : "";
+
   const main = `<main class="main">
     <header class="phead">
       <div class="crumb"><a href="/studio">studio</a><span>/</span><a href="/project/${esc(project)}">${esc(project)}</a><span>/</span><span>${esc(unitId)}</span></div>
       <h1><span style="display:inline-flex;vertical-align:-3px;margin-right:9px;color:var(--fg-mute)" aria-hidden="true">${typeGlyphSvg(type?.name, 20)}</span>${esc(unitId)}</h1>
     </header>
+    ${checkoutSyncHtml}
     <section class="sec">
       <div style="display:flex;gap:32px;align-items:flex-start;flex-wrap:wrap">${scoreCol}${timelineCol}</div>
     </section>
