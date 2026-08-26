@@ -226,6 +226,25 @@ export interface Fragment {
    * would carry, never a second lookup. The client compares this against the CURRENT panel's own
    * `data-scope` attribute to decide whether the persisted-tail region needs resyncing. */
   scope: string;
+  /** Finding 136 item 3: whether the Orchestrator is unavailable, read off the same `<aside class="orch"
+   * data-scope="..." data-orch-disabled="...">` tag `scope` above is sliced from — the identical fact
+   * the header dot (`orchIndicator`) already carries, from the same server-side `status.available` this
+   * page's one `resolveOrchestratorStatus()` call resolved (render/shell.ts#orchestratorPanel). The
+   * client uses this to toggle the `<aside>`'s own `is-disabled` class, which a marker/innerHTML swap
+   * can't reach since it lives on the persisted element's own opening tag, not inside any replaceable
+   * region. */
+  orchDisabled: boolean;
+  /** Finding 136 item 3: the composer, sliced from `<!--orchcomposer-->`/`<!--/orchcomposer-->` — the
+   * other place `status.available` renders (disabled input/placeholder vs the live form), with the
+   * identical gap `orchIndicator` (Finding 40) already had: outside every swap region, so it stayed
+   * frozen at whatever was enabled/disabled at the tab's last cold GET even after the daemon restarted
+   * with ANTHROPIC_API_KEY newly set or unset. */
+  orchComposer: string;
+  /** Finding 136 item 2: the panel header's own "{scope} scope" label, sliced from
+   * `<!--orchscope-->`/`<!--/orchscope-->` (render/shell.ts#orchHead) — the SAME `scope` value the
+   * `<aside>`'s `data-scope` attribute already carries (and `syncOrchTail` already resyncs on a scope
+   * change), rendered a second time as visible text with no marker of its own until now. */
+  orchScope: string;
   /** The rendered persisted-tail HTML for `scope`, sliced from the `<!--orchtail-->`/`<!--/orchtail-->`
    * markers `orchestratorPanel` (render/shell.ts) wraps it in — same mechanism as `main`/`extras`. */
   orchTail: string;
@@ -288,6 +307,9 @@ export function extractFragment(rendered: string): Fragment | null {
   const mainHtml = mainMatch[1];
   const highlightMatch = /<main[^>]*\sdata-highlight="([^"]*)"/.exec(mainHtml);
   const scopeMatch = /<aside class="orch[^"]*" data-scope="([^"]*)"/.exec(rendered);
+  const orchDisabledMatch = /<aside class="orch[^"]*" data-scope="[^"]*" data-orch-disabled="(true|false)"/.exec(rendered);
+  const orchComposerMatch = /<!--orchcomposer-->([\s\S]*?)<!--\/orchcomposer-->/.exec(rendered);
+  const orchScopeMatch = /<!--orchscope-->([\s\S]*?)<!--\/orchscope-->/.exec(rendered);
   const orchTailMatch = /<!--orchtail-->([\s\S]*?)<!--\/orchtail-->/.exec(rendered);
   const orchActionMatch = /<!--orchaction-->([\s\S]*?)<!--\/orchaction-->/.exec(rendered);
   const orchBriefingMatch = /<!--orchbriefing-->([\s\S]*?)<!--\/orchbriefing-->/.exec(rendered);
@@ -305,6 +327,9 @@ export function extractFragment(rendered: string): Fragment | null {
     // server-side (sanitizeScope always does that from the ORIGINAL request), only string-compared
     // against the client's own identically-escaped `data-scope` attribute, so no decode step is needed.
     scope: scopeMatch ? scopeMatch[1] : STUDIO_SCOPE,
+    orchDisabled: orchDisabledMatch ? orchDisabledMatch[1] === "true" : false,
+    orchComposer: orchComposerMatch ? orchComposerMatch[1] : "",
+    orchScope: orchScopeMatch ? orchScopeMatch[1] : "",
     orchTail: orchTailMatch ? orchTailMatch[1] : "",
     orchAction: orchActionMatch ? orchActionMatch[1] : "",
     orchBriefing: orchBriefingMatch ? orchBriefingMatch[1] : "",

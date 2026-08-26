@@ -151,6 +151,65 @@ describe("extractFragment — pure string extraction", () => {
     expect(frag.railConnectors).toBe("");
     expect(frag.railIdeas).toBe("");
   });
+
+  // Finding 136 item 3: the panel's own reflection of `status.available` — the `<aside>`'s own
+  // `is-disabled` class and the composer — had the identical Finding 40 gap and never got the fix.
+  // `orchDisabled` is read off the `<aside>` tag itself (no innerHTML region to slice, since a class
+  // attribute isn't reachable through a `<!--marker-->`), `orchComposer` off its own marker pair.
+  test("pulls orchDisabled and orchComposer out of the orch aside", () => {
+    const html = [
+      '<title>t</title><!--main--><main class="main">HELLO</main><!--/main-->',
+      '<aside class="orch is-disabled" data-scope="studio" data-orch-disabled="true"><div class="orch__body">',
+      '<div class="orch__action" data-orch-action><!--orchaction--><!--/orchaction--></div>',
+      "</div>",
+      '<div data-orch-composer><!--orchcomposer--><div class="composer is-disabled">DISABLED FORM</div><!--/orchcomposer--></div>',
+      "</aside>",
+    ].join("");
+    const frag = extractFragment(html)!;
+    expect(frag.orchDisabled).toBe(true);
+    expect(frag.orchComposer).toBe('<div class="composer is-disabled">DISABLED FORM</div>');
+  });
+
+  test("orchDisabled is false, and orchComposer real markup, for an enabled orch aside", () => {
+    const html = [
+      '<title>t</title><!--main--><main class="main">HELLO</main><!--/main-->',
+      '<aside class="orch" data-scope="studio" data-orch-disabled="false"><div class="orch__body">',
+      '<div class="orch__action" data-orch-action><!--orchaction--><!--/orchaction--></div>',
+      "</div>",
+      '<div data-orch-composer><!--orchcomposer--><div class="composer">LIVE FORM</div><!--/orchcomposer--></div>',
+      "</aside>",
+    ].join("");
+    const frag = extractFragment(html)!;
+    expect(frag.orchDisabled).toBe(false);
+    expect(frag.orchComposer).toBe('<div class="composer">LIVE FORM</div>');
+  });
+
+  test("orchDisabled defaults to false and orchComposer to the empty string when the page carries no markers", () => {
+    const html = '<title>t</title><!--main--><main class="main">x</main><!--/main--><!--extras--><!--/extras-->';
+    const frag = extractFragment(html)!;
+    expect(frag.orchDisabled).toBe(false);
+    expect(frag.orchComposer).toBe("");
+  });
+
+  // Finding 136 item 2: the panel header's own "{scope} scope" label — the SAME `scope` value the
+  // `<aside>`'s `data-scope` attribute carries, rendered a second time as text, sliced independently
+  // via its own `<!--orchscope-->` marker.
+  test("pulls orchScope out of the orch header, independent of data-scope", () => {
+    const html = [
+      '<title>t</title><!--main--><main class="main">HELLO</main><!--/main-->',
+      '<aside class="orch" data-scope="jot" data-orch-disabled="false">',
+      '<header class="orch__head"><span class="orch__scope" data-orch-scope><!--orchscope-->jot scope<!--/orchscope--></span></header>',
+      "</aside>",
+    ].join("");
+    const frag = extractFragment(html)!;
+    expect(frag.scope).toBe("jot");
+    expect(frag.orchScope).toBe("jot scope");
+  });
+
+  test("orchScope is the empty string, not absent, when the page carries no marker", () => {
+    const html = '<title>t</title><!--main--><main class="main">x</main><!--/main--><!--extras--><!--/extras-->';
+    expect(extractFragment(html)!.orchScope).toBe("");
+  });
 });
 
 describe("isFragmentRequest", () => {
@@ -236,6 +295,35 @@ describe("levare serve — fragment GETs (NOTES UI10)", () => {
       expect(fragBody.railProjects).toBe(extractedFromFull.railProjects);
       expect(fragBody.railConnectors).toBe(extractedFromFull.railConnectors);
       expect(fragBody.railIdeas).toBe(extractedFromFull.railIdeas);
+      // Finding 136 item 3: and now the panel's own disabled-state reflection too — same guarantee.
+      expect(fragBody.orchDisabled).toBe(extractedFromFull.orchDisabled);
+      expect(fragBody.orchComposer).toBe(extractedFromFull.orchComposer);
+      // Finding 136 item 2: and the panel header's own scope label — same guarantee.
+      expect(fragBody.orchScope).toBe(extractedFromFull.orchScope);
+    }
+  });
+
+  // Finding 136 item 2: `scope` (the `<aside>`'s `data-scope` attribute, already resynced by
+  // `syncOrchTail` on a scope-changing navigation) and `orchScope` (the header's visible label) name
+  // the same fact and must always agree, never just the attribute alone.
+  test("scope and orchScope always agree — the label text is derived from the same value as the attribute", async () => {
+    for (const url of ["/studio", "/project/storefront", "/run/storefront/checkout-flow"]) {
+      const res = await board.fetch(req(url, { headers: FRAG }));
+      const body = await res.json();
+      expect(body.orchScope).toBe(`${body.scope} scope`);
+    }
+  });
+
+  // Finding 136 item 3: the header dot and the panel's disabled reflection must never disagree — both
+  // are sliced from the SAME rendered string, off the SAME `status.available` this environment resolves
+  // (no ANTHROPIC_API_KEY in the test env, so both read as unavailable/disabled here).
+  test("orchIndicator and orchDisabled always agree — one status, two renderings, never a fork", async () => {
+    for (const url of ["/studio", "/project/storefront", "/run/storefront/checkout-flow"]) {
+      const res = await board.fetch(req(url, { headers: FRAG }));
+      const body = await res.json();
+      const indicatorSaysOff = body.orchIndicator.includes("orchestrator: off");
+      expect(body.orchDisabled).toBe(indicatorSaysOff);
+      expect(body.orchComposer.includes('class="composer is-disabled"')).toBe(indicatorSaysOff);
     }
   });
 

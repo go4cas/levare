@@ -86,7 +86,7 @@ ${appHeader(status, railToggleLabel)}
 ${body}
 ${confirmModal()}
 ${toastViewport()}
-<script src="/app.js?v=10"></script>
+<script src="/app.js?v=12"></script>
 </body>
 </html>
 `;
@@ -106,8 +106,14 @@ export function pageBody(rail: string, main: string, orch: string, extras: strin
   return `<div class="app">${rail}<!--main-->${main}<!--/main-->${orch}</div><div data-extras-host><!--extras-->${extras}<!--/extras--></div>`;
 }
 
+// Finding 136 item 2: the SAME `scope` the `<aside>`'s own `data-scope` attribute carries (already
+// resynced by `syncOrchTail` on every scope-changing navigation — assets/app.js) rendered a second
+// time here as this label's TEXT, with no marker of its own — so a navigation that moved scope (e.g.
+// jot → studio) updated `data-scope` silently while this visible "jot scope"/"studio scope" label sat
+// frozen, half of one line agreeing with the URL and half not. Same wrapper shape as `orchIndicator`/
+// `appVersion`: a bare label, no local state to preserve, resynced unconditionally on every swap.
 function orchHead(scope: string): string {
-  return `<header class="orch__head"><span class="orch__mark"><i></i><b></b></span><span class="orch__title">Orchestrator</span><span class="orch__scope">${esc(scope)} scope</span></header>`;
+  return `<header class="orch__head"><span class="orch__mark"><i></i><b></b></span><span class="orch__title">Orchestrator</span><span class="orch__scope" data-orch-scope><!--orchscope-->${esc(scope)} scope<!--/orchscope--></span></header>`;
 }
 
 function composer(opts: { disabled?: boolean } = {}): string {
@@ -214,21 +220,34 @@ export function orchestratorPanel(scope: string, status: OrchestratorStatus, bri
   const tailBlock = `<div class="orch__tail" data-orch-tail><!--orchtail-->${tailHtml}<!--/orchtail--></div>`;
   const actionBlock = `<div class="orch__action" data-orch-action><!--orchaction-->${actionableHtml}<!--/orchaction--></div>`;
   const briefingBlock = (html: string) => `<div class="orch__briefing" data-orch-briefing><!--orchbriefing-->${html}<!--/orchbriefing--></div>`;
+  // Finding 136 item 3: the composer is the other place `status.available` renders besides the
+  // header dot (Finding 40) — the `.orch`/`.orch.is-disabled` split on the `<aside>` itself, and
+  // `composer({disabled})`'s own markup. Both come from the SAME `status` this function's caller
+  // already resolved fresh per request (render/*.ts's `resolveOrchestratorStatus()` default param,
+  // the identical value passed to `orchestratorIndicator` in `appHeader` above) — so unlike Finding
+  // 40, there is no second derivation to fix server-side, only the identical client reapplication
+  // gap: the `<aside>` sits outside every swap region (`main`/`extras`, NOTES UI10) and is never
+  // rebuilt wholesale by a client-side refresh, so its `is-disabled` class and the composer's markup
+  // both stayed frozen at whatever was true on the tab's last cold GET. `data-orch-disabled` gives
+  // the client the same fact `data-scope` already gives it, off the one `<aside>` tag, so it can
+  // toggle the class without a second render call; `composerBlock` wraps the composer in the same
+  // `<!--marker-->`-in-a-stable-host shape as `tailBlock`/`actionBlock`/`briefingBlock` above.
+  const composerBlock = (html: string) => `<div data-orch-composer><!--orchcomposer-->${html}<!--/orchcomposer--></div>`;
   if (!status.available) {
-    return `<aside class="orch is-disabled" data-scope="${esc(scope)}">
+    return `<aside class="orch is-disabled" data-scope="${esc(scope)}" data-orch-disabled="true">
     ${orchHead(scope)}
     <div class="orch__body">
       ${briefingBlock(orchTurn(`<p class="turn__body">Orchestrator unavailable — ${esc(reasonSentence(status.reason))} The board, the registry, and every gate still work: you can approve, reject, and the runner will advance.</p>`))}
       ${tailBlock}
       ${actionBlock}
     </div>
-    ${composer({ disabled: true })}
+    ${composerBlock(composer({ disabled: true }))}
   </aside>`;
   }
-  return `<aside class="orch" data-scope="${esc(scope)}">
+  return `<aside class="orch" data-scope="${esc(scope)}" data-orch-disabled="false">
     ${orchHead(scope)}
     <div class="orch__body">${briefingBlock(briefingHtml)}${tailBlock}${actionBlock}</div>
-    ${composer()}
+    ${composerBlock(composer())}
   </aside>`;
 }
 
