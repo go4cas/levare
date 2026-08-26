@@ -13,9 +13,10 @@ import { spawnSync } from "node:child_process";
 import { assertSpawnOk } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveGitActor, gitLogRows } from "../src/timeline.ts";
+import { resolveGitActor, gitLogRows, buildTimeline } from "../src/timeline.ts";
 import { loadStudioSettings } from "../src/repo.ts";
 import { CONDUCTOR_NAME, CONDUCTOR_EMAIL, RUNNER_NAME, RUNNER_EMAIL } from "../src/git.ts";
+import { workBranchName } from "../src/merge.ts";
 import { timelineDirectTag } from "../src/board/render/run.ts";
 
 const HERMETIC_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
@@ -156,6 +157,124 @@ describe("loadStudioSettings: Finding 90 declaration parsing", () => {
       expect(loadStudioSettings(root).conductorGitIdentity).toBeUndefined();
     } finally {
       rmrf(root);
+    }
+  });
+});
+
+// Findings 86/89 (RELEASE R3): the project repo as a second timeline source. `buildTimeline` now
+// returns `{ rows, unavailable? }` rather than a bare array — `unavailable` is set exactly when the
+// project source could not be read at all (no usable `repo:`, or the work branch doesn't exist yet),
+// never when it was read and simply came back empty.
+describe("buildTimeline: the project repo as a second git source (Findings 86/89)", () => {
+  function writeLedgerLine(unitDir: string, member: string, ts: string): void {
+    mkdirSync(unitDir, { recursive: true });
+    writeFileSync(join(unitDir, "ledger.ndjson"), `${JSON.stringify({ ts, member, event: "produce", kind: "spec" })}\n`, { flag: "a" });
+  }
+
+  /** A real, local project repo — `default_branch` = "main" — with one committed file. */
+  function makeProjectRepo(): string {
+    const dir = mkdtempSync(join(tmpdir(), "levare-tl-proj-"));
+    git(dir, ["-c", "init.defaultBranch=main", "init", "-q"]);
+    writeFileSync(join(dir, "README.md"), "hello\n");
+    git(dir, ["add", "-A"]);
+    git(dir, ["commit", "-q", "-m", "initial"]);
+    return dir;
+  }
+
+  /** A commit on `branch` with an explicit author/committer date, so ordering across sources can be
+   * asserted precisely rather than relying on wall-clock timing. */
+  function commitDated(repo: string, branch: string, message: string, isoDate: string): void {
+    spawnSync("git", ["-C", repo, "checkout", "-q", branch], { encoding: "utf8", env: HERMETIC_ENV });
+    writeFileSync(join(repo, `${message.replace(/\W+/g, "-")}.txt`), "x\n");
+    const env = {
+      ...HERMETIC_ENV,
+      GIT_AUTHOR_NAME: "member",
+      GIT_AUTHOR_EMAIL: "member@levare.local",
+      GIT_COMMITTER_NAME: "member",
+      GIT_COMMITTER_EMAIL: "member@levare.local",
+      GIT_AUTHOR_DATE: isoDate,
+      GIT_COMMITTER_DATE: isoDate,
+    };
+    spawnSync("git", ["-C", repo, "add", "-A"], { encoding: "utf8", env });
+    const r = spawnSync("git", ["-C", repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", message], { encoding: "utf8", env });
+    assertSpawnOk(`git commit ${message}`, r);
+    spawnSync("git", ["-C", repo, "checkout", "-q", "main"], { encoding: "utf8", env: HERMETIC_ENV });
+  }
+
+  test("project commits interleave with studio rows in correct time order", () => {
+    const studio = mkdtempSync(join(tmpdir(), "levare-tl-studio-"));
+    const projectRepo = makeProjectRepo();
+    try {
+      const unitDir = join(studio, "work", "acme", "widget-1");
+      writeLedgerLine(unitDir, "lyra", "2024-01-01T10:00:00.000Z");
+
+      const branch = workBranchName("widget-1");
+      git(projectRepo, ["branch", branch, "main"]);
+      commitDated(projectRepo, branch, "earliest project commit", "2024-01-01T09:00:00+00:00");
+      commitDated(projectRepo, branch, "latest project commit", "2024-01-01T11:00:00+00:00");
+
+      const result = buildTimeline(studio, { dir: unitDir, unit: "widget-1" }, { repo: projectRepo, default_branch: "main" });
+
+      expect(result.unavailable).toBeUndefined();
+      expect(result.rows.map((r) => r.text)).toEqual([expect.stringContaining("earliest project commit"), expect.stringContaining("lyra"), expect.stringContaining("latest project commit")]);
+    } finally {
+      rmrf(studio);
+      rmrf(projectRepo);
+    }
+  });
+
+  test("no repo: declared → today's rows plus that reason, never an empty project section", () => {
+    const studio = mkdtempSync(join(tmpdir(), "levare-tl-studio-"));
+    try {
+      const unitDir = join(studio, "work", "acme", "widget-1");
+      writeLedgerLine(unitDir, "lyra", "2024-01-01T10:00:00.000Z");
+
+      const result = buildTimeline(studio, { dir: unitDir, unit: "widget-1" }, { repo: "", default_branch: "main" });
+
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]?.text).toContain("lyra");
+      expect(result.unavailable).toBeDefined();
+      expect(result.unavailable).toMatch(/repo/i);
+    } finally {
+      rmrf(studio);
+    }
+  });
+
+  test("a resolvable repo with a missing work branch → today's rows plus that reason, never an empty project section", () => {
+    const studio = mkdtempSync(join(tmpdir(), "levare-tl-studio-"));
+    const projectRepo = makeProjectRepo();
+    try {
+      const unitDir = join(studio, "work", "acme", "widget-1");
+      writeLedgerLine(unitDir, "lyra", "2024-01-01T10:00:00.000Z");
+
+      // Deliberately never create `levare/widget-1` on projectRepo.
+      const result = buildTimeline(studio, { dir: unitDir, unit: "widget-1" }, { repo: projectRepo, default_branch: "main" });
+
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]?.text).toContain("lyra");
+      expect(result.unavailable).toBeDefined();
+      expect(result.unavailable).toContain(workBranchName("widget-1"));
+    } finally {
+      rmrf(studio);
+      rmrf(projectRepo);
+    }
+  });
+
+  test("mixed-offset timestamps sort by instant, not by string", () => {
+    const studio = mkdtempSync(join(tmpdir(), "levare-tl-studio-"));
+    try {
+      const unitDir = join(studio, "work", "acme", "widget-1");
+      // Lexicographically "T09" > "T08", but +02:00 puts this instant an hour BEFORE the +00:00 one
+      // (07:00Z vs 08:00Z) — a plain string sort gets this backwards; only an instant-aware sort
+      // (Date.parse) gets it right. Nothing pins TZ in this env, so this reproduces even locally.
+      writeLedgerLine(unitDir, "later-by-string-earlier-by-instant", "2024-06-01T09:00:00+02:00");
+      writeLedgerLine(unitDir, "earlier-by-string-later-by-instant", "2024-06-01T08:00:00+00:00");
+
+      const result = buildTimeline(studio, { dir: unitDir, unit: "widget-1" }, { repo: "", default_branch: "main" });
+
+      expect(result.rows.map((r) => r.actor.name)).toEqual(["later-by-string-earlier-by-instant", "earlier-by-string-later-by-instant"]);
+    } finally {
+      rmrf(studio);
     }
   });
 });
