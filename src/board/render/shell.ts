@@ -786,14 +786,24 @@ function mergeGateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: 
     diffstatSummary(merge.diffstat) ? tag(diffstatSummary(merge.diffstat)!, "tag") : ""
   }${shaChip}</div>`;
 
-  const trialBadge = conflicted ? statusBadge("failed", "CONFLICTED") : statusBadge("done", "CLEAN");
+  // Finding 128: `conflicted`/`violations` describe the LAST COMPLETED trial on disk — accurate only
+  // until a re-check dispatch is live, at which point they describe a tree state that has since
+  // changed (the Conductor may have just resolved the conflict by hand, in the project repo, the
+  // instant before clicking Re-check). While `dispatching`, the badge slot renders RE-CHECKING instead
+  // of a verdict — same `.gate__verdict` slot, so the layout doesn't jump — and the conflict list and
+  // guardrail lines that describe the stale trial go with it, rather than sitting under a badge that no
+  // longer speaks for them. Not a greyed CLEAN/CONFLICTED (Finding 122: a badge shouts louder than its
+  // signal warrants) and not a blank slot (ambiguous between "no verdict" and "not yet").
+  const trialBadge = dispatching ? statusBadge("active", "RE-CHECKING") : conflicted ? statusBadge("failed", "CONFLICTED") : statusBadge("done", "CLEAN");
   // The instruction the server already words at every layer that names a conflict (merge.ts's own
   // artifact body, gateops.ts's 409 error) — repeated here verbatim rather than invented afresh.
-  const conflictDetail = conflicted
-    ? `<p class="gate__ctx">Conflicts on: ${merge.conflicts.map((f) => `<span class="mono">${esc(f)}</span>`).join(", ")}. Resolve by hand on <span class="mono">${esc(merge.branch)}</span> in the project repo, then re-check.</p>`
-    : "";
-  const guardrailHtml =
-    blockingViolations.length > 0
+  const conflictDetail =
+    !dispatching && conflicted
+      ? `<p class="gate__ctx">Conflicts on: ${merge.conflicts.map((f) => `<span class="mono">${esc(f)}</span>`).join(", ")}. Resolve by hand on <span class="mono">${esc(merge.branch)}</span> in the project repo, then re-check.</p>`
+      : "";
+  const guardrailHtml = dispatching
+    ? ""
+    : blockingViolations.length > 0
       ? callout("danger", `blocked by guardrail: ${blockingViolations.map(esc).join("; ")}`)
       : gateExemptViolations.length > 0
         ? `<p class="gate__ctx" style="color:var(--fg-mute)">${gateExemptViolations.map(esc).join("; ")} &mdash; approving this gate is the authorization to land here.</p>`

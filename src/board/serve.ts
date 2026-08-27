@@ -459,6 +459,27 @@ export const ROUTES: RouteDef[] = [
         return json({ ok: true });
       }
       if (!allowed.includes(verb)) return json({ ok: false, error: `unknown verb '${verb}'` }, 400);
+
+      // Finding 128: a merge-gate re-check has no member, so `resolveGate`'s own verb dispatch never
+      // goes through `AsyncMemberRunner.produce` — the one boundary `beginInvocation` is normally
+      // registered around (see daemon.ts's own note). It runs entirely synchronously (`trialMerge`'s
+      // git subprocesses), so registering it can only ever matter if it happens BEFORE the one genuine
+      // yield point this route has — `await req.json()` below — since nothing past that point ever
+      // hands control back to the event loop until the whole recheck is done. Registered here, ahead of
+      // that await, so a concurrent request's render (an SSE `reload`-triggered fragment fetch racing
+      // this recheck's own response) has an actual chance to see it via `dispatchingFor`
+      // (render/shell.ts#mergeGateCardHtml) instead of rendering the last-completed (about-to-be-stale)
+      // trial as current.
+      let mergeRecheckInvocation: ReturnType<Daemon["beginInvocation"]> | undefined;
+      if (ctx.daemon && verb === "recheck") {
+        const repoForLookup = loadRepo(ctx.root, { validate: false });
+        const unitForLookup = repoForLookup.units.find(
+          (u) => u.project === params.project && repoForLookup.artifacts.get(`${params.project}/${u.unit}`)?.has(params.artifact),
+        );
+        if (unitForLookup) {
+          mergeRecheckInvocation = ctx.daemon.beginInvocation({ project: params.project, unit: unitForLookup.unit, member: "levare-runner", kind: "merge" });
+        }
+      }
       let note: string | undefined;
       try {
         const body = await req.json();
@@ -466,7 +487,12 @@ export const ROUTES: RouteDef[] = [
       } catch {
         /* no body / not JSON — note stays undefined */
       }
-      const result = await resolveGate(ctx.root, params.project, params.artifact, verb, { note, memberRunner: ctx.memberRunner, daemon: ctx.daemon });
+      let result;
+      try {
+        result = await resolveGate(ctx.root, params.project, params.artifact, verb, { note, memberRunner: ctx.memberRunner, daemon: ctx.daemon });
+      } finally {
+        if (mergeRecheckInvocation) ctx.daemon!.endInvocation(mergeRecheckInvocation);
+      }
       if (!result.ok) return json({ ok: false, error: result.error }, result.status);
       ctx.broadcast("reload");
       // Deliverable (d): an approval (or any other resolution) may have just satisfied a producible
