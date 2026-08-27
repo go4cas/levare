@@ -6,7 +6,7 @@ nav_order: 4
 
 # 5.3 · The CLI
 
-levare has seven commands. Six run once and exit; `serve` runs until you stop it.
+levare has eight commands. Seven run once and exit; `serve` runs until you stop it.
 
 Every command takes a **studio path** as its first argument. These docs write the binary as `levare`;
 if you built from source and haven't put it on your `PATH`, call it by path (`~/source/levare/levare`)
@@ -60,6 +60,48 @@ doesn't already `validate` is refused rather than built on top of.
 `user.email` `init`'s founding commit uses) when one resolves and this studio has git history —
 otherwise the file is still written (files are the truth), and the command tells you it wasn't
 committed.
+
+---
+
+## `levare project new <name> --repo <path> [--remote <url>] [--default-branch <branch>] [--deploy <text>] [--pace auto|step] [--root <path>]`
+
+Create a project — no hand-editing `projects/<name>.md` required.
+
+```sh
+levare project new todo-cli --repo ~/source/todo-cli
+```
+
+```
+levare project new · projects/todo-cli.md
+  repo: ~/source/todo-cli
+  remote: git@github.com:you/todo-cli.git (inferred)
+  default_branch: main (inferred)
+  deploy: null (default)
+  pace: auto (default)
+  git: committed 3f9a1c2e0b7d
+Next: levare validate .
+```
+
+`--repo` is required and must point at a real local git checkout — `--repo` naming anything else
+(a placeholder path, a repo you haven't cloned yet, the studio's own root) is refused immediately,
+naming the path it resolved to, rather than left to surface later as `PROJECT_REPO_UNRESOLVED` at
+first dispatch. `--default-branch` and `--remote` infer from that checkout when it leaves exactly one
+candidate (its current branch; its one configured remote) and require the flag, naming every
+candidate, when it doesn't. `--deploy` defaults to `null`; `--pace` defaults to `auto`.
+
+House rules — the project's own [context recipe](../03-concepts.md#context-what-a-member-actually-sees)
+injection — are read from stdin when piped in, so the whole registration is one command:
+
+```sh
+levare project new todo-cli --repo ~/source/todo-cli <<'EOF'
+- Zero runtime dependencies. Bun's standard library only.
+- Single binary. No config file, no server, no network.
+EOF
+```
+
+Every failure is a diagnosis, never a guess, exactly like `new` above — including a studio that
+doesn't already `validate`, which is refused rather than built on top of. Commits under your own
+resolved git identity the same way `new` does.
 
 ---
 

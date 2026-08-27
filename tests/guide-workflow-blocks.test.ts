@@ -21,7 +21,10 @@ import { validatePath } from "../src/validate.ts";
 
 const HEREDOC_RE = /cat > (\S+) <<'EOF'\n([\s\S]*?)\nEOF/g;
 
-type Action = { pos: number; kind: "write"; path: string; body: string } | { pos: number; kind: "new"; args: string[] };
+type Action =
+  | { pos: number; kind: "write"; path: string; body: string }
+  | { pos: number; kind: "new"; args: string[] }
+  | { pos: number; kind: "project-new"; args: string[]; stdin?: string };
 
 function extractHeredocs(src: string): Array<{ pos: number; kind: "write"; path: string; body: string }> {
   const out: Array<{ pos: number; kind: "write"; path: string; body: string }> = [];
@@ -55,8 +58,39 @@ function extractLevareNewCalls(src: string): Array<{ pos: number; kind: "new"; a
   return out;
 }
 
+// `levare project new` (Finding 137, RELEASE R1b) is executable content exactly like `levare new`
+// above, but its own house rules argument is piped in via a heredoc attached to the command itself
+// (`levare project new ... <<'EOF' ... EOF`) rather than as a separate `cat >` file write — so it
+// needs its own two-pass extraction: first pull out every heredoc-attached call (consuming its whole
+// span, stdin included), then scan what's left for a plain (no-stdin) call the same way `levare new` is.
+const LEVARE_PROJECT_NEW_HEREDOC_RE = /^levare project new (.+) <<'EOF'\n([\s\S]*?)\nEOF$/gm;
+const LEVARE_PROJECT_NEW_PLAIN_RE = /^levare project new (.+)$/gm;
+
+function extractLevareProjectNewCalls(src: string): Array<{ pos: number; kind: "project-new"; args: string[]; stdin?: string }> {
+  const out: Array<{ pos: number; kind: "project-new"; args: string[]; stdin?: string }> = [];
+  SH_BLOCK_RE.lastIndex = 0;
+  let block: RegExpExecArray | null;
+  while ((block = SH_BLOCK_RE.exec(src))) {
+    const body = block[1];
+    const consumed: Array<[number, number]> = [];
+    LEVARE_PROJECT_NEW_HEREDOC_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = LEVARE_PROJECT_NEW_HEREDOC_RE.exec(body))) {
+      out.push({ pos: block.index + m.index, kind: "project-new", args: m[1].trim().split(/\s+/), stdin: m[2] });
+      consumed.push([m.index, m.index + m[0].length]);
+    }
+    let remainder = body;
+    for (const [s, e] of consumed.slice().reverse()) remainder = remainder.slice(0, s) + remainder.slice(e);
+    LEVARE_PROJECT_NEW_PLAIN_RE.lastIndex = 0;
+    while ((m = LEVARE_PROJECT_NEW_PLAIN_RE.exec(remainder))) {
+      out.push({ pos: block.index + m.index, kind: "project-new", args: m[1].trim().split(/\s+/) });
+    }
+  }
+  return out;
+}
+
 function extractActions(src: string): Action[] {
-  return [...extractHeredocs(src), ...extractLevareNewCalls(src)].sort((a, b) => a.pos - b.pos);
+  return [...extractHeredocs(src), ...extractLevareNewCalls(src), ...extractLevareProjectNewCalls(src)].sort((a, b) => a.pos - b.pos);
 }
 
 const GUIDE_DIR = "docs/guide/04-workflow";
@@ -80,27 +114,50 @@ describe("docs/guide/04-workflow's pasteable blocks produce a valid studio", () 
   // What `2 · Quickstart`'s `levare init .` leaves behind — the walkthrough's own stated starting point.
   scaffoldStudio(root);
 
+  // 4.2's own `levare project new todo-cli --repo ~/source/todo-cli ...` call is a real subprocess
+  // (see the replay loop below) — `--repo` must resolve to a real git checkout or the new command's
+  // own R1b guarantee ("say so immediately") makes it fail loudly, exactly as it should for a reader
+  // who really hasn't cloned it yet. This suite is not that reader: it must pass deterministically on
+  // every host regardless of whether the real `~/source/todo-cli` exists, so the subprocess is run
+  // with `HOME` scoped to a scratch directory carrying a real, hermetic `source/todo-cli` checkout —
+  // never the actual host home. `initStudio`/`scaffoldStudio` above don't touch `HOME` at all (`root`
+  // itself is never `git init`'d in this whole suite), so this scoping affects nothing else here.
+  const fakeHome = mkdtempSync(join(tmpdir(), "levare-guide-fakehome-"));
+  const fakeTodoCliRepo = join(fakeHome, "source", "todo-cli");
+  mkdirSync(fakeTodoCliRepo, { recursive: true });
+  spawnSync("git", ["-c", "init.defaultBranch=main", "-C", fakeTodoCliRepo, "init", "-q"]);
+  spawnSync("git", ["-C", fakeTodoCliRepo, "remote", "add", "origin", "git@github.com:you/todo-cli.git"]);
+
   afterAll(() => {
     rmSync(root, { recursive: true, force: true });
+    rmSync(fakeHome, { recursive: true, force: true });
   });
 
   for (const chapter of CHAPTERS) {
     const src = readFileSync(join(GUIDE_DIR, chapter), "utf8");
     const actions = extractActions(src);
     for (const action of actions) {
-      const label = action.kind === "write" ? action.path : `levare new ${action.args.join(" ")}`;
+      const label = action.kind === "write" ? action.path : action.kind === "new" ? `levare new ${action.args.join(" ")}` : `levare project new ${action.args.join(" ")}`;
       test(`${chapter} → ${label} parses and validates clean`, () => {
         if (action.kind === "write") {
           const full = join(root, action.path);
           mkdirSync(dirname(full), { recursive: true });
           writeFileSync(full, action.body + "\n");
-        } else {
+        } else if (action.kind === "new") {
           // A real subprocess, exactly what a reader who pasted this line gets — not a call into
           // createUnit directly, for the same reason D10/D11 (init.test.ts) run `./levare init` as a
           // real subprocess rather than calling `initStudio`.
           const r = spawnSync(LEVARE_BIN, ["new", ...action.args], { cwd: root, encoding: "utf8" });
           if (r.status !== 0) {
             throw new Error(`after running \`levare new ${action.args.join(" ")}\` from ${chapter}, it exited ${r.status}:\n${r.stderr}`);
+          }
+        } else {
+          // Same "real subprocess" reasoning as `levare new` above — `HOME` is scoped to this describe
+          // block's own fake home (see its own comment) so `--repo ~/source/todo-cli` resolves
+          // hermetically, on every host, without ever touching the real one.
+          const r = spawnSync(LEVARE_BIN, ["project", "new", ...action.args], { cwd: root, encoding: "utf8", env: { ...process.env, HOME: fakeHome }, input: action.stdin ?? "" });
+          if (r.status !== 0) {
+            throw new Error(`after running \`levare project new ${action.args.join(" ")}\` from ${chapter}, it exited ${r.status}:\n${r.stderr}`);
           }
         }
 

@@ -18,9 +18,10 @@ import { join } from "node:path";
 import { loadRepo, RepoError, type Repo } from "./repo.ts";
 import { commitAs, resolveGitIdentity } from "./git.ts";
 
-// Directory-name-safe: these become path segments under `work/`. No separators, no leading dot/dash,
-// no `..` — never trust an operator-supplied name into `join()` unchecked.
-const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+// Directory-name-safe: these become path segments under `work/` (and, reused by project-new.ts,
+// under `projects/`). No separators, no leading dot/dash, no `..` — never trust an operator-supplied
+// name into `join()` unchecked.
+export const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export interface NewUnitInput {
   root: string;

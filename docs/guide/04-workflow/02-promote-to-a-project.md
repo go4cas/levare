@@ -9,26 +9,14 @@ nav_order: 2
 A **project** is a commitment. It says: *this thing is real, here is where its code lives, and here
 are the rules every agent must obey when they touch it.*
 
+You already have (or just cloned) todo-cli's own repo somewhere on disk — for this walkthrough,
+that's `~/source/todo-cli`, with an `origin` remote already configured. `levare project new` reads
+`default_branch` and `remote` straight off that checkout, so nothing here is typed twice:
+
 ```sh
 cd ~/studio
 
-cat > projects/todo-cli.md <<'EOF'
----
-name: todo-cli
-repo: ~/source/todo-cli
-remote: git@github.com:you/todo-cli.git
-default_branch: main
-deploy: null
-pace: auto
----
-
-# todo-cli
-
-A terminal todo list. Three commands: add, list, done. State lives in a single JSON file
-under the user's home directory.
-
-## House rules
-
+levare project new todo-cli --repo ~/source/todo-cli <<'EOF'
 - Zero runtime dependencies. Bun's standard library only.
 - Single binary. No config file, no server, no network.
 - Every command must work offline and finish in under 50ms.
@@ -39,19 +27,40 @@ mkdir -p work/todo-cli
 levare validate .
 ```
 
+```
+levare project new · projects/todo-cli.md
+  repo: ~/source/todo-cli
+  remote: git@github.com:you/todo-cli.git (inferred)
+  default_branch: main (inferred)
+  deploy: null (default)
+  pace: auto (default)
+  git: committed 3f9a1c2e0b7d
+Next: levare validate .
+```
+
 ## The fields
 
 | Field | Required | What it does |
 |---|---|---|
 | `name` | ✅ | Must match the filename |
 | `repo` | ✅ | Where the product's code lives on your machine |
-| `remote` | ✅ | Its git remote — there must be somewhere for approved work to land |
+| `remote` | ✅ (may be `null`) | Its git remote — there must be somewhere for approved work to land |
 | `default_branch` | ✅ | Usually `main` |
-| `deploy` | — | Where it ships, or `null` |
-| `pace` | — | `auto` (the daemon advances between gates) or `step` (you nod before each team runs) |
+| `deploy` | ✅ (may be `null`) | Where it ships, or `null` |
+| `pace` | ✅ | `auto` (the daemon advances between gates) or `step` (you nod before each team runs) |
 
-`remote` being **required** is a design statement, not bureaucracy: a project levare will accept is
-one where finished work has somewhere to go.
+Every one of these six keys must be **present** in the file — `remote`/`deploy` may be `null`, but
+omitting the key entirely fails `levare validate`. `levare project new` always writes all six; you
+never have to remember which ones are nullable.
+
+`remote` allowing `null` is not an invitation to leave it unset: a project levare will accept is one
+where finished work has somewhere to go. `levare project new` only writes `null` there when the
+checkout has no remote (or more than one, without `--remote` to disambiguate) — add `origin` to the
+checkout, or pass `--remote` explicitly, and it infers it, exactly as it did with `default_branch`
+above.
+
+If `--repo` doesn't point at a real local git checkout, `levare project new` refuses immediately,
+naming the path it resolved to — you never find out from a stalled dispatch three steps later.
 
 ## The house rules are not decoration
 

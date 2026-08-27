@@ -1,6 +1,7 @@
 // levare CLI entry point. Phase 1 implements `validate`; phase 2 adds `replay`. Later phases add
 // context/serve/doctor/stats behind the same dispatcher.
 
+import { readFileSync } from "node:fs";
 import { validatePath, type ValidationResult } from "./validate.ts";
 import { formatReport, runReplay } from "./replay.ts";
 import { loadRepo, repoCapabilities } from "./repo.ts";
@@ -11,6 +12,7 @@ import { remoteAgentImplemented } from "./env.ts";
 import { serve } from "./board/serve.ts";
 import { initStudio, GIT_IDENTITY_NOTE } from "./init.ts";
 import { createUnit } from "./new.ts";
+import { createProject } from "./project-new.ts";
 import { applyStudioEnv } from "./dotenv.ts";
 import { resolveOrchestratorStatus, ORCHESTRATOR_ENV_VAR } from "./orchestrator-status.ts";
 import { loadOrchestratorPromptSource, ORCHESTRATOR_PROMPT_PATH } from "./orchestrator-boundary.ts";
@@ -270,6 +272,79 @@ export function runNewCmd(rest: string[]): number {
   return 0;
 }
 
+// `levare project new <name> --repo <path> [--remote <url>] [--default-branch <branch>] [--deploy
+// <text>] [--pace auto|step] [--root <path>]` — create `projects/<name>.md` without hand-editing a
+// file (Finding 137, RELEASE R1b). `--default-branch`/`--remote` infer from the target repo (a single
+// current branch/remote) and fail loudly naming the ambiguity when the repo leaves more than one — see
+// src/project-new.ts for the exact rules. House rules (the project's own context-recipe §5 injection)
+// are read from stdin when piped, never a second hand-edit step after this command returns.
+function projectFieldLabel(source: "flag" | "inferred" | "default"): string {
+  return source === "flag" ? "" : source === "inferred" ? " (inferred)" : " (default)";
+}
+
+function readStdinIfPiped(): string | undefined {
+  if (process.stdin.isTTY) return undefined;
+  try {
+    const data = readFileSync(0, "utf8").trim();
+    return data.length > 0 ? data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const PROJECT_NEW_USAGE = "usage: levare project new <name> --repo <path> [--remote <url>] [--default-branch <branch>] [--deploy <text>] [--pace auto|step] [--root <path>]";
+
+export function runProjectNewCmd(rest: string[]): number {
+  const args: string[] = [];
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i]!;
+    if (a.startsWith("--")) {
+      i++; // skip this flag's value
+      continue;
+    }
+    args.push(a);
+  }
+  const [name] = args;
+  const repoFlag = flag(rest, "--repo");
+  if (!name || !repoFlag) {
+    console.error(PROJECT_NEW_USAGE);
+    return 2;
+  }
+  const root = flag(rest, "--root") ?? ".";
+  const remoteFlag = flag(rest, "--remote");
+  const defaultBranchFlag = flag(rest, "--default-branch");
+  const deployFlag = flag(rest, "--deploy");
+  const paceFlag = flag(rest, "--pace");
+  const houseRules = readStdinIfPiped();
+
+  const result = createProject({ root, name, repo: repoFlag, remote: remoteFlag, defaultBranch: defaultBranchFlag, deploy: deployFlag, pace: paceFlag, houseRules });
+  if (!result.ok) {
+    console.error(`levare project new: ${result.code} — ${result.message}`);
+    return 1;
+  }
+
+  console.log(`levare project new · ${result.file}`);
+  console.log(`  repo: ${result.repo}`);
+  console.log(`  remote: ${result.remote.value ?? "null"}${projectFieldLabel(result.remote.source)}`);
+  console.log(`  default_branch: ${result.defaultBranch.value}${projectFieldLabel(result.defaultBranch.source)}`);
+  console.log(`  deploy: ${result.deploy.value ?? "null"}${projectFieldLabel(result.deploy.source)}`);
+  console.log(`  pace: ${result.pace.value}${projectFieldLabel(result.pace.source)}`);
+  if (result.committed) {
+    console.log(`  git: committed ${result.commit?.slice(0, 12)}`);
+  } else {
+    console.log(`  ⚠ ${result.commitNote}`);
+  }
+  console.log(`Next: levare validate ${root}`);
+  return 0;
+}
+
+function runProjectCmd(rest: string[]): number {
+  const [sub, ...projectRest] = rest;
+  if (sub === "new") return runProjectNewCmd(projectRest);
+  console.error(PROJECT_NEW_USAGE);
+  return 2;
+}
+
 function wrap(text: string, width: number): string[] {
   const words = text.split(/\s+/);
   const lines: string[] = [];
@@ -351,6 +426,7 @@ function usage(): number {
   console.error(
     "usage: levare init [path]\n" +
       "       levare new <project> <unit> [--type <type>] [--team <team>] [--budget <usd>] [--root <path>]\n" +
+      "       levare project new <name> --repo <path> [--remote <url>] [--default-branch <branch>] [--deploy <text>] [--pace auto|step] [--root <path>]\n" +
       "       levare validate <path>\n" +
       "       levare replay <path> --stubs\n" +
       "       levare context <agent> --unit <unit> [--step <step>] [--root <path>] [--dry-run]\n" +
@@ -368,6 +444,8 @@ export function main(argv: string[]): number {
       return runInitCmd(rest);
     case "new":
       return runNewCmd(rest);
+    case "project":
+      return runProjectCmd(rest);
     case "validate": {
       const path = rest[0];
       if (!path) return usage();
