@@ -416,16 +416,23 @@ export function scoreNodes(repo: Repo, unit: WorkUnit, running: DaemonInvocation
   if (project && project.repo && project.repo !== ".") {
     const mergeArtifacts = artifacts.filter((a) => a.kind === "merge");
     const currentMerge = mergeArtifacts.find((a) => a.status !== "superseded") ?? mergeArtifacts[mergeArtifacts.length - 1];
+    // Finding 145 site 1: `inv` (computed above and consulted for every `expects:` kind) was never
+    // consulted here — a re-check (board/serve.ts registers it as `kind: "merge"` around
+    // `doRecheckMerge`'s own synchronous window) leaves the old, about-to-be-superseded merge artifact
+    // on disk for the whole in-flight window, same as the gate card's own `RE-CHECKING` badge already
+    // accounts for (render/shell.ts#mergeGateCardHtml) — the rail must agree with it.
     nodes.push(
-      currentMerge
-        ? {
-            kind: "merge",
-            shape: nodeStateFor(currentMerge.status) === "gate" ? "diamond" : "dot",
-            state: nodeStateFor(currentMerge.status),
-            artifact: currentMerge,
-            producedBy: currentMerge.produced_by,
-          }
-        : { kind: "merge", shape: "dot", state: "wait" },
+      inv && inv.kind === "merge"
+        ? { kind: "merge", shape: "dot", state: "active", producedBy: currentMerge?.produced_by ?? inv.member, live: { startedAt: inv.startedAt } }
+        : currentMerge
+          ? {
+              kind: "merge",
+              shape: nodeStateFor(currentMerge.status) === "gate" ? "diamond" : "dot",
+              state: nodeStateFor(currentMerge.status),
+              artifact: currentMerge,
+              producedBy: currentMerge.produced_by,
+            }
+          : { kind: "merge", shape: "dot", state: "wait" },
     );
   }
   return nodes;
