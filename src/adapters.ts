@@ -57,7 +57,7 @@ import { repoCapabilities } from "./repo.ts";
 import { resolveProjectRepoPath, workBranchName, branchExists, createDispatchWorktree, commitDispatchWorktree, type DispatchCommitResult } from "./merge.ts";
 import { isSafeHomeDotpath, detectFetchAtDispatchLauncher } from "./validate.ts";
 import { detectSandbox, wrapForSandbox, resolveDarwinUserTempDir, type SandboxDetection, type SandboxLevel, type SandboxPolicy, type WrappedSpawn } from "./sandbox.ts";
-import { registryStateHash, memberIdentity } from "./git.ts";
+import { registryStateHash, memberIdentity, resolveGlobalExcludesFile } from "./git.ts";
 import { isCompiledBuild } from "./version.ts";
 import type { Pricing } from "./pricing.ts";
 import type { Repo } from "./repo.ts";
@@ -302,8 +302,25 @@ function resolveFeatureRepo(template: string | undefined, projectRepoPath: strin
 // `/dev/null`, so git degrades cleanly to "no global/system config" instead of hitting the denial at all.
 // Neither env var touches per-repo config (`.git/config`, read regardless) or `-c` flags a member's own
 // command template already passes — a member needing git identity keeps working exactly as before.
+//
+// Finding 120: the redirect above degrades `.gitconfig` cleanly, but it's not the ONLY thing a "full"
+// sandbox denies read access to — the operator's global excludes file (explicit `core.excludesFile`, or
+// git's own default `$HOME/.config/git/ignore`) lives under the SAME denied real HOME, and unlike
+// `.gitconfig`, a denied excludesFile is NOT fatal: git just warns to stderr and silently proceeds as if
+// no excludes file exists at all (confirmed directly against this host's own git — a "full"-tier deny
+// degrades a read failure there to a no-op, not an error, so this has no crash to make it visible). A
+// member's own `git add`/`git status` inside the sandbox would stage exactly what the operator's global
+// ignore rules say never to track. Fixed the same way FIX-9 fixes `.gitconfig` visibility without
+// reopening HOME: resolve the real path here, in THIS unsandboxed parent process (before the sandbox
+// denial ever applies), and hand it back into the spawn as `GIT_CONFIG_COUNT`/`_KEY_0`/`_VALUE_0` — the
+// environment-variable equivalent of a `-c core.excludesFile=` override, since a member's own git
+// invocations inside the sandbox are never levare's own command line to add `-c` flags to. The sandbox
+// policy itself (`buildDispatchSandboxPolicy`) grants read access to this SAME resolved path — narrowly,
+// never the whole operator HOME — so the value this points at is actually reachable, not just named.
 function gitConfigRedirectEnv(env: Record<string, string>): Record<string, string> {
-  return { ...env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
+  const base = { ...env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
+  const excludesFile = resolveGlobalExcludesFile(env);
+  return excludesFile ? { ...base, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.excludesFile", GIT_CONFIG_VALUE_0: excludesFile } : base;
 }
 
 // NOTES R4-VENDOR-CLI (live macOS gate: the first validation against a REAL vendor CLI, `gh`, never the
@@ -1212,11 +1229,18 @@ export function buildDispatchSandboxPolicy(
   const { readOnlyPaths, operatorHome, darwinTempDir } = baseSandboxContext(repo, cwd, argv0, req.env.PATH, baseEnv);
   const sub = subscriptionConnector(repo, req.member);
   const grantedHomeTargets = operatorHome ? (sub?.home ?? []).filter(isSafeHomeDotpath).map((dotpath) => pathJoin(operatorHome, dotpath)) : [];
+  // Finding 120: the SAME resolved path `gitConfigRedirectEnv` points a "full"-tier dispatch's
+  // GIT_CONFIG_VALUE_0 at — granted read-only here (a single file, never the containing directory or
+  // the rest of operatorHome) so that redirect actually resolves to something readable under the
+  // sandbox, instead of degrading to the identical silent no-op a plain denied HOME already produces.
+  // Resolved unconditionally (not gated on the eventual sandbox tier — cheap, and `readOnlyPaths` is
+  // inert on a "none"/partial-tier dispatch exactly like every other entry in this list already is).
+  const excludesFile = resolveGlobalExcludesFile(req.env);
   return {
     cwd: cwd ?? process.cwd(),
     home: req.env.HOME,
     allowNetwork: memberNetworkAllowed(repo, req.member),
-    readOnlyPaths,
+    readOnlyPaths: excludesFile ? [...readOnlyPaths, excludesFile] : readOnlyPaths,
     operatorHome,
     grantedHomeTargets,
     // NOTES R4-VENDOR-CLI: the vendor-CLI scratch dir carries no reseal/deny-then-reallow complexity the
