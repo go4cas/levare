@@ -19,6 +19,7 @@ import { createBoard } from "../src/board/serve.ts";
 import { resolveGate } from "../src/board/gateops.ts";
 import { loadRepo } from "../src/repo.ts";
 import { advanceUnit, type AsyncMemberRunner } from "../src/dagwalk.ts";
+import { Daemon } from "../src/daemon.ts";
 
 const HERMETIC_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
 function git(root: string, args: string[]): string {
@@ -144,6 +145,81 @@ describe("merge gate recheck re-renders the board card to its new trial state (N
         expect(afterBody.main).toContain('data-verb="approve"');
         expect(afterBody.main).not.toContain("CONFLICTED");
         expect(afterBody.main).not.toContain('data-verb="recheck"');
+      } finally {
+        board.close();
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(projectRepo, { recursive: true, force: true });
+    }
+  });
+});
+
+// Finding 128 — a merge gate must not present a stale verdict as current. `doRecheckMerge` (gateops.ts)
+// runs entirely synchronously (trialMerge's git subprocesses, no `await` inside it), so the ONE genuine
+// yield point on the recheck route is `await req.json()` (board/serve.ts) — a concurrent request's own
+// render can only ever observe the recheck as in-flight if it's registered with the daemon BEFORE that
+// await. Proven directly here: a `reload`-shaped fragment GET is fired in the SAME synchronous turn as
+// the recheck POST (no await between the two `board.fetch()` calls — the exact ordering an SSE `reload`
+// racing an outstanding client fetch would produce), and must see RE-CHECKING, not the stale trial the
+// recheck is in the middle of superseding.
+describe("merge gate recheck vs. a concurrent reload — Finding 128", () => {
+  test("a fragment GET fired in the same turn as the recheck POST sees RE-CHECKING, not the stale CONFLICTED verdict it's about to supersede", async () => {
+    const { root, projectRepo } = buildStudio();
+    try {
+      await startAndApproveTask(root);
+
+      git(projectRepo, ["checkout", "-q", "levare/widget-1"]);
+      writeFileSync(join(projectRepo, "README.md"), "CHANGED ON BRANCH\n");
+      git(projectRepo, ["add", "-A"]);
+      git(projectRepo, ["commit", "-q", "-m", "branch changes README"]);
+      git(projectRepo, ["checkout", "-q", "main"]);
+      writeFileSync(join(projectRepo, "README.md"), "CHANGED ON MAIN\n");
+      git(projectRepo, ["add", "-A"]);
+      git(projectRepo, ["commit", "-q", "-m", "main also changes README"]);
+
+      let repo = loadRepo(root);
+      const unit = repo.units.find((u) => u.unit === "widget-1")!;
+      const advanced = await advanceUnit(root, repo, unit, memberRunner, { today: TODAY });
+      expect(advanced.outcome).toBe("produced");
+
+      // Resolve the conflict by hand BEFORE the recheck fires — same as the sequential test above —
+      // so the only thing that could still say CONFLICTED by the time both requests settle is a stale
+      // render caught mid-flight, not a genuinely-still-conflicted trial.
+      git(projectRepo, ["checkout", "-q", "levare/widget-1"]);
+      git(projectRepo, ["merge", "main", "-X", "ours", "--no-edit", "-q"]);
+      git(projectRepo, ["checkout", "-q", "main"]);
+
+      repo = loadRepo(root, { validate: false });
+      const merge = [...repo.artifacts.get("acme/widget-1")!.values()].find((a) => a.kind === "merge")!;
+
+      const daemon = new Daemon(root, { memberRunner: () => memberRunner });
+      const board = createBoard(root, { daemon });
+      try {
+        const postPromise = board.fetch(req(`/gates/acme/${merge.id}/recheck`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }));
+        // No `await` between the two `fetch()` calls — this GET is issued in the SAME synchronous turn
+        // as the POST, before the POST has advanced past its own `await req.json()`.
+        const getPromise = board.fetch(req("/studio", { headers: { "X-Levare-Fragment": "1" } }));
+
+        const [postRes, getRes] = await Promise.all([postPromise, getPromise]);
+        expect(postRes.status).toBe(200);
+        const postBody = await postRes.json();
+        expect(postBody.ok).toBe(true);
+
+        const getBody = await getRes.json();
+        expect(getBody.main).toContain("RE-CHECKING");
+        expect(getBody.main).not.toContain("CONFLICTED");
+        expect(getBody.main).not.toContain("Conflicts on:");
+        expect(getBody.main).not.toContain('data-verb="recheck"');
+        expect(getBody.main).not.toContain('data-verb="approve"');
+
+        // The invocation is cleared once the recheck settles — a later, genuinely-uncontended request
+        // sees the fresh, non-stale verdict.
+        expect(daemon.running()).toEqual([]);
+        const after = await board.fetch(req("/studio", { headers: { "X-Levare-Fragment": "1" } }));
+        const afterBody = await after.json();
+        expect(afterBody.main).toContain('class="chip is-done">CLEAN');
+        expect(afterBody.main).toContain('data-verb="approve"');
       } finally {
         board.close();
       }
