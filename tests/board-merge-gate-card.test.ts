@@ -277,6 +277,71 @@ describe("merge gate card — dispatching (in-flight) state", () => {
     expect(html).not.toContain('data-verb="approve"');
     expect(html).not.toContain('data-verb="recheck"');
   });
+
+  // Finding 128: the trial report (badge, conflict list, guardrail message) is a verdict about the
+  // tree state the LAST COMPLETED trial saw — accurate only until a re-check dispatch is live, at
+  // which point it describes a tree state that has since changed. A CONFLICTED trial whose re-check
+  // is in flight must not go on reading CONFLICTED (a Conductor could have just resolved it by hand,
+  // in the project repo, the instant before clicking Re-check).
+  test("a CONFLICTED trial with a re-check in flight shows RE-CHECKING, not the stale CONFLICTED verdict or its conflict list", () => {
+    const repo = makeRepo({
+      artifact: {
+        merge: {
+          branch: "levare/widget-1",
+          target: "main",
+          commits_ahead: 2,
+          diffstat: " README.md | 1 +\n 1 file changed, 1 insertion(+)",
+          conflicted: true,
+          conflicts: ["README.md", "src/config.ts"],
+          guardrail_violations: [],
+        },
+      },
+    });
+    const art = [...repo.artifacts.get("acme/widget-1")!.values()][0];
+    const dispatching = { member: "levare-runner", kind: "merge", startedAt: "2026-07-17T01:59:00.000Z" };
+    const html = gateCardHtml(repo, mergeGate(art), NOW, { dispatching });
+
+    expect(html).toContain("RE-CHECKING");
+    expect(html).not.toContain("CONFLICTED");
+    expect(html).not.toContain("README.md");
+    expect(html).not.toContain("src/config.ts");
+    expect(html).not.toContain("Resolve by hand on");
+
+    // Same slot: the RE-CHECKING badge still lands inside `.gate__verdict`, so the layout doesn't jump
+    // once the fresh verdict replaces it.
+    expect(html).toContain('<div class="gate__verdict">');
+
+    // Once the re-check completes, the render (no `dispatching`) goes back to reporting the trial
+    // honestly — the fix only ever suppresses the stale report WHILE a fresher one is in flight.
+    const settled = gateCardHtml(repo, mergeGate(art), NOW);
+    expect(settled).toContain('<span class="chip is-failed">CONFLICTED</span>');
+    expect(settled).toContain("README.md");
+  });
+
+  // A guardrail violation is the same kind of stale safety claim as the conflict list — it too
+  // describes the last-completed trial's diff, which a re-check may supersede.
+  test("a guardrail violation with a re-check in flight is suppressed alongside the stale badge", () => {
+    const repo = makeRepo({
+      artifact: {
+        merge: {
+          branch: "levare/widget-1",
+          target: "main",
+          commits_ahead: 1,
+          diffstat: " infra/deploy.yml | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)",
+          conflicted: false,
+          conflicts: [],
+          guardrail_violations: ["protected_paths: infra/deploy.yml is protected"],
+        },
+      },
+    });
+    const art = [...repo.artifacts.get("acme/widget-1")!.values()][0];
+    const dispatching = { member: "levare-runner", kind: "merge", startedAt: "2026-07-17T01:59:00.000Z" };
+    const html = gateCardHtml(repo, mergeGate(art), NOW, { dispatching });
+
+    expect(html).toContain("RE-CHECKING");
+    expect(html).not.toContain("notice notice--danger");
+    expect(html).not.toContain("protected_paths: infra/deploy.yml is protected");
+  });
 });
 
 // ---------------------------------------------------------------------------
