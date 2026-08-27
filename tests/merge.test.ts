@@ -707,6 +707,74 @@ describe("commitDispatchWorktree (goal commit-on-produce, Finding 74)", () => {
     }
   });
 
+  // Finding 120: `HERMETIC_GIT_ENV` forces GIT_CONFIG_GLOBAL/SYSTEM to `/dev/null` so a stray ambient
+  // GIT_AUTHOR_* never misattributes a commit (NOTES CAP-B-FIX) — this must never ALSO mean the
+  // operator's own `core.excludesFile` gets silently defeated, letting a file they configured git to
+  // never track land in a member's commit. Mutates the real `process.env.HOME` for the duration of the
+  // test (restored in `finally`) rather than threading a fake env through `commitDispatchWorktree` — the
+  // function takes no env override; this is the same ambient-HOME surface a real operator's shell sets.
+  test("a file the operator's global core.excludesFile excludes is never staged, committed, or lost as an empty commit", () => {
+    const repo = makeProjectRepo();
+    const fakeHome = mkdtempSync(join(tmpdir(), "levare-op-home-"));
+    const realHome = process.env.HOME;
+    try {
+      mkdirSync(join(fakeHome, ".config", "git"), { recursive: true });
+      writeFileSync(join(fakeHome, ".config", "git", "ignore"), "*.secret\n");
+      process.env.HOME = fakeHome;
+
+      git(repo, ["branch", "levare/unit-a", "main"]);
+      const beforeSha = rev(repo, "levare/unit-a");
+      const identity = { name: "finch", email: "finch@levare.local" };
+      const created = createDispatchWorktree(repo, "levare/unit-a", identity);
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+      let result: ReturnType<typeof commitDispatchWorktree>;
+      try {
+        writeFileSync(join(created.worktree.path, "leaked.secret"), "should never be tracked\n");
+        result = commitDispatchWorktree(created.worktree.path, created.worktree.baseSha, "should never land", identity);
+      } finally {
+        created.worktree.cleanup();
+      }
+      // No real, trackable change happened — the only file present is one the operator's own global
+      // config excludes, so this must read as "clean", never a real commit.
+      expect(result).toEqual({ committed: false, reason: "clean" });
+      expect(rev(repo, "levare/unit-a")).toBe(beforeSha);
+    } finally {
+      process.env.HOME = realHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+      rmrf(repo);
+    }
+  });
+
+  // The repo's own `.gitignore` (never the operator's global config) must keep working exactly as
+  // before — Finding 120's fix passes an explicit `core.excludesFile` through; it must never suppress
+  // or interfere with per-repo ignore rules `git` already applies on its own.
+  test("the project repo's own .gitignore still excludes a file, independent of any operator global config", () => {
+    const repo = makeProjectRepo();
+    try {
+      writeFileSync(join(repo, ".gitignore"), "*.local\n");
+      git(repo, ["add", ".gitignore"]);
+      git(repo, ["commit", "-q", "-m", "add gitignore"]);
+      git(repo, ["branch", "levare/unit-a", "main"]);
+      const beforeSha = rev(repo, "levare/unit-a");
+      const identity = { name: "finch", email: "finch@levare.local" };
+      const created = createDispatchWorktree(repo, "levare/unit-a", identity);
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+      let result: ReturnType<typeof commitDispatchWorktree>;
+      try {
+        writeFileSync(join(created.worktree.path, "scratch.local"), "should never be tracked\n");
+        result = commitDispatchWorktree(created.worktree.path, created.worktree.baseSha, "should never land", identity);
+      } finally {
+        created.worktree.cleanup();
+      }
+      expect(result).toEqual({ committed: false, reason: "clean" });
+      expect(rev(repo, "levare/unit-a")).toBe(beforeSha);
+    } finally {
+      rmrf(repo);
+    }
+  });
+
   test("a clean worktree (member already self-committed, or genuinely no changes) never creates an empty commit", () => {
     const repo = makeProjectRepo();
     try {

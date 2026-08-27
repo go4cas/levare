@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, unlinkSync, readdirSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { homedir } from "node:os";
 
 export const CONDUCTOR_NAME = "cas";
 export const CONDUCTOR_EMAIL = "cas@levare.local";
@@ -42,6 +43,26 @@ const HERMETIC_GIT_ENV: NodeJS.ProcessEnv = {
   GIT_COMMITTER_NAME: undefined,
   GIT_COMMITTER_EMAIL: undefined,
 };
+
+// Finding 120: every commit helper in this file (and its merge.ts/gateops.ts siblings — see each one's
+// own doc) forces GIT_CONFIG_GLOBAL/SYSTEM to `/dev/null` (NOTES CAP-B-FIX, above) so a stray ambient
+// GIT_AUTHOR_* never misattributes a commit — but that redirect also hides the operator's real
+// `~/.gitconfig`, and with it any explicit `core.excludesFile` the operator configured there. Resolved
+// ONCE, against the REAL ambient env (never HERMETIC_GIT_ENV — this must run before that redirect
+// exists), so a caller can pass the result through explicitly (`-c core.excludesFile=<path>`) and get
+// the operator's real ignore rules back without reopening GIT_CONFIG_GLOBAL/SYSTEM. Mirrors git's own
+// resolution order: an explicit `core.excludesFile` (tilde-expanded, exactly as git itself expands a
+// leading `~/`) wins; absent that, git's own compiled-in default is `$XDG_CONFIG_HOME/git/ignore`,
+// falling back to `$HOME/.config/git/ignore`. Returns undefined — never a guessed/nonexistent path —
+// when nothing resolves to a real file: git treats a configured-but-missing excludesFile as a hard
+// error on some versions, so this must only ever hand back a path that is actually readable right now.
+export function resolveGlobalExcludesFile(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const home = env.HOME ?? homedir();
+  const configured = spawnSync("git", ["config", "--global", "--get", "core.excludesFile"], { encoding: "utf8", env });
+  const raw = configured.status === 0 ? configured.stdout.trim() : "";
+  const resolved = raw ? (raw === "~" ? home : raw.startsWith("~/") ? join(home, raw.slice(2)) : raw) : join(env.XDG_CONFIG_HOME || join(home, ".config"), "git", "ignore");
+  return existsSync(resolved) ? resolved : undefined;
+}
 
 export function commitAs(root: string, files: string[], message: string, identity: { name: string; email: string }): string {
   const gitArgs = (args: string[]) => [
