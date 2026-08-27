@@ -353,25 +353,32 @@ export function scoreNodes(repo: Repo, unit: WorkUnit, running: DaemonInvocation
     // rejected/blocked kind still renders its true state rather than reading as untouched.
     const live = artifacts.filter((a) => a.kind === kind);
     const current = live.find((a) => a.status !== "superseded") ?? live[live.length - 1];
+    // Finding 145 site 2: a live invocation for this kind means it is genuinely being (re)produced
+    // right now, regardless of whether a stale artifact of the same kind still sits on disk — loop redo
+    // (board/gateops.ts's own `reinvokeKind`) and blocked-artifact retry (`resolveBlockedArtifactGate`)
+    // both leave the artifact being replaced in place for the whole in-flight window, so gating this
+    // check behind "no artifact yet" (as before) rendered the stale `needs you`/`blocked` state through
+    // the ordinary redo/retry loop, not just some edge case. `inv.kind === kind` already scopes this to
+    // the exact kind, and the daemon's single-flight-per-unit dispatch means a match is unambiguous.
+    if (inv && inv.kind === kind) {
+      // The invocation names a bare member, not `team/member` (dagwalk.ts's own `action.member`) —
+      // resolve which responsible team actually owns it so the avatar column reads exactly like an
+      // artifact's own `produced_by` does everywhere else on the board.
+      const team = responsibleTeamsFor(repo, unit).find((t) => t.members.includes(inv.member));
+      const membership = team ? loopMembershipFor(team, kind, capabilities) : undefined;
+      const loop = membership
+        ? { round: live.length + 1, maxRounds: membership.loop.maxRounds, until: membership.loop.until, onExhaust: membership.loop.onExhaust }
+        : undefined;
+      const agent = repo.agents.get(inv.member);
+      return {
+        kind,
+        shape: "dot",
+        state: "active",
+        producedBy: team ? `${team.name}/${inv.member}` : inv.member,
+        live: { startedAt: inv.startedAt, timeoutS: agent ? resolveMemberTimeoutS(agent) : undefined, loop },
+      };
+    }
     if (!current) {
-      if (inv && inv.kind === kind) {
-        // The invocation names a bare member, not `team/member` (dagwalk.ts's own `action.member`) —
-        // resolve which responsible team actually owns it so the avatar column reads exactly like an
-        // artifact's own `produced_by` does everywhere else on the board.
-        const team = responsibleTeamsFor(repo, unit).find((t) => t.members.includes(inv.member));
-        const membership = team ? loopMembershipFor(team, kind, capabilities) : undefined;
-        const loop = membership
-          ? { round: live.length + 1, maxRounds: membership.loop.maxRounds, until: membership.loop.until, onExhaust: membership.loop.onExhaust }
-          : undefined;
-        const agent = repo.agents.get(inv.member);
-        return {
-          kind,
-          shape: "dot",
-          state: "active",
-          producedBy: team ? `${team.name}/${inv.member}` : inv.member,
-          live: { startedAt: inv.startedAt, timeoutS: agent ? resolveMemberTimeoutS(agent) : undefined, loop },
-        };
-      }
       // Fault 1: a kind no member of the responsible team can ever produce is not "wait" — nothing
       // arriving changes it, and rendering it as an ordinary queued step tells a Conductor to keep
       // watching for progress that cannot come.
