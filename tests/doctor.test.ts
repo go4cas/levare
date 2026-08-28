@@ -109,12 +109,16 @@ describe("doctor: reports the Orchestrator boundary (NOTES C11)", () => {
     expect(out.startsWith("levare doctor")).toBe(true);
   });
 
-  test("`levare doctor` prints the Orchestrator's boundary state on the real CLI", () => {
+  // Finding 149: a missing ANTHROPIC_API_KEY no longer reports "off" — a subscription session
+  // authenticates identically and leaves no env var to check locally, so credential presence is no
+  // longer a local precondition at all; only a genuinely unresolvable native binary is, and this
+  // sandbox has one installed. "on" here is the fix, not a stale assertion (see sdk-transport.ts#checkSdkPreconditions).
+  test("`levare doctor` prints the Orchestrator's boundary state on the real CLI — 'on' even with no ANTHROPIC_API_KEY, when the native binary resolves", () => {
     const p = Bun.spawnSync(["./levare", "doctor", "fixtures/golden"], { env: { ...process.env, ANTHROPIC_API_KEY: "" } });
     assertExitCode("./levare doctor fixtures/golden", p, 0);
     const out = p.stdout.toString();
-    expect(out).toContain("orchestrator: off");
-    expect(out).toContain("ANTHROPIC_API_KEY");
+    expect(out).toContain("orchestrator: on");
+    expect(out).not.toContain("ANTHROPIC_API_KEY is not set");
   });
 });
 

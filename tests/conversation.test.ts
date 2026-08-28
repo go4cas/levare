@@ -1,4 +1,4 @@
-import { test, expect, describe } from "bun:test";
+import { test, expect, describe, beforeEach } from "bun:test";
 import { mkdtempSync, rmSync, cpSync, readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { assertSpawnOk, spawnStdout } from "./spawn-helpers.ts";
@@ -9,8 +9,17 @@ import { validatePath } from "../src/validate.ts";
 import { loadRepo } from "../src/repo.ts";
 import { createBoard } from "../src/board/serve.ts";
 import { createSdkOrchestratorBoundary } from "../src/orchestrator-boundary.ts";
+import { resetSdkPreconditionCache } from "../src/sdk-transport.ts";
 import type { AsyncSdkTransport } from "../src/sdk-transport.ts";
 import type { OrchestratorBoundary, Intent } from "../src/orchestrator.ts";
+
+// See tests/board-serve.test.ts's identical `beforeEach` for why: `checkSdkPreconditionsCached`
+// (sdk-transport.ts) memoizes across every test file in this `bun test` process, keyed by nothing but
+// time — the "disabled-boundary 503 path" test below forces an unresolvable binary via `requireFrom`
+// and must not read a stale `viable: true` some earlier test cached against this sandbox's real binary.
+beforeEach(() => {
+  resetSdkPreconditionCache();
+});
 
 // NOTES V11-CONV: the Orchestrator conversation persists to files (conversations/<scope>/<YYYY-MM>.md),
 // closing the last invariant-2 exception UI10 left open (docs/current-gaps.md's former "Conversation
@@ -340,9 +349,14 @@ describe("POST /orchestrator/message — persists the completed exchange (NOTES 
 });
 
 describe("POST /orchestrator/message — a failed or errored reply is never persisted (NOTES V11-CONV)", () => {
+  // Finding 149: credential presence no longer gates boundary selection, so this test forces the one
+  // thing that still does — an unresolvable native binary — via `precondition.requireFrom`, rather than
+  // relying on this sandbox's ambient missing ANTHROPIC_API_KEY (which would now select a real boundary
+  // and attempt a real subprocess spawn).
   test("the disabled-boundary 503 path writes no conversation file and makes no commit", async () => {
     const root = seedScratchRepo();
-    const board = createBoard(root);
+    const dir = mkdtempSync(join(tmpdir(), "levare-orch-nobinary-"));
+    const board = createBoard(root, { orchestratorSelectOpts: { precondition: { requireFrom: join(dir, "scratch.ts") } } });
     try {
       const before = spawnStdout("git " + (["-C", root, "rev-parse", "HEAD"]).join(" "), spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" })).trim();
       const res = await board.fetch(
@@ -359,6 +373,7 @@ describe("POST /orchestrator/message — a failed or errored reply is never pers
     } finally {
       board.close();
       rmSync(root, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

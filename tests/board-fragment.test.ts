@@ -13,6 +13,19 @@ import { createBoard, extractFragment, isFragmentRequest, ROUTES } from "../src/
 
 const FRAG = { "X-Levare-Fragment": "1" };
 
+// Finding 149: with the Orchestrator now genuinely available (no more credential-presence gate — see
+// sdk-transport.ts), the panel's briefing turn renders with a real, live `data-at`/`title` timestamp
+// (`new Date()`, invariant 2 — never cached). The full-page and fragment GETs below are two INDEPENDENT
+// server-side renders fired concurrently; each legitimately captures its own wall-clock instant, so a
+// byte-for-byte comparison of that instant is not what "one render path, not a fork" actually asserts —
+// same lesson as NOTES ORCH-B-DATE-FLAKE (normalize the volatile value, compare the shape). Only an
+// ISO-8601 instant's literal characters are matched, so any content sharing a string that happens to
+// look like a date is not the concern — a real one only ever appears as an attribute value here.
+const ISO_INSTANT = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/g;
+function stripLiveTimestamps(s: string): string {
+  return s.replace(ISO_INSTANT, "NORMALIZED-INSTANT");
+}
+
 function req(url: string, init?: RequestInit): Request {
   return new Request(`http://localhost${url}`, init);
 }
@@ -277,16 +290,16 @@ describe("levare serve — fragment GETs (NOTES UI10)", () => {
       const fullHtml = await fullRes.text();
       const fragBody = await fragRes.json();
       const extractedFromFull = extractFragment(fullHtml)!;
-      expect(fragBody.main).toBe(extractedFromFull.main);
+      expect(stripLiveTimestamps(fragBody.main)).toBe(stripLiveTimestamps(extractedFromFull.main));
       expect(fragBody.title).toBe(extractedFromFull.title);
-      expect(fragBody.extras).toBe(extractedFromFull.extras);
+      expect(stripLiveTimestamps(fragBody.extras)).toBe(stripLiveTimestamps(extractedFromFull.extras));
       // NOTES ORCH-STALE-CARD: the SAME one-render-path guarantee now covers `orchAction` too — the
       // regression this bug was: a fragment response that silently dropped/forked the gate card content
       // a cold GET would have shown, since nothing sliced it out at all.
-      expect(fragBody.orchAction).toBe(extractedFromFull.orchAction);
+      expect(stripLiveTimestamps(fragBody.orchAction)).toBe(stripLiveTimestamps(extractedFromFull.orchAction));
       // NOTES ORCH-STALE-CARD addendum: and now `orchBriefing` too, found stale one element up from
       // `orchAction` after that fix shipped.
-      expect(fragBody.orchBriefing).toBe(extractedFromFull.orchBriefing);
+      expect(stripLiveTimestamps(fragBody.orchBriefing)).toBe(stripLiveTimestamps(extractedFromFull.orchBriefing));
       // Finding 131: and now the header's version chip too — same guarantee, same reason.
       expect(fragBody.appVersion).toBe(extractedFromFull.appVersion);
       // Finding 40 (REOPENED): and now the header's Orchestrator dot and the rail's three resynced

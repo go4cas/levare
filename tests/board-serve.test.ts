@@ -1,4 +1,4 @@
-import { test, expect, describe, beforeAll, afterAll } from "bun:test";
+import { test, expect, describe, beforeAll, beforeEach, afterAll } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, cpSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { assertSpawnOk, assertExitCode, spawnStdout } from "./spawn-helpers.ts";
@@ -6,9 +6,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBoard } from "../src/board/serve.ts";
 import { createSdkOrchestratorBoundary } from "../src/orchestrator-boundary.ts";
+import { resetSdkPreconditionCache } from "../src/sdk-transport.ts";
 import type { AsyncSdkTransport } from "../src/sdk-transport.ts";
 import { stubAdapterRunner } from "../src/replay.ts";
 import { loadRepo } from "../src/repo.ts";
+
+// Ambient-environment pattern (see tests/orchestrator-sdk.test.ts's own identical `beforeEach`):
+// `checkSdkPreconditionsCached` (sdk-transport.ts) memoizes in a MODULE-LEVEL cache for a 30s TTL,
+// keyed by nothing but time, shared across every test file in this `bun test` process. The
+// "unresolvable native binary" test below (POST /orchestrator/message) depends on evaluating its own
+// `requireFrom` override fresh, not reading a stale `viable: true` some earlier test cached against
+// this sandbox's real (resolvable) binary.
+beforeEach(() => {
+  resetSdkPreconditionCache();
+});
 
 // Phase-4 acceptance (PRD §11): "an integration test POSTs approve on the fixture's open gate and
 // asserts the artifact file shows approved_by and `git log -1` shows the commit." Exercised against
@@ -560,12 +571,19 @@ describe("levare serve — POST /registry/check/*path (live validation of an uns
 });
 
 describe("levare serve — POST /orchestrator/message", () => {
-  // NOTES C11: with no ANTHROPIC_API_KEY (the case for this whole test suite — see the top-of-file
-  // hermetic env), there is no deterministic stand-in boundary to answer in the Orchestrator's voice
-  // any more. The route reports the honest disabled state and touches nothing.
-  test("with no credential, the route reports a disabled state — never a canned reply — and mutates nothing", async () => {
+  // NOTES C11 / Finding 149: unlike before, an absent ANTHROPIC_API_KEY (the case for this whole test
+  // suite's ambient env) no longer makes the boundary unselectable — a subscription session
+  // authenticates identically with no env var to detect, so credential presence no longer gates this.
+  // The one thing that still does is a genuinely unresolvable native binary, forced here via
+  // `precondition.requireFrom` pointed at an empty scratch dir (this sandbox has the real SDK binary
+  // installed, so leaving this unset would now select a REAL boundary and attempt a real, slow
+  // subprocess spawn — exactly the behavior change this finding intends for production, but wrong for
+  // a fast, hermetic unit test whose actual point is the disabled-response SHAPE). The route reports
+  // the honest disabled state and touches nothing.
+  test("with an unresolvable native binary, the route reports a disabled state — never a canned reply — and mutates nothing", async () => {
     const root = seedScratchRepo();
-    const board = createBoard(root);
+    const dir = mkdtempSync(join(tmpdir(), "levare-orch-nobinary-"));
+    const board = createBoard(root, { orchestratorSelectOpts: { precondition: { requireFrom: join(dir, "scratch.ts") } } });
     try {
       const before = spawnStdout("git rev-parse HEAD (before)", spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" })).trim();
       const res = await board.fetch(
@@ -587,6 +605,7 @@ describe("levare serve — POST /orchestrator/message", () => {
     } finally {
       board.close();
       rmSync(root, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

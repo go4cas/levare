@@ -1,5 +1,6 @@
 import { test, expect, describe, beforeEach } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as orchestratorModule from "../src/orchestrator.ts";
 import { selectOrchestratorBoundary } from "../src/orchestrator-boundary.ts";
@@ -49,8 +50,18 @@ describe("NOTES C11: no deterministic Orchestrator boundary exists in the codeba
     expect((orchestratorModule as Record<string, unknown>).deterministicBoundary).toBeUndefined();
   });
 
-  test("selectOrchestratorBoundary returns null — never a stand-in object — when the Orchestrator is unavailable", () => {
-    expect(selectOrchestratorBoundary({})).toBeNull();
-    expect(selectOrchestratorBoundary({ ANTHROPIC_API_KEY: "" })).toBeNull();
+  // Finding 149: credential presence no longer makes the Orchestrator unavailable — a subscription
+  // session authenticates identically with no env var to detect, so `selectOrchestratorBoundary({})`
+  // now returns a real boundary as long as the native SDK binary resolves (proven separately in
+  // tests/orchestrator-sdk.test.ts). The one thing that still makes it unavailable is a genuinely
+  // unresolvable binary — simulated here the same way that file does, scoping `requireFrom` to an
+  // empty directory with no node_modules ancestry.
+  test("selectOrchestratorBoundary returns null — never a stand-in object — when the native binary is unresolvable", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-empty-require-root-"));
+    try {
+      expect(selectOrchestratorBoundary({}, { precondition: { requireFrom: join(dir, "scratch.ts") } })).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
