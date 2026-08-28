@@ -65,9 +65,15 @@ describe("offline commands run with the SDK genuinely unresolvable (NOTES REV1 f
     assertExitCode("levare validate (no SDK)", { status: r.exitCode, signal: r.signal, stderr: r.stderr, stdout: r.stdout }, 0);
   });
 
-  test("`levare doctor` succeeds and never mentions the SDK package", () => {
+  // Finding 149: `doctor` no longer short-circuits on credential absence before ever checking the
+  // native binary (that gate is gone), so with the SDK genuinely unresolvable it now correctly reaches
+  // `checkSdkPreconditions`' binary check and reports it — legitimately naming "claude-agent-sdk" as
+  // part of the actual remedy ("run 'bun install' to fetch @anthropic-ai/claude-agent-sdk-<platform>").
+  // That is real, honest diagnostic output, not the REV1 finding 1 regression this file exists to
+  // catch (a top-level import crashing the WHOLE command before it reaches its own logic at all,
+  // always exactly "Cannot find module") — so only that specific string is still asserted absent here.
+  test("`levare doctor` succeeds without a module-resolution crash, even with the SDK genuinely unresolvable", () => {
     const r = run(["doctor", "fixtures/golden"]);
-    expect(r.stderr).not.toContain("claude-agent-sdk");
     expect(r.stderr).not.toContain("Cannot find module");
     expect(r.stdout).toContain("levare doctor");
     assertExitCode("levare doctor (no SDK)", { status: r.exitCode, signal: r.signal, stderr: r.stderr, stdout: r.stdout }, 0);

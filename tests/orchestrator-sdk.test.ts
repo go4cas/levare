@@ -471,15 +471,18 @@ describe("createSdkOrchestratorBoundary#converse (mocked transport)", () => {
 
 // NOTES C11: there is no second, deterministic boundary implementation any more — "unavailable" is
 // `null`, not a stand-in object with its own behavior.
-describe("selectOrchestratorBoundary — key-present vs. key-absent", () => {
-  test("no ANTHROPIC_API_KEY → null (the Orchestrator is unavailable, not a fallback voice)", () => {
+describe("selectOrchestratorBoundary — Finding 149: no credential-presence gate, only the binary precondition", () => {
+  // A subscription session (macOS Keychain, or a Linux OAuth credentials file) authenticates
+  // identically to ANTHROPIC_API_KEY but leaves no env var to detect, so an empty env must still
+  // select a real boundary as long as the native binary resolves — this sandbox has one installed.
+  test("no ANTHROPIC_API_KEY → still a real boundary, when the native binary resolves", () => {
     const boundary = selectOrchestratorBoundary({});
-    expect(boundary).toBeNull();
+    expect(boundary).not.toBeNull();
   });
 
-  test("empty-string ANTHROPIC_API_KEY is treated as absent", () => {
+  test("empty-string ANTHROPIC_API_KEY is likewise not treated as unavailable", () => {
     const boundary = selectOrchestratorBoundary({ ANTHROPIC_API_KEY: "" });
-    expect(boundary).toBeNull();
+    expect(boundary).not.toBeNull();
   });
 
   test("ANTHROPIC_API_KEY present → the real SDK-driven boundary, proven by it actually invoking the transport", async () => {
@@ -626,17 +629,22 @@ describe("resolveNativeBinary — mirrors the SDK's own require.resolve-based ch
   });
 });
 
-describe("checkSdkPreconditions — credential presence + binary resolvability, no network", () => {
-  test("no ANTHROPIC_API_KEY → not viable, reason names the credential", () => {
+describe("checkSdkPreconditions — Finding 149: binary resolvability only, no network, no credential gate", () => {
+  // The regression test for Finding 149: a Pro/Max operator with a real subscription session and no
+  // ANTHROPIC_API_KEY must not be told the Orchestrator is unavailable — there is no local, synchronous
+  // way to know a subscription session exists (macOS Keychain lookup is an async subprocess; a Linux
+  // credentials file check would still miss macOS), so credential presence is no longer checked here at
+  // all. The one thing that still makes this non-viable is a genuinely unresolvable native binary,
+  // covered by the next test.
+  test("no ANTHROPIC_API_KEY → still viable, when the native binary resolves", () => {
     const check = checkSdkPreconditions({});
-    expect(check.viable).toBe(false);
-    expect(check.reason).toContain("ANTHROPIC_API_KEY");
+    expect(check.viable).toBe(true);
   });
 
-  test("credential present but binary unresolvable → not viable, reason names the platform and the fix", () => {
+  test("no credential AND binary unresolvable → not viable, reason names the platform and the fix", () => {
     const dir = mkdtempSync(join(tmpdir(), "levare-empty-require-root-"));
     try {
-      const check = checkSdkPreconditions({ ANTHROPIC_API_KEY: "sk-ant-test" }, { requireFrom: join(dir, "scratch.ts") });
+      const check = checkSdkPreconditions({}, { requireFrom: join(dir, "scratch.ts") });
       expect(check.viable).toBe(false);
       expect(check.reason).toContain(`${process.platform}-${process.arch}`);
       // NOTES DIST7: the source-tree remedy is now a real, actionable command — "bun install" — not

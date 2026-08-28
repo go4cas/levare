@@ -12,7 +12,8 @@ export interface OrchestratorStatus {
   /** A short, human sentence explaining the state — the same text a doctor line and the panel's
    * disabled note draw from, so the reason is never re-worded per surface. */
   reason: string;
-  /** The env var an operator would set to make the Orchestrator available. */
+  /** A supported env-var override for authentication (Finding 149: no longer the only way to
+   * authenticate, or something `available` depends on — see `resolveOrchestratorStatus`). */
   envVar: string;
 }
 
@@ -23,8 +24,8 @@ export const ORCHESTRATOR_ENV_VAR = "ANTHROPIC_API_KEY";
 // SDK_WORKER_PATH])`) only worked when `process.execPath` was a real `bun` interpreter, not the
 // compiled binary itself. `workerSpawnArgv` (sdk-transport.ts) now self-invokes this same process in
 // worker mode instead of spawning a script path, which works identically whether this process is
-// compiled or source — so the credential/native-binary precondition below is the ONLY thing that
-// determines availability, compiled or not.
+// compiled or source — so the native-binary precondition below is the ONLY thing that determines
+// availability, compiled or not (Finding 149: credential presence no longer gates this at all).
 
 /** Resolve the Orchestrator's current boundary status — cached (30s TTL, see sdk-transport.ts) so a
  * page render or a doctor run never re-walks node_modules resolution on every call.
@@ -43,17 +44,17 @@ export function resolveOrchestratorStatus(
   envSource?: EnvProvenance,
 ): OrchestratorStatus {
   const check = checkSdkPreconditionsCached(env, opts);
+  // Finding 149: `check.viable` no longer depends on `ANTHROPIC_API_KEY` at all (sdk-transport.ts —
+  // a subscription session authenticates identically but leaves no env var to detect). `env` is still
+  // read HERE, independently of `check`, purely to report the (still-true, still-useful) fact that the
+  // key is set when it is — never to gate on it. NOTES DOCS-WALKTHROUGH-2's "presence, not validity"
+  // discipline still applies: this only ever says the key is present, never that it works.
+  const keyPresent = typeof env[ORCHESTRATOR_ENV_VAR] === "string" && env[ORCHESTRATOR_ENV_VAR].length > 0;
+  const keyNote = keyPresent ? `${ORCHESTRATOR_ENV_VAR} is present${envSource ? ` (${envSource})` : ""}; ` : "";
   return {
     available: check.viable,
-    // NOTES DOCS-WALKTHROUGH-2: this used to read "The Orchestrator is live." — a claim doctor cannot
-    // back up. `checkSdkPreconditions` only proves the key is SET and the native binary resolves; it
-    // never makes a request, so an expired or revoked key reports this identically to a good one, and
-    // only fails later at real dispatch (an operator hit exactly this live: a green doctor, then a 401
-    // on the first real message). Say only what's actually known — presence, not validity — rather than
-    // implying a check that never ran. See docs/current-gaps.md for why a real round-trip check was
-    // rejected rather than added.
     reason: check.viable
-      ? `${ORCHESTRATOR_ENV_VAR} is present${envSource ? ` (${envSource})` : ""} — its validity isn't checked until the Orchestrator makes a real request.`
+      ? `${keyNote}the Claude Agent SDK's native binary resolved — authentication (an API key or a subscription session) isn't checked until the Orchestrator makes a real request.`
       : (check.reason ?? `${ORCHESTRATOR_ENV_VAR} is not set`),
     envVar: ORCHESTRATOR_ENV_VAR,
   };

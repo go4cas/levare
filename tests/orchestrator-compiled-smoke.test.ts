@@ -51,7 +51,7 @@ function seedScratchStudio(): string {
 }
 
 describe("the compiled binary can load the orchestrator prompt (NOTES DIST4)", () => {
-  test("`<compiled> doctor` reports the prompt readable, byte-for-byte identical to docs/orchestrator-prompt.md, and 'off' honestly with no credential", () => {
+  test("`<compiled> doctor` reports the prompt readable, byte-for-byte identical to docs/orchestrator-prompt.md, and 'on' even with no credential (Finding 149)", () => {
     const onDisk = readFileSync("docs/orchestrator-prompt.md", "utf8");
     const expectedBytes = Buffer.byteLength(onDisk, "utf8");
 
@@ -62,9 +62,12 @@ describe("the compiled binary can load the orchestrator prompt (NOTES DIST4)", (
     expect(out).toContain("run mode: compiled");
     expect(out).toContain(`orchestrator prompt: readable (${expectedBytes} bytes)`);
     expect(out).not.toContain("ENOENT");
-    // NOTES DIST5: with no credential, "off" is a genuinely missing prerequisite (the key), not the
-    // old DIST4 blanket "compiled binaries can't run this" refusal — that reason string is gone.
-    expect(out).toContain("orchestrator: off");
+    // Finding 149: a missing ANTHROPIC_API_KEY no longer reports "off" at all — a subscription
+    // session (macOS Keychain, or a Linux OAuth credentials file) authenticates identically and
+    // leaves no env var to check locally, so credential presence is no longer a local precondition;
+    // only a genuinely unresolvable native binary is. This scratch binary DOES embed one for this
+    // host platform, so "on" here is the fix working, not a stale assertion.
+    expect(out).toContain("orchestrator: on");
     expect(out).not.toContain("compiled binary");
   });
 
@@ -112,7 +115,15 @@ describe("the compiled binary's hidden `__worker` subcommand reaches the real wo
 });
 
 describe("a compiled `serve` dispatches a real Orchestrator turn through the real self-invoked worker (NOTES DIST5)", () => {
-  test("with no credential at all, still reports the honest disabled state (a genuinely missing prerequisite, not a compiled-binary limitation)", async () => {
+  // Finding 149: no credential at all no longer means disabled — a subscription session
+  // authenticates identically to ANTHROPIC_API_KEY but leaves no env var to detect, so credential
+  // presence no longer gates boundary selection (sdk-transport.ts#checkSdkPreconditions). This
+  // scratch binary embeds a real native SDK asset for this host platform, so the route now proceeds
+  // to a REAL call attempt — same shape as the "with a credential present" test below (this sandbox
+  // has no live, authenticated `claude` CLI session either way, so a genuine successful reply isn't
+  // something either test can force; the point is that a call is genuinely ATTEMPTED, never refused
+  // up front for lack of an env var).
+  test("with no credential at all, the real spawn is still attempted end-to-end — never disabled for lack of ANTHROPIC_API_KEY", async () => {
     const root = seedScratchStudio();
     // NOTES DIST5-HANG-2 (readBoundPort cold-start flake): `spawnLevareServe`'s own bound-port wait
     // must use `COMPILED_BINARY_BIND_TIMEOUT_MS`, not the source-shim-sized default, because `bin`
@@ -133,17 +144,35 @@ describe("a compiled `serve` dispatches a real Orchestrator turn through the rea
         body: JSON.stringify({ text: "hello" }),
       });
       const body = await res.json();
-      expect(body.disabled).toBe(true);
-      expect(body.reason).not.toContain("compiled binary");
-      // NOTES V11-CONV: the disabled path returns before `handle()` is ever called — no exchange was
-      // completed, so nothing should have been persisted. Proven against the REAL compiled binary's
-      // own write path, not just the source-mode route tests in tests/conversation.test.ts.
-      expect(existsSync(join(root, "conversations"))).toBe(false);
+      const raw = JSON.stringify(body);
+      expect(raw).not.toContain("ENOENT");
+      expect(raw).not.toContain("$bunfs");
+      expect(raw).not.toContain("unknown command");
+      // Never the old refusal — the boundary WAS selected (no credential check blocks it any more)
+      // and a real call WAS attempted.
+      expect(body.disabled).toBeUndefined();
+      // Exactly one of: a genuine successful reply, or a genuine (never dispatch-shaped) SDK failure
+      // — this sandbox's real failure here is the SDK's own "Not logged in" (no session, no key).
+      expect(typeof body.reply === "string" || typeof body.error === "string").toBe(true);
+
+      // NOTES V11-CONV: whether persistence happened is conditioned on which of the two branches
+      // above actually fired. Proven against the REAL compiled binary's own write path, not just the
+      // source-mode route tests in tests/conversation.test.ts.
+      const monthKey = new Date().toISOString().slice(0, 7);
+      const convFile = join(root, "conversations", "studio", `${monthKey}.md`);
+      if (typeof body.reply === "string") {
+        expect(existsSync(convFile)).toBe(true);
+      } else {
+        expect(existsSync(join(root, "conversations"))).toBe(false);
+      }
     } finally {
       proc.kill();
       rmSync(root, { recursive: true, force: true });
     }
-  }, COMPILED_BINARY_BIND_TIMEOUT_MS + 15_000);
+    // Comfortably longer than `COMPILED_BINARY_BIND_TIMEOUT_MS + DEFAULT_INTERPRET_TIMEOUT_MS` — same
+    // reasoning as the "with a credential present" test below, since this now drives the identical
+    // real-call code path.
+  }, COMPILED_BINARY_BIND_TIMEOUT_MS + DEFAULT_INTERPRET_TIMEOUT_MS + 15_000);
 
   // The core DIST5 proof: a credential IS present (so the boundary is selectable) and the native
   // binary resolves (this sandbox's own installed platform package) — the route must now actually

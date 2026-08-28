@@ -402,16 +402,19 @@ export type SelectOrchestratorBoundaryOptions = Omit<SdkOrchestratorBoundaryOpti
 };
 
 /**
- * Select the real SDK-driven boundary when the environment carries API credentials AND the SDK's own
- * local preconditions (credential + a resolvable native binary — NOTES phase-7 K13) are met, else
- * `null` — the Orchestrator is unavailable (NOTES C11: there is no deterministic stand-in boundary;
- * "present or absent" is the whole vocabulary). The precondition check is fast and local (no network,
- * no subprocess): a genuinely broken install (missing binary) is detected without ever attempting —
- * and timing out on — a real spawn. A credential that resolves but is invalid, or any other genuine
- * runtime failure (network, credit, model error), is NOT something this local check can know; those
- * still surface per-request as a real error (board/serve.ts), never silently downgraded. This is the
- * one seam `levare serve`/the CLI call; it never inspects the key's value, only its presence
- * (invariant 11).
+ * Select the real SDK-driven boundary when the SDK's own local precondition (a resolvable native
+ * binary — NOTES phase-7 K13) is met, else `null` — the Orchestrator is unavailable (NOTES C11: there
+ * is no deterministic stand-in boundary; "present or absent" is the whole vocabulary). The precondition
+ * check is fast and local (no network, no subprocess): a genuinely broken install (missing binary) is
+ * detected without ever attempting — and timing out on — a real spawn.
+ *
+ * Finding 149: this no longer also gates on `ANTHROPIC_API_KEY` presence — a subscription session
+ * (macOS Keychain, or a Linux OAuth credentials file) authenticates identically but leaves no env var
+ * to check locally, and checking it honestly would mean an async, platform-specific subprocess call
+ * this synchronous seam cannot afford (see sdk-transport.ts#checkSdkPreconditions). Whether ANY
+ * credential is present or valid, or any other genuine runtime failure (network, credit, model error),
+ * is NOT something this local check can know; those surface per-request as a real error
+ * (board/serve.ts) once the boundary actually attempts a call, never silently downgraded.
  *
  * NOTES DIST5: no longer refuses under a compiled binary. DIST4 forced `null` here because
  * `createAsyncSdkTransport`'s worker spawn (`Bun.spawn([process.execPath, SDK_WORKER_PATH])`) could
