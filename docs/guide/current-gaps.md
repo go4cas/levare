@@ -1,3 +1,8 @@
+---
+title: Current gaps
+nav_order: 8
+---
+
 # Current gaps
 
 A register, not a roadmap. Every item here is a decision that was made — to defer, to leave

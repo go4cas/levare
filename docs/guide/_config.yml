@@ -1,5 +1,6 @@
 remote_theme: just-the-docs/just-the-docs@v0.10.1
 plugins:
+  - jekyll-relative-links
   - jekyll-remote-theme
 
 title: levare guide
