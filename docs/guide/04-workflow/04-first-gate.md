@@ -101,7 +101,7 @@ produced_by: press/scribe
 consumes: []
 supersedes: null
 approved_by: null
-created: 2026-07-14
+created: 2026-07-14T09:22:41.108Z
 files: []
 usage:
   model: claude-sonnet-5
@@ -190,7 +190,7 @@ git log --format='%h %an — %s' -4
 
 ```
 9f2c1a4 cas           — approve product-brief-add-command-v2
-7b8e043 levare-runner — request-changes add-command → press/scribe produced product-brief v2
+7b8e043 cas           — request changes on product-brief-add-command-v1 → product-brief-add-command-v2
 2c91f5e levare-runner — start add-command → press/scribe produced product-brief v1
 d53c896 cas           — seed
 ```
