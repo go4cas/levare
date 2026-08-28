@@ -38,13 +38,16 @@ grep -q '^\.env$' .gitignore || echo ".env" >> .gitignore
 
 levare loads that file **at startup** — literally, not continuously. Three things to know:
 
-- **A shell variable always wins over `.env`.** If you `export ANTHROPIC_API_KEY` in your terminal,
-  that's what gets used.
+- **A shell variable always wins over `.env`.** If you `export ANTHROPIC_API_KEY` in your terminal
+  with a value that differs from what's in `.env`, that's what gets used. levare tells the two apart
+  by value, not by presence — some runtimes (Bun included) auto-load `.env` into the process before
+  levare ever runs, so "already present" can't by itself mean "shell-exported."
 - **`levare validate` will refuse to run if `.env` is tracked by git.** Studios get shared; a
   committed credential in a shared studio is a catastrophe. This one fails closed, deliberately.
-- **Fixing a typo in `.env` doesn't do anything to a `levare serve` that's already running.** Restart
-  it. This is the first of a few places in this chapter where an edit needs a restart to take
-  effect — [4.6](06-first-loop.md) explains why, and where else it applies.
+- **Fixing a typo in `.env` takes effect on the next request to a `levare serve` that's already
+  running — no restart.** levare re-derives `.env` on every page load and every mutating request.
+  Registry files (`teams/`, `agents/`, `connectors/`, `projects/`) are different — those *do* need a
+  restart to take effect. [4.6](06-first-loop.md) explains why, and where else it applies.
 
 Check it took:
 

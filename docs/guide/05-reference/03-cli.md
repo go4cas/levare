@@ -219,8 +219,10 @@ the graph between gates and halts at every one.
 - `--read-only` serves the board with the write routes disabled entirely — a safe way to look at a
   studio you don't intend to touch.
 
-It loads a `.env` from the studio root at startup (a shell variable wins over `.env`). It's
-single-user and localhost, and every write route is a Conductor action.
+It loads a `.env` from the studio root at startup, and again on every page load and mutating request
+— an edited `.env` takes effect on the next request, no restart needed (a shell variable that
+genuinely differs still wins over `.env`). It's single-user and localhost, and every write route is a
+Conductor action.
 
 Stop it with `Ctrl-C`; it shuts the listener down cleanly.
 

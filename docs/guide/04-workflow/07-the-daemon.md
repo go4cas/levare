@@ -30,10 +30,11 @@ could spend your money, and it is deliberately the part with no capacity to deci
 
 ## What it doesn't watch
 
-Only `work/`. A `teams/`, `agents/`, `connectors/`, or `projects/` edit — or a `.env` credential fix
-— never nudges it, no matter how long `levare serve` has been running: nothing under `work/` changed,
-so nothing scheduled a walk. The next walk *would* pick the edit up — every walk re-derives the whole
-repo from disk, registry included — there just isn't one coming until something does.
+Only `work/`. A `teams/`, `agents/`, `connectors/`, or `projects/` edit never nudges it, no matter how
+long `levare serve` has been running: nothing under `work/` changed, so nothing scheduled a walk. The
+next walk *would* pick the edit up — every walk re-derives the whole repo from disk, registry included
+— there just isn't one coming until something does. That's the daemon specifically; it's a separate
+mechanism from the one that reads `.env` (below).
 
 You met this directly in [4.6](06-first-loop.md): editing `teams/press.md` to add the loop was real
 the instant you saved it, and utterly invisible to a `levare serve` that had been running since 4.4,
@@ -41,6 +42,12 @@ until you restarted it. A daemon that just started always walks once immediately
 anything to change — which is the one dependable way to force this; there's no lighter-weight
 "recheck the registry" action in this version of levare. If you've just changed a definition and the
 studio isn't reacting, that's why.
+
+A `.env` credential fix is different: it doesn't go through the daemon's walk at all, so the daemon
+never watching it doesn't mean a restart is required. `levare serve` re-reads `.env` on every page
+load and every mutating request, independently of whether anything scheduled a walk — an edited key
+takes effect on the next request. Registry files have no such shortcut; they only take effect when a
+walk re-derives them from disk, which is what a restart forces.
 
 ## What it will never do
 

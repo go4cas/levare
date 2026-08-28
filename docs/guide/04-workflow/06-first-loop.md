@@ -80,9 +80,10 @@ levare serve .
 ```
 
 A fresh start always re-derives every unit from disk before it does anything else — this edit
-included. (You'll hit this same shape again outside a loop: any edit to a registry file, or to
-`.env`, needs a restart to take effect on a `levare serve` that's already running. [4.7](07-the-daemon.md)
-says why.)
+included. (You'll hit this same shape again outside a loop: any edit to a registry file — `teams/`,
+`agents/`, `connectors/`, `projects/` — needs a restart to take effect on a `levare serve` that's
+already running. `.env` is the exception: it's re-derived on every page load and mutating request,
+so an edit there takes effect on the next request with no restart. [4.7](07-the-daemon.md) says why.)
 
 Once it's back up, watch the score, and read `git log` afterwards — because the log *is* the story:
 
