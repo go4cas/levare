@@ -224,12 +224,12 @@ how the vendor CLI itself behaves, live-validated against a real one (`gh`, not 
   store. A `cli` member whose vendor CLI instead *defers* TLS verification to the platform trust store
   directly (NOTES R4-SANDBOX-TLS: a Rust CLI using `rustls-platform-verifier` or equivalent is the
   case in hand) is a different code path through the same sandbox, and is not covered by the `gh`
-  result — see [Current gaps](../../current-gaps.md) for what's confirmed and what's still open for
+  result — see [Current gaps](../current-gaps.md) for what's confirmed and what's still open for
   that case specifically.
 - **Credential and network reach are the same grant, not two.** Both come from the identical condition
   — does this member hold a connector — so a `cli` member can't hold a credential while staying offline
   today; there's no connector shape that names a purely local capability. This is a deliberate stance,
-  not an oversight — see [Current gaps](../../current-gaps.md)'s connector trust-tier taxonomy entry for
+  not an oversight — see [Current gaps](../current-gaps.md)'s connector trust-tier taxonomy entry for
   why, and what would change it.
 
 **A note on Corvid specifically, as of this writing (NOTES R4-SANDBOX-APPSERVER, NOTES
@@ -242,7 +242,7 @@ validation (`invalid peer certificate: UnknownIssuer`) on both its WebSocket and
 second, distinct fault from the one just described, still open. Whether that needs a further, narrowly
 scoped sandbox grant, or is something about Corvid's own TLS stack the sandbox can't fix at all, is being
 isolated with a codex-independent probe (`scripts/repro-r4-sandbox-tls-handshake.ts`) rather than guessed
-at — track [Current gaps](../../current-gaps.md) for the outcome. If your own `cli` member's vendor CLI
+at — track [Current gaps](../current-gaps.md) for the outcome. If your own `cli` member's vendor CLI
 can't run confined at all — its own architecture needs OS access the sandbox won't safely grant —
 declare that plainly rather than fighting it silently:
 

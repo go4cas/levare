@@ -203,7 +203,7 @@ narrows the blast radius of a mistake, it doesn't remove the need for that judgm
 R4-SANDBOX-APPSERVER).** Some vendor CLIs have their own internal architecture — an in-process IPC
 client/server split, a self-sandboxing helper that calls into the OS's own sandbox primitive as part of
 its startup — that needs OS access this sandbox's threat model won't safely grant. If you've confirmed
-that (not merely suspected it — see [Current gaps](../../current-gaps.md) for the live investigation this
+that (not merely suspected it — see [Current gaps](current-gaps.md) for the live investigation this
 project ran against exactly this shape), declare it on the agent:
 
 ```yaml
@@ -235,7 +235,7 @@ TLS stack a given `cli` member's vendor CLI uses — proven by construction, not
 working `bubblewrap` host. If your own `cli` member's vendor CLI defers to the platform trust store on
 macOS, treat a real end-to-end TLS request as unverified until you've tested it directly on that host;
 `scripts/repro-r4-sandbox-tls-handshake.ts` is the codex-independent harness this project built to isolate
-exactly this question, and [Current gaps](../../current-gaps.md) tracks the outcome.
+exactly this question, and [Current gaps](current-gaps.md) tracks the outcome.
 
 **On macOS, a network-granted member can also reach `securityd` — keychain and cryptographic services,
 not just trust evaluation (NOTES R4-SANDBOX-TLS).** `trustd.agent` alone was not sufficient for a real,
