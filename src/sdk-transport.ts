@@ -280,11 +280,16 @@ export function workerSpawnCwd(workerPath: string | undefined): string | undefin
 }
 
 /**
- * Whether the environment carries credentials the SDK can authenticate with — presence only, the
- * value itself is never read into a log, artifact, or commit (invariant 11), mirroring doctor.ts's
- * `EnvProbe` posture exactly. One of the two local preconditions `checkSdkPreconditions` checks before
- * `selectOrchestratorBoundary` will return a real boundary at all (NOTES C11: the other outcome is
- * `null` — unavailable — never a stand-in implementation).
+ * Whether `ANTHROPIC_API_KEY` specifically is set — presence only, the value itself is never read
+ * into a log, artifact, or commit (invariant 11), mirroring doctor.ts's `EnvProbe` posture exactly.
+ *
+ * NOT part of `checkSdkPreconditions`'s viability gate (Finding 149) — an operator authenticated via
+ * a Pro/Max subscription session (a macOS Keychain item, or a Linux OAuth credentials file — neither
+ * is an env var, and the macOS check alone requires an async `security` subprocess call, which this
+ * function's synchronous, render-path-called callers cannot afford) has no `ANTHROPIC_API_KEY` and
+ * would be wrongly reported unavailable by a gate keyed on this alone. This predicate is now test-only
+ * scaffolding (tests/orchestrator-sdk-live.test.ts skips its real-network round trip unless a real key
+ * is exported) — see `checkSdkPreconditions` for what actually gates the Orchestrator now.
  */
 export function hasAnthropicCredentials(env: Record<string, string | undefined> = process.env): boolean {
   return typeof env.ANTHROPIC_API_KEY === "string" && env.ANTHROPIC_API_KEY.length > 0;
@@ -439,18 +444,34 @@ export interface SdkPreconditionOptions {
   requireFrom?: string;
 }
 
-/** The two LOCAL, zero-cost preconditions a real SDK call needs: a credential, and a resolvable
- * native binary. Both are knowable in milliseconds — no network, no subprocess.
+/** The ONE local, zero-cost precondition a real SDK call needs: a resolvable native binary —
+ * knowable in milliseconds, no network, no subprocess.
  *
- * The binary check itself is two different mechanisms (NOTES DIST7): a compiled build asks
- * `hasEmbeddedNativeBinary` (is one embedded at all — never attempts extraction here, see this
- * file's own module comment on `resolveNativeBinary` above for why); a source build asks
- * `resolveNativeBinary` for a real, immediately-usable path. Either way, `binaryPath` on the
+ * Finding 149: this used to also gate on `hasAnthropicCredentials` (`ANTHROPIC_API_KEY` presence),
+ * which made a Pro/Max operator authenticated via a subscription session — a macOS Keychain item, or
+ * a Linux OAuth credentials file, neither an env var — see "Orchestrator unavailable —
+ * ANTHROPIC_API_KEY is not set" while correctly configured. Checking subscription presence honestly
+ * would mean shelling out to `security find-generic-password` on macOS (the SDK's own mechanism,
+ * confirmed against its shipped source; up to a 5s timeout) from a check this module's own render-path
+ * callers invoke synchronously on every page — the exact blocking-call shape NOTES phase-7 K9 already
+ * found freezes `levare serve`'s single event-loop thread for concurrent requests, just relocated to a
+ * different call. Dropped instead: no credential is pre-checked here at all. Every auth mechanism
+ * (API key, subscription session, any future SDK-supported method) gets the identical treatment — an
+ * attempted real call, whose actual outcome (success, or the SDK's own well-worded "Not logged in ·
+ * Please run /login") is what the operator sees, never a local guess about which mechanism applies.
+ *
+ * The binary check stays: unlike a credential, a genuinely missing native binary can never succeed
+ * under ANY auth mechanism, so it is a real precondition, not a guess about which credential the
+ * operator uses — and it remains a purely local, synchronous, milliseconds-fast fact (NOTES DIST7): a
+ * compiled build asks `hasEmbeddedNativeBinary` (is one embedded at all — never attempts extraction
+ * here, see this file's own module comment on `resolveNativeBinary` above for why); a source build
+ * asks `resolveNativeBinary` for a real, immediately-usable path. Either way, `binaryPath` on the
  * returned check is only ever set for the SOURCE case — a compiled build's real dispatch path
  * resolves its own `pathToClaudeCodeExecutable` in `sdk-worker.ts` instead, which is the only place
- * that can safely do the extraction (see there). */
-export function checkSdkPreconditions(env: Record<string, string | undefined> = process.env, opts: SdkPreconditionOptions = {}): SdkPreconditionCheck {
-  if (!hasAnthropicCredentials(env)) return { viable: false, reason: "ANTHROPIC_API_KEY is not set" };
+ * that can safely do the extraction (see there). `env` is accepted for signature stability with every
+ * existing caller (`checkSdkPreconditionsCached`, `selectOrchestratorBoundary`, `resolveOrchestratorStatus`,
+ * each of which still needs it for other reasons downstream) but is no longer read here. */
+export function checkSdkPreconditions(_env: Record<string, string | undefined> = process.env, opts: SdkPreconditionOptions = {}): SdkPreconditionCheck {
   const platform = opts.platform ?? process.platform;
   const arch = opts.arch ?? process.arch;
   const compiled = isCompiledBuild();

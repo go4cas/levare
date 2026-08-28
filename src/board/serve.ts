@@ -603,9 +603,12 @@ export const ROUTES: RouteDef[] = [
       // never logged either way (invariant 11). `ctx.orchestratorBoundary` is a test-only override
       // (unset in production, where `selectOrchestratorBoundary()` always runs).
       //
-      // NOTES C11: when no boundary is selectable (no credential, or the SDK's local preconditions
-      // fail), this is NOT routed through a deterministic stand-in — that boundary no longer exists.
-      // The route reports the honest disabled state and returns, never calling `handle()` at all.
+      // NOTES C11: when no boundary is selectable (the SDK's local native-binary precondition fails —
+      // Finding 149: credential presence no longer gates this), this is NOT routed through a
+      // deterministic stand-in — that boundary no longer exists. The route reports the honest disabled
+      // state and returns, never calling `handle()` at all. An unauthenticated operator (no API key,
+      // no subscription session) still gets a real boundary here — the real SDK call below is what
+      // reports that, via its own `catch` a few lines down, in the vendor's own words.
       // NOTES F11: `root` lets the boundary resolve `studio.md#orchestrator_model` — the studio-level
       // declaration that is now the source of truth for the Orchestrator's model (LEVARE_ORCHESTRATOR_MODEL
       // remains a runtime override, checked first inside resolveOrchestratorModel).
