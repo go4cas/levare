@@ -27,7 +27,7 @@ import { mkdtempSync, rmSync, existsSync, realpathSync, readFileSync } from "nod
 import { tmpdir, homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { checkGuardrails, violationLine, type DiffEntry, type GuardrailViolation } from "./guardrails.ts";
-import { RUNNER_NAME, RUNNER_EMAIL } from "./git.ts";
+import { RUNNER_NAME, RUNNER_EMAIL, resolveGlobalExcludesFile, resolveGlobalAttributesFile } from "./git.ts";
 import type { Project, Team } from "./types.ts";
 
 export class MergeError extends Error {}
@@ -382,11 +382,28 @@ function detectUnexpectedActor(worktreePath: string, commit: string, identity: {
  * case it was, since this function has no way to tell them apart and no need to). Absent whenever this
  * function did the committing itself (its own `-c` flags below always match `identity` by construction). */
 export function commitDispatchWorktree(worktreePath: string, baseSha: string, message: string, identity: { name: string; email: string }): DispatchCommitResult {
-  const status = git(worktreePath, ["status", "--porcelain"]);
+  // Finding 120: resolved against the real ambient env, BEFORE any HERMETIC_GIT_ENV-scrubbed spawn runs
+  // below — passed through explicitly as `-c core.excludesFile=` on both `status` (so "is this worktree
+  // dirty" agrees with what `add` is about to stage) and `add` (so a file the operator's global ignore
+  // excludes is never what makes this a non-empty, committable dispatch) — see resolveGlobalExcludesFile's
+  // own doc for why HOME being real here still isn't enough on its own.
+  const excludesFlag = (() => {
+    const excludesFile = resolveGlobalExcludesFile();
+    return excludesFile ? ["-c", `core.excludesFile=${excludesFile}`] : [];
+  })();
+  // Finding 144: same gap, `core.attributesFile` — a clean filter or eol rule from the operator's global
+  // attributes governs the bytes `add` stages, so it belongs only on `add` (never `status`, which never
+  // invokes a filter — see resolveGlobalAttributesFile's own doc for why this must apply even though
+  // `add -A`'s expansion, unlike an explicit path, was never the part attributesFile protects against).
+  const attributesFlag = (() => {
+    const attributesFile = resolveGlobalAttributesFile();
+    return attributesFile ? ["-c", `core.attributesFile=${attributesFile}`] : [];
+  })();
+  const status = git(worktreePath, [...excludesFlag, "status", "--porcelain"]);
   if (status.status !== 0) return { committed: false, reason: "error", error: `git status failed: ${status.stderr.trim()}` };
 
   if (status.stdout.trim() !== "") {
-    const add = git(worktreePath, ["add", "-A"]);
+    const add = git(worktreePath, [...excludesFlag, ...attributesFlag, "add", "-A"]);
     if (add.status !== 0) return { committed: false, reason: "error", error: `git add failed: ${add.stderr.trim()}` };
 
     const commit = git(worktreePath, ["-c", `user.name=${identity.name}`, "-c", `user.email=${identity.email}`, "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", message]);

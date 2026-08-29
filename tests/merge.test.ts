@@ -707,6 +707,132 @@ describe("commitDispatchWorktree (goal commit-on-produce, Finding 74)", () => {
     }
   });
 
+  // Finding 120: `HERMETIC_GIT_ENV` forces GIT_CONFIG_GLOBAL/SYSTEM to `/dev/null` so a stray ambient
+  // GIT_AUTHOR_* never misattributes a commit (NOTES CAP-B-FIX) — this must never ALSO mean the
+  // operator's own `core.excludesFile` gets silently defeated, letting a file they configured git to
+  // never track land in a member's commit. Mutates the real `process.env.HOME` for the duration of the
+  // test (restored in `finally`) rather than threading a fake env through `commitDispatchWorktree` — the
+  // function takes no env override; this is the same ambient-HOME surface a real operator's shell sets.
+  //
+  // Also clears `XDG_CONFIG_HOME` for the duration (restored in `finally`): `resolveGlobalExcludesFile`'s
+  // default-path fallback is `$XDG_CONFIG_HOME/git/ignore` when that var is set, taking priority over
+  // `$HOME/.config/git/ignore` — this test plants the fixture at the LATTER path deliberately (the common
+  // case, no XDG override), so an ambient `XDG_CONFIG_HOME` already set on the host running the suite
+  // (observed on at least one CI runner, absent on a plain dev machine) would make the real resolution
+  // correctly skip right past this fixture — not a bug in the resolver, just an assumption this test's
+  // setup needs to hold instead of leaving to chance.
+  test("a file the operator's global core.excludesFile excludes is never staged, committed, or lost as an empty commit", () => {
+    const repo = makeProjectRepo();
+    const fakeHome = mkdtempSync(join(tmpdir(), "levare-op-home-"));
+    const realHome = process.env.HOME;
+    const realXdgConfigHome = process.env.XDG_CONFIG_HOME;
+    try {
+      mkdirSync(join(fakeHome, ".config", "git"), { recursive: true });
+      writeFileSync(join(fakeHome, ".config", "git", "ignore"), "*.secret\n");
+      process.env.HOME = fakeHome;
+      delete process.env.XDG_CONFIG_HOME;
+
+      git(repo, ["branch", "levare/unit-a", "main"]);
+      const beforeSha = rev(repo, "levare/unit-a");
+      const identity = { name: "finch", email: "finch@levare.local" };
+      const created = createDispatchWorktree(repo, "levare/unit-a", identity);
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+      let result: ReturnType<typeof commitDispatchWorktree>;
+      try {
+        writeFileSync(join(created.worktree.path, "leaked.secret"), "should never be tracked\n");
+        result = commitDispatchWorktree(created.worktree.path, created.worktree.baseSha, "should never land", identity);
+      } finally {
+        created.worktree.cleanup();
+      }
+      // No real, trackable change happened — the only file present is one the operator's own global
+      // config excludes, so this must read as "clean", never a real commit.
+      expect(result).toEqual({ committed: false, reason: "clean" });
+      expect(rev(repo, "levare/unit-a")).toBe(beforeSha);
+    } finally {
+      process.env.HOME = realHome;
+      if (realXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = realXdgConfigHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+      rmrf(repo);
+    }
+  });
+
+  // Finding 144: the same HERMETIC_GIT_ENV redirect also hides the operator's global `core.attributesFile`
+  // — a clean filter it declares must still transform a member's own added content. The attributes file
+  // itself is planted at git's own DEFAULT path under a fake $HOME (mirroring the excludesFile test above
+  // — no explicit `core.excludesFile`/`core.attributesFile` configured), so this never touches the real
+  // host's global git config; the filter COMMAND is defined in the project repo's own LOCAL config
+  // (`.git/config`, shared by every worktree of that repo, never redirected by GIT_CONFIG_GLOBAL) since a
+  // global gitconfig entry would be just as hidden as the attributes file itself was before this fix.
+  // Also clears `XDG_CONFIG_HOME` for the duration — see the excludesFile test above's own doc for why.
+  test("a filter from the operator's global core.attributesFile still transforms a member's added content", () => {
+    const repo = makeProjectRepo();
+    const fakeHome = mkdtempSync(join(tmpdir(), "levare-op-home-attrs-"));
+    const realHome = process.env.HOME;
+    const realXdgConfigHome = process.env.XDG_CONFIG_HOME;
+    try {
+      mkdirSync(join(fakeHome, ".config", "git"), { recursive: true });
+      writeFileSync(join(fakeHome, ".config", "git", "attributes"), "*.shout filter=shout\n");
+      process.env.HOME = fakeHome;
+      delete process.env.XDG_CONFIG_HOME;
+      git(repo, ["config", "filter.shout.clean", "tr a-z A-Z"]);
+      git(repo, ["config", "filter.shout.smudge", "cat"]);
+
+      git(repo, ["branch", "levare/unit-a", "main"]);
+      const identity = { name: "finch", email: "finch@levare.local" };
+      const created = createDispatchWorktree(repo, "levare/unit-a", identity);
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+      let result: ReturnType<typeof commitDispatchWorktree>;
+      try {
+        writeFileSync(join(created.worktree.path, "loud.shout"), "hello world\n");
+        result = commitDispatchWorktree(created.worktree.path, created.worktree.baseSha, "shout it", identity);
+      } finally {
+        created.worktree.cleanup();
+      }
+      expect(result.committed).toBe(true);
+      if (!result.committed) return;
+      const stored = git(repo, ["show", `${result.commit}:loud.shout`]);
+      expect(stored).toBe("HELLO WORLD\n");
+    } finally {
+      process.env.HOME = realHome;
+      if (realXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = realXdgConfigHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+      rmrf(repo);
+    }
+  });
+
+  // The repo's own `.gitignore` (never the operator's global config) must keep working exactly as
+  // before — Finding 120's fix passes an explicit `core.excludesFile` through; it must never suppress
+  // or interfere with per-repo ignore rules `git` already applies on its own.
+  test("the project repo's own .gitignore still excludes a file, independent of any operator global config", () => {
+    const repo = makeProjectRepo();
+    try {
+      writeFileSync(join(repo, ".gitignore"), "*.local\n");
+      git(repo, ["add", ".gitignore"]);
+      git(repo, ["commit", "-q", "-m", "add gitignore"]);
+      git(repo, ["branch", "levare/unit-a", "main"]);
+      const beforeSha = rev(repo, "levare/unit-a");
+      const identity = { name: "finch", email: "finch@levare.local" };
+      const created = createDispatchWorktree(repo, "levare/unit-a", identity);
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+      let result: ReturnType<typeof commitDispatchWorktree>;
+      try {
+        writeFileSync(join(created.worktree.path, "scratch.local"), "should never be tracked\n");
+        result = commitDispatchWorktree(created.worktree.path, created.worktree.baseSha, "should never land", identity);
+      } finally {
+        created.worktree.cleanup();
+      }
+      expect(result).toEqual({ committed: false, reason: "clean" });
+      expect(rev(repo, "levare/unit-a")).toBe(beforeSha);
+    } finally {
+      rmrf(repo);
+    }
+  });
+
   test("a clean worktree (member already self-committed, or genuinely no changes) never creates an empty commit", () => {
     const repo = makeProjectRepo();
     try {

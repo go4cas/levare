@@ -927,6 +927,11 @@ export function runNewProjectSkill(opts: NewProjectOptions): GateOpResult {
   // Reuse the one Conductor identity (git.ts) rather than a second inline "cas" literal — this commits
   // into the freshly-cloned PROJECT repo (not the studio, so it can't call conductorCommit directly),
   // but the identity it stamps must never drift from every other Conductor-authored commit.
+  //
+  // Finding 142 — ruled NOT a defect, stays hermetic (see git.ts#commitAs's own doc for the full
+  // reasoning): this is the founding commit of a brand-new project levare itself just cloned, not an
+  // operator's pre-existing, pre-configured checkout — there is no operator excludesFile/attributesFile
+  // to honor here, and this should commit identically regardless of the host's global git config.
   const cloneGitArgs = (args: string[]) => ["-C", opts.cloneDir, "-c", `user.name=${CONDUCTOR_NAME}`, "-c", `user.email=${CONDUCTOR_EMAIL}`, "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args];
   spawnSync("git", cloneGitArgs(["add", "-A"]), { encoding: "utf8", env: HERMETIC_GIT_ENV });
   spawnSync("git", cloneGitArgs(["commit", "-q", "-m", "initial commit"]), { encoding: "utf8", env: HERMETIC_GIT_ENV });

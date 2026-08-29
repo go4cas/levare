@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, chmodSync, realpathSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, chmodSync, realpathSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { assertSpawnOk } from "./spawn-helpers.ts";
 import { tmpdir, homedir } from "node:os";
@@ -2768,6 +2768,138 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
         const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
         expect(doc).toContain("member");
       } finally {
+        rmSync(projectRepo, { recursive: true, force: true });
+        rmSync(dirname(primitiveBin), { recursive: true, force: true });
+      }
+    });
+
+    // Finding 120: the /dev/null redirect above degrades `.gitconfig` cleanly, but on its own it also
+    // silently defeats the operator's global `core.excludesFile` — a "full"-tier sandbox denies the
+    // operator's real HOME the excludesFile lives under, and unlike `.gitconfig`, git treats a denied
+    // excludesFile as a tolerated no-op (confirmed directly against a real git binary), not a fatal
+    // error, so a member's own `git add`/`git status` inside the sandbox would stage exactly what the
+    // operator's global ignore rules say never to track — with no crash to make the loss visible. Fixed
+    // by resolving the real path in the unsandboxed parent process and handing it back in as
+    // GIT_CONFIG_COUNT/_KEY_0/_VALUE_0 (the env-var equivalent of `-c core.excludesFile=`, since a
+    // member's own git invocations inside the sandbox are never levare's own command line to add a `-c`
+    // flag to). Mutates the real `process.env.HOME` for the duration of the test (restored in `finally`)
+    // — `resolveGlobalExcludesFile` reads the real ambient env by design, the same surface a real
+    // operator's shell sets.
+    test("level: full → the operator's global core.excludesFile is resolved and handed through as GIT_CONFIG_COUNT/_KEY_0/_VALUE_0", async () => {
+      const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+      const primitiveBin = fakeWorkingPrimitive();
+      const fakeHome = mkdtempSync(join(tmpdir(), "levare-op-home-"));
+      const realHome = process.env.HOME;
+      try {
+        mkdirSync(join(fakeHome, ".config", "git"), { recursive: true });
+        writeFileSync(join(fakeHome, ".config", "git", "ignore"), "*.secret\n");
+        process.env.HOME = fakeHome;
+
+        const repo = repoWithRealStorefrontRepo(projectRepo);
+        const runner = new AdapterRunner(repo, {
+          pricing,
+          capabilities: [{ member: "finch", kind: "review" }],
+          native: nativeMock,
+          remote: remoteMock,
+          cliCommand: () => ["sh", "-c", 'printf "COUNT=%s KEY_0=%s VALUE_0=%s" "$GIT_CONFIG_COUNT" "$GIT_CONFIG_KEY_0" "$GIT_CONFIG_VALUE_0"'],
+          sandboxDetection: { platform: "linux", primitive: "bubblewrap", level: "full", bin: primitiveBin },
+        });
+        const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+        expect(doc).toContain(`COUNT=1 KEY_0=core.excludesFile VALUE_0=${join(fakeHome, ".config", "git", "ignore")}`);
+      } finally {
+        process.env.HOME = realHome;
+        rmSync(fakeHome, { recursive: true, force: true });
+        rmSync(projectRepo, { recursive: true, force: true });
+        rmSync(dirname(primitiveBin), { recursive: true, force: true });
+      }
+    });
+
+    test("no operator global excludesFile exists → GIT_CONFIG_COUNT is never set at all", async () => {
+      const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+      const primitiveBin = fakeWorkingPrimitive();
+      const fakeHome = mkdtempSync(join(tmpdir(), "levare-op-home-empty-"));
+      const realHome = process.env.HOME;
+      try {
+        process.env.HOME = fakeHome;
+        const repo = repoWithRealStorefrontRepo(projectRepo);
+        const runner = new AdapterRunner(repo, {
+          pricing,
+          capabilities: [{ member: "finch", kind: "review" }],
+          native: nativeMock,
+          remote: remoteMock,
+          cliCommand: () => ["sh", "-c", 'printf "COUNT=[%s]" "$GIT_CONFIG_COUNT"'],
+          sandboxDetection: { platform: "linux", primitive: "bubblewrap", level: "full", bin: primitiveBin },
+        });
+        const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+        expect(doc).toContain("COUNT=[]");
+      } finally {
+        process.env.HOME = realHome;
+        rmSync(fakeHome, { recursive: true, force: true });
+        rmSync(projectRepo, { recursive: true, force: true });
+        rmSync(dirname(primitiveBin), { recursive: true, force: true });
+      }
+    });
+
+    // Finding 144: same class, same mechanism as Finding 120 above — `core.attributesFile` lives under
+    // the same denied real HOME and degrades the same way (a tolerated no-op, not fatal), so a member's
+    // own `git add` inside the sandbox would silently skip whatever clean filter/eol rule the operator's
+    // global attributes configure.
+    test("level: full → the operator's global core.attributesFile is resolved and handed through as GIT_CONFIG_KEY_0/VALUE_0 when no excludesFile exists", async () => {
+      const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+      const primitiveBin = fakeWorkingPrimitive();
+      const fakeHome = mkdtempSync(join(tmpdir(), "levare-op-home-attrs-"));
+      const realHome = process.env.HOME;
+      try {
+        mkdirSync(join(fakeHome, ".config", "git"), { recursive: true });
+        writeFileSync(join(fakeHome, ".config", "git", "attributes"), "*.shout filter=shout\n");
+        process.env.HOME = fakeHome;
+
+        const repo = repoWithRealStorefrontRepo(projectRepo);
+        const runner = new AdapterRunner(repo, {
+          pricing,
+          capabilities: [{ member: "finch", kind: "review" }],
+          native: nativeMock,
+          remote: remoteMock,
+          cliCommand: () => ["sh", "-c", 'printf "COUNT=%s KEY_0=%s VALUE_0=%s" "$GIT_CONFIG_COUNT" "$GIT_CONFIG_KEY_0" "$GIT_CONFIG_VALUE_0"'],
+          sandboxDetection: { platform: "linux", primitive: "bubblewrap", level: "full", bin: primitiveBin },
+        });
+        const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+        expect(doc).toContain(`COUNT=1 KEY_0=core.attributesFile VALUE_0=${join(fakeHome, ".config", "git", "attributes")}`);
+      } finally {
+        process.env.HOME = realHome;
+        rmSync(fakeHome, { recursive: true, force: true });
+        rmSync(projectRepo, { recursive: true, force: true });
+        rmSync(dirname(primitiveBin), { recursive: true, force: true });
+      }
+    });
+
+    // Both keys resolve at once — COUNT must track the actual number of overrides, indexed in the same
+    // excludesFile-then-attributesFile order `gitConfigRedirectEnv` builds them in.
+    test("level: full → both core.excludesFile and core.attributesFile resolve together as GIT_CONFIG_COUNT=2", async () => {
+      const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+      const primitiveBin = fakeWorkingPrimitive();
+      const fakeHome = mkdtempSync(join(tmpdir(), "levare-op-home-both-"));
+      const realHome = process.env.HOME;
+      try {
+        mkdirSync(join(fakeHome, ".config", "git"), { recursive: true });
+        writeFileSync(join(fakeHome, ".config", "git", "ignore"), "*.secret\n");
+        writeFileSync(join(fakeHome, ".config", "git", "attributes"), "*.shout filter=shout\n");
+        process.env.HOME = fakeHome;
+
+        const repo = repoWithRealStorefrontRepo(projectRepo);
+        const runner = new AdapterRunner(repo, {
+          pricing,
+          capabilities: [{ member: "finch", kind: "review" }],
+          native: nativeMock,
+          remote: remoteMock,
+          cliCommand: () => ["sh", "-c", 'printf "COUNT=%s KEY_0=%s KEY_1=%s" "$GIT_CONFIG_COUNT" "$GIT_CONFIG_KEY_0" "$GIT_CONFIG_KEY_1"'],
+          sandboxDetection: { platform: "linux", primitive: "bubblewrap", level: "full", bin: primitiveBin },
+        });
+        const { doc } = await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+        expect(doc).toContain("COUNT=2 KEY_0=core.excludesFile KEY_1=core.attributesFile");
+      } finally {
+        process.env.HOME = realHome;
+        rmSync(fakeHome, { recursive: true, force: true });
         rmSync(projectRepo, { recursive: true, force: true });
         rmSync(dirname(primitiveBin), { recursive: true, force: true });
       }

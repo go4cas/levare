@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, unlinkSync, readdirSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { homedir } from "node:os";
 
 export const CONDUCTOR_NAME = "cas";
 export const CONDUCTOR_EMAIL = "cas@levare.local";
@@ -43,6 +44,52 @@ const HERMETIC_GIT_ENV: NodeJS.ProcessEnv = {
   GIT_COMMITTER_EMAIL: undefined,
 };
 
+// Finding 120 (excludesFile), Finding 144 (attributesFile): every commit helper in this file (and its
+// merge.ts/gateops.ts siblings — see each one's own doc) forces GIT_CONFIG_GLOBAL/SYSTEM to `/dev/null`
+// (NOTES CAP-B-FIX, above) so a stray ambient GIT_AUTHOR_* never misattributes a commit — but that
+// redirect also hides the operator's real `~/.gitconfig`, and with it any explicit `core.excludesFile`/
+// `core.attributesFile` the operator configured there. Both keys resolve the identical way (an explicit
+// value, tilde-expanded exactly as git itself expands a leading `~/`, wins; absent that, git's own
+// compiled-in default lives under `$XDG_CONFIG_HOME/git/<name>`, falling back to `$HOME/.config/git/
+// <name>`) — the only difference is the config key and the default file's name, so one resolver takes
+// both as parameters rather than duplicating this logic per key. Resolved ONCE, against the REAL
+// ambient env (never HERMETIC_GIT_ENV — this must run before that redirect exists), so a caller can pass
+// the result through explicitly (`-c core.<key>=<path>`) and get the operator's real config back without
+// reopening GIT_CONFIG_GLOBAL/SYSTEM. Returns undefined — never a guessed/nonexistent path — when
+// nothing resolves to a real file: git treats a configured-but-missing file as a hard error on some
+// versions, so this must only ever hand back a path that is actually readable right now.
+function resolveGlobalGitConfigFile(key: string, defaultFileName: string, env: NodeJS.ProcessEnv): string | undefined {
+  const home = env.HOME ?? homedir();
+  const configured = spawnSync("git", ["config", "--global", "--get", key], { encoding: "utf8", env });
+  const raw = configured.status === 0 ? configured.stdout.trim() : "";
+  const resolved = raw ? (raw === "~" ? home : raw.startsWith("~/") ? join(home, raw.slice(2)) : raw) : join(env.XDG_CONFIG_HOME || join(home, ".config"), "git", defaultFileName);
+  return existsSync(resolved) ? resolved : undefined;
+}
+
+export function resolveGlobalExcludesFile(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  return resolveGlobalGitConfigFile("core.excludesFile", "ignore", env);
+}
+
+// Finding 144: a global `core.attributesFile` governs diff/merge/checkin behavior (line-ending
+// normalization, clean/smudge filters, diff drivers) for every path it matches — unlike excludesFile,
+// this applies even to an EXPLICIT `git add <path>` (verified directly: a `filter.*.clean` from a
+// resolved attributesFile transforms content added by exact path, not just by wildcard/`-A` expansion).
+// Losing it silently changes how a commit's bytes are stored, not just which files a wildcard add would
+// have picked up.
+export function resolveGlobalAttributesFile(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  return resolveGlobalGitConfigFile("core.attributesFile", "attributes", env);
+}
+
+// Finding 142 — ruled NOT a defect, stays hermetic: `commitAs` commits into the STUDIO's own repo
+// (conductorCommit/runnerCommit — board gate resolution, registry edits, the Orchestrator — and
+// new.ts/project-new.ts's operator-identity commits) and `runNewProjectSkill` (board/gateops.ts) commits
+// the founding state of a brand-new PROJECT repo levare itself just cloned. Both are levare's own
+// bookkeeping, not an operator's pre-existing, pre-configured project — unlike Finding 120's member
+// commits into a REAL project repo the operator owns and has configured, there is no "operator's own
+// config" here for excludesFile/attributesFile to honor; these writes should behave identically on every
+// machine regardless of whatever global git config happens to be set. Deliberately left hermetic; see
+// resolveGlobalExcludesFile/resolveGlobalAttributesFile's own doc for the sites where the opposite
+// reasoning applies.
 export function commitAs(root: string, files: string[], message: string, identity: { name: string; email: string }): string {
   const gitArgs = (args: string[]) => [
     "-C",
