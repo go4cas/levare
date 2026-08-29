@@ -383,6 +383,26 @@ describe("project screen", () => {
     expect(html).toContain('<div class="stat stat--actionable"><div class="n">2</div><div class="l">Gates open</div></div>');
   });
 
+  // Finding 145 site 3 sibling: "Gates open" is a genuinely different, structural measure from "Gates
+  // on you" (both gates are still honestly open, dispatching or not — see the "genuinely different
+  // measures" test above), so the NUMBER must stay 2 even while both dispatch. But `actionable` carries
+  // the same gate-brass "needs you" signal the header chip already gets right — it must not tint amber
+  // once every open gate's own re-dispatch is already running and nothing is actually left for the
+  // Conductor to decide.
+  test("the Gates open stat's honest count doesn't change while both gates dispatch, but its actionable tint turns off, matching the header chip", () => {
+    const running = [
+      { project: "storefront", unit: "checkout-flow", member: "lyra", kind: "spec", startedAt: now.toISOString() },
+      { project: "storefront", unit: "loyalty-flow", member: "wren", kind: "product-brief", startedAt: now.toISOString() },
+    ];
+    const dispatchingHtml = renderProject(repo, "storefront", root, now, running);
+    expect(dispatchingHtml).toContain('<div class="stat"><div class="n">2</div><div class="l">Gates open</div></div>');
+    expect(dispatchingHtml).not.toContain('<div class="stat stat--actionable"><div class="n">2</div><div class="l">Gates open</div></div>');
+
+    // Only ONE of the two dispatching: the other still genuinely needs the Conductor, so it stays tinted.
+    const oneDispatchingHtml = renderProject(repo, "storefront", root, now, [running[0]]);
+    expect(oneDispatchingHtml).toContain('<div class="stat stat--actionable"><div class="n">2</div><div class="l">Gates open</div></div>');
+  });
+
   // Conductor amendment (Phase 2 cluster 3 seal): "waiting"/"blocked" moved from a hollow ring to a
   // SOLID neutral-gray fill, palette-wide — a hollow ring reads as the score rail's own connecting
   // line piercing an empty center once that line runs continuously through every node. Both states
