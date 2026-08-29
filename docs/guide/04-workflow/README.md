@@ -36,7 +36,8 @@ EOF
 grep -q '^\.env$' .gitignore || echo ".env" >> .gitignore
 ```
 
-levare loads that file **at startup** — literally, not continuously. Three things to know:
+levare loads that file at startup **and re-reads it on every page load and mutating request** — so a
+correction lands without a restart. Three things to know:
 
 - **A shell variable always wins over `.env`.** If you `export ANTHROPIC_API_KEY` in your terminal
   with a value that differs from what's in `.env`, that's what gets used. levare tells the two apart
