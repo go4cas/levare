@@ -83,7 +83,7 @@ why it holds.
 
 ## Status
 
-**v0.2.0** — pre-1.0, built by one person, used daily by its author. The contract, runner, board,
+**v0.3.0** — pre-1.0, built by one person, used daily by its author. The contract, runner, board,
 sandbox, and MCP remote members are implemented and tested. Expect sharp edges, and expect the
 schema to move before 1.0.
 
