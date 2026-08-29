@@ -169,4 +169,17 @@ describe("studio briefing — the gate count in the sentence always agrees with 
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  // Finding 145 site 3 sibling: the studio briefing count used to be raw `openGates(repo).length`,
+  // never excluding a gate whose own dispatch is already running — unlike `projGates` (the per-project
+  // chip), computed from the same array.
+  test("a gate whose own dispatch is in flight is excluded from the sentence's count, matching the stat and section counter", () => {
+    const root = "fixtures/golden";
+    const repo = loadRepo(root);
+    expect(openGates(repo).length).toBe(2);
+    const running = [{ project: "storefront", unit: "checkout-flow", member: "lyra", kind: "spec", startedAt: now.toISOString() }];
+    const html = renderStudio(repo, root, now, running, ON);
+    expect(html).toContain("1 gate is on you.");
+    expect(html).not.toContain("2 gates are on you.");
+  });
 });

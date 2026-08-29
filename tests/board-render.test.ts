@@ -137,6 +137,20 @@ describe("the studio 'Gates on you' stat tints only when actionable, matching th
     expect(statMatch![0]).toContain('class="stat stat--actionable"');
     expect(statMatch![0]).not.toContain('class="n is-gate"');
   });
+
+  // Finding 145 site 3 sibling: `data-gatestat` (this stat) and `data-gatecount` (the "Needs you"
+  // section counter, which also drives assets/app.js's tab/favicon badge) both used to read the raw
+  // `openGates(repo).length`, counting a gate whose own dispatch is already running as still needing a
+  // decision — the fixture's checkout-flow spec gate, dispatched here, must drop out of both.
+  test("a gate whose own dispatch is in flight drops out of the stat AND the 'Needs you' section counter", () => {
+    const running = [{ project: "storefront", unit: "checkout-flow", member: "lyra", kind: "spec", startedAt: now.toISOString() }];
+    const html = renderStudio(repo, root, now, running);
+    const statMatch = html.match(/<div class="stat[^"]*"><div class="n[^"]*"[^>]*data-gatestat[^>]*>(\d+)<\/div><div class="l">Gates on you<\/div><\/div>/);
+    expect(statMatch).not.toBeNull();
+    expect(statMatch![1]).toBe("1");
+    expect(html).toMatch(/data-gatecount[^>]*>1</);
+    expect(html).not.toMatch(/data-gatecount[^>]*>2</);
+  });
 });
 
 // DOCS-WALKTHROUGH-3 item 1: the studio and project stat rails used to name the same measure two ways
