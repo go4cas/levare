@@ -138,27 +138,40 @@ levare doctor ~/studio
 ```
 
 ```
-orchestrator: on · ANTHROPIC_API_KEY is present — its validity isn't checked until the Orchestrator makes a real request.
+run mode: compiled (build 9c00154)
+
+orchestrator: on · ANTHROPIC_API_KEY is present (dotenv); the Claude Agent SDK's native binary
+resolved — authentication (an API key or a subscription session) isn't checked until the
+Orchestrator makes a real request.
+
+orchestrator prompt: readable (4251 bytes) at /$bunfs/root/orchestrator-prompt-5bbmv1hp.md
+
+sandbox: full (sandbox-exec — OS-visible, operator HOME denied)
 
 levare doctor · 3 connectors
 
-codex · cli
-  auth: subscription · ChatGPT subscription
+codex · cli · model
+  auth: subscription · ChatGPT Plus — flat monthly rate
   ⚠ levare cannot scope this credential — any member that can spawn `codex` can use this
     login. The grant is documentation, not enforcement.
   cli codex on PATH
   → ok
 
-github · cli
+github · cli · tool
   auth: env
   env GITHUB_TOKEN missing
   cli gh on PATH
   → missing-env
 ```
 
-`doctor` tells you what `validate` can't: whether the Orchestrator has a credential, whether each
-connector's env vars are actually present (and where they came from — `.env` or shell), whether each
-CLI is on your `PATH`, and each connector's auth mode with the scoping warning for subscription ones.
+`doctor` tells you what `validate` can't: which build you're running, whether the Orchestrator's SDK
+binary resolved, whether each connector's env vars are actually present (and where they came from —
+`.env` or shell), whether each CLI is on your `PATH`, what OS sandbox this host can actually enforce,
+and each connector's auth mode with the scoping warning for subscription ones.
+
+**It does not pre-check whether your credential works.** An API key or a subscription session is only
+exercised when the Orchestrator makes a real request — and the vendor's own error is what you get
+back, which is more accurate than anything levare could guess in advance.
 
 Where `validate` answers *"is this studio correct?"*, `doctor` answers *"will it run on this machine?"*
 
@@ -198,7 +211,7 @@ development and CI tool.
 
 ---
 
-## `levare serve <path> [--read-only] [--no-daemon]`
+## `levare serve <path> [--port <n>] [--read-only] [--no-daemon]`
 
 Start the board and the daemon.
 
@@ -214,6 +227,7 @@ The one long-running command. It serves the board on localhost, opens an SSE cha
 re-derives when files change, and runs the [daemon](../04-workflow/07-the-daemon.md) — which advances
 the graph between gates and halts at every one.
 
+- `--port` serves on a port other than the default `4173`.
 - `--no-daemon` serves the board without the daemon: you can read and resolve gates, but nothing
   advances on its own. Useful for inspecting a studio without letting it run.
 - `--read-only` serves the board with the write routes disabled entirely — a safe way to look at a
