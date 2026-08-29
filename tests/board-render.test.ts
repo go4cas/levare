@@ -1462,6 +1462,19 @@ describe("artifact render view", () => {
   test("throws on an unknown artifact id (routed to a 404-equivalent by the caller)", () => {
     expect(() => renderArtifact(repo, "storefront", "checkout-flow", "not-a-real-id", root, now)).toThrow();
   });
+
+  // Finding 145 site 3 sibling: this page never received `running` at all, so an in-review artifact
+  // always read "at gate" even while its own redo was actively dispatching — the one board surface
+  // that stayed blind to `dispatchingFor`, unlike every sibling route (studio/project/run).
+  test("the status chip reads 'dispatching', not 'at gate', while the gate's own redo is in flight", () => {
+    const running = [{ project: "storefront", unit: "checkout-flow", member: "lyra", kind: "spec", startedAt: now.toISOString() }];
+    const dispatchingHtml = renderArtifact(repo, "storefront", "checkout-flow", "spec-checkout-flow-v1", root, now, running);
+    expect(dispatchingHtml).toContain('<span class="chip is-active">dispatching</span>');
+    expect(dispatchingHtml).not.toContain('<span class="chip is-gate">at gate</span>');
+
+    // No running invocation: reads exactly as before.
+    expect(html).toContain('<span class="chip is-gate">at gate</span>');
+  });
 });
 
 describe("idea render view", () => {
@@ -2096,7 +2109,7 @@ describe("the header status indicator shows the Orchestrator's real state, on ev
     ["project", renderProject(repo, "storefront", root, now, [], status)],
     ["run", renderRun(repo, "storefront", "checkout-flow", root, now, [], status)],
     ["registry", renderRegistry(repo, root, undefined, status)],
-    ["artifact", renderArtifact(repo, "storefront", "checkout-flow", "spec-checkout-flow-v1", root, now, status)],
+    ["artifact", renderArtifact(repo, "storefront", "checkout-flow", "spec-checkout-flow-v1", root, now, [], status)],
     ["idea", renderIdea(repo, root, "loyalty-program", status)],
   ];
 

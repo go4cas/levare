@@ -422,7 +422,7 @@ export const ROUTES: RouteDef[] = [
     pattern: "/artifact/:project/:unit/:id",
     mutating: false,
     page: true,
-    handler: (_req, params, ctx) => html(renderArtifact(loadRepo(ctx.root), params.project, params.unit, params.id, ctx.root)),
+    handler: (_req, params, ctx) => html(renderArtifact(loadRepo(ctx.root), params.project, params.unit, params.id, ctx.root, undefined, ctx.daemon?.running() ?? [])),
   },
   // Idea render view (item 6) — the same artifact render view, applied to ideas/*.md.
   {

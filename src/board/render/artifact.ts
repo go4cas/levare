@@ -10,9 +10,10 @@
 import type { Repo } from "../../repo.ts";
 import type { Artifact } from "../../types.ts";
 import { repoCapabilities } from "../../repo.ts";
-import { esc, ageLabel, costLabel, findArtifactInProject, supersededByOf, citedByOf, captionTime } from "../../derive.ts";
+import { esc, ageLabel, costLabel, findArtifactInProject, supersededByOf, citedByOf, captionTime, openGates } from "../../derive.ts";
 import { isLoopCompanionKind } from "../../gates.ts";
 import { loadExtras } from "../../extra.ts";
+import type { DaemonInvocation } from "../../daemon.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
 import { fromArtifactStatus } from "../status.ts";
 import { statusBadge, neutralChip, orchTurn } from "../components.ts";
@@ -26,6 +27,7 @@ import {
   artifactTokenLink,
   renderBody,
   lineageEmpty,
+  dispatchingFor,
 } from "./shell.ts";
 
 // Reuses `.founding`/`.cite` (already the "artifact reference + a badge" row, used for the project
@@ -37,7 +39,16 @@ function lineageUnresolved(id: string): string {
   return `<div class="founding" style="color:var(--fg-mute)"><span class="mono">${esc(id)}</span><span class="cite">unresolved</span></div>`;
 }
 
-export function renderArtifact(repo: Repo, project: string, unit: string, id: string, root: string, now: Date = new Date(), status: OrchestratorStatus = resolveOrchestratorStatus()): string {
+export function renderArtifact(
+  repo: Repo,
+  project: string,
+  unit: string,
+  id: string,
+  root: string,
+  now: Date = new Date(),
+  running: DaemonInvocation[] = [],
+  status: OrchestratorStatus = resolveOrchestratorStatus(),
+): string {
   const art = repo.artifacts.get(`${project}/${unit}`)?.get(id);
   if (!art) throw new Error(`unknown artifact '${project}/${unit}/${id}'`);
 
@@ -50,11 +61,21 @@ export function renderArtifact(repo: Repo, project: string, unit: string, id: st
   // openGates/gateops.ts/scoreNodes already use, not a fourth reimplementation of it.
   const artTeam = repo.teams.get(art.produced_by.split("/")[0]);
   const artIsLoopCompanion = art.status === "in-review" && artTeam ? isLoopCompanionKind(artTeam, art.kind, repoCapabilities(repo)) : false;
+  // Finding 145 site 3 sibling: this page never consulted whether the gate it's describing was
+  // already dispatching a redo (serve.ts's caller has `ctx.daemon?.running()` in hand for every
+  // sibling route — studio/project/run — but never threaded it here), so it always read "at gate" even
+  // mid-redo. `openGates` already resolves the exact OpenGate this artifact raises (companion kinds
+  // never get one, matching `artIsLoopCompanion` above), so `dispatchingFor` gets the same loop-aware
+  // match every other surface uses rather than a second, cruder kind check.
+  const openGate = art.status === "in-review" && !artIsLoopCompanion ? openGates(repo).find((g) => g.unit === unit && g.artifact?.id === art.id) : undefined;
+  const dispatching = openGate ? dispatchingFor(repo, running, openGate) : undefined;
   const artStatusChip =
     art.status === "in-review"
       ? artIsLoopCompanion
         ? neutralChip("under review", undefined, { text: "this round's decision is on the other artifact, not this one", id: `loopcompanion-${esc(project)}-${esc(unit)}-${esc(id)}` })
-        : statusBadge("needs-you", "at gate")
+        : dispatching
+          ? statusBadge("active", "dispatching")
+          : statusBadge("needs-you", "at gate")
     : art.status === "superseded" ? statusBadge("waiting", "superseded")
     : statusBadge(fromArtifactStatus(art.status), art.status);
 
