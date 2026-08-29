@@ -137,6 +137,20 @@ describe("the studio 'Gates on you' stat tints only when actionable, matching th
     expect(statMatch![0]).toContain('class="stat stat--actionable"');
     expect(statMatch![0]).not.toContain('class="n is-gate"');
   });
+
+  // Finding 145 site 3 sibling: `data-gatestat` (this stat) and `data-gatecount` (the "Needs you"
+  // section counter, which also drives assets/app.js's tab/favicon badge) both used to read the raw
+  // `openGates(repo).length`, counting a gate whose own dispatch is already running as still needing a
+  // decision — the fixture's checkout-flow spec gate, dispatched here, must drop out of both.
+  test("a gate whose own dispatch is in flight drops out of the stat AND the 'Needs you' section counter", () => {
+    const running = [{ project: "storefront", unit: "checkout-flow", member: "lyra", kind: "spec", startedAt: now.toISOString() }];
+    const html = renderStudio(repo, root, now, running);
+    const statMatch = html.match(/<div class="stat[^"]*"><div class="n[^"]*"[^>]*data-gatestat[^>]*>(\d+)<\/div><div class="l">Gates on you<\/div><\/div>/);
+    expect(statMatch).not.toBeNull();
+    expect(statMatch![1]).toBe("1");
+    expect(html).toMatch(/data-gatecount[^>]*>1</);
+    expect(html).not.toMatch(/data-gatecount[^>]*>2</);
+  });
 });
 
 // DOCS-WALKTHROUGH-3 item 1: the studio and project stat rails used to name the same measure two ways
@@ -267,6 +281,77 @@ describe("projectStatusChip — gate count wins, then active, else idle (NOTES U
   });
 });
 
+// Finding 145 site 3: `projectStatusChip` itself is a pure function of an already-derived gate count —
+// the defect was one level up, at its two call sites (studio.ts, project.ts), which used to pass the
+// RAW open-gate count straight through with no regard for whether a gate's own dispatch was already in
+// flight. The exact same defect Finding 97 (project.ts:165-169, the per-unit row chip) already fixed
+// one level down: a gate being actively re-dispatched isn't "needs you", it's already being worked.
+describe("Finding 145 site 3: a project's status chip doesn't show needs-you amber for a gate that's already dispatching", () => {
+  const NOW2 = new Date("2026-07-17T02:00:00.000Z");
+
+  function synthRepo(): Repo {
+    const p: Project = { name: "acme", repo: "/tmp/acme", remote: null, default_branch: "main", deploy: null, pace: "auto", houseRules: "" };
+    const t: TypeTemplate = { name: "feature", glyph: "&#9656;", expects: ["spec"], gates: ["human"] };
+    const u: WorkUnit = { type: "feature", status: "active", project: "acme", unit: "flow", dir: "/tmp/acme-studio/work/acme/flow" };
+    const art: Artifact = {
+      kind: "spec",
+      id: "spec-flow-v1",
+      unit: "flow",
+      project: "acme",
+      status: "in-review",
+      produced_by: "kestrel/lyra",
+      consumes: [],
+      supersedes: null,
+      approved_by: null,
+      created: "2026-07-17T00:00:00.000Z",
+      files: [],
+    };
+    return {
+      root: "/tmp/acme-studio",
+      teams: new Map(),
+      agents: new Map(),
+      types: new Map([[t.name, t]]),
+      projects: new Map([[p.name, p]]),
+      connectors: new Map(),
+      units: [u],
+      artifacts: new Map([[`${p.name}/${u.unit}`, new Map([[art.id, art]])]]),
+      studio: {},
+    };
+  }
+
+  test("project page header: with no running invocation, the open gate shows needs-you amber", () => {
+    const html = renderProject(synthRepo(), "acme", "/tmp/nonexistent-acme-studio", NOW2);
+    const titleRow = /<div class="phead__title">[\s\S]*?<\/div>/.exec(html)![0];
+    expect(titleRow).toContain('<span class="chip is-gate">1 gate</span>');
+  });
+
+  test("project page header: the SAME gate's own dispatch in flight shows active blue, never needs-you amber", () => {
+    const running = [{ project: "acme", unit: "flow", member: "lyra", kind: "spec", startedAt: NOW2.toISOString() }];
+    const html = renderProject(synthRepo(), "acme", "/tmp/nonexistent-acme-studio", NOW2, running);
+    const titleRow = /<div class="phead__title">[\s\S]*?<\/div>/.exec(html)![0];
+    expect(titleRow).toContain('<span class="chip is-active">active</span>');
+    expect(titleRow).not.toContain("chip is-gate");
+  });
+
+  test("studio project card: mirrors the same fix — active blue, not needs-you amber, while the gate dispatches", () => {
+    const running = [{ project: "acme", unit: "flow", member: "lyra", kind: "spec", startedAt: NOW2.toISOString() }];
+    const html = renderStudio(synthRepo(), "/tmp/nonexistent-acme-studio", NOW2, running);
+    const cardMatch = /<a class="pcard" href="\/project\/acme">[\s\S]*?<\/a>/.exec(html);
+    expect(cardMatch).not.toBeNull();
+    expect(cardMatch![0]).toContain('<span class="chip is-active">active</span>');
+    expect(cardMatch![0]).not.toContain("chip is-gate");
+  });
+
+  test("an in-flight invocation for an UNRELATED kind on the same unit does not suppress the gate — still needs-you amber", () => {
+    // dispatchingFor only recognises a running invocation of the gate's OWN kind (or loop companion);
+    // a mismatched kind means nothing is actually resolving this gate, so it must keep reading as open.
+    const running = [{ project: "acme", unit: "flow", member: "lyra", kind: "docs", startedAt: NOW2.toISOString() }];
+    const html = renderProject(synthRepo(), "acme", "/tmp/nonexistent-acme-studio", NOW2, running);
+    const titleRow = /<div class="phead__title">[\s\S]*?<\/div>/.exec(html)![0];
+    expect(titleRow).toContain('<span class="chip is-gate">1 gate</span>');
+  });
+});
+
 describe("project screen", () => {
   const html = renderProject(repo, "storefront", root, now);
 
@@ -296,6 +381,26 @@ describe("project screen", () => {
   // The fixture has 2 open gates, so this is asserted against the real, non-zero case.
   test("the Gates open stat tints actionable when the project genuinely has an open gate", () => {
     expect(html).toContain('<div class="stat stat--actionable"><div class="n">2</div><div class="l">Gates open</div></div>');
+  });
+
+  // Finding 145 site 3 sibling: "Gates open" is a genuinely different, structural measure from "Gates
+  // on you" (both gates are still honestly open, dispatching or not — see the "genuinely different
+  // measures" test above), so the NUMBER must stay 2 even while both dispatch. But `actionable` carries
+  // the same gate-brass "needs you" signal the header chip already gets right — it must not tint amber
+  // once every open gate's own re-dispatch is already running and nothing is actually left for the
+  // Conductor to decide.
+  test("the Gates open stat's honest count doesn't change while both gates dispatch, but its actionable tint turns off, matching the header chip", () => {
+    const running = [
+      { project: "storefront", unit: "checkout-flow", member: "lyra", kind: "spec", startedAt: now.toISOString() },
+      { project: "storefront", unit: "loyalty-flow", member: "wren", kind: "product-brief", startedAt: now.toISOString() },
+    ];
+    const dispatchingHtml = renderProject(repo, "storefront", root, now, running);
+    expect(dispatchingHtml).toContain('<div class="stat"><div class="n">2</div><div class="l">Gates open</div></div>');
+    expect(dispatchingHtml).not.toContain('<div class="stat stat--actionable"><div class="n">2</div><div class="l">Gates open</div></div>');
+
+    // Only ONE of the two dispatching: the other still genuinely needs the Conductor, so it stays tinted.
+    const oneDispatchingHtml = renderProject(repo, "storefront", root, now, [running[0]]);
+    expect(oneDispatchingHtml).toContain('<div class="stat stat--actionable"><div class="n">2</div><div class="l">Gates open</div></div>');
   });
 
   // Conductor amendment (Phase 2 cluster 3 seal): "waiting"/"blocked" moved from a hollow ring to a
@@ -1357,6 +1462,19 @@ describe("artifact render view", () => {
   test("throws on an unknown artifact id (routed to a 404-equivalent by the caller)", () => {
     expect(() => renderArtifact(repo, "storefront", "checkout-flow", "not-a-real-id", root, now)).toThrow();
   });
+
+  // Finding 145 site 3 sibling: this page never received `running` at all, so an in-review artifact
+  // always read "at gate" even while its own redo was actively dispatching — the one board surface
+  // that stayed blind to `dispatchingFor`, unlike every sibling route (studio/project/run).
+  test("the status chip reads 'dispatching', not 'at gate', while the gate's own redo is in flight", () => {
+    const running = [{ project: "storefront", unit: "checkout-flow", member: "lyra", kind: "spec", startedAt: now.toISOString() }];
+    const dispatchingHtml = renderArtifact(repo, "storefront", "checkout-flow", "spec-checkout-flow-v1", root, now, running);
+    expect(dispatchingHtml).toContain('<span class="chip is-active">dispatching</span>');
+    expect(dispatchingHtml).not.toContain('<span class="chip is-gate">at gate</span>');
+
+    // No running invocation: reads exactly as before.
+    expect(html).toContain('<span class="chip is-gate">at gate</span>');
+  });
 });
 
 describe("idea render view", () => {
@@ -1991,7 +2109,7 @@ describe("the header status indicator shows the Orchestrator's real state, on ev
     ["project", renderProject(repo, "storefront", root, now, [], status)],
     ["run", renderRun(repo, "storefront", "checkout-flow", root, now, [], status)],
     ["registry", renderRegistry(repo, root, undefined, status)],
-    ["artifact", renderArtifact(repo, "storefront", "checkout-flow", "spec-checkout-flow-v1", root, now, status)],
+    ["artifact", renderArtifact(repo, "storefront", "checkout-flow", "spec-checkout-flow-v1", root, now, [], status)],
     ["idea", renderIdea(repo, root, "loyalty-program", status)],
   ];
 

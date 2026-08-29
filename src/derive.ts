@@ -279,8 +279,27 @@ function unitShipped(repo: Repo, project: string, unitId: string): boolean {
  * review below" regardless of `gate.type` — true for an in-review artifact, but a lie for an
  * `artifact-blocked` gate (nothing to review; a member FAILED) or a `blocked` unit (nothing was even
  * produced). A Conductor reading a blocked review's briefing saw "review is ready for review below."
+ *
+ * Finding 145 site 3's sibling: this sentence sits directly above the gate card it describes
+ * (run.ts's `orchestratorPanel`), which already swaps to "dispatching" the instant a re-check/retry is
+ * live (`dispatchingFor`) — this sentence stayed on the completed-state text regardless, so a
+ * Conductor could read "review is ready for review below" directly above a card that plainly said
+ * dispatching. `dispatching` takes the same boolean shape the call site already derives via
+ * `dispatchingFor` — no `DispatchingInfo` import needed here (derive.ts is upstream of shell.ts, where
+ * that type lives).
  */
-export function gateBriefingSentence(gate: OpenGate): string {
+export function gateBriefingSentence(gate: OpenGate, dispatching?: boolean): string {
+  if (dispatching) {
+    switch (gate.type) {
+      case "artifact":
+        return `${esc(gate.label)} is dispatching a redo right now &mdash; check back below.`;
+      case "artifact-blocked":
+        return `${esc(gate.label)} is retrying right now &mdash; check back below.`;
+      case "start":
+      case "blocked":
+        return "This unit is dispatching right now &mdash; check back below.";
+    }
+  }
   switch (gate.type) {
     case "artifact":
       return `${esc(gate.label)} is ready for review below.`;

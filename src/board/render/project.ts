@@ -140,7 +140,13 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
   // members), so the two surfaces can never independently drift on what "active" looks like.
   const anyUnitActive = units.some((u) => u.status === "active");
   const membersRunningHere = running.filter((r) => r.project === projectName).length;
-  const projectHeaderStatus = projectStatusChip(gates.length, anyUnitActive, membersRunningHere);
+  // Finding 145 site 3: a gate whose own dispatch is in flight (the exact `dispatchingFor` check
+  // `project.ts:165` already applies one level down, on the per-unit row) isn't "needs you" — it's
+  // already being worked. Excluded here so the header doesn't show needs-you amber for it; the
+  // invocation backing it still shows through `membersRunningHere` (it's an entry in `running`
+  // regardless of whether its kind matches the gate closely enough for `dispatchingFor` to confirm it).
+  const projGates = gates.filter((g) => !dispatchingFor(repo, running, g)).length;
+  const projectHeaderStatus = projectStatusChip(projGates, anyUnitActive, membersRunningHere);
 
   // Finding 59: shared across every artifact row below (isLoopCompanionKind's own signature already
   // takes it) — computed once here rather than per row.
@@ -298,7 +304,13 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
       // Amendment 1 §3, review F13: a stat tints only when actionable, gate-brass only — the same
       // rule the Studio page's own "Gates on you" stat already gets (Phase 2 cluster 3 part 3: this
       // page's identical stat was the one holdout, never actually tinted).
-      { value: `${gates.length}`, label: "Gates open", actionable: gates.length > 0 },
+      //
+      // Finding 145 site 3 sibling: the NUMBER stays the honest structural count (`gates.length` — a
+      // gate is still genuinely open, unresolved, mid-dispatch or not), but the tint is the same
+      // gate-brass "needs you" signal `projGates` already drives on the header chip two lines above —
+      // it must not light up amber for a gate whose own re-dispatch is already running and needs
+      // nothing from the Conductor right now.
+      { value: `${gates.length}`, label: "Gates open", actionable: projGates > 0 },
       { value: reviewMedian === null ? "&mdash;" : `${reviewMedian}`, label: "Median review rounds" },
       { value: `$${projectSpend(repo, projectName).toFixed(2)}`, label: "Spend" },
     ])}

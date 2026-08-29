@@ -114,6 +114,19 @@ describe("run view briefing — states what's true about the gate it's actually 
     const html = renderRun(repo, noGateUnit!.project, noGateUnit!.unit, root, now, [], ON);
     expect(html).toContain("No open gate on this unit right now.");
   });
+
+  // Finding 145 site 3 sibling: the gate card right below the briefing (same orchestrator panel)
+  // already renders "dispatching" the instant its own redo is in flight — the sentence above it must
+  // agree, not go on claiming the artifact is "ready for review" while the card underneath says
+  // otherwise.
+  test("the SAME gate's own re-dispatch in flight is reflected in the briefing sentence too, not just the gate card", () => {
+    const root = "fixtures/golden";
+    const repo = loadRepo(root);
+    const running = [{ project: "storefront", unit: "checkout-flow", member: "lyra", kind: "spec", startedAt: now.toISOString() }];
+    const html = renderRun(repo, "storefront", "checkout-flow", root, now, running, ON);
+    expect(html).toContain("spec is dispatching a redo right now &mdash; check back below.");
+    expect(html).not.toContain("spec is ready for review below.");
+  });
 });
 
 // NOTES ORCH-STALE-CARD addendum: the studio's own briefing sentence ("N gates are on you...") names
@@ -155,5 +168,18 @@ describe("studio briefing — the gate count in the sentence always agrees with 
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  // Finding 145 site 3 sibling: the studio briefing count used to be raw `openGates(repo).length`,
+  // never excluding a gate whose own dispatch is already running — unlike `projGates` (the per-project
+  // chip), computed from the same array.
+  test("a gate whose own dispatch is in flight is excluded from the sentence's count, matching the stat and section counter", () => {
+    const root = "fixtures/golden";
+    const repo = loadRepo(root);
+    expect(openGates(repo).length).toBe(2);
+    const running = [{ project: "storefront", unit: "checkout-flow", member: "lyra", kind: "spec", startedAt: now.toISOString() }];
+    const html = renderStudio(repo, root, now, running, ON);
+    expect(html).toContain("1 gate is on you.");
+    expect(html).not.toContain("2 gates are on you.");
   });
 });

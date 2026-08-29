@@ -763,7 +763,7 @@ function mergeGateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: 
       bodyWrapCls: "gate__body",
       title: nameRow,
       titleExtra: callout("warning", "this merge gate has no trial-merge report on disk yet &mdash; re-check to generate one."),
-      status: `<span class="gate__badge">${gateKindLabel(gate)}</span>`,
+      status: `<span class="gate__badge">${dispatching ? "dispatching" : gateKindLabel(gate)}</span>`,
       meta: verbs,
     });
   }
@@ -782,6 +782,13 @@ function mergeGateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: 
   // NOTES SEC-V11 F2: surfaces the exact commit `executeMerge` pins to (merge.ts's own TOCTOU-closing
   // check) — small, honest, additive; omitted entirely for a pre-F2 artifact carrying no `branch_sha`.
   const shaChip = merge.branch_sha ? tag(merge.branch_sha.slice(0, 7), "tag") : "";
+  // Finding 145 site 4, reasoned negative: these chips are observations of the branch as of the LAST
+  // COMPLETED trial too, same as `conflicted`/`violations` below — but unlike that verdict, they never
+  // drive a decision. `verbsHtml` already gates every actionable button behind `dispatching`, so a
+  // Conductor can't act on a stale commit count or diffstat while a re-check is in flight; the moment it
+  // finishes, this function re-renders from the fresh `merge` record and the chips catch up on their
+  // own. Suppressing or greying them would cost real orientation (which branch, roughly how big the
+  // diff is) for a purely cosmetic staleness window with no wrong-action risk — left as-is.
   const statsHtml = `<div class="chiprow">${tag(merge.branch, "tag")}${tag(`${merge.commits_ahead} commit${merge.commits_ahead === 1 ? "" : "s"} ahead`, "tag")}${
     diffstatSummary(merge.diffstat) ? tag(diffstatSummary(merge.diffstat)!, "tag") : ""
   }${shaChip}</div>`;
@@ -846,7 +853,7 @@ function mergeGateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?: 
     bodyWrapCls: "gate__body",
     title: nameRow,
     titleExtra,
-    status: `<span class="gate__badge">${gateKindLabel(gate)}</span>`,
+    status: `<span class="gate__badge">${dispatching ? "dispatching" : gateKindLabel(gate)}</span>`,
     meta: verbsHtml,
   });
 }

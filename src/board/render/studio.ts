@@ -59,6 +59,13 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date(), r
     ? gates.map((g) => gateCardHtml(repo, g, now, { dispatching: dispatchingFor(repo, running, g) })).join("\n")
     : emptyState({ message: "Nothing needs you right now." });
 
+  // Finding 145 site 3 sibling: `gates.length` alone counts a gate whose own dispatch is already
+  // running (the card above already renders it as "dispatching") as still needing a decision. Every
+  // aggregate below that claims "N need you" — the stat, the section counter (which also drives the
+  // tab/favicon badge, assets/app.js), and the briefing sentence — must exclude it, the same
+  // `dispatchingFor` check `projGates` (below) already applies per-project.
+  const gatesNeedingYou = gates.filter((g) => !dispatchingFor(repo, running, g)).length;
+
   // UI2 item 6: the Studio "Projects" section becomes an IN-FLIGHT worklist, not the project index —
   // it shows only projects with at least one active work unit. An idle project (no active unit) drops
   // out entirely; it's still reachable via the left nav (`railNav`) and its own project page. This is
@@ -68,7 +75,11 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date(), r
   const projectCards = inFlightProjects
     .map((p) => {
       const units = repo.units.filter((u) => u.project === p.name);
-      const projGates = gates.filter((g) => g.project === p.name).length;
+      // Finding 145 site 3: a gate currently dispatching (`dispatchingFor` — the same check
+      // project.ts:165 already applies one level down, on the per-unit row) isn't "needs you", it's
+      // already being worked; excluded here so the card doesn't show needs-you amber for it. The
+      // invocation backing it still surfaces through `membersRunning` below.
+      const projGates = gates.filter((g) => g.project === p.name && !dispatchingFor(repo, running, g)).length;
       // A8: the summary is the first paragraph of the most relevant unit's leading artifact — newest
       // gated, else newest active, else honestly empty (no fabricated summary — see NOTES.md).
       const summaryUnit = mostRelevantUnit(repo, p.name);
@@ -116,14 +127,14 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date(), r
       // Project page's identical "Gates open" stat (render/project.ts), which never carried the extra
       // `cls` and already got this right. `actionable` alone (the cell background tint) is the single
       // mechanism now, matching that page.
-      { value: `${gates.length}`, label: "Gates on you", actionable: gates.length > 0, attr: { name: "data-gatestat", value: gates.length } },
+      { value: `${gatesNeedingYou}`, label: "Gates on you", actionable: gatesNeedingYou > 0, attr: { name: "data-gatestat", value: gatesNeedingYou } },
       { value: `${running.length}`, label: "Members running", attr: { name: "data-runningstat", value: running.length } },
       { value: `${shippedUnits}`, label: "Units shipped &middot; 30d" },
       { value: median === null ? "&mdash;" : `${median.toFixed(median % 1 === 0 ? 0 : 1)}d`, label: "Median gate response" },
       { value: `$${spend.toFixed(2)}`, label: "Spend &middot; 30d" },
     ])}
     <section class="sec" id="needs">
-      <div class="sec__h"><h2>Needs you</h2>${counter(gates.length, { gatecount: true })}</div>
+      <div class="sec__h"><h2>Needs you</h2>${counter(gatesNeedingYou, { gatecount: true })}</div>
       ${gateCards}
     </section>
     <section class="sec">
@@ -139,7 +150,7 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date(), r
   </main>`;
 
   const briefingBody = orchTurn(
-    `<p class="turn__body">${gates.length ? `${gates.length} gate${gates.length === 1 ? " is" : "s are"} on you.` : "Nothing needs a decision right now."} Ask me about any project or open a gate to review it.</p>`,
+    `<p class="turn__body">${gatesNeedingYou ? `${gatesNeedingYou} gate${gatesNeedingYou === 1 ? " is" : "s are"} on you.` : "Nothing needs a decision right now."} Ask me about any project or open a gate to review it.</p>`,
     { captionTime: captionTime(now.toISOString(), now), captionLabel: "briefing" },
   );
   const orch = orchestratorPanel(STUDIO_SCOPE, status, briefingBody, "", root, now);
