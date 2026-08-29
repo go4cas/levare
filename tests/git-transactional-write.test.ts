@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { mkdtempSync, rmSync, cpSync, readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, cpSync, readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { assertSpawnOk, assertExitCode, spawnStdout } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
@@ -251,6 +251,61 @@ describe("commitAs's identity override survives a startup-environment GIT_AUTHOR
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(driver, { force: true });
+    }
+  });
+});
+
+// Finding 142 (git-config family sweep, sibling of Finding 120/144): ruled NOT a defect — `commitAs`
+// commits into the studio's own repo on levare's own behalf (gate approvals, registry edits), not into
+// an operator-owned project the way Finding 120's member dispatch does, so there is no "operator's own
+// config" for `core.excludesFile`/`core.attributesFile` to honor here. This asserts the ruling holds in
+// code, not just in a comment: a `conductorCommit` must succeed and land content untransformed even when
+// the operator's global config would, if honored, either refuse the explicit add (excludesFile matching
+// the target path) or rewrite its bytes (an attributesFile filter) — see git.ts#commitAs's own doc.
+describe("Finding 142 — commitAs stays hermetic to the operator's global excludesFile/attributesFile", () => {
+  test("a path matching the operator's global core.excludesFile still commits normally via conductorCommit", () => {
+    const root = seedScratchRepo("levare-f142-excludes-");
+    const fakeHome = mkdtempSync(join(tmpdir(), "levare-f142-home-"));
+    const realHome = process.env.HOME;
+    try {
+      mkdirSync(join(fakeHome, ".config", "git"), { recursive: true });
+      writeFileSync(join(fakeHome, ".config", "git", "ignore"), "*.md\n");
+      process.env.HOME = fakeHome;
+
+      const file = join(root, "gate-note.md");
+      writeFileSync(file, "approved\n");
+      const result = transactionalWrite(root, [{ path: file, content: "approved\n" }], "approve gate", conductorCommit);
+      expect(result.ok).toBe(true);
+      expect(readFileSync(file, "utf8")).toBe("approved\n");
+    } finally {
+      process.env.HOME = realHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a filter from the operator's global core.attributesFile never transforms a conductorCommit's content", () => {
+    const root = seedScratchRepo("levare-f142-attrs-");
+    const fakeHome = mkdtempSync(join(tmpdir(), "levare-f142-home-attrs-"));
+    const realHome = process.env.HOME;
+    try {
+      mkdirSync(join(fakeHome, ".config", "git"), { recursive: true });
+      writeFileSync(join(fakeHome, ".config", "git", "attributes"), "*.shout filter=shout\n");
+      process.env.HOME = fakeHome;
+      git(root, ["config", "filter.shout.clean", "tr a-z A-Z"]);
+      git(root, ["config", "filter.shout.smudge", "cat"]);
+
+      const file = join(root, "loud.shout");
+      writeFileSync(file, "hello world\n");
+      const result = transactionalWrite(root, [{ path: file, content: "hello world\n" }], "approve gate", conductorCommit);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const stored = spawnStdout("git show", spawnSync("git", ["-C", root, "show", `${result.commit}:loud.shout`], { encoding: "utf8" }));
+      expect(stored).toBe("hello world\n");
+    } finally {
+      process.env.HOME = realHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });
