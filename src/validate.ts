@@ -294,7 +294,8 @@ export const ARTIFACT_SCHEMA: Schema = {
     // but unbuilt: a member has no way to WRITE frontmatter directly (Ruling C12 — levare authors the
     // artifact from facts it already knows, never the member's own account of them), so without a bridge
     // this field could never populate, on any review, ever. The bridge accepted is STRUCTURAL extraction,
-    // not sentiment-guessing: `adapters.ts#author`'s own read-only, whole-document scan for a line that
+    // not sentiment-guessing: `adapters.ts#author`'s own read-only, whole-document scan for a line
+    // that, once markdown decoration (backticks, bold, italic) is stripped from it (Findings 118/133),
     // IS, in its entirety, one of the two enum values (optionally `Verdict: `-prefixed) — never a
     // substring match inside ordinary critique prose ("no changes requested" can never trip it). Every
     // matching line in the document is counted, never just the first or the last: exactly one match is
@@ -330,7 +331,7 @@ export const ARTIFACT_SCHEMA: Schema = {
       nullable: true,
       enum: ["APPROVED", "CHANGES REQUESTED"],
       description:
-        "Reserved for kind: review — the critic's own verdict on what it reviewed: APPROVED or CHANGES REQUESTED. Populated by adapters.ts#author's read-only, whole-document extraction (never a guess: exactly one anchored line — optionally `Verdict: `-prefixed — must match the whole document, or this stays absent; see verdict_source). Absent means not recorded — predates this field, extraction found zero or more than one matching line, or the critic's own prompt hasn't been updated to declare it yet — and must never be treated as either enum value.",
+        "Reserved for kind: review — the critic's own verdict on what it reviewed: APPROVED or CHANGES REQUESTED. Populated by adapters.ts#author's read-only, whole-document extraction (never a guess: markdown decoration — backticks, bold, italic — is stripped from each line first, then exactly one resulting line — optionally `Verdict: `-prefixed — must match in its entirety, or this stays absent; see verdict_source). Absent means not recorded — predates this field, extraction found zero or more than one matching line, or the critic's own prompt hasn't been updated to declare it yet — and must never be treated as either enum value.",
     },
     // Ruling 2026-08-24 (the verdict bridge, Finding 118, Q3): sibling to `verdict` above — records HOW
     // that value was obtained (mirrors `sandbox`/`sandbox_reason`'s own "present only when relevant"

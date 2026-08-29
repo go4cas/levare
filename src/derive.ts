@@ -525,16 +525,12 @@ export function leadingArtifact(repo: Repo, unit: WorkUnit): Artifact | undefine
     return realGate ?? inReview[0];
   }
   const settled = all.filter((a) => a.status !== "superseded");
-  // Finding 140 sibling fix: a shipped unit's merge gate is definitionally its terminal artifact
-  // (M2-M5 — the merge gate is the last step before `status: shipped`), but its own `created` stamp is
-  // day-granularity ("today", dagwalk.ts/merge.ts's own levare-authored writes), while a real member-
-  // produced artifact's `created` is a precise ISO timestamp from the adapter's own clock. String-
-  // compared, a bare date always sorts <= a same-day ISO timestamp ("2026-08-26" <
-  // "2026-08-26T14:00:00.000Z"), so the generic "most recent `created`" sort below silently returned
-  // the PRIOR step instead of the merge gate itself whenever a unit shipped same day as that prior
-  // step finished — exactly the case unitSummary's own Finding 117 comment already assumed couldn't
-  // happen. A shipped unit's own merge-kind artifact wins outright here, never falling through to the
-  // generic (timestamp-granularity-dependent) tie-break.
+  // Finding 140 sibling fix: a shipped unit's merge gate (M2-M5) is definitionally its terminal
+  // artifact — the last step before `status: shipped`, by construction, independent of any timestamp
+  // it happens to carry. The generic "most recent `created`" sort below has no way to express that: it
+  // picks whichever settled artifact's `created` sorts last, which is only the merge gate when it also
+  // happens to be the most recently created one. A shipped unit's own merge-kind artifact wins outright
+  // here instead, never falling through to that tie-break at all.
   if (unit.status === "shipped") {
     const merge = settled.find((a) => a.kind === "merge");
     if (merge) return merge;

@@ -144,11 +144,13 @@ it wasn't the one who made it.
 That closing `**CHANGES REQUESTED**` line is not just for you. It's also the one shape levare itself
 can read back, structurally, into the review artifact's own `verdict:` frontmatter — the [artifact
 cheatsheet](../05-reference/cheatsheets/artifact.md) has the full contract. levare never guesses this
-from tone or argument; it looks for a line that consists, in its entirety, of `APPROVED` or `CHANGES
-REQUESTED` (optionally `Verdict: `-prefixed), and only accepts it when the whole review contains
-exactly one such line. Give your own critic's system prompt the same instruction — end every review
-with that line, alone, once — and its verdict becomes a fact the gate card can render, not just prose
-you have to read to find.
+from tone or argument; it strips markdown decoration (backticks, bold, italic — so Corvid's own
+`**CHANGES REQUESTED**` above still counts) from each line, then looks for a line that consists, in
+its entirety, of `APPROVED` or `CHANGES REQUESTED` (optionally `Verdict: `-prefixed), and only accepts
+it when the whole review contains exactly one such line. If the scan finds zero or more than one, the
+artifact records `verdict_source: not-found` instead of guessing. Give your own critic's system prompt
+the same instruction — end every review with that line, alone, once — and its verdict becomes a fact
+the gate card can render, not just prose you have to read to find.
 
 ## The receipt
 
