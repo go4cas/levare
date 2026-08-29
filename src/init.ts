@@ -102,10 +102,14 @@ levare doctor .       # connector env-presence + CLI/MCP reachability report
 optional (the board, registry, and every gate work without it); connector variables are scoped to
 whichever team/agent explicitly grants that connector, even once set.
 
-Open a work unit with \`levare new <project> <unit>\` (see \`types/\` for what each unit type
-expects and which artifacts its flow gates on) — it infers \`--type\`/\`--team\` when your studio
-leaves no ambiguity, and asks explicitly when it doesn't. Or capture a pitch as a new file under
-\`ideas/\`.
+Point levare at something you're building with \`levare project new <name> --repo <path>\` — the
+scaffolded \`projects/studio.md\` points at this studio itself, which is deliberately excluded from
+work branches and merge gates, so a unit opened under it can never land code anywhere.
+
+Then open a work unit in your project with \`levare new <project> <unit>\` (see \`types/\` for what each
+unit type expects and which artifacts its flow gates on). Both commands infer what your studio leaves
+unambiguous — \`--type\`/\`--team\`, the repo's own branch and remote — and ask explicitly when it
+doesn't. Or capture a pitch as a new file under \`ideas/\`.
 
 ## Git
 
