@@ -232,19 +232,26 @@ how the vendor CLI itself behaves, live-validated against a real one (`gh`, not 
   not an oversight — see [Current gaps](../current-gaps.md)'s connector trust-tier taxonomy entry for
   why, and what would change it.
 
-**A note on Corvid specifically, as of this writing (NOTES R4-SANDBOX-APPSERVER, NOTES
-R4-SANDBOX-TLS):** an "app-server architecture" vendor CLI — one where the CLI itself runs an in-process
-client/server split for its own IPC — surfaced a real sandbox gap distinct from the config-directory
-redirect above: `home:`-granted credentials were re-allowed for READ only, never WRITE, which would deny
-a vendor CLI refreshing its own stored token. That's fixed, and a live macOS run confirmed it: Corvid's
-own app-server now initializes and reaches the network under the sandbox. It then fails at certificate
-validation (`invalid peer certificate: UnknownIssuer`) on both its WebSocket and HTTPS transports — a
-second, distinct fault from the one just described, still open. Whether that needs a further, narrowly
-scoped sandbox grant, or is something about Corvid's own TLS stack the sandbox can't fix at all, is being
-isolated with a codex-independent probe (`scripts/repro-r4-sandbox-tls-handshake.ts`) rather than guessed
-at — track [Current gaps](../current-gaps.md) for the outcome. If your own `cli` member's vendor CLI
-can't run confined at all — its own architecture needs OS access the sandbox won't safely grant —
-declare that plainly rather than fighting it silently:
+**A note on Corvid specifically (NOTES R4-SANDBOX-APPSERVER, NOTES R4-SANDBOX-TLS — both now
+closed):** an "app-server architecture" vendor CLI — one where the CLI itself runs an in-process
+client/server split for its own IPC — surfaced two real sandbox gaps in sequence, and both are fixed.
+First, `home:`-granted credentials were re-allowed for READ only, never WRITE, which denied a vendor
+CLI refreshing its own stored token; a live macOS run confirmed the fix, and Corvid's app-server now
+initializes and reaches the network under the sandbox. Second, certificate validation then failed on
+both its WebSocket and HTTPS transports (`invalid peer certificate: UnknownIssuer`) — a distinct
+fault, because codex's Rust TLS stack defers to the platform trust store directly rather than doing
+its own certificate handling the way `gh` (Go) does. A `log stream` capture of the failing dispatch,
+diffed against a passing `curl` handshake under the identical generated profile, named exactly one
+mach-lookup denial present in the failure and absent from the pass: **`com.apple.SecurityServer`**.
+Granted alongside `trustd.agent`, gated on `policy.allowNetwork`, and re-dispatched live — the
+handshake completed and the member produced a real `review` artifact at `sandbox: full`.
+
+**A wrapped codex critic runs confined, end to end.** That is what the rest of this chapter
+describes, and it is not aspirational. See [Current gaps](../current-gaps.md) for the full six-round
+account, including two probe-design flaws found along the way.
+
+If your own `cli` member's vendor CLI can't run confined at all — its own architecture needs OS access
+the sandbox won't safely grant — declare that plainly rather than fighting it silently:
 
 ```yaml
 sandbox: unsandboxed
