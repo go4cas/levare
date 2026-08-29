@@ -44,3 +44,30 @@ describe("gateBriefingSentence — states what's actually true about the gate's 
     expect(gateBriefingSentence(gate)).toBe("&lt;b&gt;&amp;hack&lt;/b&gt; is ready for review below.");
   });
 });
+
+// Finding 145 site 3 sibling: the gate card directly below this sentence (run.ts's orchestrator
+// panel) already swaps to "dispatching" the instant `dispatchingFor` finds a live redo — this sentence
+// must not go on claiming the completed-state text while that card says otherwise.
+describe("gateBriefingSentence(gate, dispatching) — follows a live dispatch, not the stale gate state", () => {
+  test("an in-review artifact's re-dispatch in flight reads dispatching, not ready for review", () => {
+    const gate: OpenGate = { ...BASE, type: "artifact", target: "spec-v1", label: "spec" };
+    expect(gateBriefingSentence(gate, true)).toBe("spec is dispatching a redo right now &mdash; check back below.");
+    expect(gateBriefingSentence(gate, true)).not.toContain("ready for review");
+  });
+
+  test("a blocked artifact's retry in flight reads retrying, not failed", () => {
+    const gate: OpenGate = { ...BASE, type: "artifact-blocked", target: "review-v1", label: "review" };
+    expect(gateBriefingSentence(gate, true)).toBe("review is retrying right now &mdash; check back below.");
+    expect(gateBriefingSentence(gate, true)).not.toContain("failed");
+  });
+
+  test("a start gate's dispatch in flight reads dispatching, not ready to start", () => {
+    const gate: OpenGate = { ...BASE, type: "start", target: "widget", label: "start" };
+    expect(gateBriefingSentence(gate, true)).toBe("This unit is dispatching right now &mdash; check back below.");
+  });
+
+  test("no dispatch in flight (dispatching omitted) reads exactly as before", () => {
+    const gate: OpenGate = { ...BASE, type: "artifact", target: "spec-v1", label: "spec" };
+    expect(gateBriefingSentence(gate)).toBe("spec is ready for review below.");
+  });
+});

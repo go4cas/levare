@@ -256,8 +256,11 @@ export function renderRun(repo: Repo, project: string, unitId: string, root: str
   </main>`;
 
   const gateHtml = gates.map((g) => gateCardHtml(repo, g, now, { cta: true, dispatching: dispatchingFor(repo, running, g) })).join("\n");
+  // Finding 145 site 3 sibling: same `dispatchingFor` result the gate card right below already
+  // renders from — the briefing sentence must not describe a completed state the card underneath has
+  // already moved past.
   const briefingBody = orchTurn(
-    `<p class="turn__body">${gates.length ? gateBriefingSentence(gates[0]) : "No open gate on this unit right now."}</p>`,
+    `<p class="turn__body">${gates.length ? gateBriefingSentence(gates[0], !!dispatchingFor(repo, running, gates[0])) : "No open gate on this unit right now."}</p>`,
     { captionTime: captionTime(now.toISOString(), now), captionLabel: "briefing" },
   );
   const orch = orchestratorPanel(project, status, briefingBody, gateHtml, root, now);
