@@ -713,14 +713,24 @@ describe("commitDispatchWorktree (goal commit-on-produce, Finding 74)", () => {
   // never track land in a member's commit. Mutates the real `process.env.HOME` for the duration of the
   // test (restored in `finally`) rather than threading a fake env through `commitDispatchWorktree` — the
   // function takes no env override; this is the same ambient-HOME surface a real operator's shell sets.
+  //
+  // Also clears `XDG_CONFIG_HOME` for the duration (restored in `finally`): `resolveGlobalExcludesFile`'s
+  // default-path fallback is `$XDG_CONFIG_HOME/git/ignore` when that var is set, taking priority over
+  // `$HOME/.config/git/ignore` — this test plants the fixture at the LATTER path deliberately (the common
+  // case, no XDG override), so an ambient `XDG_CONFIG_HOME` already set on the host running the suite
+  // (observed on at least one CI runner, absent on a plain dev machine) would make the real resolution
+  // correctly skip right past this fixture — not a bug in the resolver, just an assumption this test's
+  // setup needs to hold instead of leaving to chance.
   test("a file the operator's global core.excludesFile excludes is never staged, committed, or lost as an empty commit", () => {
     const repo = makeProjectRepo();
     const fakeHome = mkdtempSync(join(tmpdir(), "levare-op-home-"));
     const realHome = process.env.HOME;
+    const realXdgConfigHome = process.env.XDG_CONFIG_HOME;
     try {
       mkdirSync(join(fakeHome, ".config", "git"), { recursive: true });
       writeFileSync(join(fakeHome, ".config", "git", "ignore"), "*.secret\n");
       process.env.HOME = fakeHome;
+      delete process.env.XDG_CONFIG_HOME;
 
       git(repo, ["branch", "levare/unit-a", "main"]);
       const beforeSha = rev(repo, "levare/unit-a");
@@ -741,6 +751,8 @@ describe("commitDispatchWorktree (goal commit-on-produce, Finding 74)", () => {
       expect(rev(repo, "levare/unit-a")).toBe(beforeSha);
     } finally {
       process.env.HOME = realHome;
+      if (realXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = realXdgConfigHome;
       rmSync(fakeHome, { recursive: true, force: true });
       rmrf(repo);
     }
@@ -753,14 +765,17 @@ describe("commitDispatchWorktree (goal commit-on-produce, Finding 74)", () => {
   // host's global git config; the filter COMMAND is defined in the project repo's own LOCAL config
   // (`.git/config`, shared by every worktree of that repo, never redirected by GIT_CONFIG_GLOBAL) since a
   // global gitconfig entry would be just as hidden as the attributes file itself was before this fix.
+  // Also clears `XDG_CONFIG_HOME` for the duration — see the excludesFile test above's own doc for why.
   test("a filter from the operator's global core.attributesFile still transforms a member's added content", () => {
     const repo = makeProjectRepo();
     const fakeHome = mkdtempSync(join(tmpdir(), "levare-op-home-attrs-"));
     const realHome = process.env.HOME;
+    const realXdgConfigHome = process.env.XDG_CONFIG_HOME;
     try {
       mkdirSync(join(fakeHome, ".config", "git"), { recursive: true });
       writeFileSync(join(fakeHome, ".config", "git", "attributes"), "*.shout filter=shout\n");
       process.env.HOME = fakeHome;
+      delete process.env.XDG_CONFIG_HOME;
       git(repo, ["config", "filter.shout.clean", "tr a-z A-Z"]);
       git(repo, ["config", "filter.shout.smudge", "cat"]);
 
@@ -782,6 +797,8 @@ describe("commitDispatchWorktree (goal commit-on-produce, Finding 74)", () => {
       expect(stored).toBe("HELLO WORLD\n");
     } finally {
       process.env.HOME = realHome;
+      if (realXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = realXdgConfigHome;
       rmSync(fakeHome, { recursive: true, force: true });
       rmrf(repo);
     }
