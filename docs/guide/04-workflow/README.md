@@ -62,6 +62,23 @@ orchestrator: on · ANTHROPIC_API_KEY is present — its validity isn't checked 
 
 ---
 
+## Two modes, and the difference is deliberate
+
+levare generates the things that are mechanical. `levare new` writes a work unit; `levare project new`
+writes a project. Both infer what they can from your studio and refuse to guess when they can't.
+
+It does **not** generate agents, teams, connectors or ideas — you'll write those by hand in the
+chapters ahead, and that isn't a gap levare hasn't got round to.
+
+**An agent file *is* a system prompt.** The prose below the frontmatter is the whole point of it. A
+team's `flow:` is a sequence someone has to think about. A command that scaffolded either would hand
+you a stub you'd immediately open and fill in — saving you the frontmatter, and nothing that matters.
+
+Units and projects are scaffolding. Agents and teams are your studio's constitution. **You author a
+constitution.**
+
+---
+
 ## The steps
 
 | | |
