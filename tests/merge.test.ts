@@ -746,6 +746,47 @@ describe("commitDispatchWorktree (goal commit-on-produce, Finding 74)", () => {
     }
   });
 
+  // Finding 144: the same HERMETIC_GIT_ENV redirect also hides the operator's global `core.attributesFile`
+  // — a clean filter it declares must still transform a member's own added content. The attributes file
+  // itself is planted at git's own DEFAULT path under a fake $HOME (mirroring the excludesFile test above
+  // — no explicit `core.excludesFile`/`core.attributesFile` configured), so this never touches the real
+  // host's global git config; the filter COMMAND is defined in the project repo's own LOCAL config
+  // (`.git/config`, shared by every worktree of that repo, never redirected by GIT_CONFIG_GLOBAL) since a
+  // global gitconfig entry would be just as hidden as the attributes file itself was before this fix.
+  test("a filter from the operator's global core.attributesFile still transforms a member's added content", () => {
+    const repo = makeProjectRepo();
+    const fakeHome = mkdtempSync(join(tmpdir(), "levare-op-home-attrs-"));
+    const realHome = process.env.HOME;
+    try {
+      mkdirSync(join(fakeHome, ".config", "git"), { recursive: true });
+      writeFileSync(join(fakeHome, ".config", "git", "attributes"), "*.shout filter=shout\n");
+      process.env.HOME = fakeHome;
+      git(repo, ["config", "filter.shout.clean", "tr a-z A-Z"]);
+      git(repo, ["config", "filter.shout.smudge", "cat"]);
+
+      git(repo, ["branch", "levare/unit-a", "main"]);
+      const identity = { name: "finch", email: "finch@levare.local" };
+      const created = createDispatchWorktree(repo, "levare/unit-a", identity);
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+      let result: ReturnType<typeof commitDispatchWorktree>;
+      try {
+        writeFileSync(join(created.worktree.path, "loud.shout"), "hello world\n");
+        result = commitDispatchWorktree(created.worktree.path, created.worktree.baseSha, "shout it", identity);
+      } finally {
+        created.worktree.cleanup();
+      }
+      expect(result.committed).toBe(true);
+      if (!result.committed) return;
+      const stored = git(repo, ["show", `${result.commit}:loud.shout`]);
+      expect(stored).toBe("HELLO WORLD\n");
+    } finally {
+      process.env.HOME = realHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+      rmrf(repo);
+    }
+  });
+
   // The repo's own `.gitignore` (never the operator's global config) must keep working exactly as
   // before — Finding 120's fix passes an explicit `core.excludesFile` through; it must never suppress
   // or interfere with per-repo ignore rules `git` already applies on its own.

@@ -27,7 +27,7 @@ import { mkdtempSync, rmSync, existsSync, realpathSync, readFileSync } from "nod
 import { tmpdir, homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { checkGuardrails, violationLine, type DiffEntry, type GuardrailViolation } from "./guardrails.ts";
-import { RUNNER_NAME, RUNNER_EMAIL, resolveGlobalExcludesFile } from "./git.ts";
+import { RUNNER_NAME, RUNNER_EMAIL, resolveGlobalExcludesFile, resolveGlobalAttributesFile } from "./git.ts";
 import type { Project, Team } from "./types.ts";
 
 export class MergeError extends Error {}
@@ -391,11 +391,19 @@ export function commitDispatchWorktree(worktreePath: string, baseSha: string, me
     const excludesFile = resolveGlobalExcludesFile();
     return excludesFile ? ["-c", `core.excludesFile=${excludesFile}`] : [];
   })();
+  // Finding 144: same gap, `core.attributesFile` — a clean filter or eol rule from the operator's global
+  // attributes governs the bytes `add` stages, so it belongs only on `add` (never `status`, which never
+  // invokes a filter — see resolveGlobalAttributesFile's own doc for why this must apply even though
+  // `add -A`'s expansion, unlike an explicit path, was never the part attributesFile protects against).
+  const attributesFlag = (() => {
+    const attributesFile = resolveGlobalAttributesFile();
+    return attributesFile ? ["-c", `core.attributesFile=${attributesFile}`] : [];
+  })();
   const status = git(worktreePath, [...excludesFlag, "status", "--porcelain"]);
   if (status.status !== 0) return { committed: false, reason: "error", error: `git status failed: ${status.stderr.trim()}` };
 
   if (status.stdout.trim() !== "") {
-    const add = git(worktreePath, [...excludesFlag, "add", "-A"]);
+    const add = git(worktreePath, [...excludesFlag, ...attributesFlag, "add", "-A"]);
     if (add.status !== 0) return { committed: false, reason: "error", error: `git add failed: ${add.stderr.trim()}` };
 
     const commit = git(worktreePath, ["-c", `user.name=${identity.name}`, "-c", `user.email=${identity.email}`, "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", message]);

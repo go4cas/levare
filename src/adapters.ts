@@ -57,7 +57,7 @@ import { repoCapabilities } from "./repo.ts";
 import { resolveProjectRepoPath, workBranchName, branchExists, createDispatchWorktree, commitDispatchWorktree, type DispatchCommitResult } from "./merge.ts";
 import { isSafeHomeDotpath, detectFetchAtDispatchLauncher } from "./validate.ts";
 import { detectSandbox, wrapForSandbox, resolveDarwinUserTempDir, type SandboxDetection, type SandboxLevel, type SandboxPolicy, type WrappedSpawn } from "./sandbox.ts";
-import { registryStateHash, memberIdentity, resolveGlobalExcludesFile } from "./git.ts";
+import { registryStateHash, memberIdentity, resolveGlobalExcludesFile, resolveGlobalAttributesFile } from "./git.ts";
 import { isCompiledBuild } from "./version.ts";
 import type { Pricing } from "./pricing.ts";
 import type { Repo } from "./repo.ts";
@@ -317,10 +317,26 @@ function resolveFeatureRepo(template: string | undefined, projectRepoPath: strin
 // invocations inside the sandbox are never levare's own command line to add `-c` flags to. The sandbox
 // policy itself (`buildDispatchSandboxPolicy`) grants read access to this SAME resolved path — narrowly,
 // never the whole operator HOME — so the value this points at is actually reachable, not just named.
+//
+// Finding 144: `core.attributesFile` lives under the same denied real HOME and degrades the same way
+// (a denied read is a tolerated no-op for git, not fatal — same as excludesFile, unlike `.gitconfig`
+// itself) — a member's own `git add` inside the sandbox would silently skip whatever clean filter or
+// eol rule the operator's global attributes configure. Threaded through the SAME `GIT_CONFIG_COUNT`
+// mechanism as a second override, since both keys need identical env-var-equivalent treatment here.
 function gitConfigRedirectEnv(env: Record<string, string>): Record<string, string> {
   const base = { ...env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
+  const overrides: Array<[string, string]> = [];
   const excludesFile = resolveGlobalExcludesFile(env);
-  return excludesFile ? { ...base, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.excludesFile", GIT_CONFIG_VALUE_0: excludesFile } : base;
+  if (excludesFile) overrides.push(["core.excludesFile", excludesFile]);
+  const attributesFile = resolveGlobalAttributesFile(env);
+  if (attributesFile) overrides.push(["core.attributesFile", attributesFile]);
+  if (overrides.length === 0) return base;
+  const countEnv: Record<string, string> = { GIT_CONFIG_COUNT: String(overrides.length) };
+  overrides.forEach(([key, value], i) => {
+    countEnv[`GIT_CONFIG_KEY_${i}`] = key;
+    countEnv[`GIT_CONFIG_VALUE_${i}`] = value;
+  });
+  return { ...base, ...countEnv };
 }
 
 // NOTES R4-VENDOR-CLI (live macOS gate: the first validation against a REAL vendor CLI, `gh`, never the
@@ -1236,11 +1252,15 @@ export function buildDispatchSandboxPolicy(
   // Resolved unconditionally (not gated on the eventual sandbox tier — cheap, and `readOnlyPaths` is
   // inert on a "none"/partial-tier dispatch exactly like every other entry in this list already is).
   const excludesFile = resolveGlobalExcludesFile(req.env);
+  // Finding 144: the same grant, for the same reason, for GIT_CONFIG_VALUE_1's target when a global
+  // core.attributesFile resolves.
+  const attributesFile = resolveGlobalAttributesFile(req.env);
+  const gitConfigReadOnlyPaths = [excludesFile, attributesFile].filter((p): p is string => p !== undefined);
   return {
     cwd: cwd ?? process.cwd(),
     home: req.env.HOME,
     allowNetwork: memberNetworkAllowed(repo, req.member),
-    readOnlyPaths: excludesFile ? [...readOnlyPaths, excludesFile] : readOnlyPaths,
+    readOnlyPaths: [...readOnlyPaths, ...gitConfigReadOnlyPaths],
     operatorHome,
     grantedHomeTargets,
     // NOTES R4-VENDOR-CLI: the vendor-CLI scratch dir carries no reseal/deny-then-reallow complexity the
