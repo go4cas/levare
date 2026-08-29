@@ -237,6 +237,11 @@ export function runNewCmd(rest: string[]): number {
   }
   const [project, unit] = args;
   if (!project || !unit) {
+    // Finding 148: name what's missing, in the same shape every other failure in this command uses
+    // (CODE — what's wrong — what to do). A bare usage line makes the operator diff two strings in
+    // their head to spot which argument they left out.
+    const missing = !project && !unit ? "a project and a unit name are required" : !project ? "a project name is required (the first argument)" : "a unit name is required (the second argument)";
+    console.error(`levare new: MISSING_ARGS — ${missing}`);
     console.error("usage: levare new <project> <unit> [--type <type>] [--team <team>] [--budget <usd>] [--root <path>]");
     return 2;
   }
@@ -307,6 +312,15 @@ export function runProjectNewCmd(rest: string[]): number {
   const [name] = args;
   const repoFlag = flag(rest, "--repo");
   if (!name || !repoFlag) {
+    // Finding 148: same shape as REPO_NOT_A_CHECKOUT/PROJECT_EXISTS below — name the missing thing
+    // and say what it is for, rather than printing a usage line and leaving the operator to spot the
+    // difference between what they typed and what is shown.
+    const missing = !name && !repoFlag
+      ? "a project name and --repo are required"
+      : !name
+        ? "a project name is required (the first argument)"
+        : "--repo is required — point it at the local git checkout this project's work lands in";
+    console.error(`levare project new: MISSING_ARGS — ${missing}`);
     console.error(PROJECT_NEW_USAGE);
     return 2;
   }
