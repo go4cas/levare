@@ -410,8 +410,9 @@ export interface Artifact {
    * reviews read CHANGES REQUESTED would silently meet a real APPROVED for the first time in production
    * (see validate.ts's own schema doc for the full reasoning). What the second ruling then built is
    * STRUCTURAL extraction instead — `adapters.ts#author`'s own read-only, whole-document scan for a line
-   * that IS, in its entirety, one of the two enum values (never a substring match inside ordinary
-   * prose), accepted only when exactly one such line exists in the whole document. `status: approved`
+   * that, once markdown decoration (backticks, bold, italic) is stripped from it (Findings 118/133), IS,
+   * in its entirety, one of the two enum values (never a substring match inside ordinary prose),
+   * accepted only when exactly one such line exists in the whole document. `status: approved`
    * means the CONDUCTOR approved the review artifact, never that the critic's verdict was positive.
    * Absent means NOT RECORDED — predates this field, extraction found zero or more than one matching
    * line, or a critic whose own prompt hasn't been updated to declare it yet — a caller must render that
