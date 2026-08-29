@@ -550,6 +550,30 @@ describe("M4/M5: a clean approval merges, preserves history, and closes the unit
     expect(mergeAfter.merge_result?.checkout_behind).toBe(false);
     expect(mergeAfter.body).not.toContain("Checkout out of sync");
   });
+
+  test("checkout_behind is false for a no-op merge (0 commits ahead), even with the checkout sitting on default_branch (Finding 146)", async () => {
+    dirs = buildStudio();
+    await startAndApproveTask(dirs.root);
+    // No `commitToWorkBranch` call: the work branch never advances past default_branch's tip, so the
+    // trial merge is 0-commits-ahead — reachable whenever every dispatch on the unit's flow landed no
+    // commit (trialMerge/commitDispatchWorktree's own docs), not only via "the branch was already
+    // merged". The project repo's primary checkout is still on `main` throughout (buildStudio never
+    // moves it) — exactly the position `checkoutBehindMerge` alone would flag. A merge that changed
+    // nothing must not be blamed for leaving the checkout stale.
+    await advanceOnce(dirs.root);
+    const repo = loadRepo(dirs.root, { validate: false });
+    const merge = [...repo.artifacts.get("acme/widget-1")!.values()].find((a) => a.kind === "merge")!;
+    expect(merge.merge?.commits_ahead).toBe(0);
+
+    const approve = await resolveGate(dirs.root, "acme", merge.id, "approve", { today: TODAY });
+    expect(approve.ok).toBe(true);
+    if (!approve.ok) return;
+
+    const repoAfter = loadRepo(dirs.root, { validate: false });
+    const mergeAfter = [...repoAfter.artifacts.get("acme/widget-1")!.values()].find((a) => a.kind === "merge")!;
+    expect(mergeAfter.merge_result?.checkout_behind).toBe(false);
+    expect(mergeAfter.body).not.toContain("Checkout out of sync");
+  });
 });
 
 describe("Finding 140: the checkout-sync notice reaches the board, not just the merge artifact's own body", () => {

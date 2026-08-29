@@ -312,7 +312,15 @@ async function doApproveMerge(root: string, repo: Repo, unit: WorkUnit, file: st
   // 2026-08-20 checkout-sync ruling: read-only, and deliberately AFTER `executeMerge`'s own transaction
   // has already concluded — M4's never-checkout guarantee (merge.ts's own header) stays exactly as it
   // was, this only reports the one state it can leave behind rather than staying silent about it.
-  const checkoutBehind = checkoutBehindMerge(projectRepoPath, project.default_branch);
+  //
+  // Finding 146: `checkoutBehindMerge` only asks whether the checkout sits on `default_branch` — it
+  // has no way to know whether THIS merge actually moved that branch. A no-op merge (`trial.commitsAhead
+  // === 0`, reachable whenever every dispatch on the unit's work branch landed no commit, not only via
+  // "already merged" — trialMerge's own doc) leaves the checkout in exactly the same "on default_branch"
+  // position as a real one, so the recorded flag requires both: the merge advanced the branch, and the
+  // checkout is positioned where that leaves it stale. Checked in this order so a no-op merge (the
+  // common early-out) never pays for the `git symbolic-ref` call at all.
+  const checkoutBehind = trial.commitsAhead > 0 && checkoutBehindMerge(projectRepoPath, project.default_branch);
 
   const src = readFileSync(file, "utf8");
   let patched = stampApproval(src, today, root);
