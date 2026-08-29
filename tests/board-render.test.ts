@@ -267,6 +267,77 @@ describe("projectStatusChip — gate count wins, then active, else idle (NOTES U
   });
 });
 
+// Finding 145 site 3: `projectStatusChip` itself is a pure function of an already-derived gate count —
+// the defect was one level up, at its two call sites (studio.ts, project.ts), which used to pass the
+// RAW open-gate count straight through with no regard for whether a gate's own dispatch was already in
+// flight. The exact same defect Finding 97 (project.ts:165-169, the per-unit row chip) already fixed
+// one level down: a gate being actively re-dispatched isn't "needs you", it's already being worked.
+describe("Finding 145 site 3: a project's status chip doesn't show needs-you amber for a gate that's already dispatching", () => {
+  const NOW2 = new Date("2026-07-17T02:00:00.000Z");
+
+  function synthRepo(): Repo {
+    const p: Project = { name: "acme", repo: "/tmp/acme", remote: null, default_branch: "main", deploy: null, pace: "auto", houseRules: "" };
+    const t: TypeTemplate = { name: "feature", glyph: "&#9656;", expects: ["spec"], gates: ["human"] };
+    const u: WorkUnit = { type: "feature", status: "active", project: "acme", unit: "flow", dir: "/tmp/acme-studio/work/acme/flow" };
+    const art: Artifact = {
+      kind: "spec",
+      id: "spec-flow-v1",
+      unit: "flow",
+      project: "acme",
+      status: "in-review",
+      produced_by: "kestrel/lyra",
+      consumes: [],
+      supersedes: null,
+      approved_by: null,
+      created: "2026-07-17T00:00:00.000Z",
+      files: [],
+    };
+    return {
+      root: "/tmp/acme-studio",
+      teams: new Map(),
+      agents: new Map(),
+      types: new Map([[t.name, t]]),
+      projects: new Map([[p.name, p]]),
+      connectors: new Map(),
+      units: [u],
+      artifacts: new Map([[`${p.name}/${u.unit}`, new Map([[art.id, art]])]]),
+      studio: {},
+    };
+  }
+
+  test("project page header: with no running invocation, the open gate shows needs-you amber", () => {
+    const html = renderProject(synthRepo(), "acme", "/tmp/nonexistent-acme-studio", NOW2);
+    const titleRow = /<div class="phead__title">[\s\S]*?<\/div>/.exec(html)![0];
+    expect(titleRow).toContain('<span class="chip is-gate">1 gate</span>');
+  });
+
+  test("project page header: the SAME gate's own dispatch in flight shows active blue, never needs-you amber", () => {
+    const running = [{ project: "acme", unit: "flow", member: "lyra", kind: "spec", startedAt: NOW2.toISOString() }];
+    const html = renderProject(synthRepo(), "acme", "/tmp/nonexistent-acme-studio", NOW2, running);
+    const titleRow = /<div class="phead__title">[\s\S]*?<\/div>/.exec(html)![0];
+    expect(titleRow).toContain('<span class="chip is-active">active</span>');
+    expect(titleRow).not.toContain("chip is-gate");
+  });
+
+  test("studio project card: mirrors the same fix — active blue, not needs-you amber, while the gate dispatches", () => {
+    const running = [{ project: "acme", unit: "flow", member: "lyra", kind: "spec", startedAt: NOW2.toISOString() }];
+    const html = renderStudio(synthRepo(), "/tmp/nonexistent-acme-studio", NOW2, running);
+    const cardMatch = /<a class="pcard" href="\/project\/acme">[\s\S]*?<\/a>/.exec(html);
+    expect(cardMatch).not.toBeNull();
+    expect(cardMatch![0]).toContain('<span class="chip is-active">active</span>');
+    expect(cardMatch![0]).not.toContain("chip is-gate");
+  });
+
+  test("an in-flight invocation for an UNRELATED kind on the same unit does not suppress the gate — still needs-you amber", () => {
+    // dispatchingFor only recognises a running invocation of the gate's OWN kind (or loop companion);
+    // a mismatched kind means nothing is actually resolving this gate, so it must keep reading as open.
+    const running = [{ project: "acme", unit: "flow", member: "lyra", kind: "docs", startedAt: NOW2.toISOString() }];
+    const html = renderProject(synthRepo(), "acme", "/tmp/nonexistent-acme-studio", NOW2, running);
+    const titleRow = /<div class="phead__title">[\s\S]*?<\/div>/.exec(html)![0];
+    expect(titleRow).toContain('<span class="chip is-gate">1 gate</span>');
+  });
+});
+
 describe("project screen", () => {
   const html = renderProject(repo, "storefront", root, now);
 

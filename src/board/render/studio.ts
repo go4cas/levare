@@ -68,7 +68,11 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date(), r
   const projectCards = inFlightProjects
     .map((p) => {
       const units = repo.units.filter((u) => u.project === p.name);
-      const projGates = gates.filter((g) => g.project === p.name).length;
+      // Finding 145 site 3: a gate currently dispatching (`dispatchingFor` — the same check
+      // project.ts:165 already applies one level down, on the per-unit row) isn't "needs you", it's
+      // already being worked; excluded here so the card doesn't show needs-you amber for it. The
+      // invocation backing it still surfaces through `membersRunning` below.
+      const projGates = gates.filter((g) => g.project === p.name && !dispatchingFor(repo, running, g)).length;
       // A8: the summary is the first paragraph of the most relevant unit's leading artifact — newest
       // gated, else newest active, else honestly empty (no fabricated summary — see NOTES.md).
       const summaryUnit = mostRelevantUnit(repo, p.name);
