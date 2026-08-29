@@ -342,6 +342,61 @@ describe("merge gate card — dispatching (in-flight) state", () => {
     expect(html).not.toContain("notice notice--danger");
     expect(html).not.toContain("protected_paths: infra/deploy.yml is protected");
   });
+
+  // Finding 145 site 4: the generic gate card's status badge already swaps to "dispatching" while a
+  // re-check runs (shell.ts:718) — the merge card's own non-CTA status slot (project/studio surfaces,
+  // never the run-view CTA banner) stayed on the static `gateKindLabel(gate)` ("merge") regardless, the
+  // same family of defect Finding 128 just above already fixed one slot over (`gate__verdict`).
+  test("the status badge (top-right, non-CTA card) reads 'dispatching', not 'merge', while a re-check is in flight", () => {
+    const repo = makeRepo({
+      artifact: {
+        merge: {
+          branch: "levare/widget-1",
+          target: "main",
+          commits_ahead: 1,
+          diffstat: "",
+          conflicted: false,
+          conflicts: [],
+          guardrail_violations: [],
+        },
+      },
+    });
+    const art = [...repo.artifacts.get("acme/widget-1")!.values()][0];
+    const dispatching = { member: "levare-runner", kind: "merge", startedAt: "2026-07-17T01:59:00.000Z" };
+    const html = gateCardHtml(repo, mergeGate(art), NOW, { dispatching });
+    expect(html).toContain('<span class="gate__badge">dispatching</span>');
+    expect(html).not.toContain('<span class="gate__badge">merge</span>');
+
+    // Settles back to naming the gate's kind once the dispatch completes.
+    const settled = gateCardHtml(repo, mergeGate(art), NOW);
+    expect(settled).toContain('<span class="gate__badge">merge</span>');
+  });
+
+  // Finding 145 site 4, reasoned negative: unlike the verdict badge/conflict list above, the branch/
+  // commits-ahead/diffstat/sha chips are mere observations of the branch, never consulted by any verb
+  // (every button is already replaced by the pending indicator while dispatching), so they stay visible
+  // rather than being suppressed or greyed — see shell.ts's own comment beside `statsHtml`.
+  test("the branch/commits-ahead/diffstat chips stay visible during a re-check — they don't drive any decision", () => {
+    const repo = makeRepo({
+      artifact: {
+        merge: {
+          branch: "levare/widget-1",
+          target: "main",
+          commits_ahead: 3,
+          diffstat: " src/a.ts | 5 +++--\n 1 file changed, 5 insertions(+)",
+          conflicted: false,
+          conflicts: [],
+          guardrail_violations: [],
+        },
+      },
+    });
+    const art = [...repo.artifacts.get("acme/widget-1")!.values()][0];
+    const dispatching = { member: "levare-runner", kind: "merge", startedAt: "2026-07-17T01:59:00.000Z" };
+    const html = gateCardHtml(repo, mergeGate(art), NOW, { dispatching });
+    expect(html).toContain("levare/widget-1");
+    expect(html).toContain("3 commits ahead");
+    expect(html).toContain("1 file changed · +5/-0");
+  });
 });
 
 // ---------------------------------------------------------------------------
