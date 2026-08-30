@@ -31,7 +31,7 @@
 
 import { existsSync } from "node:fs";
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import type { SettingSource, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { extractFromBunfs } from "@anthropic-ai/claude-agent-sdk/extract";
 import type { SdkWorkerRequest, SdkWorkerResponse } from "./sdk-transport.ts";
 import type { Receipt } from "./types.ts";
@@ -227,6 +227,143 @@ export function formatAuthFailureError(status: number, attempt: number): string 
   return `sdk worker: authentication failure (HTTP ${status}) on attempt ${attempt} — aborted without retrying, credentials are invalid or expired`;
 }
 
+/**
+ * Finding 124: races one `iterator.next()` call against an idle timer — resolves `{idle:false,
+ * result}` the instant the next message arrives (the common case, on every healthy dispatch), or
+ * `{idle:true}` if `idleTimeoutMs` elapses first with no message at all. `idleTimeoutMs` absent (or
+ * `0`) skips the race entirely (`await promise` alone) — every existing caller of this worker that
+ * never sets `SdkWorkerRequest.idleTimeoutMs` (today: every orchestrator-boundary.ts call, and every
+ * test double) keeps its prior no-idle-bound behavior exactly.
+ *
+ * Factored out as its own pure-ish function (mirrors `deriveReceipt`/`assistantContentLogLines`'s own
+ * precedent) so a test can drive the race with a controllable fake promise (one that never resolves, or
+ * one that resolves after a known short delay) and real-but-tiny timers, without spawning the real SDK
+ * or waiting out a production-sized idle window.
+ */
+export async function raceIdle<T>(promise: Promise<T>, idleTimeoutMs: number | undefined): Promise<{ idle: true } | { idle: false; result: T }> {
+  if (!idleTimeoutMs) return { idle: false, result: await promise };
+  let timer: ReturnType<typeof setTimeout>;
+  const idled = new Promise<{ idle: true }>((resolve) => {
+    timer = setTimeout(() => resolve({ idle: true }), idleTimeoutMs);
+  });
+  const arrived = promise.then((result) => ({ idle: false as const, result }));
+  const outcome = await Promise.race([arrived, idled]);
+  clearTimeout(timer!);
+  return outcome;
+}
+
+/** The operator-facing message for an idle-bound abort (Finding 124) — factored out (mirrors
+ * `formatAuthFailureError`'s own precedent) so a test can assert it names idleness explicitly, distinct
+ * from both a plain failure and the transport's own wall-clock "timed out after Nms" message: a
+ * Conductor reading either this string or a dispatch trace's `outcome` must be able to tell "this
+ * worker gave up on its own, having seen nothing for N minutes" apart from "the outer bound killed it
+ * mid-stream" — Findings 92 and 123 were both cases of a failure naming the wrong cause. */
+export function formatIdleFailureError(idleTimeoutMs: number, elapsedMs: number): string {
+  return `sdk worker: idle for ${idleTimeoutMs}ms with no stream activity — aborted after ${elapsedMs}ms elapsed (distinct from the outer wall-clock bound, which never fired)`;
+}
+
+export interface ConsumeQueryOptions {
+  /** See `SdkWorkerRequest.idleTimeoutMs` — `undefined`/`0` disables the idle bound entirely. */
+  idleTimeoutMs: number | undefined;
+  abortController: AbortController;
+  startedAt: number;
+  reqModel: string | undefined;
+}
+
+export interface ConsumeQueryResult {
+  sawSuccess: boolean;
+  resultText: string;
+  structuredOutput: unknown;
+  receipt: Receipt | undefined;
+  failure: string | undefined;
+  retryCount: number;
+  /** See `isNonRetryableAuthStatus`'s own doc (Finding 92) — takes precedence over `idle` below when
+   * both could theoretically be true, mirroring the original inline loop's own ordering (an auth abort
+   * always breaks the loop immediately, before an idle race on the next iteration could ever run). */
+  authFailure: { status: number; attempt: number } | undefined;
+  /** Finding 124: `true` only when the idle race (`raceIdle`) actually fired — never inferred from
+   * `sawSuccess`/`failure` being falsy, which would conflate "aborted for being genuinely idle" with
+   * every other way a dispatch can fail to produce a result. */
+  idle: boolean;
+}
+
+/**
+ * Finding 124: the SDK message-stream consumption loop, factored out of `runSdkWorkerFromStdin` (which
+ * used to inline this as a bare `for await`) so a test can drive it with a FAKE message iterator —
+ * synthetic `SDKMessage`-shaped objects, or a `.next()` that deliberately never resolves — and assert
+ * the idle bound actually fires, without spawning the real SDK (which needs network + a real
+ * credential this sandbox has neither of). Every branch below (`api_retry`/auth-abort, `assistant`
+ * logging, `result`) is the SAME logic `runSdkWorkerFromStdin` always ran; only the iteration mechanism
+ * changed — a manual `iterator.next()` raced against `raceIdle`, replacing the bare `for await`, so a
+ * silent gap between messages can be caught mid-wait rather than only ever observed after the fact.
+ */
+export async function consumeQuery(iterator: AsyncIterator<SDKMessage>, opts: ConsumeQueryOptions): Promise<ConsumeQueryResult> {
+  let resultText = "";
+  let structuredOutput: unknown;
+  let receipt: Receipt | undefined;
+  let sawSuccess = false;
+  let failure: string | undefined;
+  let retryCount = 0;
+  let authFailure: { status: number; attempt: number } | undefined;
+  let respondingModel: string | null = null;
+  let idle = false;
+
+  while (true) {
+    const nextPromise = iterator.next();
+    const raced = await raceIdle(nextPromise, opts.idleTimeoutMs);
+    if (raced.idle) {
+      idle = true;
+      console.error(
+        `levare: sdk worker query() idle for ${opts.idleTimeoutMs}ms with no stream activity — aborting ` +
+          `(Finding 124: distinct from the wall-clock bound), ${Date.now() - opts.startedAt}ms elapsed so far`,
+      );
+      opts.abortController.abort();
+      // The abandoned `iterator.next()` call settles on its own once the abort propagates — swallow
+      // whatever it resolves/rejects to so this never surfaces as an unhandled rejection; the loop has
+      // already moved on and nothing here awaits it again.
+      nextPromise.catch(() => {});
+      break;
+    }
+    const { value: message, done } = raced.result;
+    if (done) break;
+
+    if (message.type === "system" && message.subtype === "api_retry") {
+      retryCount++;
+      console.error(
+        `levare: sdk worker query() retrying (attempt ${message.attempt}/${message.max_retries}, ` +
+          `error_status=${message.error_status ?? "null (connection error, no HTTP response)"}, ` +
+          `retry_delay_ms=${message.retry_delay_ms}) — ${Date.now() - opts.startedAt}ms elapsed so far`,
+      );
+      if (isNonRetryableAuthStatus(message.error_status)) {
+        authFailure = { status: message.error_status as number, attempt: message.attempt };
+        console.error(
+          `levare: sdk worker query() aborting — error_status=${message.error_status} is not retryable ` +
+            `(auth failure), refusing the SDK's remaining ${message.max_retries - message.attempt} retries`,
+        );
+        opts.abortController.abort();
+        break;
+      }
+    }
+    if (message.type === "assistant") {
+      if (typeof message.message?.model === "string") respondingModel = message.message.model;
+      for (const line of assistantContentLogLines(message.message?.content)) console.error(line);
+    }
+    if (message.type === "result") {
+      if (message.subtype === "success") {
+        sawSuccess = true;
+        resultText = message.result;
+        structuredOutput = message.structured_output;
+        receipt = deriveReceipt(message, respondingModel, opts.reqModel);
+      } else {
+        const errs = "errors" in message && Array.isArray(message.errors) ? message.errors.join("; ") : undefined;
+        failure = `sdk query did not succeed (${message.subtype})${errs ? `: ${errs}` : ""}`;
+      }
+    }
+  }
+
+  return { sawSuccess, resultText, structuredOutput, receipt, failure, retryCount, authFailure, idle };
+}
+
 /** Read one `SdkWorkerRequest` from stdin, run it through the real SDK, print one `SdkWorkerResponse`
  * line of JSON to stdout. Never throws — every failure path (malformed input, transport/SDK error) is
  * reported via `respond({ ok: false, ... })` instead, so a caller awaiting this can always exit 0. */
@@ -248,7 +385,8 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
   // `SDKAPIRetryMessage` (`type: "system", subtype: "api_retry"`), for every retried request — including
   // "connection errors (e.g. timeouts) that had no HTTP response" per its own doc comment, exactly the
   // shape a real network-level hang on a restricted-egress host would take — and this worker silently
-  // dropped every one of them (the `for await` loop below only ever branched on `assistant`/`result`).
+  // dropped every one of them (the message loop, now `consumeQuery` below, only ever branched on
+  // `assistant`/`result`).
   // Both are closed unconditionally (not debug-gated, mirroring `orchestrator-boundary.ts#logReceipt`'s
   // own always-on precedent — real SDK calls are infrequent enough that this costs nothing): the elapsed
   // wall-clock time is logged on EVERY exit path (success, a non-success result, and a thrown error
@@ -266,69 +404,36 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
   const resolvedBinaryPath = resolvePathToClaudeCodeExecutable(req.pathToClaudeCodeExecutable);
   const nativeBinaryResolved = resolvedBinaryPath !== undefined;
   try {
-    let resultText = "";
-    let structuredOutput: unknown;
-    let receipt: Receipt | undefined;
-    let sawSuccess = false;
-    let failure: string | undefined;
-    let retryCount = 0;
-    // Finding 92: set the moment a non-retryable status is seen (below), then checked right after the
+    // Finding 92: `authFailure` set the moment a non-retryable status is seen, checked right after the
     // loop exits — takes precedence over both the success/failure result branches and the generic catch,
     // so an auth failure is always reported as itself, never as whatever the abort happens to surface.
-    let authFailure: { status: number; attempt: number } | undefined;
+    // Finding 124: `idle` mirrors that same precedence discipline for the new idle bound — see
+    // `ConsumeQueryResult.idle`'s own doc for why it's a distinct flag, never inferred from `sawSuccess`.
     const abortController = new AbortController();
-    // NOTES F11: see `deriveReceipt`'s own doc for why this is tracked from `assistant` messages
-    // rather than trusted to `modelUsage`'s key order.
-    let respondingModel: string | null = null;
-    for await (const message of query({
-      prompt: req.prompt,
-      options: { ...buildQueryOptions({ ...req, pathToClaudeCodeExecutable: resolvedBinaryPath }), abortController },
-    })) {
-      if (message.type === "system" && message.subtype === "api_retry") {
-        retryCount++;
-        console.error(
-          `levare: sdk worker query() retrying (attempt ${message.attempt}/${message.max_retries}, ` +
-            `error_status=${message.error_status ?? "null (connection error, no HTTP response)"}, ` +
-            `retry_delay_ms=${message.retry_delay_ms}) — ${Date.now() - startedAt}ms elapsed so far`,
-        );
-        if (isNonRetryableAuthStatus(message.error_status)) {
-          authFailure = { status: message.error_status as number, attempt: message.attempt };
-          console.error(
-            `levare: sdk worker query() aborting — error_status=${message.error_status} is not retryable ` +
-              `(auth failure), refusing the SDK's remaining ${message.max_retries - message.attempt} retries`,
-          );
-          abortController.abort();
-          break;
-        }
-      }
-      if (message.type === "assistant") {
-        if (typeof message.message?.model === "string") respondingModel = message.message.model;
-        for (const line of assistantContentLogLines(message.message?.content)) console.error(line);
-      }
-      if (message.type === "result") {
-        if (message.subtype === "success") {
-          sawSuccess = true;
-          resultText = message.result;
-          structuredOutput = message.structured_output;
-          // §10: record what the SDK itself reports — real cost and token counts — rather than ever
-          // estimating (NOTES phase-7 K16).
-          receipt = deriveReceipt(message, respondingModel, req.model);
-        } else {
-          const errs = "errors" in message && Array.isArray(message.errors) ? message.errors.join("; ") : undefined;
-          failure = `sdk query did not succeed (${message.subtype})${errs ? `: ${errs}` : ""}`;
-        }
-      }
-    }
-    console.error(`levare: sdk worker query() finished in ${Date.now() - startedAt}ms (${retryCount} retr${retryCount === 1 ? "y" : "ies"}, ${sawSuccess ? "success" : "no success result"})`);
-    if (authFailure) {
-      respond({ ok: false, error: formatAuthFailureError(authFailure.status, authFailure.attempt), nativeBinaryResolved });
+    const consumed = await consumeQuery(
+      query({
+        prompt: req.prompt,
+        options: { ...buildQueryOptions({ ...req, pathToClaudeCodeExecutable: resolvedBinaryPath }), abortController },
+      }),
+      { idleTimeoutMs: req.idleTimeoutMs, abortController, startedAt, reqModel: req.model },
+    );
+    console.error(
+      `levare: sdk worker query() finished in ${Date.now() - startedAt}ms (${consumed.retryCount} retr${consumed.retryCount === 1 ? "y" : "ies"}, ` +
+        `${consumed.sawSuccess ? "success" : consumed.idle ? "idle" : "no success result"})`,
+    );
+    if (consumed.authFailure) {
+      respond({ ok: false, error: formatAuthFailureError(consumed.authFailure.status, consumed.authFailure.attempt), nativeBinaryResolved });
       return;
     }
-    if (!sawSuccess) {
-      respond({ ok: false, error: failure ?? "sdk query produced no result message", nativeBinaryResolved });
+    if (consumed.idle) {
+      respond({ ok: false, error: formatIdleFailureError(req.idleTimeoutMs as number, Date.now() - startedAt), idle: true, nativeBinaryResolved });
       return;
     }
-    respond({ ok: true, result: resultText, structuredOutput, receipt, nativeBinaryResolved });
+    if (!consumed.sawSuccess) {
+      respond({ ok: false, error: consumed.failure ?? "sdk query produced no result message", nativeBinaryResolved });
+      return;
+    }
+    respond({ ok: true, result: consumed.resultText, structuredOutput: consumed.structuredOutput, receipt: consumed.receipt, nativeBinaryResolved });
   } catch (e) {
     console.error(`levare: sdk worker query() threw after ${Date.now() - startedAt}ms`);
     respond({ ok: false, error: e instanceof Error ? e.message : String(e), nativeBinaryResolved });

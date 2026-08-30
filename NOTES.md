@@ -17419,3 +17419,123 @@ from silently becoming "one person, one story."
 deps:check` → `deps ok`. Not verified against `~/source/jot-studio` directly in this session (no
 `~/source` access here) — the regression report and the fix it describes both came from the user's own
 live page-refresh against that studio.
+
+# NOTES IDLE-BOUND — Finding 124: a busy worker is not killed like a hung one
+
+Finding 123's own trace table established that the wall-clock bound (`DEFAULT_NATIVE_TIMEOUT_S`) cannot
+tell a hung worker from a busy one — every timeout in 33 dispatches was `code-builder`, and raising the
+default from 600s to 1200s bought headroom, not a distinction (`count-words` then used 52% of the new
+bound on a one-flag change). The ruling: add an idle bound (no stream activity for N minutes aborts the
+dispatch, reported as `idle`, not `timeout`); keep the wall clock as an outer backstop (a worker looping
+forever on a failing tool call streams continuously and only the backstop catches it); flat `N`, not
+per-kind/per-role (Finding 123 already showed that axis is wrong).
+
+## Where output is already observed — hangs off the EXISTING consumption, no second path
+
+`sdk-worker.ts`'s own `for await (const message of query(...))` loop (NOTES DISPATCH-TRACE phase 1) was
+already the one place this worker consumes the SDK's message stream — `worker_stdout`/`worker_stderr`
+are what the TRANSPORT captures after the fact, but the stream itself only exists inside this loop.
+Refactored the loop out of `runSdkWorkerFromStdin` into `consumeQuery` (mirroring `deriveReceipt`/
+`assistantContentLogLines`/`isNonRetryableAuthStatus`'s own precedent for factoring this file's logic
+into testable pure(ish) functions), and replaced the bare `for await` with a manual
+`iterator.next()` raced against an idle timer (`raceIdle`) on every iteration. Any message counts as
+activity — `api_retry`, `assistant`, `result`, alike — never gated on assistant text specifically, per
+the ruling's "any stream activity counts" item. No second observation path was added; the SAME
+iteration this worker already ran is now just timed.
+
+The race lives entirely INSIDE the worker (a child process, spawned by either the sync or the async
+transport), which is why this works identically for both `SdkTransport` (`Bun.spawnSync`, blocks the
+parent entirely) and `AsyncSdkTransport` (`Bun.spawn`, non-blocking) — neither transport ever sees an
+intermediate message itself (both just read the worker's full stdout at the end), so an idle bound
+enforced at the transport level was never an option; enforcing it in the worker sidesteps that
+entirely, since the worker's own internal `query()` loop is async regardless of how its parent spawned
+it.
+
+## What N should be — reasoned, not measured (said plainly, per the same discipline as the CLI answer)
+
+No real trace data was available to mine: this sandbox holds no `.levare/dispatch-logs/` history, and —
+more fundamentally — `DispatchTraceRecord` never timestamped individual streamed messages even when a
+real trace exists (only `started_at`/`ended_at`/`duration_ms`, plus an elapsed-ms figure sdk-worker.ts
+already logs on `api_retry` and its own final exit line). The one number this bound most wants — the
+gap between messages in a healthy dispatch — was never captured by anything that ran before this unit.
+
+Chose 300s (5 minutes) by the same reasoning `DEFAULT_NATIVE_TIMEOUT_S` itself was widened by (Finding
+81: a deliberately generous number, erring toward never killing real work, not a number derived from a
+measurement this unit lacks): long enough to comfortably cover a single slow tool call a member
+plausibly issues end-to-end with zero intermediate stream activity (a package install, a test run, a
+web fetch — none of these emit a message until the tool call itself returns), short enough (a quarter
+of the 1200s backstop) to actually add value over the backstop alone. Documented honestly, in-line at
+`DEFAULT_NATIVE_IDLE_TIMEOUT_S`'s own definition (adapters.ts), as reasoned rather than measured — the
+next unit that revisits this constant has a real data point to work from that this one didn't: a
+genuinely idle-triggered dispatch's `worker_stderr` now says so explicitly
+(`formatIdleFailureError`/the `levare: sdk worker query() idle for...` log line), which is itself the
+first real trace evidence this bound will ever have.
+
+## Whether the `cli` boundary can have this — native-only, stated plainly
+
+`kind: cli` spawns a vendor binary (`bunSpawn`/`asyncBunSpawn`, adapters.ts) and sees raw stdout/stderr
+— there is no structured message stream to time gaps between, only bytes. The async CLI spawn's
+`proc.stdout` IS technically a `ReadableStream` a future unit could read incrementally for a
+byte-level "any output at all" idle signal, so this is not a hard technical impossibility — but it
+would be a materially different, weaker heuristic than the native case: many legitimate CLI
+invocations (a single `gh pr create`, a compiler with no verbose flag) produce ZERO incremental output
+until they exit successfully, so "no bytes for N minutes" would false-positive on exactly the kind of
+healthy-but-quiet run the native idle bound is designed never to kill. Building that with no real
+evidence for what "healthy CLI silence" looks like would repeat this same unit's own "chosen, not
+measured" gap on a mechanism with a much worse false-positive shape. Left out of this unit entirely —
+native-only, by design, not by oversight.
+
+## The mechanism — both bounds report which one fired
+
+`SdkWorkerRequest.idleTimeoutMs` (sdk-transport.ts) is the worker-enforced bound, set only by
+`createSdkNativeBoundary`/`createAsyncSdkNativeBoundary` (adapters.ts) — every other caller of this
+worker (`orchestrator-boundary.ts`'s interpret/narrate/converse, and every existing test double) leaves
+it unset and keeps exactly its prior no-idle-bound behavior. On idle, the worker aborts its own
+`query()` call, exits CLEANLY (never triggering the transport's wall-clock kill), and responds
+`{ok:false, idle:true, error: formatIdleFailureError(...)}` — structurally distinct from the
+transport's own synthesized `{ok:false, timedOut:true, error:"...timed out after Nms"}`, which the
+worker never even gets a chance to produce (the transport kills the process tree and builds that
+response itself). `DispatchTraceRecord.outcome` gained a fourth value, `"idle"`, alongside
+`"timeout"`, with `timedOut` still taking precedence in `buildDispatchTrace`'s derivation for the case
+(never expected to occur, since the two are mutually exclusive by construction) where both were
+somehow set. Findings 92 and 123 were both cases of a failure naming the wrong cause; the two failure
+shapes here are distinguishable in the thrown `AdapterError` message, the worker's own stderr log
+line, and the dispatch trace's `outcome` field alike — never just one of the three.
+
+## Sweep for siblings (Finding 129, standing instruction — nineteenth consecutive unit)
+
+- **`orchestrator-boundary.ts`'s `interpret()`/`narrate()`/`converse()`** — the closest sibling: these
+  call the SAME `bunSdkTransport`/`asyncSdkTransport`, spawning the identical `sdk-worker.ts`, so
+  `consumeQuery`'s idle race already runs underneath them today, just permanently disarmed
+  (`idleTimeoutMs` never set). A natural, low-cost follow-up once real idle-outcome trace evidence
+  exists from the member path — deliberately NOT wired in this unit, which stays scoped to native
+  member dispatch per the ruling.
+- **`mcp-client.ts`'s stdio MCP client** (`DEFAULT_TIMEOUT_MS = 30_000`, the `tools/call`
+  request/response wait) — a genuine wall-clock-only bound with no liveness observation at all: the
+  client waits on a bare `setTimeout` for exactly one JSON-RPC response over stdio, with no per-message
+  progress signal consulted even though the MCP protocol has one (`notifications/progress`) this client
+  doesn't currently read. A real candidate for the same idle-vs-timeout split, out of scope here.
+- **`kind: cli`'s `bunSpawn`/`asyncBunSpawn`** — covered above under the CLI-boundary question:
+  possible in principle (the async spawn's stdout is a real stream), but a materially weaker signal
+  (raw bytes, not messages) with no evidence base — deliberately left as a named, undone possibility,
+  not silently skipped.
+- Debounce timers (`daemon.ts`, `board/serve.ts`'s SSE reload watcher) were checked and excluded — they
+  coalesce rapid filesystem events into one reload, not bound an operation's own liveness; there is
+  nothing there analogous to "is the operation still alive."
+
+## Test
+
+`tests/sdk-worker-idle-timeout.test.ts` (new): `raceIdle` (the race primitive) and `consumeQuery` (the
+loop built on it) driven with a fake message iterator and real-but-tiny timers — a dispatch that
+streams continuously past N is not killed even though its TOTAL run exceeds N; one that goes fully
+silent past N is killed and reports `idle:true`, never `timedOut`; with no `idleTimeoutMs` at all,
+behavior is unchanged; an auth failure (Finding 92) still takes precedence over an idle race running
+concurrently. `tests/native-sdk-boundary.test.ts`: both boundaries thread the flat 300s default (and a
+test-only override) into every request regardless of `agent.timeout`; an idle-bound worker response
+surfaces as an `AdapterError` naming idleness. `tests/dispatch-trace.test.ts`: an idle outcome records
+`outcome: "idle"` distinct from `"timeout"`, and `timedOut` wins if both were somehow set.
+
+## Verification
+
+`bun test` → 1847 pass, 9 skip, 0 fail across 121 files, 6264 expect() calls. `bunx tsc --noEmit`
+clean.

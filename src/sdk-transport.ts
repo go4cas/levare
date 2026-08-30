@@ -126,6 +126,16 @@ export interface SdkWorkerRequest {
    * (which showed a resolution mismatch on at least one host — see K14). Unset only when resolution
    * itself failed, in which case the SDK falls back to its own (equally unresolvable) attempt. */
   pathToClaudeCodeExecutable?: string;
+  /** Finding 124: the idle bound — no stream activity (any message, not just assistant text) for this
+   * many ms — the WORKER itself enforces, distinct from `SdkTransportRunOptions.timeoutMs` (the outer
+   * wall-clock bound the TRANSPORT enforces by killing the process tree). Enforced here, not in
+   * `sdk-transport.ts`, because the message stream this bound watches only exists inside the worker's
+   * own `query()` loop (sdk-worker.ts) — the transport (both the sync `Bun.spawnSync` boundary and the
+   * async `Bun.spawn` one) only ever sees the worker as an opaque child process and reads its full
+   * stdout/stderr in one shot, never an intermediate message. Absent (every caller that never sets it —
+   * `orchestrator-boundary.ts`'s interpret/narrate/converse, and every existing test double) means no
+   * idle bound applies, only the outer wall clock — unchanged prior behavior. */
+  idleTimeoutMs?: number;
 }
 
 // `nativeBinaryResolved` (Finding 112): optional on BOTH branches — the worker itself always knows the
@@ -135,7 +145,20 @@ export interface SdkWorkerRequest {
 // value to report — absent, not `false`: the resolution outcome is genuinely unknown, not a negative.
 export type SdkWorkerResponse =
   | { ok: true; result: string; structuredOutput?: unknown; receipt?: Receipt; nativeBinaryResolved?: boolean }
-  | { ok: false; error: string; nativeBinaryResolved?: boolean };
+  | {
+      ok: false;
+      error: string;
+      nativeBinaryResolved?: boolean;
+      /** Finding 124: set only when THIS worker's own idle bound fired (`SdkWorkerRequest.idleTimeoutMs`
+       * — no stream activity for that long) — distinct from the transport's outer wall-clock kill, which
+       * never reaches this response at all (the transport synthesizes its own `{ok:false,...}` after
+       * killing the process tree; see `SdkTransportResult.timedOut`). A Conductor reading either an
+       * `AdapterError` message or a dispatch trace's `outcome` must be able to tell "idle for 5m" (a
+       * worker that gave up on its own, cleanly) apart from "killed after its 20m bound" (never absent,
+       * never conflated with a plain non-timeout failure) — see `formatIdleFailureError`'s own doc.
+       */
+      idle?: boolean;
+    };
 
 /**
  * NOTES DISPATCH-TRACE (native-dispatch-hang investigation, 2026-08-19): what `run()` actually returns,

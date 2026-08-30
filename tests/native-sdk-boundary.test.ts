@@ -90,6 +90,23 @@ describe("createSdkNativeBoundary (mocked transport)", () => {
     expect(calls[0].tools).toEqual([]);
     expect(calls[0].allowedTools).toEqual([]);
   });
+
+  // Finding 124: the idle bound is enforced BY THE WORKER (sdk-worker.ts#consumeQuery), so the request
+  // this boundary hands the transport must carry it — the flat default, never derived from the agent
+  // (unlike `timeout:`), and a test-only override wins over that default exactly like `timeoutMs` does.
+  test("threads the flat default idle bound (300s) into every request, regardless of the agent's own timeout:", () => {
+    const { transport, calls } = fakeTransport(() => ({ ok: true, result: "doc" }));
+    const boundary = createSdkNativeBoundary({ transport });
+    boundary.invoke(req({ agent: agent({ timeout: 90 }) }));
+    expect(calls[0].idleTimeoutMs).toBe(300_000);
+  });
+
+  test("a test-only idleTimeoutMs override wins over the flat default", () => {
+    const { transport, calls } = fakeTransport(() => ({ ok: true, result: "doc" }));
+    const boundary = createSdkNativeBoundary({ transport, idleTimeoutMs: 15_000 });
+    boundary.invoke(req());
+    expect(calls[0].idleTimeoutMs).toBe(15_000);
+  });
 });
 
 describe("createAsyncSdkNativeBoundary (mocked transport) — NOTES F8, the non-blocking counterpart", () => {
@@ -142,5 +159,29 @@ describe("createAsyncSdkNativeBoundary (mocked transport) — NOTES F8, the non-
     const boundary = createAsyncSdkNativeBoundary({ transport });
     await expect(boundary.invoke(req())).rejects.toThrow(AdapterError);
     await expect(boundary.invoke(req())).rejects.toThrow(/worker exited 1/);
+  });
+
+  // Finding 124: same flat idle-bound wiring as the sync boundary above, async counterpart.
+  test("threads the flat default idle bound (300s) into every request, regardless of the agent's own timeout:", async () => {
+    const { transport, calls } = fakeAsyncTransport(() => ({ ok: true, result: "doc" }));
+    const boundary = createAsyncSdkNativeBoundary({ transport });
+    await boundary.invoke(req({ agent: agent({ timeout: 90 }) }));
+    expect(calls[0].idleTimeoutMs).toBe(300_000);
+  });
+
+  test("a test-only idleTimeoutMs override wins over the flat default", async () => {
+    const { transport, calls } = fakeAsyncTransport(() => ({ ok: true, result: "doc" }));
+    const boundary = createAsyncSdkNativeBoundary({ transport, idleTimeoutMs: 15_000 });
+    await boundary.invoke(req());
+    expect(calls[0].idleTimeoutMs).toBe(15_000);
+  });
+
+  // The idle abort itself is a WORKER-reported failure — from this boundary's perspective it's just
+  // another `{ok:false, idle:true}` response, which must still surface as an AdapterError naming
+  // idleness, never presented as a plain/ambiguous failure.
+  test("an idle-bound abort surfaces as an AdapterError naming idleness, not a generic failure", async () => {
+    const { transport } = fakeAsyncTransport(() => ({ ok: false, error: "sdk worker: idle for 300000ms with no stream activity — aborted after 300050ms elapsed", idle: true }));
+    const boundary = createAsyncSdkNativeBoundary({ transport });
+    await expect(boundary.invoke(req())).rejects.toThrow(/idle for 300000ms/);
   });
 });
