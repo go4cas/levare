@@ -609,10 +609,17 @@ describe("run screen", () => {
     expect(html).toContain('class="cost"');
   });
 
-  test("timeline is built from ledger + git log, not fabricated", () => {
+  // Finding 130: the timeline's only sources are `git log` on the unit dir and the project repo now
+  // — the golden fixture's own `ledger.ndjson` (still on disk, unread) must not leak into it. Assert
+  // against the timeline's own markup, not just the page as a whole: "kestrel/wren"/"kestrel/lyra"
+  // also appear in the gate/producer cards elsewhere on this same screen, so a bare `html.toContain`
+  // would pass regardless of what the timeline itself rendered.
+  test("timeline is built from real git log, not fabricated, and never surfaces the unread ledger", () => {
     expect(html).toContain('class="timeline"');
-    expect(html).toContain("kestrel/wren");
-    expect(html).toContain("kestrel/lyra");
+    const timelineHtml = /<div class="timeline">[\s\S]*?<\/div>\s*<\/div>/.exec(html)?.[0] ?? "";
+    expect(timelineHtml).toContain("committed &mdash;");
+    expect(timelineHtml).not.toContain("kestrel/wren");
+    expect(timelineHtml).not.toContain("kestrel/lyra");
   });
 });
 
