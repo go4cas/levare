@@ -341,8 +341,12 @@ export interface OrchestratorTraceRecord {
   pid: number;
   started_at: string;
   /** Same `in_progress` sentinel and same reasoning as `DispatchTraceRecord.outcome` — written only by
-   * `buildOrchestratorTraceStart`, never a terminal state. */
-  outcome: "in_progress" | "ok" | "timeout" | "error";
+   * `buildOrchestratorTraceStart`, never a terminal state. Finding 160: `"idle"` is the same distinct
+   * outcome `DispatchTraceRecord.outcome` already carries for the native path — the Orchestrator's own
+   * idle bound (orchestrator-boundary.ts's `DEFAULT_ORCHESTRATOR_IDLE_TIMEOUT_MS`) firing, as opposed
+   * to the outer wall-clock kill (`"timeout"`); the two stay mutually exclusive by the same construction
+   * `NativeDispatchOutcome.idle`'s own doc describes. */
+  outcome: "in_progress" | "ok" | "timeout" | "idle" | "error";
   duration_ms?: number;
   /** Same fact, same capture discipline, as `DispatchTraceRecord.ended_at` — a sibling record, not a
    * shared shape, but this field's meaning and its `in_progress` → real transition are identical. */
@@ -390,7 +394,7 @@ export function buildOrchestratorTraceStart(opts: OrchestratorTraceIdentityOpts)
 
 export type OrchestratorTraceFinishedRecord = OrchestratorTraceRecord & {
   duration_ms: number;
-  outcome: "ok" | "timeout" | "error";
+  outcome: "ok" | "timeout" | "idle" | "error";
   worker_stdout: string;
   worker_stdout_truncated: boolean;
   worker_stderr: string;
@@ -398,16 +402,18 @@ export type OrchestratorTraceFinishedRecord = OrchestratorTraceRecord & {
 };
 
 /** The finish trace — amends the start trace with the outcome, mirroring `buildDispatchTrace`.
- * `outcome` here is the SAME shape `NativeDispatchOutcome` already describes (ok/error/timedOut/
- * durationMs/stdout/stderr/receipt) — the Orchestrator's transport call produces the identical
- * summary a member dispatch's does, via the same `asSdkTransportResult`. */
+ * `outcome` here is the SAME shape `NativeDispatchOutcome` already describes (ok/error/timedOut/idle/
+ * durationMs/stdout/stderr/receipt) — the Orchestrator's transport call produces the identical summary
+ * a member dispatch's does, via the same `asSdkTransportResult`. */
 export function buildOrchestratorTrace(outcome: NativeDispatchOutcome, opts: OrchestratorTraceIdentityOpts): OrchestratorTraceFinishedRecord {
   const stdout = truncate(outcome.stdout, { fromEnd: true });
   const stderr = truncate(outcome.stderr, { fromEnd: true });
   return {
     ...buildOrchestratorTraceIdentity(opts),
     duration_ms: outcome.durationMs,
-    outcome: outcome.timedOut ? "timeout" : outcome.ok ? "ok" : "error",
+    // Finding 160: `idle` checked before the plain `ok`/`error` split, after `timedOut` — identical
+    // precedence to `buildDispatchTrace`'s own (the two are mutually exclusive by construction).
+    outcome: outcome.timedOut ? "timeout" : outcome.idle ? "idle" : outcome.ok ? "ok" : "error",
     ended_at: outcome.endedAt,
     error: outcome.error,
     worker_stdout: stdout.value,
