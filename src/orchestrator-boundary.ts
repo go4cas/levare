@@ -131,7 +131,19 @@ function traceOrchestratorCallFinish(studioRoot: string | undefined, call: Orche
   const endedAt = new Date().toISOString();
   const wide = asSdkTransportResult(res);
   const record = buildOrchestratorTrace(
-    { ok: res.ok, error: res.ok ? undefined : res.error, timedOut: wide.timedOut, durationMs: wide.durationMs, endedAt, stdout: wide.stdout, stderr: wide.stderr, receipt: res.ok ? res.receipt : undefined },
+    {
+      ok: res.ok,
+      error: res.ok ? undefined : res.error,
+      timedOut: wide.timedOut,
+      // Finding 160: mirrors adapters.ts#traceNativeDispatchFinish's identical wiring — `idle` only
+      // ever comes from the WORKER's own report (`res.idle`), never inferred from `!res.ok` alone.
+      idle: !res.ok && res.idle === true,
+      durationMs: wide.durationMs,
+      endedAt,
+      stdout: wide.stdout,
+      stderr: wide.stderr,
+      receipt: res.ok ? res.receipt : undefined,
+    },
     {
       call,
       model: ctx.model,
@@ -258,6 +270,16 @@ export function coerceIntent(raw: unknown, fallbackText: string): Intent {
 // second, independently-guessed copy that could silently drift out of sync with it.
 export const DEFAULT_INTERPRET_TIMEOUT_MS = 45_000;
 
+// Finding 160: the idle bound (Finding 124, sdk-worker.ts#raceIdle) — no message-stream activity at
+// all for this long aborts the call, distinct from the wall-clock bounds above (timeoutMs/converseTimeoutMs),
+// which stay exactly as they are. RULED flat 20s for both interpret() and converse() — a healthy
+// interpret() completed in 4.6s end to end (trace, 2026-08-24), so 20s of silence is comfortably above
+// any real gap while reporting a genuinely stuck call over twice as fast as the 45s wall-clock bound
+// would. Deliberately NOT wired into narrate() — the ruling names only interpret/converse, and
+// narrate() already degrades silently to the plain computed fact on ANY transport failure (K8), so an
+// idle abort there would be indistinguishable from every other failure it already swallows.
+export const DEFAULT_ORCHESTRATOR_IDLE_TIMEOUT_MS = 20_000;
+
 export interface SdkOrchestratorBoundaryOptions {
   transport?: AsyncSdkTransport;
   model?: string;
@@ -274,6 +296,10 @@ export interface SdkOrchestratorBoundaryOptions {
    * the full studio projection (NOTES/ruling C10) rather than a short task string, so it is a bigger
    * single-turn call than interpret()/narrate() even with no tool round-trips. */
   converseTimeoutMs?: number;
+  /** Test-only override for the idle bound (Finding 160) — mirrors `SdkNativeBoundaryOptions.idleTimeoutMs`'s
+   * identical role (adapters.ts). Production never sets this; a real call's idle bound is always
+   * `DEFAULT_ORCHESTRATOR_IDLE_TIMEOUT_MS`. */
+  idleTimeoutMs?: number;
   /** Explicit override for the resolved native-binary path (test-only) — see
    * `resolveNativeBinaryPath` default below and NOTES phase-7 K14. */
   pathToClaudeCodeExecutable?: string;
@@ -301,6 +327,9 @@ export function createSdkOrchestratorBoundary(opts: SdkOrchestratorBoundaryOptio
   // string, so it legitimately needs more room than a single-turn classification/voice call, even
   // with no tool round-trips left to wait on.
   const converseTimeoutMs = opts.converseTimeoutMs ?? 90_000;
+  // Finding 160: same test-only-override-beats-default precedence as timeoutMs/converseTimeoutMs
+  // above — flat across interpret()/converse(), never per-call (see the constant's own doc).
+  const idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_ORCHESTRATOR_IDLE_TIMEOUT_MS;
   // Resolved ONCE, here, at construction time — never left to the SDK's own implicit resolution
   // inside the worker (NOTES phase-7 K14: a live host showed that implicit lookup fail to find a
   // platform binary that genuinely existed as a sibling node_modules package). Every request this
@@ -327,6 +356,7 @@ export function createSdkOrchestratorBoundary(opts: SdkOrchestratorBoundaryOptio
           allowedTools: [],
           outputFormat: { type: "json_schema", schema: INTENT_SCHEMA },
           pathToClaudeCodeExecutable,
+          idleTimeoutMs,
         },
         { env, timeoutMs },
       );
@@ -380,7 +410,10 @@ export function createSdkOrchestratorBoundary(opts: SdkOrchestratorBoundaryOptio
       const startedAt = new Date().toISOString();
       const traceCtx: OrchestratorTraceCtx = { model, timeoutMs: converseTimeoutMs, env, startedAt };
       traceOrchestratorCallStart(studioRoot, "converse", prompt, traceCtx);
-      const res = await transport.run({ prompt, systemPrompt, model, tools: [], allowedTools: [], pathToClaudeCodeExecutable }, { env, timeoutMs: converseTimeoutMs });
+      const res = await transport.run(
+        { prompt, systemPrompt, model, tools: [], allowedTools: [], pathToClaudeCodeExecutable, idleTimeoutMs },
+        { env, timeoutMs: converseTimeoutMs },
+      );
       traceOrchestratorCallFinish(studioRoot, "converse", prompt, res, traceCtx);
       // Same reasoning as interpret(): a transport failure must never be dressed up as a real answer.
       // Throwing here (rather than degrading in-place, unlike narrate()) reuses the EXISTING

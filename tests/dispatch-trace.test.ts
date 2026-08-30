@@ -478,4 +478,19 @@ describe("buildOrchestratorTrace / buildOrchestratorTraceStart — Finding 94: a
       rmSync(studioRoot, { recursive: true, force: true });
     }
   });
+
+  // Finding 160: the Orchestrator boundary now arms its own idle bound (orchestrator-boundary.ts) —
+  // its trace must be able to say so distinctly from a wall-clock "timeout", mirroring the native
+  // path's own `outcome: "idle"` (buildDispatchTrace's own precedence test, above).
+  test("an idle-bound abort is filed under outcome: idle, distinct from timeout — idle takes precedence over ok/error but never over timedOut", () => {
+    const idleOutcome = { ok: false, error: "sdk worker: idle for 20000ms with no stream activity — aborted after 20050ms elapsed", timedOut: false, idle: true, durationMs: 20_050, endedAt: "2026-08-20T00:00:20.050Z", stdout: "", stderr: "" };
+    const record = buildOrchestratorTrace(idleOutcome, orchIdentityOpts);
+    expect(record.outcome).toBe("idle");
+    expect(record.error).toContain("idle for 20000ms");
+
+    // timedOut still wins if both were somehow set — same mutual-exclusion precedence the native path
+    // already guarantees by construction (a wall-clock kill never lets the worker report idle at all).
+    const bothSet = buildOrchestratorTrace({ ...idleOutcome, timedOut: true }, orchIdentityOpts);
+    expect(bothSet.outcome).toBe("timeout");
+  });
 });
