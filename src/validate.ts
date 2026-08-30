@@ -932,7 +932,6 @@ function classify(relPath: string): Kind {
   if (parts.length === 1 && base === "studio.md") return { schema: STUDIO_SCHEMA, isArtifact: false, isUnit: false };
   if (top === "work") {
     if (base === "unit.md") return { schema: WORK_UNIT_SCHEMA, isArtifact: false, isUnit: true };
-    if (base === "ledger.ndjson") return { schema: null, isArtifact: false, isUnit: false };
     return { schema: ARTIFACT_SCHEMA, isArtifact: true, isUnit: false };
   }
   const schema = REGISTRY_SCHEMAS[top];

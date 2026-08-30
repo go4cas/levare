@@ -1,12 +1,11 @@
 // Run-view timeline: "every runner walk, member spawn, and gate event" (design brief) — built from
-// the sources of truth that actually exist on disk for a unit: the append-only usage ledger (§10
-// `ledger.ndjson`, one line per member invocation), `git log` on the unit's directory in the STUDIO's
-// own repo, and — Findings 86/89 — `git log` on `levare/<unit>` in the PROJECT's own repo, the work a
-// member actually did against the product itself. No separate event store; all three are re-derived
-// from disk on every request (invariant 2).
+// the sources of truth that actually exist on disk for a unit: `git log` on the unit's directory in
+// the STUDIO's own repo, and — Findings 86/89 — `git log` on `levare/<unit>` in the PROJECT's own
+// repo, the work a member actually did against the product itself. No separate event store; both are
+// re-derived from disk on every request (invariant 2). (Finding 130: a third source, the §10 usage
+// ledger `ledger.ndjson`, was removed — nothing in this codebase ever wrote that file.)
 
-import { existsSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { relative } from "node:path";
 import { spawnSync } from "node:child_process";
 import { CONDUCTOR_EMAIL, RUNNER_EMAIL } from "./git.ts";
 import { resolveProjectRepoPath, workBranchName, branchExists, projectLog } from "./merge.ts";
@@ -16,8 +15,8 @@ import type { Project, WorkUnit } from "./types.ts";
  * into `text`'s HTML — the run view uses this to render the design brief's own actor-avatar rule
  * ("agent initials on team tint, the Conductor as the only solid-filled disc, the Runner deliberately
  * gray"). `member` needs a repo lookup (a bare agent name, no team prefix) to tint correctly — that
- * lookup belongs to the render layer (which has `repo`), not here (which only has a raw ledger line/
- * git author). `conductor`/`runner`/`member` are resolved right here by `resolveGitActor`, from the
+ * lookup belongs to the render layer (which has `repo`), not here (which only has a raw git author).
+ * `conductor`/`runner`/`member` are resolved right here by `resolveGitActor`, from the
  * exact identity shapes every real commit in the app funnels through (`git.ts#CONDUCTOR_EMAIL`/
  * `RUNNER_EMAIL`/`memberIdentity`, plus an optionally studio-declared human identity for the Conductor
  * — Finding 90) — never guessed by name alone. `unknown` is an honest fallback for a git identity that
@@ -60,38 +59,9 @@ export function resolveGitActor(name: string, email: string, declaredConductor?:
 
 export interface TimelineRow {
   ts: string; // ISO
-  kind: "produce" | "commit";
+  kind: "commit";
   text: string;
   actor: TimelineActor;
-}
-
-interface LedgerLine {
-  ts: string;
-  member: string;
-  event: string;
-  kind?: string;
-  wall_clock_s?: number;
-  tokens_in?: number;
-  tokens_out?: number;
-  usd?: number;
-}
-
-export function ledgerRows(unitDir: string): TimelineRow[] {
-  const file = join(unitDir, "ledger.ndjson");
-  if (!existsSync(file)) return [];
-  const rows: TimelineRow[] = [];
-  for (const line of readFileSync(file, "utf8").split("\n")) {
-    if (!line.trim()) continue;
-    let l: LedgerLine;
-    try {
-      l = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const cost = typeof l.usd === "number" ? ` &middot; ${(l.tokens_in ?? 0) + (l.tokens_out ?? 0)} tok &middot; ~$${l.usd.toFixed(2)}` : "";
-    rows.push({ ts: l.ts, kind: "produce", text: `<span class="who">${l.member}</span> ${l.event}d <span class="mono">${l.kind ?? ""}</span>${cost}`, actor: { kind: "member", name: l.member } });
-  }
-  return rows;
 }
 
 export function gitLogRows(root: string, unitDir: string, declaredConductor?: { name: string; email: string }): TimelineRow[] {
@@ -143,7 +113,7 @@ function projectLogRows(studioRoot: string, project: Pick<Project, "repo" | "def
 
 export function buildTimeline(root: string, unit: Pick<WorkUnit, "dir" | "unit">, project: Pick<Project, "repo" | "default_branch"> | undefined, declaredConductor?: { name: string; email: string }): TimelineResult {
   const projectResult = projectLogRows(root, project, unit.unit, declaredConductor);
-  const rows = [...ledgerRows(unit.dir), ...gitLogRows(root, unit.dir, declaredConductor), ...projectResult.rows];
+  const rows = [...gitLogRows(root, unit.dir, declaredConductor), ...projectResult.rows];
   rows.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
   return { rows, unavailable: projectResult.unavailable };
 }
