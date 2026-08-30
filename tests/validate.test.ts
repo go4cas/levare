@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, cpSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -21,6 +21,24 @@ describe("golden fixture", () => {
     // Sanity: the story the fixture tells matches PRD §4's example artifact.
     const r = validatePath("fixtures/golden/work/storefront/checkout-flow/spec-checkout-flow-v1.md");
     expect(r.ok).toBe(true);
+  });
+
+  // Finding 130: `ledger.ndjson` is read by nothing that writes it, so its read path (and the
+  // schema exclusion that existed only to keep the validator from rejecting it) was deleted. An
+  // operator's studio may still carry the file from an earlier version of levare — it must keep
+  // validating clean, not be rejected for a file the validator no longer even looks at.
+  test("a stray ledger.ndjson from an earlier version is ignored, not rejected", () => {
+    const scratch = mkdtempSync(join(tmpdir(), "levare-ledger-stray-"));
+    try {
+      cpSync("fixtures/golden", scratch, { recursive: true });
+      // Garbage, not even valid JSON — proves the file is never parsed, just walked past.
+      writeFileSync(join(scratch, "work", "storefront", "checkout-flow", "ledger.ndjson"), "not even valid json\n");
+      const r = validatePath(scratch);
+      if (!r.ok) console.error(r.errors);
+      expect(r.ok).toBe(true);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
   });
 });
 

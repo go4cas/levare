@@ -166,9 +166,25 @@ describe("loadStudioSettings: Finding 90 declaration parsing", () => {
 // project source could not be read at all (no usable `repo:`, or the work branch doesn't exist yet),
 // never when it was read and simply came back empty.
 describe("buildTimeline: the project repo as a second git source (Findings 86/89)", () => {
-  function writeLedgerLine(unitDir: string, member: string, ts: string): void {
+  /** The studio-side source, post-Finding-130: a real commit on the unit's own directory in the
+   * STUDIO repo, authored as a member (`<member>@levare.local`, `git.ts#memberIdentity`'s shape) at a
+   * chosen instant — replaces the old `ledger.ndjson` line the pre-130 version of this suite used to
+   * seed studio rows with (§10's ledger was never actually written by anything in `src/`). */
+  function commitStudioRow(studioRoot: string, unitDir: string, member: string, isoDate: string): void {
     mkdirSync(unitDir, { recursive: true });
-    writeFileSync(join(unitDir, "ledger.ndjson"), `${JSON.stringify({ ts, member, event: "produce", kind: "spec" })}\n`, { flag: "a" });
+    writeFileSync(join(unitDir, `${member}.txt`), "x\n");
+    const env = {
+      ...HERMETIC_ENV,
+      GIT_AUTHOR_NAME: member,
+      GIT_AUTHOR_EMAIL: `${member}@levare.local`,
+      GIT_COMMITTER_NAME: member,
+      GIT_COMMITTER_EMAIL: `${member}@levare.local`,
+      GIT_AUTHOR_DATE: isoDate,
+      GIT_COMMITTER_DATE: isoDate,
+    };
+    spawnSync("git", ["-C", studioRoot, "add", "-A"], { encoding: "utf8", env });
+    const r = spawnSync("git", ["-C", studioRoot, "-c", "commit.gpgsign=false", "commit", "-q", "-m", `${member} produced spec`], { encoding: "utf8", env });
+    assertSpawnOk(`git commit as ${member}`, r);
   }
 
   /** A real, local project repo — `default_branch` = "main" — with one committed file. */
@@ -205,8 +221,9 @@ describe("buildTimeline: the project repo as a second git source (Findings 86/89
     const studio = mkdtempSync(join(tmpdir(), "levare-tl-studio-"));
     const projectRepo = makeProjectRepo();
     try {
+      git(studio, ["init", "-q"]);
       const unitDir = join(studio, "work", "acme", "widget-1");
-      writeLedgerLine(unitDir, "lyra", "2024-01-01T10:00:00.000Z");
+      commitStudioRow(studio, unitDir, "lyra", "2024-01-01T10:00:00.000Z");
 
       const branch = workBranchName("widget-1");
       git(projectRepo, ["branch", branch, "main"]);
@@ -226,8 +243,9 @@ describe("buildTimeline: the project repo as a second git source (Findings 86/89
   test("no repo: declared → today's rows plus that reason, never an empty project section", () => {
     const studio = mkdtempSync(join(tmpdir(), "levare-tl-studio-"));
     try {
+      git(studio, ["init", "-q"]);
       const unitDir = join(studio, "work", "acme", "widget-1");
-      writeLedgerLine(unitDir, "lyra", "2024-01-01T10:00:00.000Z");
+      commitStudioRow(studio, unitDir, "lyra", "2024-01-01T10:00:00.000Z");
 
       const result = buildTimeline(studio, { dir: unitDir, unit: "widget-1" }, { repo: "", default_branch: "main" });
 
@@ -244,8 +262,9 @@ describe("buildTimeline: the project repo as a second git source (Findings 86/89
     const studio = mkdtempSync(join(tmpdir(), "levare-tl-studio-"));
     const projectRepo = makeProjectRepo();
     try {
+      git(studio, ["init", "-q"]);
       const unitDir = join(studio, "work", "acme", "widget-1");
-      writeLedgerLine(unitDir, "lyra", "2024-01-01T10:00:00.000Z");
+      commitStudioRow(studio, unitDir, "lyra", "2024-01-01T10:00:00.000Z");
 
       // Deliberately never create `levare/widget-1` on projectRepo.
       const result = buildTimeline(studio, { dir: unitDir, unit: "widget-1" }, { repo: projectRepo, default_branch: "main" });
@@ -263,12 +282,13 @@ describe("buildTimeline: the project repo as a second git source (Findings 86/89
   test("mixed-offset timestamps sort by instant, not by string", () => {
     const studio = mkdtempSync(join(tmpdir(), "levare-tl-studio-"));
     try {
+      git(studio, ["init", "-q"]);
       const unitDir = join(studio, "work", "acme", "widget-1");
       // Lexicographically "T09" > "T08", but +02:00 puts this instant an hour BEFORE the +00:00 one
       // (07:00Z vs 08:00Z) — a plain string sort gets this backwards; only an instant-aware sort
       // (Date.parse) gets it right. Nothing pins TZ in this env, so this reproduces even locally.
-      writeLedgerLine(unitDir, "later-by-string-earlier-by-instant", "2024-06-01T09:00:00+02:00");
-      writeLedgerLine(unitDir, "earlier-by-string-later-by-instant", "2024-06-01T08:00:00+00:00");
+      commitStudioRow(studio, unitDir, "later-by-string-earlier-by-instant", "2024-06-01T09:00:00+02:00");
+      commitStudioRow(studio, unitDir, "earlier-by-string-later-by-instant", "2024-06-01T08:00:00+00:00");
 
       const result = buildTimeline(studio, { dir: unitDir, unit: "widget-1" }, { repo: "", default_branch: "main" });
 

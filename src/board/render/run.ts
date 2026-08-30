@@ -54,8 +54,8 @@ export function scoreLineClass(state: NodeState): string {
 export { elapsedLabel };
 
 // Phase 2 cluster 3 part 3: "actor avatars — agent initials on team tint, the Conductor as the only
-// solid-filled disc, the Runner deliberately gray" (base brief, Run view). A ledger row's `actor.name`
-// for a "member" is already `team/member` (ledger.ndjson's own shape, the same convention
+// solid-filled disc, the Runner deliberately gray" (base brief, Run view). A timeline row's `actor.name`
+// for a "member" is already `team/member` (`git.ts#memberIdentity`'s own shape, the same convention
 // `artifact.produced_by` uses) — `memberAvatar` takes that directly, no extra lookup. Conductor/Runner/
 // member identities are resolved in timeline.ts's `resolveGitActor`, exhaustive over every identity
 // shape the app itself produces — never guessed here. "unknown" (a git identity matching none of those)
