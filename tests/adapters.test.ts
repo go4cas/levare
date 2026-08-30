@@ -19,6 +19,7 @@ import {
   nativeBunfsExtractionBase,
   ensureNativeBunfsExtractionBase,
   type CliSpawn,
+  type AsyncCliSpawn,
   type InvokeRequest,
   type NativeBoundary,
   type RemoteBoundary,
@@ -631,6 +632,203 @@ describe("cli adapter (against the fixture stub)", () => {
     });
     const { doc } = runner.produce("finch", "review", "checkout-flow", "storefront");
     expect(doc).toContain("kind: review");
+  });
+});
+
+describe("cli adapter — dispatch trace (Finding 132)", () => {
+  function readCliTrace(studioRoot: string): Record<string, unknown> {
+    const dir = join(studioRoot, DISPATCH_LOG_DIR_NAME);
+    const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+    expect(files.length).toBe(1);
+    return JSON.parse(readFileSync(join(dir, files[0]), "utf8"));
+  }
+
+  test("absent studioRoot writes no trace at all — the same opt-in convention the native path uses", () => {
+    const repo = loadRepo(ROOT);
+    const studioRoot = mkdtempSync(join(tmpdir(), "levare-trace-studio-"));
+    try {
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        spawn: fakeSpawn(),
+        cliCommand: stubCliCommand,
+        // studioRoot deliberately unset
+      });
+      runner.produce("finch", "review", "checkout-flow", "storefront");
+      expect(existsSync(join(studioRoot, DISPATCH_LOG_DIR_NAME))).toBe(false);
+    } finally {
+      rmSync(studioRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("a successful dispatch writes agent_kind: 'cli' with a populated outcome, env NAMES only, and never a granted connector's value", () => {
+    const repo = loadRepo(ROOT);
+    const studioRoot = mkdtempSync(join(tmpdir(), "levare-trace-studio-"));
+    try {
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        spawn: fakeSpawn(),
+        cliCommand: stubCliCommand,
+        baseEnv: { PATH: "/bin", HOME: "/h", GITHUB_TOKEN: "ghp_SUPER_SECRET_VALUE" },
+        studioRoot,
+      });
+      runner.produce("finch", "review", "checkout-flow", "storefront");
+      const trace = readCliTrace(studioRoot);
+      expect(trace.agent_kind).toBe("cli");
+      expect(trace.unit).toBe("checkout-flow");
+      expect(trace.project).toBe("storefront");
+      expect(trace.member).toBe("finch");
+      expect(trace.kind).toBe("review");
+      expect(trace.outcome).toBe("ok");
+      expect(typeof trace.duration_ms).toBe("number");
+      expect(typeof trace.pid).toBe("number");
+      expect(trace.command).toBe("bun");
+      expect(trace.args).toEqual(["stub", "finch", "review", "--unit", "checkout-flow", "--project", "storefront"]);
+      // finch grants no connectors — the allowlisted spawn env is HOME/PATH only.
+      const names = (trace.env as Array<{ name: string }>).map((e) => e.name).sort();
+      expect(names).toEqual(["HOME", "PATH"]);
+      expect(JSON.stringify(trace)).not.toContain("ghp_SUPER_SECRET_VALUE");
+      expect(typeof trace.home_scoped).toBe("boolean");
+      expect(typeof trace.git_write_grant).toBe("boolean");
+      expect(typeof trace.vendor_scratch).toBe("boolean");
+    } finally {
+      rmSync(studioRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("a failing (non-zero exit) dispatch still records its exit status and a bounded stderr tail — the trace is written before AdapterError is thrown, not skipped because of it", () => {
+    const repo = loadRepo(ROOT);
+    const studioRoot = mkdtempSync(join(tmpdir(), "levare-trace-studio-"));
+    try {
+      const failing: CliSpawn = { run: () => ({ stdout: "", exitCode: 1, timedOut: false, stderr: "authentication expired: run `codex login`\n", pid: 4242 }) };
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        spawn: failing,
+        cliCommand: stubCliCommand,
+        studioRoot,
+      });
+      expect(() => runner.produce("finch", "review", "checkout-flow", "storefront")).toThrow(/exited 1/);
+      const trace = readCliTrace(studioRoot);
+      expect(trace.outcome).toBe("error");
+      expect(trace.exit_code).toBe(1);
+      expect(trace.child_pid).toBe(4242);
+      expect(trace.stderr_tail).toContain("authentication expired");
+    } finally {
+      rmSync(studioRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("a timed-out dispatch is filed under outcome: timeout, distinct from a plain exit failure", () => {
+    const repo = loadRepo(ROOT);
+    const studioRoot = mkdtempSync(join(tmpdir(), "levare-trace-studio-"));
+    try {
+      const slow: CliSpawn = { run: () => ({ stdout: "", exitCode: -1, timedOut: true, stderr: "still waiting on upstream...\n" }) };
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        spawn: slow,
+        cliCommand: stubCliCommand,
+        studioRoot,
+      });
+      expect(() => runner.produce("finch", "review", "checkout-flow", "storefront")).toThrow(/timed out/);
+      const trace = readCliTrace(studioRoot);
+      expect(trace.outcome).toBe("timeout");
+      expect(trace.stderr_tail).toContain("still waiting");
+    } finally {
+      rmSync(studioRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("a stranded start trace (the process died before the finish write) reads unambiguously as in_progress, mirroring the native path's own Finding-113 signature", () => {
+    const repo = loadRepo(ROOT);
+    const studioRoot = mkdtempSync(join(tmpdir(), "levare-trace-studio-"));
+    try {
+      // A spawn double that throws synchronously — never returns a SpawnResult at all, so the finish
+      // write is never reached, exactly the "process died mid-dispatch" case a real hang would produce.
+      const dying: CliSpawn = {
+        run: () => {
+          throw new Error("simulated: process died before reporting a result");
+        },
+      };
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        spawn: dying,
+        cliCommand: stubCliCommand,
+        studioRoot,
+      });
+      expect(() => runner.produce("finch", "review", "checkout-flow", "storefront")).toThrow(/simulated/);
+      const trace = readCliTrace(studioRoot);
+      expect(trace.outcome).toBe("in_progress");
+      expect(trace.duration_ms).toBeUndefined();
+    } finally {
+      rmSync(studioRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("the async dispatch path (produceAsync, what levare serve actually drives) writes a trace too", async () => {
+    const repo = loadRepo(ROOT);
+    const studioRoot = mkdtempSync(join(tmpdir(), "levare-trace-studio-"));
+    try {
+      const asyncFake: AsyncCliSpawn = { run: async (argv, opts) => fakeSpawn().run(argv, opts) };
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        spawn: fakeSpawn(),
+        asyncSpawn: asyncFake,
+        cliCommand: stubCliCommand,
+        studioRoot,
+      });
+      await runner.produceAsync("finch", "review", "checkout-flow", "storefront");
+      const trace = readCliTrace(studioRoot);
+      expect(trace.agent_kind).toBe("cli");
+      expect(trace.outcome).toBe("ok");
+    } finally {
+      rmSync(studioRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("a member declaring sandbox: unsandboxed records sandbox_level: 'none' and the declared sandbox_reason — never conflated with a host that merely lacks a primitive", () => {
+    // Exercises the REAL spawn boundary (bunSpawn, not a test double) — `sandboxWrap` only ever runs for
+    // `this.spawn === bunSpawn` (see its own doc), and the `sandbox: "unsandboxed"` short-circuit lives
+    // inside `sandboxWrap` itself, before `detectSandbox()` even runs. A real `echo` mirrors the same
+    // technique the "R4-SANDBOX Ruling 2" describe block already uses to exercise a real spawn without
+    // depending on a real sandbox primitive being present on this host.
+    const repo = loadRepo(ROOT);
+    const agent = repo.agents.get("finch")!;
+    (agent as Agent).sandbox = "unsandboxed";
+    (agent as Agent).sandbox_reason = "vendor CLI needs unconfined keychain access";
+    const studioRoot = mkdtempSync(join(tmpdir(), "levare-trace-studio-"));
+    try {
+      const runner = new AdapterRunner(repo, {
+        pricing,
+        capabilities: [{ member: "finch", kind: "review" }],
+        native: nativeMock,
+        remote: remoteMock,
+        cliCommand: () => ["echo", "some real cli output"],
+        studioRoot,
+      });
+      runner.produce("finch", "review", "checkout-flow", "storefront");
+      const trace = readCliTrace(studioRoot);
+      expect(trace.sandbox_level).toBe("none");
+      expect(trace.sandbox_reason).toBe("vendor CLI needs unconfined keychain access");
+    } finally {
+      rmSync(studioRoot, { recursive: true, force: true });
+    }
   });
 });
 

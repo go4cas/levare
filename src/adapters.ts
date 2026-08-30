@@ -52,7 +52,16 @@ import {
   type SdkWorkerResponse,
   type WrapWorkerSpawn,
 } from "./sdk-transport.ts";
-import { buildDispatchTrace, buildDispatchTraceStart, writeDispatchTrace } from "./dispatch-trace.ts";
+import {
+  buildDispatchTrace,
+  buildDispatchTraceStart,
+  writeDispatchTrace,
+  buildCliDispatchTrace,
+  buildCliDispatchTraceStart,
+  writeCliDispatchTrace,
+  type CliDispatchTraceIdentityOpts,
+  type CliDispatchOutcome,
+} from "./dispatch-trace.ts";
 import { repoCapabilities } from "./repo.ts";
 import { resolveProjectRepoPath, workBranchName, branchExists, createDispatchWorktree, commitDispatchWorktree, type DispatchCommitResult } from "./merge.ts";
 import { isSafeHomeDotpath, detectFetchAtDispatchLauncher } from "./validate.ts";
@@ -872,6 +881,15 @@ export interface SpawnResult {
    * completely different classes of bug.
    */
   signalCode?: string | null;
+  /**
+   * Finding 132: the spawned CLI's own pid. Cheaply available the instant `Bun.spawnSync`/`Bun.spawn`
+   * returns a subprocess handle — unlike a native dispatch's worker pid (never captured anywhere in this
+   * codebase; see `dispatch-trace.ts#DispatchTraceRecord.pid`'s own doc for why), a cli spawn is a single,
+   * direct child this process owns start to finish. Optional, mirroring `stderr?`/`signalCode?`'s own
+   * "predates this field" allowance for a test-double `CliSpawn`; always populated by the real
+   * `bunSpawn`/`asyncBunSpawn` below.
+   */
+  pid?: number;
 }
 
 export interface CliSpawnOptions {
@@ -963,6 +981,7 @@ export const bunSpawn: CliSpawn = {
       timedOut,
       stderr,
       signalCode: proc.signalCode ?? null,
+      pid: proc.pid,
     };
   },
 };
@@ -1015,6 +1034,7 @@ export const asyncBunSpawn: AsyncCliSpawn = {
         timedOut,
         stderr,
         signalCode: proc.signalCode ?? null,
+        pid: proc.pid,
       };
     } finally {
       clearTimeout(timer);
@@ -1065,6 +1085,13 @@ export interface AdapterRunnerOptions {
    * `board/serve.ts`) never set this, so a live spawn always reflects the host's actual, current
    * capability. */
   sandboxDetection?: SandboxDetection;
+  /** Finding 132: the studio root a `kind: cli` dispatch trace is written under (`<studioRoot>/.levare/
+   * dispatch-logs/`) — mirrors `SdkNativeBoundaryOptions.studioRoot`'s identical role for the native
+   * path. Absent (the default for every test double, and for `stubAdapterRunner`) means no cli trace is
+   * written; `productionAdapterRunner` (replay.ts) passes `repo.root` on every real construction, so a
+   * live `kind: cli` dispatch — sync (`produce`, `levare replay`) or async (`produceAsync`, `levare
+   * serve`) alike — always gets one. */
+  studioRoot?: string;
 }
 
 // Substitute the agent.command argv template. {task} = the FULL §6-assembled context (NOTES F7) —
@@ -2078,6 +2105,72 @@ export class AdapterRunner implements MemberRunner {
     if (stderr) console.error(`[levare:sandbox-debug] stderr:\n${stderr}`);
   }
 
+  // Finding 132: shared by `runCli`/`runCliAsync` — everything about a cli dispatch trace that's known
+  // BEFORE the spawn (argv actually resolved to run, env names, HOME/sandbox/grant facts, timing bound).
+  // `wrapped`/`env` are already computed by both callers before this runs, so this never re-derives the
+  // sandbox decision — it only reports it. See `dispatch-trace.ts`'s own cli-trace section header for why
+  // this is a sibling shape to the native record, not a widened one.
+  private cliTraceIdentityOpts(
+    req: InvokeRequest,
+    agent: Agent,
+    wrapped: { argv: string[]; level?: SandboxLevel },
+    env: Record<string, string>,
+    cwd: string | undefined,
+    timeoutMs: number,
+    vendorScratchUsed: boolean,
+    startedAt: string,
+  ): CliDispatchTraceIdentityOpts {
+    return {
+      unit: req.unit,
+      project: req.project,
+      member: req.member,
+      kind: req.kind,
+      command: wrapped.argv[0] ?? "",
+      args: wrapped.argv.slice(1),
+      cwd,
+      timeoutMs,
+      env,
+      homeScoped: req.homeScoped ?? false,
+      sandboxLevel: wrapped.level,
+      sandboxReason: agent.sandbox === "unsandboxed" ? agent.sandbox_reason : undefined,
+      gitWriteGrant: req.dispatchGitWriteGrant !== undefined,
+      vendorScratch: vendorScratchUsed,
+      startedAt,
+    };
+  }
+
+  // Finding 132 / Finding 113's discipline applied to cli: written before the spawn, so a hung cli
+  // dispatch (Finding 52's own six rounds of live-sandbox debugging) leaves something in
+  // `.levare/dispatch-logs/` for its entire duration instead of nothing. A no-op when `studioRoot` was
+  // never supplied — every test double, and `stubAdapterRunner`, which never sets it.
+  private traceCliDispatchStart(traceOpts: CliDispatchTraceIdentityOpts): void {
+    if (!this.opts.studioRoot) return;
+    writeCliDispatchTrace(this.opts.studioRoot, buildCliDispatchTraceStart(traceOpts));
+  }
+
+  // Finding 132: amends the start trace (same file, same `traceOpts.startedAt`) with the spawn's own
+  // outcome — written from the raw `SpawnResult` directly, BEFORE `cliResultToDoc` runs, so a failing
+  // dispatch's trace is never skipped just because the caller goes on to throw an `AdapterError` for it.
+  private traceCliDispatchFinish(result: SpawnResult, endedAt: string, traceOpts: CliDispatchTraceIdentityOpts): void {
+    if (!this.opts.studioRoot) return;
+    const outcome: CliDispatchOutcome = {
+      timedOut: result.timedOut,
+      // Neither `CliSpawn`/`AsyncCliSpawn` tracks its own elapsed time (unlike the SDK transport, which
+      // hands `NativeDispatchOutcome.durationMs` back as a directly-measured figure) — derived here from
+      // the two real wall-clock timestamps this method's own two callers already capture immediately
+      // before/after the spawn, millisecond-precision `toISOString()` on both sides, never a separate
+      // timer this file would otherwise have to add to `SpawnResult` for no other consumer's benefit.
+      durationMs: Date.parse(endedAt) - Date.parse(traceOpts.startedAt),
+      endedAt,
+      exitCode: result.exitCode,
+      signalCode: result.signalCode,
+      childPid: result.pid,
+      stdout: result.stdout,
+      stderr: result.stderr ?? "",
+    };
+    writeCliDispatchTrace(this.opts.studioRoot, buildCliDispatchTrace(outcome, traceOpts));
+  }
+
   private runCli(agent: Agent, req: InvokeRequest): { content: string; tokensUsed: number | null; sandbox?: SandboxLevel } {
     const { argv, cwd, timeoutMs, stdin } = this.cliInvocation(agent, req);
     // NOTES F3: pre-flight ONLY guards the real `bunSpawn` boundary — the one that actually hands argv
@@ -2098,9 +2191,12 @@ export class AdapterRunner implements MemberRunner {
     // NOTES R4-SANDBOX-FIX-9 / R4-VENDOR-CLI: only a "full"-tier sandbox denies (rather than merely
     // not-attempting-to-confine) the operator's real HOME — see `fullSandboxEnvRedirect`'s own doc.
     const env = wrapped.level === "full" ? fullSandboxEnvRedirect(req.env, vendorScratch?.dir) : req.env;
+    const traceOpts = this.cliTraceIdentityOpts(req, agent, wrapped, env, cwd, timeoutMs, vendorScratch !== undefined, new Date().toISOString());
+    this.traceCliDispatchStart(traceOpts);
     try {
       const result = this.spawn.run(wrapped.argv, { env, cwd, timeoutMs, stdin });
       if (real) AdapterRunner.logSpawnDebug(result);
+      this.traceCliDispatchFinish(result, new Date().toISOString(), traceOpts);
       // NOTES R4-SANDBOX-FIX: the WRAPPED argv, never the pre-wrap member argv — a failed spawn used to
       // report what the member would have been invoked with had sandboxing never run, which made "did
       // the wrapper even engage" impossible to tell from the error text alone.
@@ -2121,9 +2217,12 @@ export class AdapterRunner implements MemberRunner {
     const policyReq = vendorScratch ? { ...req, cliVendorScratchDir: vendorScratch.dir } : req;
     const wrapped: { argv: string[]; level?: SandboxLevel; cleanup?: () => void } = real ? this.sandboxWrap(argv, cwd, policyReq) : { argv };
     const env = wrapped.level === "full" ? fullSandboxEnvRedirect(req.env, vendorScratch?.dir) : req.env;
+    const traceOpts = this.cliTraceIdentityOpts(req, agent, wrapped, env, cwd, timeoutMs, vendorScratch !== undefined, new Date().toISOString());
+    this.traceCliDispatchStart(traceOpts);
     try {
       const result = await this.asyncSpawn.run(wrapped.argv, { env, cwd, timeoutMs, stdin });
       if (real) AdapterRunner.logSpawnDebug(result);
+      this.traceCliDispatchFinish(result, new Date().toISOString(), traceOpts);
       return { ...this.cliResultToDoc(req.member, agent, wrapped.argv, result), sandbox: wrapped.level };
     } finally {
       wrapped.cleanup?.();

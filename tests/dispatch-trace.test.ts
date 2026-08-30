@@ -7,11 +7,15 @@ import {
   buildDispatchTraceStart,
   buildOrchestratorTrace,
   buildOrchestratorTraceStart,
+  buildCliDispatchTrace,
+  buildCliDispatchTraceStart,
   writeDispatchTrace,
   writeOrchestratorTrace,
+  writeCliDispatchTrace,
   sweepDispatchTraces,
   DISPATCH_LOG_DIR_NAME,
   type NativeDispatchOutcome,
+  type CliDispatchTraceIdentityOpts,
 } from "../src/dispatch-trace.ts";
 import type { InvokeRequest } from "../src/adapters.ts";
 import type { Agent } from "../src/types.ts";
@@ -492,5 +496,134 @@ describe("buildOrchestratorTrace / buildOrchestratorTraceStart — Finding 94: a
     // already guarantees by construction (a wall-clock kill never lets the worker report idle at all).
     const bothSet = buildOrchestratorTrace({ ...idleOutcome, timedOut: true }, orchIdentityOpts);
     expect(bothSet.outcome).toBe("timeout");
+  });
+});
+
+describe("buildCliDispatchTrace / buildCliDispatchTraceStart — Finding 132: a cli-shaped sibling, never a widened DispatchTraceRecord", () => {
+  const cliIdentityOpts: CliDispatchTraceIdentityOpts = {
+    unit: "list-entries",
+    project: "jot",
+    member: "finch",
+    kind: "review",
+    command: "/usr/bin/bwrap",
+    args: ["--ro-bind", "/", "/", "--", "codex", "exec", "review this"],
+    cwd: "/work/dispatch-worktree",
+    timeoutMs: 600_000,
+    env: { PATH: "/usr/bin", HOME: "/home/operator", GITHUB_TOKEN: "ghp_SUPER_SECRET_VALUE" },
+    homeScoped: false,
+    sandboxLevel: "full",
+    gitWriteGrant: true,
+    vendorScratch: true,
+    startedAt: "2026-08-31T00:00:00.000Z",
+  };
+
+  test("the start record carries agent_kind: 'cli', identity fields, and no outcome-dependent fields yet", () => {
+    const record = buildCliDispatchTraceStart(cliIdentityOpts);
+    expect(record.agent_kind).toBe("cli");
+    expect(record.outcome).toBe("in_progress");
+    expect(record.ended_at).toBeNull();
+    expect(record.unit).toBe("list-entries");
+    expect(record.member).toBe("finch");
+    expect(record.command).toBe("/usr/bin/bwrap");
+    expect(record.git_write_grant).toBe(true);
+    expect(record.vendor_scratch).toBe(true);
+    expect(record.sandbox_level).toBe("full");
+    expect(typeof record.pid).toBe("number");
+    expect(record.child_pid).toBeUndefined();
+    expect(record.duration_ms).toBeUndefined();
+    expect(record.exit_code).toBeUndefined();
+  });
+
+  test("env NAMES only, never a value — the same redaction guarantee as the native/orchestrator paths", () => {
+    const record = buildCliDispatchTraceStart(cliIdentityOpts);
+    const names = record.env.map((e) => e.name).sort();
+    expect(names).toEqual(["GITHUB_TOKEN", "HOME", "PATH"]);
+    expect(JSON.stringify(record)).not.toContain("ghp_SUPER_SECRET_VALUE");
+    expect(JSON.stringify(record)).not.toContain("/home/operator");
+  });
+
+  test("one argv element far exceeding the per-element cap is truncated and flagged, without eating the rest of the array's budget", () => {
+    const opts: CliDispatchTraceIdentityOpts = { ...cliIdentityOpts, args: ["--task", "x".repeat(10_000), "--model", "gpt-5"] };
+    const record = buildCliDispatchTraceStart(opts);
+    expect(record.args[0]).toBe("--task");
+    expect(record.args[1].length).toBeLessThan(300);
+    expect(record.args[1]).toContain("…(10000 chars total)");
+    // The LATER elements survive untouched — a whole-string cap would have silently dropped them.
+    expect(record.args[2]).toBe("--model");
+    expect(record.args[3]).toBe("gpt-5");
+  });
+
+  test("a successful spawn (exit 0) is filed as outcome: ok, with duration/ended_at/child_pid populated", () => {
+    const record = buildCliDispatchTrace(
+      { timedOut: false, durationMs: 4321, endedAt: "2026-08-31T00:00:04.321Z", exitCode: 0, signalCode: null, childPid: 5150, stdout: "the artifact body", stderr: "" },
+      cliIdentityOpts,
+    );
+    expect(record.outcome).toBe("ok");
+    expect(record.duration_ms).toBe(4321);
+    expect(record.ended_at).toBe("2026-08-31T00:00:04.321Z");
+    expect(record.child_pid).toBe(5150);
+    expect(record.exit_code).toBe(0);
+  });
+
+  test("a non-zero exit is filed as outcome: error (never timeout) and keeps the bounded stderr tail", () => {
+    const record = buildCliDispatchTrace(
+      { timedOut: false, durationMs: 900, endedAt: "2026-08-31T00:00:00.900Z", exitCode: 1, signalCode: null, stdout: "", stderr: "authentication expired: run `codex login`" },
+      cliIdentityOpts,
+    );
+    expect(record.outcome).toBe("error");
+    expect(record.exit_code).toBe(1);
+    expect(record.stderr_tail).toContain("authentication expired");
+    expect(record.stderr_tail_truncated).toBe(false);
+  });
+
+  test("a killed-by-signal spawn (exitCode -1) is filed as outcome: error, with the signal recorded", () => {
+    const record = buildCliDispatchTrace(
+      { timedOut: false, durationMs: 500, endedAt: "2026-08-31T00:00:00.500Z", exitCode: -1, signalCode: "SIGKILL", stdout: "", stderr: "" },
+      cliIdentityOpts,
+    );
+    expect(record.outcome).toBe("error");
+    expect(record.signal_code).toBe("SIGKILL");
+  });
+
+  test("a wall-clock timeout is filed as outcome: timeout, distinct from a plain exit failure", () => {
+    const record = buildCliDispatchTrace(
+      { timedOut: true, durationMs: 600_000, endedAt: "2026-08-31T00:10:00.000Z", exitCode: -1, signalCode: "SIGKILL", stdout: "", stderr: "still waiting on upstream..." },
+      cliIdentityOpts,
+    );
+    expect(record.outcome).toBe("timeout");
+    expect(record.stderr_tail).toContain("still waiting");
+  });
+
+  test("stdout is kept as a bounded TAIL too — a cli auth failure that prints its error on stdout (Finding 139) is never dropped", () => {
+    const record = buildCliDispatchTrace(
+      { timedOut: false, durationMs: 100, endedAt: "2026-08-31T00:00:00.100Z", exitCode: 1, signalCode: null, stdout: "starting up...\nerror: quota exhausted for this billing period\n", stderr: "" },
+      cliIdentityOpts,
+    );
+    expect(record.stdout_tail).toContain("quota exhausted");
+  });
+
+  test("writeCliDispatchTrace lands under <studioRoot>/.levare/dispatch-logs/, filename never collides with a native or orchestrator trace's own naming", () => {
+    const studioRoot = mkdtempSync(join(tmpdir(), "levare-trace-studio-"));
+    try {
+      const start = buildCliDispatchTraceStart(cliIdentityOpts);
+      writeCliDispatchTrace(studioRoot, start, "2026-08-31T00-00-00-000Z");
+      const dir = join(studioRoot, DISPATCH_LOG_DIR_NAME);
+      const afterStart = readdirSync(dir).filter((f) => f.endsWith(".json"));
+      expect(afterStart.length).toBe(1);
+      expect(afterStart[0]).toContain("-cli.json");
+      expect(JSON.parse(readFileSync(join(dir, afterStart[0]), "utf8")).outcome).toBe("in_progress");
+
+      const finish = buildCliDispatchTrace(
+        { timedOut: false, durationMs: 10, endedAt: "2026-08-31T00:00:00.010Z", exitCode: 0, signalCode: null, stdout: "ok", stderr: "" },
+        cliIdentityOpts,
+      );
+      writeCliDispatchTrace(studioRoot, finish);
+      const afterFinish = readdirSync(dir).filter((f) => f.endsWith(".json"));
+      // Same file — amended in place, never a second trace.
+      expect(afterFinish).toEqual(afterStart);
+      expect(JSON.parse(readFileSync(join(dir, afterFinish[0]), "utf8")).outcome).toBe("ok");
+    } finally {
+      rmSync(studioRoot, { recursive: true, force: true });
+    }
   });
 });

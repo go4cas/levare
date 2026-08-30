@@ -149,6 +149,9 @@ export function productionAdapterRunner(repo: Repo, overrides: ProductionAdapter
     asyncRemote: overrides.asyncRemote ?? createAsyncStdioRemoteBoundary(repo),
     spawn: bunSpawn,
     asyncSpawn: asyncBunSpawn,
+    // Finding 132: mirrors the native boundaries' own `studioRoot: repo.root` immediately above — what
+    // makes a real `kind: cli` dispatch write a trace at all (AdapterRunner#runCli/runCliAsync).
+    studioRoot: repo.root,
   });
   return {
     capabilities: () => runner.capabilities(),

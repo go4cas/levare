@@ -27,6 +27,7 @@ import { join } from "node:path";
 import { describeMemberEnv } from "./env.ts";
 import type { InvokeRequest } from "./adapters.ts";
 import type { Receipt } from "./types.ts";
+import type { SandboxLevel } from "./sandbox.ts";
 
 // A trace file's text fields are bounded, not omitted — the same "record it, but bounded and honestly
 // flagged" posture as every other capped record in this codebase (e.g. sandbox.ts's dedup, the Workflow
@@ -435,4 +436,242 @@ function orchestratorTraceFileName(record: OrchestratorTraceRecord, now: string)
  * retention sweep as `writeDispatchTrace`. */
 export function writeOrchestratorTrace(studioRoot: string, record: OrchestratorTraceRecord, now: string = record.started_at): void {
   writeTraceFile(studioRoot, orchestratorTraceFileName(record, now), record, `orchestrator trace for ${record.call}()`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Cli dispatch traces (Finding 132): `writeDispatchTrace` above is called only from the two native
+// boundaries (`createSdkNativeBoundary`/`createAsyncSdkNativeBoundary`) — `DispatchTraceRecord.
+// agent_kind`'s `"cli"` and `"remote"` variants were declared but structurally unreachable, so a `kind:
+// cli` member ran with no diagnostic surface at all. Findings 52 (six rounds of live-sandbox debugging
+// to explain a codex dispatch's own failure), 54 (still unobserved — needs a codex dispatch to see), and
+// 139 (a cli member's auth failure is invisible because the vendor subprocess exposes no error_status)
+// are the same blindness from three angles.
+//
+// This is a SIBLING record, not a widened `DispatchTraceRecord` — the same "don't invent a shape that
+// can't be populated" reasoning `OrchestratorTraceRecord` above already established. A `kind: cli`
+// dispatch is a vendor subprocess (`AdapterRunner#runCli`/`runCliAsync`), not an SDK worker: there is no
+// message stream, no receipt, no token accounting, no `native_binary_resolved` question — copying those
+// fields across would leave them structurally always-null, which Finding 112 already named as worse
+// than simply not having the field.
+//
+// `agent_kind: "cli"` is a literal, not `DispatchTraceRecord.agent_kind`'s own type — kept as a real
+// field (not just implied by which file this builder lives in) so a Conductor grepping
+// `.levare/dispatch-logs/*.json` for `"agent_kind"` finds every dispatch kind by the same key, even
+// though the shapes around it differ.
+//
+// `remote` (MCP) is deliberately OUT OF SCOPE for this unit, not merely deferred silently: `mcp-
+// client.ts#connectStdioMcpServer` spawns once and stays alive across `listTools`/`listResources`/
+// `callTool` calls, and its own `McpSession` interface exposes neither the child's pid nor its stderr
+// tail (it tracks a bounded `stderrTail` internally, in a closure, purely to enrich a thrown
+// `McpProtocolError`'s own message — never returned to the caller). A remote dispatch's failure mode is
+// consequently a thrown protocol error, not an exit code — "exit status" as this record shapes it for
+// cli genuinely doesn't fit remote's own shape without widening `McpSession` itself, which is real
+// scope this unit did not take on. Cli-only is the deliberate, reported outcome here (the goal's own
+// ruling names this as an acceptable answer) — a future unit that widens `McpSession` to expose pid/
+// stderr can add a `RemoteDispatchTraceRecord` sibling then, on real evidence of what it can report.
+//
+// The record is written at dispatch start (`buildCliDispatchTraceStart`, `outcome: "in_progress"`) and
+// amended on exit (`buildCliDispatchTrace`), mirroring `buildDispatchTraceStart`/`buildDispatchTrace`'s
+// own Finding-113 discipline: a cli dispatch can hang exactly like a native one (Finding 52's own six
+// rounds were largely spent on a sandboxed cli spawn that never returned), and a trace stranded at
+// `in_progress` is precisely the signature that made the native path's own 2026-08-25 timeout
+// diagnosable.
+//
+// No `outcome: "idle"` here — Finding 124's idle bound is `sdk-worker.ts#consumeQuery` watching a
+// message STREAM for inactivity; a cli spawn has no message stream at all, only a wall-clock timeout
+// (`SpawnResult.timedOut`, enforced by `Bun.spawnSync`'s own `timeout` option / `asyncBunSpawn`'s own
+// `setTimeout`), so `"timeout"` is the only abort outcome this record needs.
+
+// Mirrors `adapters.ts#summarizeArgv`'s own per-element cap and `…(N chars total)` suffix exactly (a
+// Conductor reading a trace and an AdapterError message for the SAME dispatch sees the identical
+// shape) — reimplemented locally rather than imported, since `adapters.ts` already imports FROM this
+// module (`buildDispatchTrace`/`writeDispatchTrace`) and importing back would make the two files
+// circular for no real benefit. One argv element can carry a member's ENTIRE §6-assembled context
+// (`context_via: arg`, `{task}` substitution) — often thousands of characters — so this must cap PER
+// ELEMENT, never truncate the whole array as one joined string the way `truncate()` above does for a
+// single field: a whole-string cap could spend its entire budget on argv[1] and silently drop every
+// later argument.
+const MAX_ARGV_ELEMENT_CHARS = 200;
+function truncateArgvElements(args: string[]): string[] {
+  return args.map((a) => (a.length > MAX_ARGV_ELEMENT_CHARS ? `${a.slice(0, MAX_ARGV_ELEMENT_CHARS)}…(${a.length} chars total)` : a));
+}
+
+export interface CliDispatchTraceRecord {
+  agent_kind: "cli";
+  unit: string;
+  project: string;
+  member: string;
+  kind: string;
+  /** The resolved argv[0] this dispatch actually spawned — the WRAPPED command (`bwrap`/`sandbox-exec`
+   * when a sandbox tier engaged), never the pre-wrap member command, mirroring
+   * `adapters.ts#cliResultToDoc`'s own "wrapped argv, not the member's" precedent: a trace that named
+   * what the member WOULD have run unsandboxed would make "did the wrapper even engage" just as
+   * impossible to tell from the trace as it used to be from the error text alone. */
+  command: string;
+  /** `argv.slice(1)`, each element capped (`truncateArgvElements`) — never the raw, unbounded array. */
+  args: string[];
+  cwd?: string;
+  timeout_ms: number;
+  /** Env var NAMES only (env.ts#describeMemberEnv), over the env this dispatch's spawn ACTUALLY carried
+   * — including any `full`-tier sandbox redirect (`GIT_CONFIG_GLOBAL`, `GH_CONFIG_DIR`, etc. —
+   * adapters.ts#fullSandboxEnvRedirect), never the pre-redirect allowlist alone. */
+  env: DispatchTraceEnvEntry[];
+  /** Same fact, same meaning, as `DispatchTraceRecord.home_scoped` — whether `env.ts#scopeHome` swapped
+   * in a scratch HOME for this dispatch. */
+  home_scoped: boolean;
+  /** The OS sandbox enforcement level this spawn actually ran under (`adapters.ts#sandboxWrap`) —
+   * absent only when the spawn boundary was a test double (`this.spawn !== bunSpawn`), which never
+   * wraps anything at all; see `sandboxWrap`'s own doc for why a double is never wrapped. */
+  sandbox_level?: SandboxLevel;
+  /** `req.agent.sandbox_reason` — present only when the member DECLARED `sandbox: unsandboxed` (an
+   * author-stated fact that this member's process cannot run confined), distinct from
+   * `sandbox_level: "none"` meaning merely "this host has no working primitive" — the same distinction
+   * `AdapterRunner#author`'s own `sandbox_reason:` artifact line already draws. */
+  sandbox_reason?: string;
+  /** Whether this dispatch held a real dispatch-worktree git write grant (`req.dispatchGitWriteGrant`)
+   * — a fact about which code path ran, never the granted paths themselves (those are real filesystem
+   * locations under the operator's own project checkout, not a value this trace needs to name). */
+  git_write_grant: boolean;
+  /** Whether a fresh, per-dispatch vendor-CLI scratch redirect (`adapters.ts#createCliVendorScratch`)
+   * applied to this spawn — never the scratch directory's own path, exactly `git_write_grant`'s own
+   * boolean-fact-not-a-path discipline. */
+  vendor_scratch: boolean;
+  /** This levare process's own pid — see `DispatchTraceRecord.pid`'s own doc for why this is never the
+   * spawned child's pid at start-trace time (the child doesn't exist yet when this is written). */
+  pid: number;
+  /** The spawned CLI's own pid — unlike native's own worker pid (never captured anywhere in this
+   * codebase, per `DispatchTraceRecord.pid`'s own doc), a cli spawn's pid IS cheaply available the
+   * instant `Bun.spawnSync`/`Bun.spawn` returns, well before this dispatch's own outer promise/call
+   * resolves — populated only on the finish write (`buildCliDispatchTrace`), absent on the in-progress
+   * start trace for the same reason `pid` above is never the child's: it doesn't exist yet. */
+  child_pid?: number;
+  started_at: string;
+  /** Same `in_progress` sentinel and reasoning as `DispatchTraceRecord.outcome` (Finding 113) — written
+   * only by `buildCliDispatchTraceStart`, before the spawn, never a terminal state. No `"idle"` variant
+   * — see this section's own header for why a cli spawn has nothing an idle bound could watch. */
+  outcome: "in_progress" | "ok" | "timeout" | "error";
+  duration_ms?: number;
+  /** Same capture discipline as `DispatchTraceRecord.ended_at` — real wall clock at the call site
+   * closest to the spawn actually resolving, never arithmetic. */
+  ended_at: string | null;
+  /** `SpawnResult.exitCode` verbatim — `-1` means killed by signal (`proc.exitCode === null`), never a
+   * real exit code; see `SpawnResult.signalCode`'s own doc for why the two must be read together. */
+  exit_code?: number;
+  signal_code?: string | null;
+  error?: string;
+  /** Bounded TAIL of the CLI's own stderr (`truncate(…, { fromEnd: true })`, this module's own cap) —
+   * never the full, unbounded stream. */
+  stderr_tail?: string;
+  stderr_tail_truncated?: boolean;
+  /** Bounded tail of stdout — cli auth/protocol failures often surface on stdout rather than stderr
+   * (`adapters.ts#vendorStructuredError` already checks both, and `diagnoseCliFailure` falls back to
+   * stdout's own last non-empty line when stderr is empty) — Finding 139's own "cli auth failure is
+   * invisible" gap is exactly this: an auth error a vendor CLI printed to stdout, which this trace would
+   * otherwise never record at all. */
+  stdout_tail?: string;
+  stdout_tail_truncated?: boolean;
+}
+
+export interface CliDispatchTraceIdentityOpts {
+  unit: string;
+  project: string;
+  member: string;
+  kind: string;
+  command: string;
+  args: string[];
+  cwd?: string;
+  timeoutMs: number;
+  /** The ACTUAL spawn env (post sandbox redirect) — see `CliDispatchTraceRecord.env`'s own doc. */
+  env: Record<string, string>;
+  homeScoped: boolean;
+  sandboxLevel?: SandboxLevel;
+  sandboxReason?: string;
+  gitWriteGrant: boolean;
+  vendorScratch: boolean;
+  startedAt: string;
+}
+
+function buildCliDispatchTraceIdentity(opts: CliDispatchTraceIdentityOpts) {
+  return {
+    agent_kind: "cli" as const,
+    unit: opts.unit,
+    project: opts.project,
+    member: opts.member,
+    kind: opts.kind,
+    command: opts.command,
+    args: truncateArgvElements(opts.args),
+    cwd: opts.cwd,
+    timeout_ms: opts.timeoutMs,
+    env: describeMemberEnv(opts.env),
+    home_scoped: opts.homeScoped,
+    sandbox_level: opts.sandboxLevel,
+    sandbox_reason: opts.sandboxReason,
+    git_write_grant: opts.gitWriteGrant,
+    vendor_scratch: opts.vendorScratch,
+    pid: process.pid,
+    started_at: opts.startedAt,
+  };
+}
+
+/** The start-of-dispatch trace (Finding 113's discipline, applied to cli): written before the spawn, so
+ * a hung cli dispatch (Finding 52's own six rounds) leaves something in `.levare/dispatch-logs/` for its
+ * entire duration instead of nothing. `outcome: "in_progress"` is the only value this ever produces. */
+export function buildCliDispatchTraceStart(opts: CliDispatchTraceIdentityOpts): CliDispatchTraceRecord {
+  return { ...buildCliDispatchTraceIdentity(opts), outcome: "in_progress", ended_at: null };
+}
+
+export interface CliDispatchOutcome {
+  timedOut: boolean;
+  durationMs: number;
+  endedAt: string;
+  exitCode?: number;
+  signalCode?: string | null;
+  childPid?: number;
+  stdout: string;
+  stderr: string;
+}
+
+export type CliDispatchTraceFinishedRecord = CliDispatchTraceRecord & {
+  duration_ms: number;
+  outcome: "ok" | "timeout" | "error";
+  stderr_tail: string;
+  stderr_tail_truncated: boolean;
+  stdout_tail: string;
+  stdout_tail_truncated: boolean;
+};
+
+/** The finish trace — amends the start trace with everything only knowable once the spawn resolved:
+ * exit status, duration, the stderr/stdout tails. `outcome` is `"ok"` only for a real zero exit; a
+ * signal-killed or nonzero-exit spawn is `"error"`, exactly `AdapterRunner#cliResultToDoc`'s own
+ * exitCode/signal handling — this never re-derives success from anything other than `exitCode === 0`. */
+export function buildCliDispatchTrace(outcome: CliDispatchOutcome, opts: CliDispatchTraceIdentityOpts): CliDispatchTraceFinishedRecord {
+  const stderr = truncate(outcome.stderr, { fromEnd: true });
+  const stdout = truncate(outcome.stdout, { fromEnd: true });
+  return {
+    ...buildCliDispatchTraceIdentity(opts),
+    duration_ms: outcome.durationMs,
+    outcome: outcome.timedOut ? "timeout" : outcome.exitCode === 0 ? "ok" : "error",
+    ended_at: outcome.endedAt,
+    exit_code: outcome.exitCode,
+    signal_code: outcome.signalCode,
+    child_pid: outcome.childPid,
+    stderr_tail: stderr.value,
+    stderr_tail_truncated: stderr.truncated,
+    stdout_tail: stdout.value,
+    stdout_tail_truncated: stdout.truncated,
+  };
+}
+
+// Same reasoning as `traceFileName`/`orchestratorTraceFileName`: filesystem-safe, sortable-by-name,
+// keyed on `started_at` so a start write and its later amend land on the identical file.
+function cliTraceFileName(record: CliDispatchTraceRecord, now: string): string {
+  const stamp = now.replace(/[:.]/g, "-");
+  const safeMember = record.member.replace(/\//g, "_");
+  return `${stamp}-${record.unit}-${record.kind}-${safeMember}-cli.json`;
+}
+
+/** Writes one cli dispatch trace — same directory, same best-effort swallow, same opportunistic
+ * retention sweep as `writeDispatchTrace`/`writeOrchestratorTrace`. */
+export function writeCliDispatchTrace(studioRoot: string, record: CliDispatchTraceRecord, now: string = record.started_at): void {
+  writeTraceFile(studioRoot, cliTraceFileName(record, now), record, `cli dispatch trace for ${record.member}/${record.kind} (${record.unit})`);
 }
