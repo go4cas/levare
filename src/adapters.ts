@@ -188,6 +188,11 @@ export interface SdkNativeBoundaryOptions {
    * sets this; a real dispatch's bound comes from `req.agent.timeout` (Finding 81), defaulting to
    * `DEFAULT_NATIVE_TIMEOUT_S` when the agent declares none. */
   timeoutMs?: number;
+  /** Test-only override for the idle bound (Finding 124) — mirrors `timeoutMs`'s identical role/
+   * precedence. Production never sets this; a real dispatch's idle bound is always
+   * `resolveNativeIdleTimeoutMs()`'s flat default (never derived from the dispatched agent, unlike
+   * `timeoutMs`/`agent.timeout` — the ruling is explicit that this bound is flat, not per-agent). */
+  idleTimeoutMs?: number;
   /** Test-only override for the resolved native-binary path — see `resolveNativeBinary` default below. */
   pathToClaudeCodeExecutable?: string;
   /** NOTES DISPATCH-TRACE: the studio root a dispatch trace is written under (`<studioRoot>/.levare/
@@ -223,6 +228,8 @@ export interface AsyncSdkNativeBoundaryOptions {
   env?: Record<string, string | undefined>;
   /** See `SdkNativeBoundaryOptions.timeoutMs` — identical role, async boundary. */
   timeoutMs?: number;
+  /** See `SdkNativeBoundaryOptions.idleTimeoutMs` — identical role, async boundary. */
+  idleTimeoutMs?: number;
   /** Test-only override for the resolved native-binary path — see `resolveNativeBinary` default below. */
   pathToClaudeCodeExecutable?: string;
   /** See `SdkNativeBoundaryOptions.studioRoot` — identical role, async boundary. */
@@ -419,13 +426,13 @@ function dispatchGitWriteGrant(worktreeGitDir: string): { root: string; subpaths
   return { root: gitCommonDir, subpaths: [pathJoin(gitCommonDir, "objects"), pathJoin(gitCommonDir, "refs"), logs, worktreeGitDir] };
 }
 
-function nativeWorkerRequest(req: InvokeRequest, pathToClaudeCodeExecutable: string | undefined) {
+function nativeWorkerRequest(req: InvokeRequest, pathToClaudeCodeExecutable: string | undefined, idleTimeoutMs: number) {
   // Tool allowlist (security-audit Surface 3/8's now-closed K5 pre-arm): `req.tools` is
   // `guardrails.ts#allowedTools(agent)` — exactly the agent's declared `tools:`, `[]` when it
   // declares none. Passed as BOTH `tools` and `allowedTools` so an agent declaring no tools reaches
   // the SDK with an empty allowlist, never an implicit/full one.
   const cwd = resolveFeatureRepo(req.agent.cwd, req.projectRepoPath);
-  return { prompt: req.context, model: req.agent.model, tools: req.tools, allowedTools: req.tools, cwd, pathToClaudeCodeExecutable };
+  return { prompt: req.context, model: req.agent.model, tools: req.tools, allowedTools: req.tools, cwd, pathToClaudeCodeExecutable, idleTimeoutMs };
 }
 
 // Finding 81: the native member dispatch default, in seconds — used by both createSdkNativeBoundary
@@ -449,6 +456,42 @@ const DEFAULT_CLI_REMOTE_TIMEOUT_S = 600;
  * number a real dispatch would enforce, never a second, independently-maintained copy of the rule. */
 export function resolveMemberTimeoutS(agent: Agent): number {
   return agent.timeout ?? (agent.kind === "native" ? DEFAULT_NATIVE_TIMEOUT_S : DEFAULT_CLI_REMOTE_TIMEOUT_S);
+}
+
+// Finding 124: the native-dispatch idle bound, in seconds — no message-stream activity at all for this
+// long aborts the dispatch (sdk-worker.ts#consumeQuery), reported as `outcome: "idle"`, distinct from
+// `DEFAULT_NATIVE_TIMEOUT_S` (the outer wall-clock backstop, left untouched by this unit). Flat across
+// every native agent — Finding 123's own trace table showed the axis that actually predicted a timeout
+// was ROLE (`code-builder`, every time), not a size/kind property a per-agent or per-role number could
+// track any better than a single flat bound already does.
+//
+// Honestly NOT measured against real inter-message gaps: `DispatchTraceRecord` (dispatch-trace.ts)
+// timestamps a dispatch's start and end, and `sdk-worker.ts`'s own stderr logs an elapsed-ms figure on
+// every `api_retry` and on its own final exit line, but no existing trace records a timestamp on each
+// individual streamed message — the one figure this bound most wants ("how long does a healthy
+// dispatch typically go between messages") was never captured by anything that ran before this unit,
+// and this sandbox holds no real `.levare/dispatch-logs/` history to mine regardless. 300s (5 minutes)
+// is chosen by the same reasoning `DEFAULT_NATIVE_TIMEOUT_S` itself was widened by by (Finding 81) — a
+// deliberately generous number, erring toward never killing real work — rather than a number derived
+// from a measurement this unit does not have: comfortably longer than a single slow tool call most
+// members plausibly issue (a package install, a test run, a web fetch), while still meaningfully
+// shorter than the 1200s backstop, so a dispatch that goes fully silent (the failing-tool-call loop
+// Finding 124's own ruling names, which streams nothing between attempts) is caught in a quarter of the
+// time rather than riding out the full backstop. The next unit that touches this constant should have
+// real numbers to work from: `sdk-worker.ts`'s per-iteration idle race already knows the actual gap
+// between messages the instant it happens (see `raceIdle`) — the missing piece is only that a
+// genuinely idle-triggered dispatch's `worker_stderr` now says so explicitly (`formatIdleFailureError`),
+// which is itself the first real data point this bound has ever had.
+const DEFAULT_NATIVE_IDLE_TIMEOUT_S = 300;
+
+/** The idle bound (Finding 124) a real native dispatch of `agent` will actually run under, in
+ * milliseconds — always `DEFAULT_NATIVE_IDLE_TIMEOUT_S`, since the ruling is explicit that this is
+ * flat, never a per-agent or per-kind override the way `resolveMemberTimeoutS` is. A free function
+ * (rather than inlined at both call sites) so `createSdkNativeBoundary`/`createAsyncSdkNativeBoundary`
+ * can't drift out of sync on what "the idle bound" means, mirroring `resolveMemberTimeoutS`'s own
+ * "one place this resolution rule lives" reasoning. */
+function resolveNativeIdleTimeoutMs(): number {
+  return DEFAULT_NATIVE_IDLE_TIMEOUT_S * 1000;
 }
 
 /**
@@ -479,13 +522,16 @@ export function createSdkNativeBoundary(opts: SdkNativeBoundaryOptions = {}): Na
       // precedence (StdioRemoteBoundaryOptions.timeoutMs's own doc): a test-only opts override beats
       // the agent's declared value, which beats the default.
       const timeoutMs = opts.timeoutMs ?? resolveMemberTimeoutS(req.agent) * 1000;
+      // Finding 124: same test-only-override-beats-default precedence as `timeoutMs` above, but never
+      // reads `req.agent` — the idle bound is flat, not per-agent (see `resolveNativeIdleTimeoutMs`).
+      const idleTimeoutMs = opts.idleTimeoutMs ?? resolveNativeIdleTimeoutMs();
       const startedAt = new Date().toISOString();
       const traceCtx = { startedAt, timeoutMs, baseEnv, pathToClaudeCodeExecutable };
       traceNativeDispatchStart(opts.studioRoot, req, traceCtx);
       const env = nativeSpawnEnv(req, baseEnv);
       let sandboxLevel: SandboxLevel | undefined;
       const wrapWorkerSpawn = nativeWrapWorkerSpawn(opts.repo, req, pathToClaudeCodeExecutable, baseEnv, opts.sandboxDetection, (l) => (sandboxLevel = l));
-      const res = transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable), { env, timeoutMs, wrapWorkerSpawn });
+      const res = transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable, idleTimeoutMs), { env, timeoutMs, wrapWorkerSpawn });
       traceNativeDispatchFinish(opts.studioRoot, req, res, traceCtx);
       if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`);
       return { doc: res.result, receipt: res.receipt, sandbox: sandboxLevel };
@@ -512,13 +558,16 @@ export function createAsyncSdkNativeBoundary(opts: AsyncSdkNativeBoundaryOptions
       // Finding 81: see createSdkNativeBoundary's identical comment above — same per-call resolution,
       // same precedence, async boundary.
       const timeoutMs = opts.timeoutMs ?? resolveMemberTimeoutS(req.agent) * 1000;
+      // Finding 124: see createSdkNativeBoundary's identical comment above — same flat idle bound,
+      // async boundary.
+      const idleTimeoutMs = opts.idleTimeoutMs ?? resolveNativeIdleTimeoutMs();
       const startedAt = new Date().toISOString();
       const traceCtx = { startedAt, timeoutMs, baseEnv, pathToClaudeCodeExecutable };
       traceNativeDispatchStart(opts.studioRoot, req, traceCtx);
       const env = nativeSpawnEnv(req, baseEnv);
       let sandboxLevel: SandboxLevel | undefined;
       const wrapWorkerSpawn = nativeWrapWorkerSpawn(opts.repo, req, pathToClaudeCodeExecutable, baseEnv, opts.sandboxDetection, (l) => (sandboxLevel = l));
-      const res = await transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable), { env, timeoutMs, wrapWorkerSpawn });
+      const res = await transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable, idleTimeoutMs), { env, timeoutMs, wrapWorkerSpawn });
       traceNativeDispatchFinish(opts.studioRoot, req, res, traceCtx);
       if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`);
       return { doc: res.result, receipt: res.receipt, sandbox: sandboxLevel };
@@ -585,7 +634,20 @@ function traceNativeDispatchFinish(studioRoot: string | undefined, req: InvokeRe
   const wide = asSdkTransportResult(res);
   const record = buildDispatchTrace(
     req,
-    { ok: res.ok, error: res.ok ? undefined : res.error, timedOut: wide.timedOut, durationMs: wide.durationMs, endedAt, stdout: wide.stdout, stderr: wide.stderr, receipt: res.ok ? res.receipt : undefined },
+    {
+      ok: res.ok,
+      error: res.ok ? undefined : res.error,
+      timedOut: wide.timedOut,
+      // Finding 124: `idle` only ever comes from the WORKER's own report (`res.idle`) — the transport's
+      // wall-clock kill (`wide.timedOut`) never populates it, so the two can never both be true; see
+      // `buildDispatchTrace`'s own `timedOut` precedence for why that ordering matters.
+      idle: !res.ok && res.idle === true,
+      durationMs: wide.durationMs,
+      endedAt,
+      stdout: wide.stdout,
+      stderr: wide.stderr,
+      receipt: res.ok ? res.receipt : undefined,
+    },
     nativeDispatchTraceIdentityOpts(req, ctx, nativeDispatchFinishNativeBinaryResolved(res, ctx)),
   );
   writeDispatchTrace(studioRoot, record);

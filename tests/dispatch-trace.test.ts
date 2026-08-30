@@ -126,6 +126,45 @@ describe("buildDispatchTrace — outcome/timing/truncation shape", () => {
     expect(record.worker_stderr_truncated).toBe(false);
   });
 
+  // Finding 124: an idle-bound abort is a WORKER-reported outcome — the transport never kills the
+  // process (timedOut stays false) because the worker exits cleanly on its own once it gives up.
+  test("an idle-bound abort records outcome: idle, distinct from timeout, and timedOut stays false", () => {
+    const req = baseReq();
+    const record = buildDispatchTrace(
+      req,
+      {
+        ok: false,
+        error: "sdk worker: idle for 300000ms with no stream activity — aborted after 300120ms elapsed (distinct from the outer wall-clock bound, which never fired)",
+        timedOut: false,
+        idle: true,
+        durationMs: 300_120,
+        endedAt: "2026-08-19T00:05:00.120Z",
+        stdout: "",
+        stderr: "levare: sdk worker query() idle for 300000ms with no stream activity — aborting",
+      },
+      { homeScoped: false, anthropicApiKeyPresent: true, nativeBinaryResolved: true, startedAt: "2026-08-19T00:00:00.000Z", timeoutMs: 1_200_000 },
+    );
+    expect(record.outcome).toBe("idle");
+    expect(record.outcome).not.toBe("timeout");
+    expect(record.error).toContain("idle for 300000ms");
+    expect(record.duration_ms).toBe(300_120);
+  });
+
+  // The two bounds are mutually exclusive by construction (NativeDispatchOutcome.idle's own doc), but
+  // this asserts the PRECEDENCE holds even if a caller somehow set both — the wall-clock kill is the
+  // one that can never coexist with the worker having reported anything, idle included, so it wins.
+  test("if both timedOut and idle were somehow set, timedOut wins — the outer bound always takes precedence", () => {
+    const req = baseReq();
+    const record = buildDispatchTrace(req, okOutcome({ ok: false, timedOut: true, idle: true, error: "sdk worker timed out after 1200000ms" }), {
+      homeScoped: false,
+      anthropicApiKeyPresent: true,
+      nativeBinaryResolved: true,
+      startedAt: "2026-08-19T00:00:00.000Z",
+      timeoutMs: 1_200_000,
+    });
+    expect(record.outcome).toBe("timeout");
+  });
+
   test("an in-progress trace carries a null ended_at; a finished one (ok path) carries a real one", () => {
     const startRecord = buildDispatchTraceStart(baseReq(), {
       homeScoped: false,

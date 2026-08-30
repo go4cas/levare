@@ -98,8 +98,11 @@ export interface DispatchTraceRecord {
    * about the outcome is knowable — never a terminal state. A trace file left at `in_progress` (the
    * dispatch's process died before the amend write landed) is diagnostic in its own right: it is the
    * literal signature of a hang, not an ambiguous empty result. Every field below that isn't knowable
-   * until the dispatch finishes is correspondingly optional, populated only by the amend write. */
-  outcome: "in_progress" | "ok" | "timeout" | "error";
+   * until the dispatch finishes is correspondingly optional, populated only by the amend write.
+   * Finding 124: `"idle"` is distinct from `"timeout"` — the worker's OWN idle bound firing (no stream
+   * activity for N minutes) versus the transport's outer wall-clock kill; see
+   * `NativeDispatchOutcome.idle`'s own doc for how the two stay mutually exclusive. */
+  outcome: "in_progress" | "ok" | "timeout" | "idle" | "error";
   duration_ms?: number;
   /** Wall-clock timestamp captured at the SAME call site that resolves `duration_ms`/`outcome` (the
    * finish builder, `buildDispatchTrace`) — not derived by adding `duration_ms` to `started_at`, so it
@@ -121,6 +124,14 @@ export interface NativeDispatchOutcome {
   ok: boolean;
   error?: string;
   timedOut: boolean;
+  /** Finding 124: whether the WORKER's own idle bound fired (`sdk-worker.ts#consumeQuery` — no stream
+   * activity for N minutes), as opposed to `timedOut` (the transport's outer wall-clock kill). The two
+   * are mutually exclusive by construction: a wall-clock kill happens entirely outside the worker (it
+   * never gets to respond at all, so it can never report `idle`), and a worker that fires its own idle
+   * bound exits cleanly (never triggering the transport's kill). Absent/`false` for every caller that
+   * never wires an idle bound through (today: `orchestrator-boundary.ts`'s interpret/narrate/converse
+   * traces, which share this same type but never populate this field) — never a stand-in `true`. */
+  idle?: boolean;
   durationMs: number;
   /** Wall-clock ISO timestamp taken by the caller at the moment the transport call resolved — see
    * `DispatchTraceRecord.ended_at`'s own doc for why this is captured, not computed from `durationMs`. */
@@ -191,7 +202,7 @@ export function buildDispatchTraceStart(req: InvokeRequest, opts: DispatchTraceI
  * stays legal) are guaranteed present here, so a caller of the finish builder never has to narrow. */
 export type DispatchTraceFinishedRecord = DispatchTraceRecord & {
   duration_ms: number;
-  outcome: "ok" | "timeout" | "error";
+  outcome: "ok" | "timeout" | "idle" | "error";
   worker_stdout: string;
   worker_stdout_truncated: boolean;
   worker_stderr: string;
@@ -212,7 +223,12 @@ export function buildDispatchTrace(req: InvokeRequest, outcome: NativeDispatchOu
   return {
     ...buildDispatchTraceIdentity(req, opts),
     duration_ms: outcome.durationMs,
-    outcome: outcome.timedOut ? "timeout" : outcome.ok ? "ok" : "error",
+    // Finding 124: `idle` is checked before the plain `ok`/`error` split — same "outer bound wins"
+    // precedence `timedOut` already had — but AFTER `timedOut`, since the two are mutually exclusive
+    // (see `NativeDispatchOutcome.idle`'s own doc): a wall-clock kill happens outside the worker (it
+    // never gets to report `idle`), and a worker that fires its own idle bound exits cleanly (never
+    // triggering the wall-clock kill).
+    outcome: outcome.timedOut ? "timeout" : outcome.idle ? "idle" : outcome.ok ? "ok" : "error",
     ended_at: outcome.endedAt,
     error: outcome.error,
     worker_stdout: stdout.value,
