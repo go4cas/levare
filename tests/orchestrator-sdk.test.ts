@@ -12,6 +12,7 @@ import {
   ORCHESTRATOR_PROMPT_PATH,
   OrchestratorSdkError,
   DEFAULT_INTERPRET_TIMEOUT_MS,
+  DEFAULT_ORCHESTRATOR_IDLE_TIMEOUT_MS,
 } from "../src/orchestrator-boundary.ts";
 import {
   createAsyncSdkTransport,
@@ -466,6 +467,95 @@ describe("createSdkOrchestratorBoundary#converse (mocked transport)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Finding 160: the idle bound (Finding 124, sdk-worker.ts#raceIdle) armed on the Orchestrator boundary
+// — interpret()/converse() only, flat 20s, never narrate() (which already degrades silently on ANY
+// transport failure, per K8 above).
+// ---------------------------------------------------------------------------
+
+describe("createSdkOrchestratorBoundary — Finding 160: the idle bound", () => {
+  test("interpret() threads the flat default idle bound (20s) into its request", async () => {
+    const { transport, calls } = fakeTransport(() => ({ ok: true, result: "{}", structuredOutput: { kind: "stats" } }));
+    const boundary = createSdkOrchestratorBoundary({ transport });
+    await boundary.interpret("stats");
+    expect(calls[0].idleTimeoutMs).toBe(DEFAULT_ORCHESTRATOR_IDLE_TIMEOUT_MS);
+    expect(DEFAULT_ORCHESTRATOR_IDLE_TIMEOUT_MS).toBe(20_000);
+  });
+
+  test("converse() threads the same flat idle bound into its request", async () => {
+    const root = seedScratchRepo();
+    try {
+      const { transport, calls } = fakeTransport(() => ({ ok: true, result: "ok" }));
+      const boundary = createSdkOrchestratorBoundary({ transport });
+      await boundary.converse("hi", root);
+      expect(calls[0].idleTimeoutMs).toBe(DEFAULT_ORCHESTRATOR_IDLE_TIMEOUT_MS);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // narrate() is deliberately NOT named by the ruling — it already falls back to the plain computed
+  // fact on any transport failure (K8), so wiring the idle bound through it would only ever be
+  // observable as "still returns the fact", never a distinct signal worth the added surface.
+  test("narrate() does NOT set an idle bound — unaffected by this unit", async () => {
+    const { transport, calls } = fakeTransport(() => ({ ok: true, result: "narrated." }));
+    const boundary = createSdkOrchestratorBoundary({ transport });
+    await boundary.narrate("fact");
+    expect(calls[0].idleTimeoutMs).toBeUndefined();
+  });
+
+  test("a test-only idleTimeoutMs override wins over the flat default, for both interpret() and converse()", async () => {
+    const root = seedScratchRepo();
+    try {
+      const { transport, calls } = fakeTransport(() => ({ ok: true, result: "{}", structuredOutput: { kind: "stats" } }));
+      const boundary = createSdkOrchestratorBoundary({ transport, idleTimeoutMs: 5_000 });
+      await boundary.interpret("stats");
+      await boundary.converse("hi", root);
+      expect(calls[0].idleTimeoutMs).toBe(5_000);
+      expect(calls[1].idleTimeoutMs).toBe(5_000);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // The wall-clock bounds (45s/90s) must stay exactly as they were — this unit adds a second, tighter
+  // liveness check underneath them, it does not replace or shrink them.
+  test("the wall-clock bounds (timeoutMs/converseTimeoutMs) are unchanged by arming the idle bound", async () => {
+    const root = seedScratchRepo();
+    try {
+      const seenTimeouts: Array<number | undefined> = [];
+      const transport: AsyncSdkTransport = {
+        async run(_req, opts) {
+          seenTimeouts.push(opts.timeoutMs);
+          return { ok: true, result: "{}", structuredOutput: { kind: "stats" } };
+        },
+      };
+      const boundary = createSdkOrchestratorBoundary({ transport });
+      await boundary.interpret("stats");
+      await boundary.converse("hi", root);
+      expect(seenTimeouts).toEqual([DEFAULT_INTERPRET_TIMEOUT_MS, 90_000]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // An idle abort is, from this boundary's perspective, just another `{ok:false, idle:true}` transport
+  // response — it must still surface as an OrchestratorSdkError naming idleness explicitly (via
+  // sdk-worker.ts's own `formatIdleFailureError` text carried verbatim in `res.error`), never
+  // flattened into a generic "SDK call failed" message. Confirms PR #64's removal of the credential
+  // pre-check didn't leave a gap where this degrades instead of throwing.
+  test("an idle-bound abort surfaces as an OrchestratorSdkError naming idleness, not a generic failure", async () => {
+    const { transport } = fakeTransport(() => ({
+      ok: false,
+      error: "sdk worker: idle for 20000ms with no stream activity — aborted after 20050ms elapsed (distinct from the outer wall-clock bound, which never fired)",
+      idle: true,
+    }));
+    const boundary = createSdkOrchestratorBoundary({ transport });
+    await expect(boundary.interpret("stats")).rejects.toThrow(OrchestratorSdkError);
+    await expect(boundary.interpret("stats")).rejects.toThrow(/idle for 20000ms/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // boundary selection: real SDK vs. deterministic offline fallback
 // ---------------------------------------------------------------------------
 
@@ -896,6 +986,31 @@ describe("createSdkOrchestratorBoundary — writes a dispatch trace (Finding 94)
       // Never a connector env value, and never the ANTHROPIC_API_KEY value either — names only, exactly
       // the same invariant dispatch-trace.test.ts already proves for the member path.
       expect(JSON.stringify(record)).not.toContain("sk-ant-");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // Finding 160: end-to-end wiring — an idle abort must land in the trace as outcome: "idle", not the
+  // generic "error" the pre-existing plain-failure test above asserts for a non-idle transport failure.
+  // This is what proves `traceOrchestratorCallFinish` actually forwards `res.idle` into the record,
+  // not just that `buildOrchestratorTrace` (tests/dispatch-trace.test.ts) can produce one in isolation.
+  test("an idle-bound abort lands in the trace as outcome: idle, distinct from a plain transport failure", async () => {
+    const root = seedScratchRepo();
+    try {
+      const transport: AsyncSdkTransport = {
+        async run(): Promise<SdkWorkerResponse> {
+          return { ok: false, error: "sdk worker: idle for 20000ms with no stream activity — aborted after 20050ms elapsed", idle: true };
+        },
+      };
+      const boundary = createSdkOrchestratorBoundary({ transport, root, env: {} });
+      await expect(boundary.interpret("how are we doing")).rejects.toThrow(/idle for 20000ms/);
+
+      const files = traceFiles(root);
+      expect(files.length).toBe(1);
+      const record = readTrace(root, files[0]);
+      expect(record.outcome).toBe("idle");
+      expect(record.error).toContain("idle for 20000ms");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
