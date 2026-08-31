@@ -1423,6 +1423,118 @@ describe("Studio's Projects section is an In-flight worklist (UI2 item 6)", () =
 });
 
 // ---------------------------------------------------------------------------
+// Finding 168: a terminal unit (`rejected`/`abandoned`) is never deleted — it stays on disk, stays
+// reachable at its own `/run/...` URL, and its history is unchanged — but every surface that counts
+// or lists a project's units must stop counting it as ongoing work, the same way the daemon
+// (`dagwalk.ts`'s `unit.status !== "active"` guard) already never acts on it again. `shipped` is
+// deliberately NOT folded into "closed": it's a success, already reported on its own via "Units
+// shipped"/"released", a different measure from this failure-shaped count.
+// ---------------------------------------------------------------------------
+
+describe("terminal units collapse out of active counts, not out of existence (Finding 168)", () => {
+  function team(over: Partial<Team> & { name: string; flow: Team["flow"]; produces: string[]; members: string[] }): Team {
+    return { consumes: [], style: { color: "#2E6FB0" }, charter: "", learnings: "", ...over };
+  }
+  function project(over: Partial<Project> & { name: string }): Project {
+    return { repo: ".", remote: null, default_branch: "main", deploy: null, pace: "auto", houseRules: "", ...over };
+  }
+  function unit(over: Partial<WorkUnit> & { unit: string; project: string; type: string }): WorkUnit {
+    return { status: "active", dir: "/tmp/x", ...over };
+  }
+
+  function terminalMixRepo(): Repo {
+    const t = team({ name: "kestrel", flow: [], produces: ["design"], members: ["wren"] });
+    const ty: TypeTemplate = { name: "feature", glyph: "▸", expects: ["design"], gates: [] };
+    const acme = project({ name: "acme" });
+    const activeUnit = unit({ unit: "widget", project: "acme", type: "feature", status: "active" });
+    const shippedUnit = unit({ unit: "released-thing", project: "acme", type: "feature", status: "shipped" });
+    const rejectedUnit = unit({ unit: "spiked-idea", project: "acme", type: "feature", status: "rejected" });
+    const abandonedUnit = unit({ unit: "old-probe", project: "acme", type: "feature", status: "abandoned" });
+    return {
+      root: "/tmp/synthetic-terminal-mix",
+      teams: new Map([[t.name, t]]),
+      types: new Map([[ty.name, ty]]),
+      projects: new Map([[acme.name, acme]]),
+      agents: new Map(),
+      connectors: new Map(),
+      units: [activeUnit, shippedUnit, rejectedUnit, abandonedUnit],
+      artifacts: new Map(),
+      studio: {},
+    };
+  }
+
+  test("project page: rejected/abandoned units sit under a 'closed' disclosure, never the primary Work units list", () => {
+    const repoRoot = "/tmp/nonexistent-levare-synthetic-terminal-mix";
+    const html = renderProject(terminalMixRepo(), "acme", repoRoot, now);
+    const workUnitsSection = /<section class="sec">\s*<div class="sec__h"><h2>Work units<\/h2>[\s\S]*?<\/section>/.exec(html);
+    expect(workUnitsSection).not.toBeNull();
+    const section = workUnitsSection![0];
+
+    // Active list: the still-active unit and the shipped one (a success, not a failure — not "closed").
+    const primaryList = section.split('<details class="unitsclosed">')[0];
+    expect(primaryList).toContain('data-unit="widget"');
+    expect(primaryList).toContain('data-unit="released-thing"');
+    expect(primaryList).not.toContain('data-unit="spiked-idea"');
+    expect(primaryList).not.toContain('data-unit="old-probe"');
+
+    // Closed disclosure: only the two unit-level terminal outcomes, still fully rendered.
+    expect(section).toContain('<details class="unitsclosed"><summary>2 closed</summary>');
+    expect(section).toContain('data-unit="spiked-idea"');
+    expect(section).toContain('data-unit="old-probe"');
+
+    // The section counter (heading badge) reflects the active count only, not the raw total.
+    expect(section).toMatch(/<h2>Work units<\/h2><span class="sec__count"[^>]*>2<\/span>/);
+  });
+
+  test("terminal units stay reachable at their own /run/... URL", () => {
+    const repoRoot = "/tmp/nonexistent-levare-synthetic-terminal-mix";
+    const repo = terminalMixRepo();
+    const html = renderProject(repo, "acme", repoRoot, now);
+    expect(html).toContain('href="/run/acme/spiked-idea"');
+    expect(html).toContain('href="/run/acme/old-probe"');
+
+    // The run view itself renders a terminal unit exactly like any other — no filtering there.
+    const runHtml = renderRun(repo, "acme", "spiked-idea", repoRoot, now);
+    expect(runHtml).toContain("spiked-idea");
+  });
+
+  test("sidebar and studio card counts read '<active> · <closed> closed', excluding shipped from the closed figure", () => {
+    const repoRoot = "/tmp/nonexistent-levare-synthetic-terminal-mix";
+    const html = renderStudio(terminalMixRepo(), repoRoot, now);
+
+    // Sidebar (railNav): 2 active (widget + released-thing) · 2 closed (rejected + abandoned).
+    expect(html).toContain('<span class="nm">acme</span><span class="ag">2 &middot; 2 closed</span>');
+
+    // Studio card meta line for the same project (it's in flight — `widget` is active).
+    const acmeCardMatch = html.match(/<a class="pcard" href="\/project\/acme">[\s\S]*?<\/a>/);
+    expect(acmeCardMatch).not.toBeNull();
+    expect(acmeCardMatch![0]).toContain("2 units");
+    expect(acmeCardMatch![0]).toContain("2 closed");
+  });
+
+  test("a project with no terminal units still shows a plain count, no '· N closed' suffix", () => {
+    const t = team({ name: "kestrel", flow: [], produces: ["design"], members: ["wren"] });
+    const ty: TypeTemplate = { name: "feature", glyph: "▸", expects: ["design"], gates: [] };
+    const clean = project({ name: "clean" });
+    const activeUnit = unit({ unit: "widget", project: "clean", type: "feature", status: "active" });
+    const cleanRepo: Repo = {
+      root: "/tmp/synthetic-clean",
+      teams: new Map([[t.name, t]]),
+      types: new Map([[ty.name, ty]]),
+      projects: new Map([[clean.name, clean]]),
+      agents: new Map(),
+      connectors: new Map(),
+      units: [activeUnit],
+      artifacts: new Map(),
+      studio: {},
+    };
+    const html = renderStudio(cleanRepo, "/tmp/nonexistent-levare-synthetic-clean", now);
+    expect(html).toContain('<span class="nm">clean</span><span class="ag">1</span>');
+    expect(html).not.toContain("closed");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Item 4c (gate-review round UI1): the left nav's "derived from ... on every request" footer line is
 // gone entirely — nowhere in the rail, nowhere else. Superseded the earlier phase-7.5 rule that it
 // live in exactly one place; now it lives nowhere.

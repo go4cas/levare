@@ -228,6 +228,18 @@ button{ font-family:inherit; }
 .sec__count{ font-family:var(--mono); font-size:11px; color:var(--fg-mute);
   background:var(--panel-2); border:1px solid var(--border); padding:2px 7px; border-radius:5px; }
 
+/* Finding 168: the project page's "closed" (rejected/abandoned) work units — a native `<details>`
+   disclosure, quiet like `.railsec__more`'s own overflow reveal, so terminal units stay one click
+   away instead of only reachable by guessing their `/run/...` URL. */
+.unitsclosed{ margin-top:2px; }
+.unitsclosed > summary{ list-style:none; cursor:pointer; font-family:var(--sans); font-size:11.5px;
+  color:var(--fg-mute); padding:5px 2px; }
+.unitsclosed > summary::-webkit-details-marker{ display:none; }
+.unitsclosed > summary:hover{ color:var(--fg-dim); }
+.unitsclosed > summary::before{ content:"▸ "; }
+.unitsclosed[open] > summary::before{ content:"▾ "; }
+.unitsclosed .units{ margin-top:6px; }
+
 /* ---------- gate card ---------- */
 .gate{ background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:15px 17px;
   display:flex; flex-direction:column; gap:12px; box-shadow:var(--shadow); }
