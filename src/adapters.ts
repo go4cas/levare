@@ -51,6 +51,7 @@ import {
   type SdkTransport,
   type SdkWorkerResponse,
   type WrapWorkerSpawn,
+  type FailureClass,
 } from "./sdk-transport.ts";
 import {
   buildDispatchTrace,
@@ -73,7 +74,19 @@ import type { Repo } from "./repo.ts";
 import type { MemberRunner } from "./runner.ts";
 import type { Agent, Connector, Receipt } from "./types.ts";
 
-export class AdapterError extends Error {}
+// Finding 85: `class` is the ONE place a dispatch failure says who must act — set only at a boundary
+// that genuinely knows (the SDK worker's own `error_status`, a studio config check that ran before any
+// process spawned), never guessed from this error's own message text later (that shape is Finding
+// 118's, disfavored). Absent means member-caused or genuinely unknown — the pre-Finding-85 default:
+// Retry stays offered, exactly as before this ruling. See `FailureClass`'s own doc for what each value
+// means and `dagwalk.ts#writeBlocked`/`board/gateops.ts#blockedRetryDoc` for where it lands on disk.
+export class AdapterError extends Error {
+  readonly class?: FailureClass;
+  constructor(message: string, opts?: { class?: FailureClass }) {
+    super(message);
+    this.class = opts?.class;
+  }
+}
 
 // What every adapter is handed to do its job. `context` is the §6-assembled prompt; `env` is the
 // allowlisted environment; `tools` is the native tool allowlist. Adapters that don't need a field
@@ -534,15 +547,29 @@ export function createSdkNativeBoundary(opts: SdkNativeBoundaryOptions = {}): Na
       // Finding 124: same test-only-override-beats-default precedence as `timeoutMs` above, but never
       // reads `req.agent` — the idle bound is flat, not per-agent (see `resolveNativeIdleTimeoutMs`).
       const idleTimeoutMs = opts.idleTimeoutMs ?? resolveNativeIdleTimeoutMs();
-      const startedAt = new Date().toISOString();
-      const traceCtx = { startedAt, timeoutMs, baseEnv, pathToClaudeCodeExecutable };
-      traceNativeDispatchStart(opts.studioRoot, req, traceCtx);
       const env = nativeSpawnEnv(req, baseEnv);
       let sandboxLevel: SandboxLevel | undefined;
       const wrapWorkerSpawn = nativeWrapWorkerSpawn(opts.repo, req, pathToClaudeCodeExecutable, baseEnv, opts.sandboxDetection, (l) => (sandboxLevel = l));
-      const res = transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable, idleTimeoutMs), { env, timeoutMs, wrapWorkerSpawn });
-      traceNativeDispatchFinish(opts.studioRoot, req, res, traceCtx);
-      if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`);
+      const runOnce = (): SdkWorkerResponse => {
+        const startedAt = new Date().toISOString();
+        const traceCtx = { startedAt, timeoutMs, baseEnv, pathToClaudeCodeExecutable };
+        traceNativeDispatchStart(opts.studioRoot, req, traceCtx);
+        const res = transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable, idleTimeoutMs), { env, timeoutMs, wrapWorkerSpawn });
+        traceNativeDispatchFinish(opts.studioRoot, req, res, traceCtx);
+        return res;
+      };
+      let res = runOnce();
+      // Finding 85: `transient` is the one class levare acts on rather than asking — the SDK's own
+      // retry policy (inside the worker's own `query()` call, sdk-worker.ts) already exhausted itself
+      // on a rate-limit/5xx/connection-error shape before this ever returned. This is a SECOND, coarser
+      // retry at the dispatch level — a fresh worker process, once — before a Conductor ever sees a
+      // gate. Capped at exactly one extra attempt (never a loop): Finding 92 was seven retries
+      // compounding into a misleading 45s timeout, and this must not recreate that shape one level up.
+      if (!res.ok && res.errorClass === "transient") {
+        console.error(`levare: native member '${req.member}' sdk call failed transiently, retrying once before gating (Finding 85): ${res.error}`);
+        res = runOnce();
+      }
+      if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`, { class: res.errorClass });
       return { doc: res.result, receipt: res.receipt, sandbox: sandboxLevel };
     },
   };
@@ -570,15 +597,25 @@ export function createAsyncSdkNativeBoundary(opts: AsyncSdkNativeBoundaryOptions
       // Finding 124: see createSdkNativeBoundary's identical comment above — same flat idle bound,
       // async boundary.
       const idleTimeoutMs = opts.idleTimeoutMs ?? resolveNativeIdleTimeoutMs();
-      const startedAt = new Date().toISOString();
-      const traceCtx = { startedAt, timeoutMs, baseEnv, pathToClaudeCodeExecutable };
-      traceNativeDispatchStart(opts.studioRoot, req, traceCtx);
       const env = nativeSpawnEnv(req, baseEnv);
       let sandboxLevel: SandboxLevel | undefined;
       const wrapWorkerSpawn = nativeWrapWorkerSpawn(opts.repo, req, pathToClaudeCodeExecutable, baseEnv, opts.sandboxDetection, (l) => (sandboxLevel = l));
-      const res = await transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable, idleTimeoutMs), { env, timeoutMs, wrapWorkerSpawn });
-      traceNativeDispatchFinish(opts.studioRoot, req, res, traceCtx);
-      if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`);
+      const runOnce = async (): Promise<SdkWorkerResponse> => {
+        const startedAt = new Date().toISOString();
+        const traceCtx = { startedAt, timeoutMs, baseEnv, pathToClaudeCodeExecutable };
+        traceNativeDispatchStart(opts.studioRoot, req, traceCtx);
+        const res = await transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable, idleTimeoutMs), { env, timeoutMs, wrapWorkerSpawn });
+        traceNativeDispatchFinish(opts.studioRoot, req, res, traceCtx);
+        return res;
+      };
+      let res = await runOnce();
+      // Finding 85: see createSdkNativeBoundary's identical comment above — same one-extra-attempt cap,
+      // async boundary.
+      if (!res.ok && res.errorClass === "transient") {
+        console.error(`levare: native member '${req.member}' sdk call failed transiently, retrying once before gating (Finding 85): ${res.error}`);
+        res = await runOnce();
+      }
+      if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`, { class: res.errorClass });
       return { doc: res.result, receipt: res.receipt, sandbox: sandboxLevel };
     },
   };
@@ -749,22 +786,26 @@ export function createAsyncStdioRemoteBoundary(repo: Repo, opts: StdioRemoteBoun
     async call(req: InvokeRequest): Promise<{ doc: string; sandbox?: SandboxLevel }> {
       const agent = req.agent;
       const serverName = agent.server;
-      if (!serverName) throw new AdapterError(`remote member '${req.member}' declares no 'server'`);
+      // Finding 85: every check below is a studio-authoring mistake, not the member's or a vendor
+      // call's — nothing here ever runs the connector, so `class: "operator"` throughout: no retry can
+      // fix a config problem, and the Conductor is who edits team/agent/connector definitions.
+      if (!serverName) throw new AdapterError(`remote member '${req.member}' declares no 'server'`, { class: "operator" });
       const connector = repo.connectors.get(serverName);
-      if (!connector) throw new AdapterError(`remote member '${req.member}' declares server '${serverName}', which is not a known connector`);
+      if (!connector) throw new AdapterError(`remote member '${req.member}' declares server '${serverName}', which is not a known connector`, { class: "operator" });
       if (connector.kind !== "mcp") {
-        throw new AdapterError(`remote member '${req.member}' declares server '${serverName}', which is kind: '${connector.kind}', not kind: mcp`);
+        throw new AdapterError(`remote member '${req.member}' declares server '${serverName}', which is kind: '${connector.kind}', not kind: mcp`, { class: "operator" });
       }
       if (!grantedConnectors(repo, req.member).some((c) => c.name === connector.name)) {
-        throw new AdapterError(`remote member '${req.member}' is not granted connector '${serverName}' (agent/team 'connectors:')`);
+        throw new AdapterError(`remote member '${req.member}' is not granted connector '${serverName}' (agent/team 'connectors:')`, { class: "operator" });
       }
       if (!connector.argv || connector.argv.length === 0) {
         throw new AdapterError(
           `remote member '${req.member}''s connector '${serverName}' declares no stdio 'argv' — only a real, granted, stdio kind: mcp connector is implemented (PRD Amendment 3 ruling R1); HTTP/SSE MCP servers remain deferred`,
+          { class: "operator" },
         );
       }
       const tool = agent.tool;
-      if (!tool) throw new AdapterError(`remote member '${req.member}' declares no 'tool'`);
+      if (!tool) throw new AdapterError(`remote member '${req.member}' declares no 'tool'`, { class: "operator" });
       const args = buildMcpToolArguments(agent.params, req.context);
       const timeoutMs = opts.timeoutMs ?? resolveMemberTimeoutS(agent) * 1000;
 
@@ -802,8 +843,11 @@ export function createAsyncStdioRemoteBoundary(repo: Repo, opts: StdioRemoteBoun
             scopedHome?.cleanup();
             rmSync(scratchDir, { recursive: true, force: true });
             const invocation = launcher.subcommand ? `${launcher.runner} ${launcher.subcommand}` : launcher.runner;
+            // Finding 85: a connector authoring choice the sandbox refuses to run at all — the operator
+            // fixes the connector's argv, never a retry.
             throw new AdapterError(
               `remote member '${req.member}''s connector '${serverName}' spawns its server via '${invocation}', a fetch-and-run package launcher — refused under this host's working sandbox primitive (${detection.primitive}), rather than left to hang (NOTES MCP-1C addendum 6). A fetch-at-dispatch server's real code lands in an npm/npx/bun cache under the operator's own HOME, which the sandbox denies and no connector argv references. Install the server locally and reference its resolved script/binary path directly in this connector's argv instead — see docs/guide/04-workflow/05-foreign-agent.md.`,
+              { class: "operator" },
             );
           }
         }
@@ -1109,7 +1153,8 @@ export interface AdapterRunnerOptions {
 // ever interpreted by a shell.
 function defaultCliCommand(req: InvokeRequest): string[] {
   const template = req.agent.command;
-  if (!template || template.length === 0) throw new AdapterError(`cli agent '${req.member}' has no command template`);
+  // Finding 85: a missing command template is the studio's own authoring gap — retry can never fill it in.
+  if (!template || template.length === 0) throw new AdapterError(`cli agent '${req.member}' has no command template`, { class: "operator" });
   // NOTES MERGE-1: prefer the resolved project repo path when one exists; a project with no real
   // local checkout falls back to the pre-existing `agent.cwd` self-reference (see resolveFeatureRepo).
   const feature = req.projectRepoPath ?? req.agent.cwd ?? ".";
@@ -1134,19 +1179,21 @@ function contextVia(agent: Agent): "arg" | "stdin" {
  * misconfigured studio never surfaces as a bare "exited N" with nothing to go on.
  */
 function preflightCli(member: string, argv: string[], cwd: string | undefined, pathEnv: string | undefined): void {
+  // Finding 85: every preflight failure below is caught before any process spawns — a fact about the
+  // studio's own config/host, never the vendor or the member. `class: "operator"` throughout.
   if (cwd !== undefined) {
-    if (!existsSync(cwd)) throw new AdapterError(`agent '${member}': cwd '${cwd}' does not exist`);
-    if (!statSync(cwd).isDirectory()) throw new AdapterError(`agent '${member}': cwd '${cwd}' is not a directory`);
+    if (!existsSync(cwd)) throw new AdapterError(`agent '${member}': cwd '${cwd}' does not exist`, { class: "operator" });
+    if (!statSync(cwd).isDirectory()) throw new AdapterError(`agent '${member}': cwd '${cwd}' is not a directory`, { class: "operator" });
   }
   const argv0 = argv[0];
-  if (!argv0) throw new AdapterError(`agent '${member}': command has no argv[0]`);
+  if (!argv0) throw new AdapterError(`agent '${member}': command has no argv[0]`, { class: "operator" });
   if (argv0.includes("/")) {
     const resolved = isAbsolute(argv0) ? argv0 : pathJoin(cwd ?? process.cwd(), argv0);
     if (!isExecutableFile(resolved)) {
-      throw new AdapterError(`agent '${member}': command '${argv0}' is not an executable file (resolved to '${resolved}')`);
+      throw new AdapterError(`agent '${member}': command '${argv0}' is not an executable file (resolved to '${resolved}')`, { class: "operator" });
     }
   } else if (Bun.which(argv0, { PATH: pathEnv ?? "" }) === null) {
-    throw new AdapterError(`agent '${member}': command '${argv0}' not found on PATH`);
+    throw new AdapterError(`agent '${member}': command '${argv0}' not found on PATH`, { class: "operator" });
   }
 }
 
@@ -1635,7 +1682,9 @@ export class AdapterRunner implements MemberRunner {
           break;
         }
         default:
-          throw new AdapterError(`unknown agent kind '${(agent as Agent).kind}' for '${member}'`);
+          // Finding 85: a declared agent kind this build's dispatch switch doesn't recognize — a
+          // studio-authoring/version-skew fact, never the vendor's or the member's.
+          throw new AdapterError(`unknown agent kind '${(agent as Agent).kind}' for '${member}'`, { class: "operator" });
       }
       const codeCommit = this.commitCodeChanges(member, kind, unit, req2);
       return this.author(req2, raw, receipt, extraConsumes, sandbox, codeCommit);
@@ -1685,7 +1734,9 @@ export class AdapterRunner implements MemberRunner {
           break;
         }
         default:
-          throw new AdapterError(`unknown agent kind '${(agent as Agent).kind}' for '${member}'`);
+          // Finding 85: a declared agent kind this build's dispatch switch doesn't recognize — a
+          // studio-authoring/version-skew fact, never the vendor's or the member's.
+          throw new AdapterError(`unknown agent kind '${(agent as Agent).kind}' for '${member}'`, { class: "operator" });
       }
       const codeCommit = this.commitCodeChanges(member, kind, unit, req2);
       return this.author(req2, raw, receipt, extraConsumes, sandbox, codeCommit);
@@ -1730,7 +1781,8 @@ export class AdapterRunner implements MemberRunner {
     dispatchRepo?: { repoPath: string; branch?: string };
   } {
     const agent = this.repo.agents.get(member);
-    if (!agent) throw new AdapterError(`no agent definition for member '${member}'`);
+    // Finding 85: no team/agent definition names this member at all — a studio-authoring gap.
+    if (!agent) throw new AdapterError(`no agent definition for member '${member}'`, { class: "operator" });
     const context = this.assemble(member, unit, project, extraConsumes);
     const env = buildMemberEnv(this.repo, member, this.opts.baseEnv);
     const dispatchRepo = this.resolveDispatchRepo(project, unit);
