@@ -274,6 +274,8 @@ export interface Project {
 export type WorkUnitStatus = "active" | "paused" | "blocked" | "shipped" | "abandoned" | "rejected";
 
 export interface WorkUnit {
+  /** Names a `types/<name>.md` entity (Finding 171) — validated against the loaded registry
+   * (validate.ts#validateResponsibleTeam, UNKNOWN_TYPE), never a closed enum. */
   type: string;
   status: WorkUnitStatus;
   project: string;

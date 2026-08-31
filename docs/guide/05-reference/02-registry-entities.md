@@ -144,7 +144,9 @@ A work-unit template: what a unit of this type is expected to produce, and where
 | `timebox` | — | Spike/timebox semantics |
 | `promotable_to` | — | e.g. a research report promotes to `knowledge/` through a gate |
 
-The five shipped types: `inception`, `feature`, `fix`, `spike`, `research`.
+The scaffold ships five: `inception`, `feature`, `fix`, `spike`, `research`. Not a closed set — add
+`types/<name>.md` and a work unit can declare `type: <name>`; `levare validate` checks a unit's `type`
+against whatever's actually defined here, not a fixed list.
 
 ---
 

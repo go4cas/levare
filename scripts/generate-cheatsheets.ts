@@ -70,6 +70,14 @@ const BODY_PURPOSE: Record<string, string> = {
 // This is generation machinery only; it never appears in a rendered field table.
 const MODEL_PLACEHOLDER = "claude-sonnet-5";
 
+// Finding 171: the work-unit skeleton's `type:` must name a real types/ entity now that levare
+// validate checks it against the registry (UNKNOWN_TYPE) instead of a fixed enum. ENTITIES walks
+// `types` (via REGISTRY_SCHEMAS) before `work-unit`, into the SAME shared scratchRoot (generateAll
+// below), so by the time the work-unit skeleton is healed a types/skeleton.md already exists — this
+// must equal the `name` TYPE_SCHEMA's own "str" default (`example-${key}`) produces for it, the same
+// generic rule every other entity's `name:` field gets, so the two placeholders can never drift apart.
+const TYPE_NAME_PLACEHOLDER = "example-name";
+
 // Error codes the skeleton-repair loop below knows how to fix generically by re-filling the named
 // field with one placeholder element — both are "declared non-empty but is empty" checks the schema's
 // own `required: true` on a `str[]` field can't express (validateAgentVariant / validateConnectorAuth
@@ -249,6 +257,7 @@ function placeholderValue(key: string, spec: FieldSpec): YamlValue {
     }
     case "str":
       if (key === "model" || key === "orchestrator_model") return MODEL_PLACEHOLDER;
+      if (key === "type") return TYPE_NAME_PLACEHOLDER;
       return `example-${key}`;
   }
 }
