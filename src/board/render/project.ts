@@ -25,8 +25,8 @@ import {
 import { loadExtras } from "../../extra.ts";
 import type { DaemonInvocation } from "../../daemon.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
-import { dotClass, fromNodeState, fromWorkUnitStatus } from "../status.ts";
-import { statusBadge, paceBadge, iconLink, statStrip, card, orchTurn, leadText, callout } from "../components.ts";
+import { dotClass, fromNodeState, fromWorkUnitStatus, isUnitTerminal } from "../status.ts";
+import { statusBadge, paceBadge, iconLink, statStrip, card, orchTurn, leadText, callout, counter } from "../components.ts";
 import {
   shell,
   pageBody,
@@ -152,8 +152,10 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
   // takes it) — computed once here rather than per row.
   const capabilities = repoCapabilities(repo);
 
-  const unitRows = units
-    .map((u) => {
+  // Finding 168: extracted to a named function (was an inline `.map` callback) so the active list and
+  // the closed list below render identical rows — same score dots, same status chip logic — rather
+  // than two copies of this drifting apart.
+  const renderUnitRow = (u: (typeof units)[number]): string => {
       const type = repo.types.get(u.type);
       // `running` threads the daemon's live-invocation projection through, same as run.ts — a unit
       // whose current step is genuinely being produced shows the canonical active (blue+pulse) dot in
@@ -267,8 +269,16 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
           </div>
         </div>`,
       });
-    })
-    .join("\n");
+  };
+
+  // Finding 168: terminal (rejected/abandoned) units collapse out of the primary list — the daemon
+  // will never touch them again — but stay on the page, reachable via their own `/run/...` link,
+  // inside a native `<details>` disclosure (same pattern as the sidebar's own long-list overflow)
+  // rather than only reachable by guessing the URL.
+  const activeUnitsForRows = units.filter((u) => !isUnitTerminal(u.status));
+  const closedUnitsForRows = units.filter((u) => isUnitTerminal(u.status));
+  const unitRows = activeUnitsForRows.map(renderUnitRow).join("\n");
+  const closedUnitRows = closedUnitsForRows.map(renderUnitRow).join("\n");
 
   const templates = gates
     .map((g) => `<template id="tpl-gate-${esc(g.target)}">${gateCardHtml(repo, g, now, { cta: true, dispatching: dispatchingFor(repo, running, g) })}</template>`)
@@ -315,7 +325,11 @@ export function renderProject(repo: Repo, projectName: string, root: string, now
       { value: `$${projectSpend(repo, projectName).toFixed(2)}`, label: "Spend" },
     ])}
     ${pointerPanel}
-    <section class="sec"><div class="sec__h"><h2>Work units</h2></div><div class="units">${unitRows}</div></section>
+    <section class="sec">
+      <div class="sec__h"><h2>Work units</h2>${counter(activeUnitsForRows.length)}</div>
+      <div class="units">${unitRows}</div>
+      ${closedUnitsForRows.length ? `<details class="unitsclosed"><summary>${closedUnitsForRows.length} closed</summary><div class="units">${closedUnitRows}</div></details>` : ""}
+    </section>
   </main>`;
 
   const briefingBody = orchTurn(
