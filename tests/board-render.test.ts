@@ -652,9 +652,10 @@ describe("registry screen", () => {
     const cardOpens = (html.match(/<article class="entity card"/g) || []).length;
     expect(cardOpens).toBeGreaterThan(0);
     // teams(2, incl. helm — Finding 78 part 2's inception team) + agents(5, incl. rook — ruling C9's
-    // isolated-scratch-dir fixture, and kite — helm's own founding member) + skills(3) + knowledge(2) +
-    // types(5) + connectors(2) + evals(1)
-    expect(cardOpens).toBe(2 + 5 + 3 + 2 + 5 + 2 + 1);
+    // isolated-scratch-dir fixture, and kite — helm's own founding member) + skills(4, incl.
+    // product-brief — Finding 174's fix for wren/kite's dangling skills: [product-brief]) +
+    // knowledge(2) + types(5) + connectors(2) + evals(1)
+    expect(cardOpens).toBe(2 + 5 + 4 + 2 + 5 + 2 + 1);
 
     // Every entity card carries its own Edit-source actions and validity indicator inside it — never
     // a bare <div class="card"> floating outside, and never an editbar with nothing bordering it.
