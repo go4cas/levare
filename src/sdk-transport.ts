@@ -147,6 +147,17 @@ export interface SdkWorkerRequest {
 // member-caused (or genuinely unknown) — the pre-Finding-85 default, unchanged: Retry stays offered.
 export type FailureClass = "operator" | "transient";
 
+// Finding 167: HOW `errorClass` was decided — `"status"` for the pre-existing `error_status`-keyed
+// path (Finding 85's own classifier, `isNonRetryableAuthStatus`/`isOperatorActionableStatus`), or
+// `"message"` for a failure that never carried a status at all (the SDK's own `query()` throwing
+// directly — no HTTP round trip, so no `error_status` for the status classifier to see) and was
+// instead matched, anchored and exact, against a known vendor error string (`sdk-worker.ts#
+// classifyLocalSdkError`). Mirrors `Artifact.verdict_source`'s own precedent (Finding 118, PR #53):
+// a reader must be able to tell a status-confirmed classification apart from a text match, and a
+// near-miss against an unrecognised local error stays unclassified (both `errorClass` and this
+// absent) rather than guessed.
+export type FailureClassSource = "status" | "message";
+
 // `nativeBinaryResolved` (Finding 112): optional on BOTH branches — the worker itself always knows the
 // answer and reports it (`sdk-worker.ts#runSdkWorkerFromStdin`), but a TRANSPORT-level failure (worker
 // script not found, timed out before responding, exited without valid JSON) never reaches the worker's
@@ -172,6 +183,9 @@ export type SdkWorkerResponse =
        * on a transport-level failure (script not found, non-JSON output) and on an idle abort — neither
        * carries a vendor status to classify from, and a documented gap beats a guessed one. */
       errorClass?: FailureClass;
+      /** Finding 167: present only alongside `errorClass` — see `FailureClassSource`'s own doc for
+       * what each value means. */
+      errorClassSource?: FailureClassSource;
     };
 
 /**

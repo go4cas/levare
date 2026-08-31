@@ -421,6 +421,16 @@ export interface Artifact {
    * Finding 118's, is deliberately avoided here).
    */
   blocked_class?: "operator" | "transient" | null;
+  /**
+   * Finding 167: sibling to `blocked_class` — HOW it was decided, mirroring `verdict_source`'s own
+   * precedent (Finding 118) so a reader can tell a status-confirmed classification apart from a text
+   * match. `"status"` is the pre-existing Finding-85 path — a real `error_status` the SDK's own
+   * `api_retry` stream carried. `"message"` means the failure never carried a status at all (the SDK's
+   * `query()` threw directly, no HTTP round trip — Finding 167's own case) and was instead matched,
+   * anchored and exact, against a known vendor error string (`sdk-worker.ts#classifyLocalSdkError`).
+   * Absent whenever `blocked_class` is: there's no source to record for an unclassified failure.
+   */
+  blocked_class_source?: "status" | "message" | null;
   /** NOTES MERGE-1: reserved for `kind: merge` — the trial-merge report, written by levare when the
    * merge gate opens and rewritten in place by the `recheck` verb. */
   merge?: MergeInfo | null;

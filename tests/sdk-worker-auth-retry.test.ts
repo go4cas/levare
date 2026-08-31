@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { isNonRetryableAuthStatus, formatAuthFailureError } from "../src/sdk-worker.ts";
+import { isNonRetryableAuthStatus, formatAuthFailureError, classifyLocalSdkError } from "../src/sdk-worker.ts";
 
 // Finding 92 (REOPENED): the SDK's own retry policy (inside `@anthropic-ai/claude-agent-sdk`'s
 // `query()`, not levare's code) previously treated 401/403 exactly like 429/5xx — retryable — so an
@@ -56,5 +56,45 @@ describe("formatAuthFailureError — the message the operator actually sees", ()
 
   test("says 'aborted without retrying' — distinct from the 45s wall-clock kill path (Finding 124 stays out of scope)", () => {
     expect(formatAuthFailureError(401, 1)).toContain("aborted without retrying");
+  });
+});
+
+// Finding 167: the commonest operator-actionable failure carries no error_status at all — the SDK's
+// own query() throws a plain Error directly, no HTTP round trip, before isOperatorActionableStatus
+// above ever gets a message to look at. classifyLocalSdkError matches THAT raw thrown message, with
+// Finding 118's own discipline: anchored, exact, whole-string equality — never a substring — so a
+// near-miss (or a member's own unrelated prose) stays unclassified rather than guessed.
+describe("classifyLocalSdkError — matches the vendor's own local-failure message, exactly (Finding 167)", () => {
+  test("the confirmed no-credential shape classifies as operator", () => {
+    expect(classifyLocalSdkError("Claude Code returned an error result: Not logged in · Please run /login")).toBe("operator");
+  });
+
+  test("tolerates surrounding whitespace (e.g. a trailing newline from Error#message) but nothing else", () => {
+    expect(classifyLocalSdkError("Claude Code returned an error result: Not logged in · Please run /login\n")).toBe("operator");
+    expect(classifyLocalSdkError("  Claude Code returned an error result: Not logged in · Please run /login  ")).toBe("operator");
+  });
+
+  test("a bare substring match is deliberately rejected — a member's own prose mentioning 'login' must never false-positive", () => {
+    expect(classifyLocalSdkError("the login flow redirects to /login on failure")).toBeUndefined();
+    expect(classifyLocalSdkError("Not logged in")).toBeUndefined();
+  });
+
+  test("a near-miss on the known string (different wording, truncated, or extra text) stays unclassified rather than guessed", () => {
+    expect(classifyLocalSdkError("Claude Code returned an error result: Not logged in")).toBeUndefined();
+    expect(classifyLocalSdkError("Claude Code returned an error result: Not logged in · Please run /login and try again")).toBeUndefined();
+    expect(classifyLocalSdkError("Some wrapper: Claude Code returned an error result: Not logged in · Please run /login")).toBeUndefined();
+  });
+
+  test("levare's own wrapper text around the vendor message is never matched — this classifies the RAW message only", () => {
+    expect(
+      classifyLocalSdkError(
+        "native member 'framer' sdk call failed: Claude Code returned an error result: Not logged in · Please run /login",
+      ),
+    ).toBeUndefined();
+  });
+
+  test("an ordinary member failure is unaffected — status-based classification stays untouched by this addition", () => {
+    expect(classifyLocalSdkError("sdk worker: request rejected (HTTP 400)")).toBeUndefined();
+    expect(classifyLocalSdkError("simulated member timeout")).toBeUndefined();
   });
 });

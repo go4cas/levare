@@ -170,6 +170,72 @@ describe("Finding 85: an operator-actionable blocked artifact withholds Retry, s
   });
 });
 
+// Finding 167: `blocked_class_source` is the sibling of `blocked_class` that says HOW the class was
+// decided (a real status vs a matched vendor message) — the classification behavior itself (Retry
+// withheld for "operator") is entirely Finding 85's, unchanged. These tests only cover that the
+// provenance field lands on disk and carries through to the gate, mirroring the tests above.
+describe("Finding 167: blocked_class_source records how blocked_class was decided", () => {
+  test("dagwalk.ts#writeBlocked (first attempt) carries AdapterError.classSource onto blocked_class_source", async () => {
+    await blockLoyaltyFlowDesignWith(
+      new AdapterError("native member 'lyra' sdk call failed: Claude Code returned an error result: Not logged in · Please run /login", {
+        class: "operator",
+        classSource: "message",
+      }),
+    );
+    const repo = loadRepo(root, { validate: false });
+    const art = [...(repo.artifacts.get("storefront/loyalty-flow")?.values() ?? [])].find((a) => a.kind === "design" && a.status === "blocked");
+    expect(art?.blocked_class).toBe("operator");
+    expect(art?.blocked_class_source).toBe("message");
+  });
+
+  test("a status-classified failure records blocked_class_source: 'status' — the pre-existing Finding-85 path, distinguishable from a message match", async () => {
+    await blockLoyaltyFlowDesignWith(
+      new AdapterError("sdk worker: request rejected (HTTP 400) — credit balance too low", { class: "operator", classSource: "status" }),
+    );
+    const repo = loadRepo(root, { validate: false });
+    const art = [...(repo.artifacts.get("storefront/loyalty-flow")?.values() ?? [])].find((a) => a.kind === "design" && a.status === "blocked");
+    expect(art?.blocked_class_source).toBe("status");
+  });
+
+  test("a classified failure with no classSource (pre-Finding-167 shape) leaves blocked_class_source absent — unchanged behavior", async () => {
+    await blockLoyaltyFlowDesignWith(new AdapterError("sdk worker: request rejected (HTTP 400) — credit balance too low", { class: "operator" }));
+    const repo = loadRepo(root, { validate: false });
+    const art = [...(repo.artifacts.get("storefront/loyalty-flow")?.values() ?? [])].find((a) => a.kind === "design" && a.status === "blocked");
+    expect(art?.blocked_class).toBe("operator");
+    expect(art?.blocked_class_source).toBeFalsy();
+  });
+
+  test("a member-caused failure (no class, no source) is unchanged — both stay absent, Retry stays offered", async () => {
+    await blockLoyaltyFlowDesign();
+    const repo = loadRepo(root, { validate: false });
+    const art = [...(repo.artifacts.get("storefront/loyalty-flow")?.values() ?? [])].find((a) => a.kind === "design" && a.status === "blocked");
+    expect(art?.blocked_class).toBeFalsy();
+    expect(art?.blocked_class_source).toBeFalsy();
+  });
+
+  test("a retry that fails again with a message-classified AdapterError records blocked_class_source on the NEW blocked artifact (blockedRetryDoc path)", async () => {
+    await blockLoyaltyFlowDesign(); // member-caused first attempt — retry is offered
+    const blockedId = "design-loyalty-flow-v1";
+    const nowNoCredentialFailing: AsyncMemberRunner = {
+      capabilities: () => [{ member: "lyra", kind: "design" }],
+      produce: () => {
+        throw new AdapterError("native member 'lyra' sdk call failed: Claude Code returned an error result: Not logged in · Please run /login", {
+          class: "operator",
+          classSource: "message",
+        });
+      },
+    };
+    const result = await resolveGate(root, "storefront", blockedId, "retry" as Verb, { memberRunner: nowNoCredentialFailing, today: "2026-07-12" });
+    expect(result.ok).toBe(false);
+
+    const after = loadRepo(root, { validate: false });
+    const gate = openGates(after).find((g) => g.type === "artifact-blocked");
+    expect(gate?.class).toBe("operator");
+    expect(gate?.artifact?.blocked_class_source).toBe("message");
+    expect(gate?.artifact?.id).not.toBe(blockedId);
+  });
+});
+
 describe("F19: a blocked artifact raises a gate with retry/skip/abandon", () => {
   test("the blocked artifact surfaces as its own gate, distinct from an in-review one — never approve/reject/request", async () => {
     await blockLoyaltyFlowDesign();

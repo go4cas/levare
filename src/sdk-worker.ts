@@ -249,6 +249,29 @@ export function formatAuthFailureError(status: number, attempt: number): string 
 }
 
 /**
+ * Finding 167: the commonest operator-actionable failure carries no `error_status` at all — the vendor
+ * SDK's own `query()` throws directly (no HTTP round trip, so nothing for `isOperatorActionableStatus`
+ * above to see) when there's no valid session, e.g. `Error("Claude Code returned an error result: Not
+ * logged in · Please run /login")`. That thrown `Error` is caught raw in `runSdkWorkerFromStdin`'s own
+ * catch block below, BEFORE `adapters.ts` wraps it into `native member 'X' sdk call failed: ...` — so
+ * this matches the vendor's own message text, never levare's wrapper around it.
+ *
+ * Mirrors Finding 118's discipline (PR #53's verdict extraction), not a substring check: exact,
+ * whole-string equality against a known vendor shape, so a member's own prose mentioning "login" can
+ * never false-positive. An unrecognised message returns `undefined` — stays unclassified, Retry stays
+ * offered — rather than guessing. Only one string is confirmed to exist today (searched the vendor SDK
+ * and every existing test/log for siblings — expired-session, revoked-token, etc. — none found); the
+ * map exists so a confirmed sibling can be added later without restructuring this.
+ */
+const LOCAL_SDK_ERROR_MESSAGES: Record<string, FailureClass> = {
+  "Claude Code returned an error result: Not logged in · Please run /login": "operator",
+};
+
+export function classifyLocalSdkError(message: string): FailureClass | undefined {
+  return LOCAL_SDK_ERROR_MESSAGES[message.trim()];
+}
+
+/**
  * Finding 124: races one `iterator.next()` call against an idle timer — resolves `{idle:false,
  * result}` the instant the next message arrives (the common case, on every healthy dispatch), or
  * `{idle:true}` if `idleTimeoutMs` elapses first with no message at all. `idleTimeoutMs` absent (or
@@ -460,6 +483,7 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
         ok: false,
         error: formatAuthFailureError(consumed.authFailure.status, consumed.authFailure.attempt),
         errorClass: "operator",
+        errorClassSource: "status",
         nativeBinaryResolved,
       });
       return;
@@ -469,6 +493,7 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
         ok: false,
         error: formatOperatorFailureError(consumed.operatorFailure.status, consumed.operatorFailure.attempt),
         errorClass: "operator",
+        errorClassSource: "status",
         nativeBinaryResolved,
       });
       return;
@@ -488,6 +513,7 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
         ok: false,
         error: consumed.failure ?? "sdk query produced no result message",
         errorClass: consumed.retryCount > 0 ? "transient" : undefined,
+        errorClassSource: consumed.retryCount > 0 ? "status" : undefined,
         nativeBinaryResolved,
       });
       return;
@@ -495,7 +521,17 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
     respond({ ok: true, result: consumed.resultText, structuredOutput: consumed.structuredOutput, receipt: consumed.receipt, nativeBinaryResolved });
   } catch (e) {
     console.error(`levare: sdk worker query() threw after ${Date.now() - startedAt}ms`);
-    respond({ ok: false, error: e instanceof Error ? e.message : String(e), nativeBinaryResolved });
+    const message = e instanceof Error ? e.message : String(e);
+    // Finding 167: the ONE place the vendor's raw, unwrapped error message is still in scope — see
+    // `classifyLocalSdkError`'s own doc for why this is the only layer that can match it safely.
+    const errorClass = classifyLocalSdkError(message);
+    respond({
+      ok: false,
+      error: message,
+      errorClass,
+      errorClassSource: errorClass ? "message" : undefined,
+      nativeBinaryResolved,
+    });
   }
 }
 

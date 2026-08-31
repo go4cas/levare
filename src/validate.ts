@@ -232,6 +232,17 @@ export const ARTIFACT_SCHEMA: Schema = {
       description:
         "Who must act on blocked_reason, when known: operator (the studio/environment needs fixing — retry cannot succeed) or transient (a rate-limit/5xx/connection failure that already survived one levare-level retry and still failed). Absent means member-caused or unknown — Retry stays offered.",
     },
+    // Finding 167: sibling to `blocked_class` — how it was decided, mirroring `verdict_source`'s own
+    // precedent (Finding 118) so a reader can tell a status-confirmed classification apart from a text
+    // match against a known vendor error string.
+    blocked_class_source: {
+      type: "enum",
+      required: false,
+      nullable: true,
+      enum: ["status", "message"],
+      description:
+        "How blocked_class was decided: status — a real error_status the SDK's api_retry stream carried (the pre-existing Finding-85 path). message — the failure carried no status at all (the SDK's query() threw directly, no HTTP round trip) and was matched, anchored and exact, against a known vendor error string instead (sdk-worker.ts#classifyLocalSdkError). Absent whenever blocked_class is — no source to record for an unclassified failure.",
+    },
     // NOTES MERGE-1 (PRD Amendment 2, M1/M2): reserved for `kind: merge` — the trial-merge report a
     // merge gate carries. Structurally optional on every artifact (mirroring `execution:`'s own
     // reservation for `kind: proposal`) rather than schema-gated by kind — a merge gate is levare's
