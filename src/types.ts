@@ -409,6 +409,18 @@ export interface Artifact {
    * revision, which also lands as `superseded` but never carries this field (Finding 84).
    */
   blocked_reason?: string | null;
+  /**
+   * Finding 85: who must act on `blocked_reason`, when it's known — `"operator"` (the studio/
+   * environment needs fixing; a config problem, an invalid/revoked credential, or a request the vendor
+   * rejected outright such as an insufficient credit balance — retry can never succeed) or `"transient"`
+   * (a rate-limit/5xx/connection shape that already survived one levare-level retry, adapters.ts's
+   * `createSdkNativeBoundary`/`createAsyncSdkNativeBoundary`, and still failed). Absent means
+   * member-caused or genuinely unknown — the pre-Finding-85 default, Retry stays offered exactly as
+   * before. Decided ONCE, at the boundary that threw (`adapters.ts#AdapterError.class`) and carried
+   * straight onto disk — never re-derived from `blocked_reason`'s own text at render time (that shape,
+   * Finding 118's, is deliberately avoided here).
+   */
+  blocked_class?: "operator" | "transient" | null;
   /** NOTES MERGE-1: reserved for `kind: merge` — the trial-merge report, written by levare when the
    * merge gate opens and rewritten in place by the `recheck` verb. */
   merge?: MergeInfo | null;
