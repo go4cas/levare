@@ -556,6 +556,8 @@ function writeBlocked(
   // boundary that threw actually knew (adapters.ts#AdapterError.class's own doc); absent for any other
   // thrown error (validation, off-contract doc) or an unclassified AdapterError alike.
   const failureClass = error instanceof AdapterError ? error.class : undefined;
+  // Finding 167: sibling to `failureClass` — how it was decided (AdapterError.classSource's own doc).
+  const failureClassSource = error instanceof AdapterError ? error.classSource : undefined;
   const doc = [
     "---",
     `kind: ${kind}`,
@@ -569,6 +571,7 @@ function writeBlocked(
     "approved_by: null",
     `blocked_reason: ${JSON.stringify(msg)}`,
     ...(failureClass ? [`blocked_class: ${failureClass}`] : []),
+    ...(failureClassSource ? [`blocked_class_source: ${failureClassSource}`] : []),
     `created: ${today}`,
     "files: []",
     "---",

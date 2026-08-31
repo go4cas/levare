@@ -581,6 +581,7 @@ function blockedRetryDoc(
   supersedes: string | null,
   consumes: string[] = [],
   failureClass?: "operator" | "transient",
+  failureClassSource?: "status" | "message",
 ): string {
   return [
     "---",
@@ -595,6 +596,7 @@ function blockedRetryDoc(
     "approved_by: null",
     `blocked_reason: ${JSON.stringify(msg)}`,
     ...(failureClass ? [`blocked_class: ${failureClass}`] : []),
+    ...(failureClassSource ? [`blocked_class_source: ${failureClassSource}`] : []),
     `created: ${createdAt}`,
     "files: []",
     "---",
@@ -711,6 +713,8 @@ async function resolveBlockedArtifactGate(
     // identical extraction) — a retry that fails operator-actionably a second time must say so too,
     // not silently drop back to the unclassified default just because it came through this path.
     const failureClass = e instanceof AdapterError ? e.class : undefined;
+    // Finding 167: sibling to `failureClass` — how it was decided (AdapterError.classSource's own doc).
+    const failureClassSource = e instanceof AdapterError ? e.classSource : undefined;
     // NOTES DISPATCH-TRACE (blocked-artifact consumes defect): same computation as dagwalk.ts#produceOne
     // and AdapterRunner#author — approved artifacts plus this retry's own `extraConsumes` — so a retry
     // that fails again records what it actually had available instead of the previous hardcoded `[]`.
@@ -718,7 +722,7 @@ async function resolveBlockedArtifactGate(
     const consumes = unitArtifactPaths(root, art.project, art.unit)
       .filter((a) => a.status === "approved" || extraSet.has(a.id))
       .map((a) => a.id);
-    const doc = blockedRetryDoc(art, newId, msg, createdAt, membership ? art.supersedes : art.id, consumes, failureClass);
+    const doc = blockedRetryDoc(art, newId, msg, createdAt, membership ? art.supersedes : art.id, consumes, failureClass, failureClassSource);
     const files: TxFile[] = membership
       ? [{ path: located.file, content: doc }]
       : [

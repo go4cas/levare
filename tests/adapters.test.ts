@@ -1467,7 +1467,96 @@ describe("native adapter — failure classification (Finding 85)", () => {
     expect(calls).toBe(2);
     expect(result.doc).toBe("native output");
   });
+});
 
+// Finding 167: `errorClassSource` (sdk-transport.ts) is the sibling signal that says HOW `errorClass`
+// was decided — carried onto the thrown AdapterError's own `classSource`, mirroring `class`'s own
+// propagation exactly (Finding 85). Both native boundaries just forward whatever the transport reports;
+// the actual classification (status vs message) happens in sdk-worker.ts, covered separately.
+describe("native adapter — failure classification source (Finding 167)", () => {
+  test("createSdkNativeBoundary carries errorClassSource: 'status' onto the thrown AdapterError's classSource, unchanged", () => {
+    const repo = loadRepo(ROOT);
+    const agent = repo.agents.get("lyra")!;
+    const transport: SdkTransport = {
+      run: () => ({ ok: false, error: "sdk worker: request rejected (HTTP 400)", errorClass: "operator", errorClassSource: "status" }),
+    };
+    const boundary = createSdkNativeBoundary({ transport });
+    let caught: unknown;
+    try {
+      boundary.invoke(baseReq(agent, { agent }));
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(AdapterError);
+    expect((caught as AdapterError).class).toBe("operator");
+    expect((caught as AdapterError).classSource).toBe("status");
+  });
+
+  test("createSdkNativeBoundary carries errorClassSource: 'message' onto the thrown AdapterError's classSource — the no-credential shape", () => {
+    const repo = loadRepo(ROOT);
+    const agent = repo.agents.get("lyra")!;
+    const transport: SdkTransport = {
+      run: () => ({
+        ok: false,
+        error: "Claude Code returned an error result: Not logged in · Please run /login",
+        errorClass: "operator",
+        errorClassSource: "message",
+      }),
+    };
+    const boundary = createSdkNativeBoundary({ transport });
+    let caught: unknown;
+    try {
+      boundary.invoke(baseReq(agent, { agent }));
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(AdapterError);
+    expect((caught as AdapterError).class).toBe("operator");
+    expect((caught as AdapterError).classSource).toBe("message");
+    // The vendor's raw message survives, wrapped — never swapped for levare's own phrasing.
+    expect((caught as AdapterError).message).toContain("Not logged in · Please run /login");
+  });
+
+  test("a failure with no errorClassSource at all throws an AdapterError with classSource undefined — unchanged behavior", () => {
+    const repo = loadRepo(ROOT);
+    const agent = repo.agents.get("lyra")!;
+    const transport: SdkTransport = { run: () => ({ ok: false, error: "sdk worker exited 1" }) };
+    const boundary = createSdkNativeBoundary({ transport });
+    let caught: unknown;
+    try {
+      boundary.invoke(baseReq(agent, { agent }));
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(AdapterError);
+    expect((caught as AdapterError).class).toBeUndefined();
+    expect((caught as AdapterError).classSource).toBeUndefined();
+  });
+
+  test("createAsyncSdkNativeBoundary mirrors classSource propagation", async () => {
+    const repo = loadRepo(ROOT);
+    const agent = repo.agents.get("lyra")!;
+    const transport: AsyncSdkTransport = {
+      run: async () => ({
+        ok: false,
+        error: "Claude Code returned an error result: Not logged in · Please run /login",
+        errorClass: "operator",
+        errorClassSource: "message",
+      }),
+    };
+    const boundary = createAsyncSdkNativeBoundary({ transport });
+    let caught: unknown;
+    try {
+      await boundary.invoke(baseReq(agent, { agent }));
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(AdapterError);
+    expect((caught as AdapterError).classSource).toBe("message");
+  });
+});
+
+describe("native adapter — failure classification (Finding 85), continued", () => {
   // Studio-authoring/config failures (Finding 129 sweep): every one of these is caught before any
   // vendor call happens at all, so they classify `operator` regardless of what the SDK itself says.
   // Uses `remoteTestRepo`/`fakeServerConnector` (defined below, in the "remote adapter — real stdio MCP

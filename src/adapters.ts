@@ -52,6 +52,7 @@ import {
   type SdkWorkerResponse,
   type WrapWorkerSpawn,
   type FailureClass,
+  type FailureClassSource,
 } from "./sdk-transport.ts";
 import {
   buildDispatchTrace,
@@ -82,9 +83,15 @@ import type { Agent, Connector, Receipt } from "./types.ts";
 // means and `dagwalk.ts#writeBlocked`/`board/gateops.ts#blockedRetryDoc` for where it lands on disk.
 export class AdapterError extends Error {
   readonly class?: FailureClass;
-  constructor(message: string, opts?: { class?: FailureClass }) {
+  /** Finding 167: sibling to `class` — how it was decided (`FailureClassSource`'s own doc). Absent
+   * whenever `class` is (nothing to attribute a source to) and on every non-SDK `AdapterError` site
+   * below (a studio-config check that already knows its own class deterministically, never a status
+   * or message match — there's no "source" question to answer for those). */
+  readonly classSource?: FailureClassSource;
+  constructor(message: string, opts?: { class?: FailureClass; classSource?: FailureClassSource }) {
     super(message);
     this.class = opts?.class;
+    this.classSource = opts?.classSource;
   }
 }
 
@@ -569,7 +576,7 @@ export function createSdkNativeBoundary(opts: SdkNativeBoundaryOptions = {}): Na
         console.error(`levare: native member '${req.member}' sdk call failed transiently, retrying once before gating (Finding 85): ${res.error}`);
         res = runOnce();
       }
-      if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`, { class: res.errorClass });
+      if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`, { class: res.errorClass, classSource: res.errorClassSource });
       return { doc: res.result, receipt: res.receipt, sandbox: sandboxLevel };
     },
   };
@@ -615,7 +622,7 @@ export function createAsyncSdkNativeBoundary(opts: AsyncSdkNativeBoundaryOptions
         console.error(`levare: native member '${req.member}' sdk call failed transiently, retrying once before gating (Finding 85): ${res.error}`);
         res = await runOnce();
       }
-      if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`, { class: res.errorClass });
+      if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`, { class: res.errorClass, classSource: res.errorClassSource });
       return { doc: res.result, receipt: res.receipt, sandbox: sandboxLevel };
     },
   };
