@@ -251,6 +251,11 @@ export interface TypeTemplate {
   timebox?: string | null;
   /** Research reports promote to knowledge/ through a gate (§5). */
   promotable_to?: string | null;
+  /** The template's markdown body (`types/<name>.md`) — what this type of unit asks for, distinct
+   * from a `feature` or a `spike`. Injected into member context alongside the unit body (§6, Finding
+   * 163); absent (undefined) only for a TypeTemplate built by hand in a test, never for one loaded
+   * from disk. */
+  body?: string;
 }
 
 export interface Project {
@@ -293,6 +298,11 @@ export interface WorkUnit {
    * with the status it explains, and the board renders it as a gate.
    */
   blocked_reason?: string | null;
+  /** The operator's own words (`unit.md`'s markdown body) — what this unit is actually for, not
+   * just its name. Injected into every member's context (§6, Finding 163) as context alongside the
+   * approved artifact chain, never as licence to override it. Absent (undefined) only for a WorkUnit
+   * built by hand in a test, never for one loaded from disk. */
+  body?: string;
   /** Directory holding the unit and its artifacts. */
   dir: string;
 }

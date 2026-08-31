@@ -55,6 +55,20 @@ score. This text is injected into every member context for this project.
 ── 6. task ──
 spec
 
+### type: feature
+# Feature
+
+A full product increment: pitch shaped into a brief, a design, a spec, then built and
+reviewed into the project's main branch through a merge gate. The longest score of the
+five types.
+
+### unit: storefront/checkout-flow — context, not a licence to override the approved artifacts in item 7
+# checkout-flow
+
+Rebuild the storefront checkout as a single-page flow: cart review, address, payment,
+confirmation. Founding story for the phase-1 golden fixture. The brief and design are
+approved; the spec sits at the review gate awaiting the Conductor.
+
 ── 7. consumed artifacts (paths only — never contents) ──
 work/storefront/checkout-flow/design-checkout-v1/index.md
 work/storefront/checkout-flow/product-brief-v1.md
