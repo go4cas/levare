@@ -770,6 +770,70 @@ describe("F10 defect 2: two teams producing the same kind a unit needs is AMBIGU
   });
 });
 
+// Finding 171: `type` used to be a WORK_UNIT_SCHEMA enum hardcoding the five scaffold types — an
+// extensibility wall in a registry (`types/`) the product otherwise invites an operator to extend.
+// It's now a plain "str" cross-checked against the loaded types/ registry, the same way `team:` is
+// checked against teams/ (UNKNOWN_TEAM) — these tests prove both directions: an operator-defined
+// sixth type validates, and an unknown one fails naming the studio's real types.
+describe("Finding 171: a work unit's `type` references the types/ registry, not a hardcoded enum", () => {
+  function buildStudio(unitType: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "levare-unit-type-registry-"));
+    mkdirSync(join(dir, "teams"), { recursive: true });
+    mkdirSync(join(dir, "agents"), { recursive: true });
+    mkdirSync(join(dir, "types"), { recursive: true });
+    mkdirSync(join(dir, "work", "acme", "launch"), { recursive: true });
+    writeFileSync(
+      join(dir, "agents", "wren.md"),
+      ["---", "name: wren", "kind: native", "produces: [product-brief]", "model: claude-sonnet-5", "style:", "  avatar: Wr", "---", "", "Wren.", ""].join("\n"),
+    );
+    writeFileSync(
+      join(dir, "teams", "kestrel.md"),
+      ["---", "name: kestrel", "consumes: []", "produces: [product-brief]", "members: [wren]", "flow:", "  - step: brief", "style:", "  color: '#000'", "---", "", "Kestrel.", ""].join("\n"),
+    );
+    writeFileSync(
+      join(dir, "types", "experiment.md"),
+      ["---", "name: experiment", "glyph: '?'", "expects: [product-brief]", "gates: []", "---", "", "Experiment.", ""].join("\n"),
+    );
+    writeFileSync(
+      join(dir, "work", "acme", "launch", "unit.md"),
+      `---\ntype: ${unitType}\nstatus: active\n---\n\n# launch\n\nType-registry test fixture.\n`,
+    );
+    return dir;
+  }
+
+  test("an operator-defined type not among the five scaffold types validates cleanly", () => {
+    const dir = buildStudio("experiment");
+    try {
+      const r = validatePath(dir);
+      expect(r.errors.map((e) => e.code)).not.toContain("UNKNOWN_TYPE");
+      expect(r.errors.map((e) => e.code)).not.toContain("BAD_ENUM");
+      expect(r.ok).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a type naming nothing defined under types/ fails UNKNOWN_TYPE, naming the studio's real types", () => {
+    const dir = buildStudio("ghost-type");
+    try {
+      const r = validatePath(dir);
+      expect(r.ok).toBe(false);
+      const err = r.errors.find((e) => e.code === "UNKNOWN_TYPE");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("ghost-type");
+      expect(err!.message).toContain("no such type is defined");
+      expect(err!.message).toContain("experiment");
+      expect(err!.file).toContain("work/acme/launch/unit.md");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the five scaffold types are unaffected — a freshly-scaffolded studio still validates", () => {
+    expect(validatePath("fixtures/golden").ok).toBe(true);
+  });
+});
+
 describe("PRD v1.1: `mode:` was removed from the team schema (invariant 7)", () => {
   test("a team definition declaring `mode:` fails validation with a REMOVED_FIELD error naming it and v1.1", () => {
     const r = validatePath("fixtures/rejections/team-bad-mode");

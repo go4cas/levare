@@ -450,11 +450,15 @@ export const ARTIFACT_SCHEMA: Schema = {
 export const WORK_UNIT_SCHEMA: Schema = {
   name: "work-unit",
   fields: {
+    // Finding 171: `type` is NOT a closed enum — it names a type defined under types/, an
+    // operator-authored registry directory (repo.ts loads it alongside teams/agents/projects/), so a
+    // studio can extend the type vocabulary. Cross-entity existence is checked in
+    // validateResponsibleTeam below (UNKNOWN_TYPE), the same way `team:` (also a plain "str" here) is
+    // checked there for UNKNOWN_TEAM — never a second closed-set mechanism.
     type: {
-      type: "enum",
+      type: "str",
       required: true,
-      enum: ["inception", "feature", "fix", "spike", "research"],
-      description: "The work-unit type template this unit follows — what it's expected to produce and where it gates.",
+      description: "The work-unit type template this unit follows — must name a type defined under types/ — what it's expected to produce and where it gates.",
     },
     status: {
       type: "enum",
@@ -2416,6 +2420,11 @@ function validateAgentTeamMembership(root: string, errors: ValidationError[], ov
  * A `team:` override, when present, is validated on its own terms: it must name a real team, and that
  * team must actually be able to produce something the unit's type expects (otherwise the override just
  * relocates the "nothing can run this unit" failure UNBINDABLE_STEP/UNPRODUCIBLE_KIND already catch).
+ *
+ * Also owns UNKNOWN_TYPE (Finding 171): this function already loads every unit's `type` and the full
+ * types/ registry to compute `expects`, so it is the natural place for the existence check a removed
+ * WORK_UNIT_SCHEMA enum used to provide — a unit naming a type nothing defines fails loudly here
+ * instead of silently reasoning about it as "expects nothing".
  */
 function validateResponsibleTeam(root: string, errors: ValidationError[], overlay?: OverlayFile): void {
   const workRoot = join(root, "work");
@@ -2469,6 +2478,18 @@ function validateResponsibleTeam(root: string, errors: ValidationError[], overla
         continue;
       }
       const type = typeof data.type === "string" ? data.type : undefined;
+      // Finding 171: `type` used to be a WORK_UNIT_SCHEMA enum (BAD_ENUM caught a typo); now that it's
+      // a plain "str" naming a types/ entity, this is where that existence check moved to — same
+      // pattern, same file, as UNKNOWN_TEAM below. Named types listed (not just "no such type"), the
+      // shape `levare new`'s own AMBIGUOUS_TYPE/UNKNOWN_TYPE messages already use (new.ts).
+      if (type !== undefined && !typeExpects.has(type)) {
+        const known = [...typeExpects.keys()].sort();
+        errors.push({
+          code: "UNKNOWN_TYPE",
+          message: `unit '${unitName}' declares type: '${type}', but no such type is defined — known types: ${known.join(", ") || "(none defined)"}`,
+          file: unitFile,
+        });
+      }
       const expects = type ? (typeExpects.get(type) ?? []) : [];
       const team = typeof data.team === "string" ? data.team : undefined;
 
