@@ -414,6 +414,11 @@ export async function consumeQuery(iterator: AsyncIterator<SDKMessage>, opts: Co
       } else {
         const errs = "errors" in message && Array.isArray(message.errors) ? message.errors.join("; ") : undefined;
         failure = `sdk query did not succeed (${message.subtype})${errs ? `: ${errs}` : ""}`;
+        // Findings 162/95: an error result (error_max_turns, error_during_execution, ...) carries the
+        // SAME total_cost_usd/modelUsage fields a success result does — the SDK already priced whatever
+        // ran before the failure. Previously discarded here, so a member that legitimately burned its
+        // turn/budget limit reported a real, priced cost that this worker threw away.
+        receipt = deriveReceipt(message, respondingModel, opts.reqModel);
       }
     }
   }
@@ -515,6 +520,7 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
         errorClass: consumed.retryCount > 0 ? "transient" : undefined,
         errorClassSource: consumed.retryCount > 0 ? "status" : undefined,
         nativeBinaryResolved,
+        receipt: consumed.receipt,
       });
       return;
     }
