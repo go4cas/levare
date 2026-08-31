@@ -62,10 +62,11 @@ const dotenvOwnedNames = new WeakMap<object, Set<string>>();
  * Load `<root>/.env` into `target` (default `process.env`). A variable already present and non-empty
  * in `target` — genuinely exported in the shell — always wins; `.env` only fills gaps, so a CI/host
  * environment that already sets a credential is never silently shadowed by a stray studio `.env`.
- * Returns the provenance of every variable named by `.env` — 'dotenv' when this call set it (or
- * confirmed it), 'shell' when it was already present with a DIFFERENT value and therefore left
+ * Returns the provenance of every variable currently named by `.env` — 'dotenv' when this call set it
+ * (or confirmed it), 'shell' when it was already present with a DIFFERENT value and therefore left
  * untouched — so a caller (doctor.ts) can report "why does this work on my machine and not in CI"
- * instead of leaving that invisible.
+ * instead of leaving that invisible. A name this function unset (see Finding 138 below) is simply
+ * absent from `target` and from this map, exactly like a name `.env` never mentioned.
  *
  * Findings 121/31/32: presence alone can't tell a shell export from a value Bun (or any other runtime)
  * already auto-loaded from this same `.env` before this function's first call ever runs — both look
@@ -80,6 +81,15 @@ const dotenvOwnedNames = new WeakMap<object, Set<string>>();
  * on a later call, picking up an edited value; a name that's present and differs from `.env` is treated
  * as shell on every call, never overwritten and never relabeled, no matter how many times this runs.
  *
+ * Finding 138: a name this function previously set that `.env` no longer declares is UNSET, not
+ * restored — there is nothing underneath to restore to (a shell-exported value was never overwritten
+ * in the first place, per the presence check above). Deleting the name from `owned` too means a later
+ * re-added line is adopted as a fresh dotenv write rather than being treated as if it still needed
+ * `owned` bookkeeping from before — the presence check alone would already re-adopt it (unsetting
+ * cleared `target`), but keeping `owned` an exact mirror of what this call currently has set avoids
+ * `owned` silently growing to remember names that no longer exist anywhere. A name this function never
+ * owned (genuinely shell-exported) is never touched here, matching the "shell always wins" contract.
+ *
  * This changes nothing about scoping: `target` is the whole process environment, and env.ts's
  * `buildMemberEnv` allowlist still governs what any member's spawned process actually sees — a
  * variable loaded here is visible to `process.env` exactly as if the operator had exported it, and a
@@ -88,8 +98,17 @@ const dotenvOwnedNames = new WeakMap<object, Set<string>>();
  */
 export function applyStudioEnv(root: string, target: Record<string, string | undefined> = process.env): Map<string, EnvProvenance> {
   const provenance = new Map<string, EnvProvenance>();
+  const entries = loadDotenvFile(root);
   let owned = dotenvOwnedNames.get(target);
-  for (const { name, value } of loadDotenvFile(root)) {
+  if (owned) {
+    const currentNames = new Set(entries.map((e) => e.name));
+    for (const name of [...owned]) {
+      if (currentNames.has(name)) continue;
+      delete target[name];
+      owned.delete(name);
+    }
+  }
+  for (const { name, value } of entries) {
     const present = typeof target[name] === "string" && target[name] !== "";
     if (present && !owned?.has(name) && target[name] !== value) {
       provenance.set(name, "shell");

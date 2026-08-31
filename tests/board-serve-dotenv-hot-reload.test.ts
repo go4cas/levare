@@ -46,11 +46,13 @@ function req(url: string): Request {
 // applyStudioEnv call of a fresh process ever runs).
 const HOT_RELOAD_PROBE_VAR = "LEVARE_TEST_SERVE_DOTENV_HOT_RELOAD_PROBE";
 const SHELL_WINS_PROBE_VAR = "LEVARE_TEST_SERVE_DOTENV_SHELL_WINS_PROBE";
+const DELETED_PROBE_VAR = "LEVARE_TEST_SERVE_DOTENV_DELETED_PROBE";
 
 describe("levare serve — a corrected .env takes effect without a restart", () => {
   afterEach(() => {
     delete process.env[HOT_RELOAD_PROBE_VAR];
     delete process.env[SHELL_WINS_PROBE_VAR];
+    delete process.env[DELETED_PROBE_VAR];
   });
 
   test("a GET to a page route re-derives .env into the real process.env, picking up a later edit", async () => {
@@ -82,6 +84,26 @@ describe("levare serve — a corrected .env takes effect without a restart", () 
       writeFileSync(join(root, ".env"), `${SHELL_WINS_PROBE_VAR}=still-from-dotenv\n`);
       await board.fetch(req("/"));
       expect(process.env[SHELL_WINS_PROBE_VAR]).toBe("from-shell"); // never shadowed, not even on a second request
+    } finally {
+      board.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // Finding 138 acceptance: deleting a line from .env must unset it from process.env on the very next
+  // request, the same way an edited line hot-reloads — not just at the unit level (dotenv.test.ts) but
+  // through the real board.fetch() -> applyStudioEnv(root) wiring against the real process.env.
+  test("deleting a line from .env unsets it from process.env on the next request, without a restart", async () => {
+    const root = seedScratchRepo();
+    const board = createBoard(root);
+    try {
+      writeFileSync(join(root, ".env"), `${DELETED_PROBE_VAR}=present\n`);
+      await board.fetch(req("/"));
+      expect(process.env[DELETED_PROBE_VAR]).toBe("present");
+
+      writeFileSync(join(root, ".env"), ""); // the operator deletes the line
+      await board.fetch(req("/"));
+      expect(process.env[DELETED_PROBE_VAR]).toBeUndefined();
     } finally {
       board.close();
       rmSync(root, { recursive: true, force: true });
