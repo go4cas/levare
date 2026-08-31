@@ -17539,3 +17539,155 @@ surfaces as an `AdapterError` naming idleness. `tests/dispatch-trace.test.ts`: a
 
 `bun test` → 1847 pass, 9 skip, 0 fail across 121 files, 6264 expect() calls. `bunx tsc --noEmit`
 clean.
+
+# NOTES FAILURE-CLASS — Finding 85: a failure must say whose problem it is
+
+A dispatch blocked on "credit balance is too low" rendered identically to a member producing bad
+output — same card, same Retry/Skip/Abandon, Retry offered when it cannot possibly succeed until the
+operator tops up the account. Ruled: three classes, assigned at the boundary that throws — the only
+layer that ever sees the vendor's own status. `operator` (config/credential/billing — Retry withheld,
+the card names the operator's own action), `member-caused` (unchanged: Retry/Skip/Abandon all still
+make sense), `transient` (rate-limit/5xx/connection — levare retries exactly once itself before ever
+gating, never more, per Finding 92's own seven-retries-into-a-misleading-timeout lesson).
+
+## Report, before building (the goal's own four questions)
+
+1. **Every `AdapterError` construction site** (`adapters.ts`, `export class AdapterError extends
+   Error {}` — genuinely empty, no fields beyond a message) fell into three shapes: (a) two SDK-boundary
+   throws (`createSdkNativeBoundary`/`createAsyncSdkNativeBoundary`) wrapping whatever
+   `SdkWorkerResponse.error` said — the ONLY sites carrying any real vendor signal; (b) ~15 pre-dispatch
+   studio-config checks (missing/invalid `cwd`, no argv0, command not on PATH, no command template,
+   unknown agent kind, no agent definition, an MCP connector declaring no server/wrong kind/not
+   granted/no tool/no stdio argv, a fetch-at-dispatch launcher the sandbox refuses) that never reach a
+   vendor call at all — deterministically the studio's own authoring mistake, every time, forever, until
+   edited; (c) genuinely ambiguous failures with no reliable signal either way (a cli member's non-zero
+   exit/timeout, an MCP tool reporting `isError`, a git worktree create/commit failure, a native
+   member's model-mismatch receipt check, "produced no usable content"). One classification point does
+   NOT serve all of these — (a) needed the SDK boundary to stop collapsing its status into a bare
+   string before classifying; (b) is decided entirely at throw time, no vendor round-trip involved; (c)
+   is left unclassified on purpose (below).
+2. **`isNonRetryableAuthStatus`** (PR #57/Finding 92) covers exactly 401/403 for the native/SDK path
+   only — narrower than class 1 even there (nothing maps "credit balance too low", which Anthropic's API
+   reports as some other 4xx, not 401/403) and structurally silent for cli/remote (neither boundary ever
+   sees an `error_status` at all — item 4 below). Left untouched (its own test file locks 400/404 as
+   explicitly out of its scope — "this fix is scoped to auth, not all 4xx"); a NEW sibling,
+   `isOperatorActionableStatus` (`sdk-worker.ts`), takes the wider "any 4xx except 429, except what
+   `isNonRetryableAuthStatus` already owns" net that actually reaches the goal's own credit-balance
+   example, with its own message (`formatOperatorFailureError`) that never claims a credential is
+   invalid — that would be a guess this status range doesn't support.
+3. **The class needed a real sibling field**, not a render-time derivation from `blocked_reason`'s
+   text — exactly the Finding 118 shape the goal named and asked to avoid. Cost: one field on
+   `Artifact` (`blocked_class?: "operator" | "transient" | null`, types.ts), one `ARTIFACT_SCHEMA` enum
+   entry (validate.ts) + `bun run docs:generate`, and — found only by writing the first failing test,
+   not by reading the schema — `repo.ts#toArtifact` explicitly enumerates every known frontmatter field
+   by name; `blocked_reason` already had a line there and `blocked_class` needed its own, or the field
+   would validate correctly on disk and silently vanish on load. `WorkUnit.blocked_reason` (the OTHER,
+   unrelated "blocked" — a flow step binding to no member, dagwalk.ts#blockUnit) deliberately gets no
+   sibling: that gate already renders with zero verbs (`board/render/shell.ts`'s `gate.type ===
+   "blocked"` branch), so there is no remedy to withhold.
+4. **The cli boundary cannot reach class 1 or 3 at all**, confirmed, not assumed: `diagnoseCliFailure`/
+   `vendorStructuredError` (adapters.ts) extract free TEXT from a vendor CLI's stdout/stderr, and
+   Finding 139's own header already names the reason — a spawned subprocess exposes no
+   `error_status`, no HTTP anything, only an exit code and whatever it printed. Classifying from that
+   text would be exactly Finding 118's disfavored shape. Documented gap, not attempted: a `kind: cli`
+   member's credit-balance/auth/rate-limit failure still renders as an unclassified (member-caused
+   default) blocked artifact, Retry still offered, same as before this unit. Same gap, same reasoning,
+   for `kind: remote` (MCP) — `mcp-client.ts#McpSession` exposes no status either (only a thrown
+   protocol error's own message).
+
+## What got built
+
+`sdk-transport.ts` gains `FailureClass = "operator" | "transient"` and
+`SdkWorkerResponse`'s `ok:false` branch gains `errorClass?: FailureClass` — set ONLY by
+`sdk-worker.ts#runSdkWorkerFromStdin`, the one place that ever saw `SDKAPIRetryMessage.error_status`.
+Three respond() sites: `authFailure` (401/403, unchanged message) and the new `operatorFailure`
+(`isOperatorActionableStatus`) both classify `"operator"` and abort on attempt 1, exactly
+`isNonRetryableAuthStatus`'s own precedent, extended rather than duplicated; the generic
+no-success-result path classifies `"transient"` when `retryCount > 0` (the SDK's OWN retry policy,
+inside `query()`, already exhausted itself on a 429/5xx/connection shape before this branch is ever
+reached) and leaves it `undefined` otherwise (attempt 1 failed for a reason the stream never named as
+retryable — genuinely unknown, not guessed). Idle aborts and transport-level failures (script not
+found, non-JSON output — no message ever streamed) stay unclassified; neither carries a vendor status.
+
+`adapters.ts#AdapterError` gains `readonly class?: FailureClass`, set at construction. Both native SDK
+boundaries thread `res.errorClass` onto the thrown error, and add the ONE new behavior the ruling
+requires: on `errorClass === "transient"`, retry the WHOLE dispatch — a fresh worker spawn, its own
+dispatch-trace start/finish pair — exactly once before ever throwing; a second transient failure gates
+like any other, never a third spawn (this is a second, coarser retry layered ABOVE the SDK's own
+internal one, never inside it — the SDK's per-message retry loop is untouched). Every pre-dispatch
+config-check site named in item 1(b) above now constructs its `AdapterError` with `class: "operator"`
+— a cheap, uncontroversial extension of the same principle the goal's own three classes rest on
+("nothing about the unit or the member is wrong"), and the sweep this unit's standing instruction asks
+for (below).
+
+`dagwalk.ts#writeBlocked` and `board/gateops.ts#blockedRetryDoc`/its retry-failure catch both extract
+`error instanceof AdapterError ? error.class : undefined` and write `blocked_class:` onto the blocked
+artifact when set — the SAME extraction at both sites (a first attempt and a Conductor-triggered retry
+that fails again classify identically). `derive.ts#OpenGate` carries `class` onto an `artifact-blocked`
+gate from `art.blocked_class`. Two places actually gate on it: `board/gateops.ts
+#resolveBlockedArtifactGate` refuses the `retry` verb server-side (409, naming the artifact and its
+reason) when `blocked_class === "operator"` — BEFORE spending a costed dispatch attempt levare already
+knows will fail identically, mirroring `doApproveMerge`'s own re-check-at-execution-time discipline for
+a conflicted trial, never trusting the UI alone — and `board/render/shell.ts`'s artifact-blocked card
+withholds the Retry button entirely for that same class (never merely `disabled`), leaving Skip/Abandon,
+and swaps the badge to "needs operator". `blocked_reason`'s own text is what already names the
+operator's action (the classified message `formatOperatorFailureError`/`formatAuthFailureError` wrote),
+so no second hint string was needed on the card.
+
+## Sweep for siblings (Finding 129, standing instruction — twenty-fifth consecutive unit)
+
+- **Every pre-dispatch studio-config `AdapterError`** (item 1(b) above) was the actual finding here,
+  not a hypothetical one — "cwd does not exist" offered Retry exactly as uselessly as a credit-balance
+  failure does, and by the SAME logic ("nothing about the unit or the member is wrong") belongs in
+  class 1. Folded into this unit rather than deferred, since `AdapterError` already needed the `class`
+  field for the SDK path and tagging these is a one-line addition per site, not a second mechanism.
+- **`kind: cli`/`kind: remote` failures** (item 4) are the honest exception: real vendor-call failures
+  that CANNOT be classified without a status signal neither boundary exposes. Left unclassified —
+  Retry still offered, unchanged — rather than guessed from text.
+- **`doApprove`'s proposal-execution-failure path** (board/gateops.ts, ~line 233): blocks the UNIT
+  (`WorkUnit.blocked_reason`, not an artifact), and that gate (`type: "blocked"`) already renders with
+  zero verbs — no remedy is offered there at all, so nothing to withhold. Genuinely could be operator-
+  or member-caused (a connector action can fail for either reason), but the question is moot with no
+  verb to gate — checked and recorded as a non-finding, so a future sweep doesn't re-open it.
+- **`doApproveMerge`'s conflicted/guardrail-violating trial** — already correctly hides `Approve` in
+  favor of `Re-check` (`board/render/shell.ts`'s `canApprove` gate, pre-existing) and re-verifies at
+  execution time regardless. This unit's own Retry-refusal on `resolveBlockedArtifactGate` is modeled
+  directly on this precedent, not a new pattern.
+- **The `blocked` (unit-level) gate and the `start` gate** — both checked; neither offers a verb that
+  can fail contingently on hidden state the way Retry-on-a-blocked-artifact did, so neither needed the
+  same treatment.
+
+## What could not be verified (no daemon, no live API, this sandbox)
+
+This unit's own worked example — an actual "credit balance is too low" response from the real
+Anthropic API — could not be produced or observed here (no network, no credential). The exact HTTP
+status Anthropic returns for that case is therefore assumed, not confirmed, to fall inside
+`isOperatorActionableStatus`'s 4xx-except-429 net; if it is ever observed to be something else (a 5xx,
+or 429), that observation should correct this unit's classification, not be worked around by widening
+the net further on guesswork. Every test here drives `consumeQuery`/the SDK boundaries with a
+synthetic `SDKMessage`/`SdkWorkerResponse`, the same "pure logic, no real query()" discipline
+`sdk-worker-auth-retry.test.ts` already established (Finding 92) — never the real SDK.
+
+## Test
+
+`tests/sdk-worker-failure-class.test.ts` (new): `isOperatorActionableStatus`/
+`formatOperatorFailureError` as pure functions; `consumeQuery` sets `operatorFailure` (never
+`authFailure`) for a 400 and aborts attempt 1, leaves both undefined for a 429 that keeps retrying to
+success, and reports `retryCount > 0` with neither set as the "transient exhaustion" shape a boundary
+classifies from. `tests/adapters.test.ts` (new describe, "native adapter — failure classification"):
+`errorClass` rides onto the thrown `AdapterError.class` unchanged; an operator failure spawns exactly
+once (never retried); a transient failure retries exactly once and recovers, or gates on a second
+transient failure without a third spawn; both sync and async boundaries; a handful of the item-1(b)
+config sites (`finch.command = undefined`, an MCP agent with no `server:`) confirmed `class:
+"operator"`. `tests/f19-blocked-artifact-verbs.test.ts` (new describe, "Finding 85"): an
+operator-classed `AdapterError` lands as `blocked_class` on disk, `openGates` carries it, the rendered
+card omits `data-verb="retry"` while keeping skip/abandon, `resolveGate(..., "retry")` is refused 409
+server-side even when a stale client still sends it (the member runner is never invoked — no costed
+attempt spent), Skip still works, and the pre-existing member-caused path (`blockLoyaltyFlowDesign`,
+untouched) still offers Retry — the regression check that this unit changes nothing for the default
+case.
+
+## Verification
+
+`bun test` → 1912 pass, 9 skip, 0 fail across 124 files, 6456 expect() calls. `bunx tsc --noEmit`
+clean.
