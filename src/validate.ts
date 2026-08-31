@@ -906,6 +906,7 @@ export function validatePath(target: string, overlay?: OverlayFile, sandbox?: Sa
     validateStudioBindings(target, errors, overlay);
     validateAgentTeamMembership(target, errors, overlay);
     validateResponsibleTeam(target, errors, overlay);
+    validateNamedReferences(target, errors, overlay);
     validateUncoverableExpectedKinds(target, warnings, overlay);
     validateFlowExpectsAgreement(target, errors, overlay);
     validateAgentContextScope(target, errors, overlay);
@@ -917,6 +918,7 @@ export function validatePath(target: string, overlay?: OverlayFile, sandbox?: Sa
   }
 
   // Cross-artifact checks over everything discovered.
+  validateProducedByReferences(target, artifacts, errors, overlay);
   crossReference(artifacts, errors);
   validateRejectedArtifactUnitStatus(artifacts, errors);
   const immutability = gitImmutabilityCheck(target, artifacts, errors);
@@ -2553,6 +2555,190 @@ function validateResponsibleTeam(root: string, errors: ValidationError[], overla
       ` (if you renamed an entity, every reference to the old name must be updated — ${refs.length} reference(s) ` +
       `still point at '${oldName}'; teams/${oldName}.md now declares name: '${newName}')`;
     for (const err of refs) err.message += hint;
+  }
+}
+
+/**
+ * Finding 174: a grant or reference to something that doesn't exist must fail loudly. Before this,
+ * `team`/`agent` `connectors:`, `team`/`agent` `knowledge:`, and `agent` `skills:` were never checked
+ * against their registry directory at all — a typo in `knowledge: [house-styl]` passed `levare
+ * validate` clean, and context.ts#readEntityBody quietly embedded a `(not found: knowledge/house-
+ * styl.md)` placeholder into the member's real context instead of failing anywhere. `connectors:` was
+ * worse still: env.ts#grantedConnectors silently drops an unresolved name from the member's env with
+ * no diagnostic at all.
+ *
+ * All three resolve by FILENAME, exactly the way context.ts#readEntityBody and
+ * validateProposalArtifact's own `connector:` check already resolve them — never by a declared
+ * `name:` field the way `team:`/`type:` do above (teams/types are the only entities whose reference
+ * name can differ from their filename). So there is no rename-hint to compute here (RENAME-ORPHANS-
+ * REFERENCES above depends on exactly that filename/declared-name split, which doesn't exist for
+ * these three); instead, same as UNKNOWN_TYPE above, each error lists every name that DOES resolve —
+ * a typo like 'house-styl' reads right next to the 'house-style' it meant.
+ *
+ * A fifth reference lives here too: a work unit's `after:` (the start-gate condition — "invisible to
+ * the walk until every named condition is met"). Its consumer, derive.ts#unitShipped, does a Map-style
+ * lookup by id within the unit's own project; an id that resolves to nothing just never appears
+ * shipped, so the condition is permanently unmet and the unit sits at its start gate forever — no
+ * error anywhere, not even a degraded-context placeholder the other three leave behind. Same shape as
+ * the three above, worse consequence, so it gets the same treatment: a hard error naming the unresolved
+ * id and listing every real unit id in that project. Resolves by directory basename, defaulted from —
+ * or overridden by — the unit's own `unit:` field (repo.ts's `optStr(data.unit) ?? unit` fallback),
+ * mirrored here exactly, and scoped per-project since `after:` never crosses a project boundary.
+ */
+function validateNamedReferences(root: string, errors: ValidationError[], overlay?: OverlayFile): void {
+  const connectorsDir = join(root, "connectors");
+  const knowledgeDir = join(root, "knowledge");
+  const skillsDir = join(root, "skills");
+  const teamsDir = join(root, "teams");
+  const agentsDir = join(root, "agents");
+
+  const knownConnectors = existsSync(connectorsDir) ? readdirSync(connectorsDir).filter((f) => f.endsWith(".md")).map((f) => basename(f, ".md")).sort() : [];
+  const knownKnowledge = existsSync(knowledgeDir) ? readdirSync(knowledgeDir).filter((f) => f.endsWith(".md")).map((f) => basename(f, ".md")).sort() : [];
+  // Agent Skills format (context.ts#readEntityBody): a flat `skills/<name>.md`, or a bundled
+  // `skills/<name>/SKILL.md` folder — both are valid resolutions of the same `<name>`.
+  const knownSkills = existsSync(skillsDir)
+    ? readdirSync(skillsDir, { withFileTypes: true })
+        .map((e) => (e.isDirectory() ? (existsSync(join(skillsDir, e.name, "SKILL.md")) ? e.name : null) : e.name.endsWith(".md") ? basename(e.name, ".md") : null))
+        .filter((n): n is string => n !== null)
+        .sort()
+    : [];
+  const connectorSet = new Set(knownConnectors);
+  const knowledgeSet = new Set(knownKnowledge);
+  const skillSet = new Set(knownSkills);
+
+  const checkRefs = (list: YamlValue, set: Set<string>, known: string[], code: string, dirLabel: string, entityLabel: string, file: string) => {
+    for (const name of strList(list)) {
+      if (set.has(name)) continue;
+      errors.push({
+        code,
+        message: `${entityLabel} declares ${dirLabel}: '${name}', but no such entry exists under ${dirLabel}/ — known ${dirLabel}: ${known.join(", ") || "(none defined)"}`,
+        file,
+      });
+    }
+  };
+
+  if (existsSync(teamsDir)) {
+    for (const f of readdirSync(teamsDir).sort()) {
+      if (!f.endsWith(".md") || f.endsWith(".learnings.md")) continue;
+      const file = join(teamsDir, f);
+      let data: Record<string, YamlValue>;
+      try {
+        ({ data } = parseFrontmatter(readOverlaid(file, overlay)));
+      } catch {
+        continue; // its own PARSE_ERROR was already recorded by the per-file pass.
+      }
+      const teamName = typeof data.name === "string" ? data.name : basename(f, ".md");
+      checkRefs(data.connectors, connectorSet, knownConnectors, "UNKNOWN_CONNECTOR", "connectors", `team '${teamName}'`, file);
+      checkRefs(data.knowledge, knowledgeSet, knownKnowledge, "UNKNOWN_KNOWLEDGE", "knowledge", `team '${teamName}'`, file);
+    }
+  }
+
+  if (existsSync(agentsDir)) {
+    for (const f of readdirSync(agentsDir).sort()) {
+      if (!f.endsWith(".md") || f.endsWith(".learnings.md")) continue;
+      const file = join(agentsDir, f);
+      let data: Record<string, YamlValue>;
+      try {
+        ({ data } = parseFrontmatter(readOverlaid(file, overlay)));
+      } catch {
+        continue;
+      }
+      const agentName = typeof data.name === "string" ? data.name : basename(f, ".md");
+      checkRefs(data.connectors, connectorSet, knownConnectors, "UNKNOWN_CONNECTOR", "connectors", `agent '${agentName}'`, file);
+      checkRefs(data.knowledge, knowledgeSet, knownKnowledge, "UNKNOWN_KNOWLEDGE", "knowledge", `agent '${agentName}'`, file);
+      checkRefs(data.skills, skillSet, knownSkills, "UNKNOWN_SKILL", "skills", `agent '${agentName}'`, file);
+    }
+  }
+
+  const workRoot = join(root, "work");
+  if (existsSync(workRoot)) {
+    for (const project of listDirs(workRoot)) {
+      const projectDir = join(workRoot, project);
+      const unitData = new Map<string, { id: string; data: Record<string, YamlValue> }>();
+      for (const unitName of listDirs(projectDir)) {
+        const unitFile = join(projectDir, unitName, "unit.md");
+        if (!existsSync(unitFile)) continue;
+        let data: Record<string, YamlValue>;
+        try {
+          ({ data } = parseFrontmatter(readFileSync(unitFile, "utf8")));
+        } catch {
+          continue; // its own PARSE_ERROR was already recorded by the per-file pass.
+        }
+        const id = typeof data.unit === "string" ? data.unit : unitName;
+        unitData.set(unitFile, { id, data });
+      }
+      const knownUnits = [...unitData.values()].map((u) => u.id).sort();
+      const unitIdSet = new Set(knownUnits);
+      for (const [unitFile, { id, data }] of unitData) {
+        for (const after of strList(data.after)) {
+          if (unitIdSet.has(after)) continue;
+          errors.push({
+            code: "UNKNOWN_AFTER",
+            message:
+              `unit '${id}' declares after: '${after}', but no unit with that id exists in project '${project}' — its start gate can never be ` +
+              `satisfied: known units in '${project}': ${knownUnits.join(", ") || "(none)"}`,
+            file: unitFile,
+          });
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Finding 174 (produced_by): the fourth name-based reference — `artifact.produced_by` — was only ever
+ * checked incidentally, and only for `kind: proposal` artifacts with a connector attached
+ * (isConnectorGrantedTo's `existsSync` guards happen to catch a nonexistent team/member, but under the
+ * unrelated code CONNECTOR_NOT_GRANTED, and only on that narrow path). Every other artifact kind's
+ * `produced_by` went unchecked entirely. In normal operation `produced_by` is always written by levare
+ * itself (adapters.ts#author, dagwalk.ts) as `${team.name}/${member}` from real, already-validated
+ * Team/Agent objects, so this exists to catch a hand-edited or manually-authored artifact naming a
+ * team or member that doesn't exist — same class of silent-gap as the three checked above, on the one
+ * name-based reference that (like `team:`) resolves by declared `name:`, not filename.
+ */
+function validateProducedByReferences(root: string, artifacts: DiscoveredArtifact[], errors: ValidationError[], overlay?: OverlayFile): void {
+  const teamsDir = join(root, "teams");
+  const agentsDir = join(root, "agents");
+  if (!existsSync(teamsDir) || !existsSync(agentsDir)) return;
+
+  const teamNames = new Set<string>();
+  for (const f of readdirSync(teamsDir).sort()) {
+    if (!f.endsWith(".md") || f.endsWith(".learnings.md")) continue;
+    try {
+      const { data } = parseFrontmatter(readOverlaid(join(teamsDir, f), overlay));
+      teamNames.add(typeof data.name === "string" ? data.name : basename(f, ".md"));
+    } catch {
+      continue;
+    }
+  }
+  const agentNames = new Set<string>();
+  for (const f of readdirSync(agentsDir).sort()) {
+    if (!f.endsWith(".md") || f.endsWith(".learnings.md")) continue;
+    try {
+      const { data } = parseFrontmatter(readOverlaid(join(agentsDir, f), overlay));
+      agentNames.add(typeof data.name === "string" ? data.name : basename(f, ".md"));
+    } catch {
+      continue;
+    }
+  }
+
+  for (const a of artifacts) {
+    const producedBy = typeof a.data.produced_by === "string" ? a.data.produced_by : undefined;
+    if (!producedBy || !producedBy.includes("/")) continue; // malformed shape is out of scope here.
+    const [teamName, memberName] = producedBy.split("/");
+    if (!teamNames.has(teamName)) {
+      errors.push({
+        code: "UNKNOWN_PRODUCED_BY",
+        message: `artifact declares produced_by: '${producedBy}', but no team named '${teamName}' is defined — known teams: ${[...teamNames].sort().join(", ") || "(none defined)"}`,
+        file: a.file,
+      });
+    } else if (!agentNames.has(memberName)) {
+      errors.push({
+        code: "UNKNOWN_PRODUCED_BY",
+        message: `artifact declares produced_by: '${producedBy}', but no agent named '${memberName}' is defined — known agents: ${[...agentNames].sort().join(", ") || "(none defined)"}`,
+        file: a.file,
+      });
+    }
   }
 }
 

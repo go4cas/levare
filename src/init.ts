@@ -285,6 +285,18 @@ Write in the calm, factual register of the studio. Produce a \`founding-brief\` 
 then, after its gate, a \`charter\` artifact.
 `;
 
+const SKILL_PRODUCT_BRIEF = `---
+name: product-brief
+description: "Turn a captured pitch into a crisp product brief: the problem, the target user, the one job to be done, and the success signal."
+---
+
+# product-brief skill
+
+State the problem in one sentence, name the target user, name the one job to be done,
+and name the signal that tells you it worked. Skip anything not yet known rather than
+guessing it — an open question beats an invented answer.
+`;
+
 const SKILL_FLOW_DESIGN = `---
 name: flow-design
 description: "Design a user flow: enumerate states and transitions, name the one happy path, and mark every branch that hides a product decision."
@@ -617,6 +629,7 @@ const FILES: Template[] = [
   { path: "agents/lyra.md", content: AGENT_LYRA },
   { path: "agents/finch.md", content: AGENT_FINCH },
   { path: "agents/kite.md", content: AGENT_KITE },
+  { path: "skills/product-brief.md", content: SKILL_PRODUCT_BRIEF },
   { path: "skills/flow-design.md", content: SKILL_FLOW_DESIGN },
   { path: "skills/spec-writing.md", content: SKILL_SPEC_WRITING },
   { path: "skills/new-project/SKILL.md", content: SKILL_NEW_PROJECT },
