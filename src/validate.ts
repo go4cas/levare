@@ -2574,6 +2574,16 @@ function validateResponsibleTeam(root: string, errors: ValidationError[], overla
  * REFERENCES above depends on exactly that filename/declared-name split, which doesn't exist for
  * these three); instead, same as UNKNOWN_TYPE above, each error lists every name that DOES resolve —
  * a typo like 'house-styl' reads right next to the 'house-style' it meant.
+ *
+ * A fifth reference lives here too: a work unit's `after:` (the start-gate condition — "invisible to
+ * the walk until every named condition is met"). Its consumer, derive.ts#unitShipped, does a Map-style
+ * lookup by id within the unit's own project; an id that resolves to nothing just never appears
+ * shipped, so the condition is permanently unmet and the unit sits at its start gate forever — no
+ * error anywhere, not even a degraded-context placeholder the other three leave behind. Same shape as
+ * the three above, worse consequence, so it gets the same treatment: a hard error naming the unresolved
+ * id and listing every real unit id in that project. Resolves by directory basename, defaulted from —
+ * or overridden by — the unit's own `unit:` field (repo.ts's `optStr(data.unit) ?? unit` fallback),
+ * mirrored here exactly, and scoped per-project since `after:` never crosses a project boundary.
  */
 function validateNamedReferences(root: string, errors: ValidationError[], overlay?: OverlayFile): void {
   const connectorsDir = join(root, "connectors");
@@ -2637,6 +2647,40 @@ function validateNamedReferences(root: string, errors: ValidationError[], overla
       checkRefs(data.connectors, connectorSet, knownConnectors, "UNKNOWN_CONNECTOR", "connectors", `agent '${agentName}'`, file);
       checkRefs(data.knowledge, knowledgeSet, knownKnowledge, "UNKNOWN_KNOWLEDGE", "knowledge", `agent '${agentName}'`, file);
       checkRefs(data.skills, skillSet, knownSkills, "UNKNOWN_SKILL", "skills", `agent '${agentName}'`, file);
+    }
+  }
+
+  const workRoot = join(root, "work");
+  if (existsSync(workRoot)) {
+    for (const project of listDirs(workRoot)) {
+      const projectDir = join(workRoot, project);
+      const unitData = new Map<string, { id: string; data: Record<string, YamlValue> }>();
+      for (const unitName of listDirs(projectDir)) {
+        const unitFile = join(projectDir, unitName, "unit.md");
+        if (!existsSync(unitFile)) continue;
+        let data: Record<string, YamlValue>;
+        try {
+          ({ data } = parseFrontmatter(readFileSync(unitFile, "utf8")));
+        } catch {
+          continue; // its own PARSE_ERROR was already recorded by the per-file pass.
+        }
+        const id = typeof data.unit === "string" ? data.unit : unitName;
+        unitData.set(unitFile, { id, data });
+      }
+      const knownUnits = [...unitData.values()].map((u) => u.id).sort();
+      const unitIdSet = new Set(knownUnits);
+      for (const [unitFile, { id, data }] of unitData) {
+        for (const after of strList(data.after)) {
+          if (unitIdSet.has(after)) continue;
+          errors.push({
+            code: "UNKNOWN_AFTER",
+            message:
+              `unit '${id}' declares after: '${after}', but no unit with that id exists in project '${project}' — its start gate can never be ` +
+              `satisfied: known units in '${project}': ${knownUnits.join(", ") || "(none)"}`,
+            file: unitFile,
+          });
+        }
+      }
     }
   }
 }

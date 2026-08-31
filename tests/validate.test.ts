@@ -835,14 +835,15 @@ describe("Finding 171: a work unit's `type` references the types/ registry, not 
   });
 });
 
-// Finding 174: `connectors:`/`knowledge:` on teams and agents, `skills:` on agents, and an artifact's
-// `produced_by` were never checked against their registry directory — a typo passed `levare validate`
-// clean while context.ts#readEntityBody quietly embedded a `(not found: ...)` placeholder into the
-// member's real context (connectors: worse still, env.ts#grantedConnectors just silently drops an
-// unresolved grant). These prove all four fail loudly, naming the broken reference and (for the three
-// filename-resolved kinds) every name that DOES resolve — the same "list what's known" idiom
-// UNKNOWN_TYPE already uses, immediately preceding this block.
-describe("Finding 174: connectors:/knowledge:/skills:/produced_by must resolve against their registry", () => {
+// Finding 174: `connectors:`/`knowledge:` on teams and agents, `skills:` on agents, an artifact's
+// `produced_by`, and a work unit's `after:` were never checked against their registry directory — a
+// typo passed `levare validate` clean while context.ts#readEntityBody quietly embedded a `(not found:
+// ...)` placeholder into the member's real context (connectors: worse still, env.ts#grantedConnectors
+// just silently drops an unresolved grant; after: worse still than that — the unit sits at its start
+// gate forever, with no diagnostic of any kind). These prove all five fail loudly, naming the broken
+// reference and listing every name that DOES resolve — the same "list what's known" idiom UNKNOWN_TYPE
+// already uses, immediately preceding this block.
+describe("Finding 174: connectors:/knowledge:/skills:/produced_by/after: must resolve against their registry", () => {
   function buildStudio(
     opts: {
       teamConnectors?: string[];
@@ -1076,18 +1077,74 @@ describe("Finding 174: connectors:/knowledge:/skills:/produced_by must resolve a
     }
   });
 
-  test("fixtures/golden carries no dangling connectors/knowledge/skills/produced_by reference", () => {
+  // A work unit's `after:` names a sibling unit id, scoped to its own project (derive.ts#unitShipped
+  // takes `(repo, project, unitId)` — the lookup never crosses a project boundary). An unresolvable id
+  // was, until this check, worse than the other three: not even a degraded-context placeholder — the
+  // unit just sits at its start gate forever, since `unitShipped` returns false for an id that never
+  // appears and the condition can never become met.
+  function buildAfterStudio(afterOnLaunch: string[], projectB?: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "levare-after-refs-"));
+    mkdirSync(join(dir, "work", "acme", "onboarding"), { recursive: true });
+    mkdirSync(join(dir, "work", "acme", "launch"), { recursive: true });
+    writeFileSync(join(dir, "work", "acme", "onboarding", "unit.md"), "---\ntype: feature\nstatus: shipped\n---\n\n# onboarding\n");
+    writeFileSync(
+      join(dir, "work", "acme", "launch", "unit.md"),
+      `---\ntype: feature\nstatus: active\nafter: [${afterOnLaunch.join(", ")}]\n---\n\n# launch\n`,
+    );
+    if (projectB) {
+      mkdirSync(join(dir, "work", projectB, "other-unit"), { recursive: true });
+      writeFileSync(join(dir, "work", projectB, "other-unit", "unit.md"), "---\ntype: feature\nstatus: shipped\n---\n\n# other-unit\n");
+    }
+    return dir;
+  }
+
+  test("a unit's after: naming a sibling unit id that doesn't exist fails UNKNOWN_AFTER, listing known units in the project", () => {
+    const dir = buildAfterStudio(["ghost-unit"]);
+    try {
+      const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_AFTER");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("ghost-unit");
+      expect(err!.message).toContain("launch");
+      expect(err!.message).toContain("onboarding");
+      expect(err!.file).toContain("work/acme/launch/unit.md");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a unit's after: naming a real sibling unit id validates cleanly", () => {
+    const dir = buildAfterStudio(["onboarding"]);
+    try {
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_AFTER");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("after: is scoped per project — a real unit id that only exists in a DIFFERENT project still fails UNKNOWN_AFTER", () => {
+    const dir = buildAfterStudio(["other-unit"], "widgets");
+    try {
+      const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_AFTER");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("other-unit");
+      expect(err!.message).toContain("project 'acme'");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("fixtures/golden carries no dangling connectors/knowledge/skills/produced_by/after reference", () => {
     expect(validatePath("fixtures/golden").errors.map((e) => e.code)).not.toEqual(
-      expect.arrayContaining(["UNKNOWN_CONNECTOR", "UNKNOWN_KNOWLEDGE", "UNKNOWN_SKILL", "UNKNOWN_PRODUCED_BY"]),
+      expect.arrayContaining(["UNKNOWN_CONNECTOR", "UNKNOWN_KNOWLEDGE", "UNKNOWN_SKILL", "UNKNOWN_PRODUCED_BY", "UNKNOWN_AFTER"]),
     );
   });
 
-  test("a freshly-scaffolded studio (src/init.ts) carries no dangling connectors/knowledge/skills/produced_by reference", () => {
+  test("a freshly-scaffolded studio (src/init.ts) carries no dangling connectors/knowledge/skills/produced_by/after reference", () => {
     const dir = mkdtempSync(join(tmpdir(), "levare-scaffold-named-refs-"));
     try {
       scaffoldStudio(dir);
       expect(validatePath(dir).errors.map((e) => e.code)).not.toEqual(
-        expect.arrayContaining(["UNKNOWN_CONNECTOR", "UNKNOWN_KNOWLEDGE", "UNKNOWN_SKILL", "UNKNOWN_PRODUCED_BY"]),
+        expect.arrayContaining(["UNKNOWN_CONNECTOR", "UNKNOWN_KNOWLEDGE", "UNKNOWN_SKILL", "UNKNOWN_PRODUCED_BY", "UNKNOWN_AFTER"]),
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });
