@@ -228,6 +228,63 @@ Codex, a linter, a custom script — whenever you're ready. \`connectors/codex.m
 \`role: model\` + \`auth: subscription\` shape a vendor CLI like Codex would need once you do.
 `;
 
+// Finding 78 part 2: the founding team for \`type: inception\` units — \`promoteIdea\` (orchestrator.ts)
+// creates one with no \`team:\` override, so a scaffolded studio needs a team whose flow actually agrees
+// with \`types/inception.md\`'s own \`expects:\`. Kestrel alone cannot serve this: even setting aside its
+// flow's own extra design/spec/review steps (none of which \`inception\` expects — UNDECLARED_FLOW_KIND),
+// its declared \`produces\` includes \`product-brief\`, and \`promoteIdea\` names no \`team:\` override — so
+// if \`inception\` also expected a kind called \`product-brief\`, TWO teams would both be candidates the
+// moment a second team existed, an AMBIGUOUS_PRODUCER no override resolves (the override is exactly the
+// unit-level \`team:\` field, and \`promoteIdea\` deliberately never hardcodes a team name — a studio can
+// rename or replace helm freely). \`founding-brief\` is a distinct kind from \`product-brief\` for exactly
+// this reason, not cosmetic naming: helm and kestrel then share no produced-and-expected kind, so
+// neither is ever ambiguous for the other's unit type. Reusing wren/lyra/finch here is not an option
+// either (one team per agent, NOTES AGENT_IN_MULTIPLE_TEAMS) — kite is helm's own, single member.
+const TEAM_HELM = `---
+name: helm
+description: "Pitch to founding charter"
+consumes: []
+produces: [founding-brief, charter]
+members: [kite]
+flow:
+  - step: brief
+  - gate: human
+  - step: charter
+style:
+  color: "#7A4FB5"
+knowledge: [house-style]
+---
+
+# Helm — the founding team
+
+Helm stands up a new project: it turns a promoted pitch into a founding brief, then —
+once approved — a founding charter every later unit in the project cites. \`pitch\` is
+never a flow-produced artifact here; \`promoteIdea\` folds the idea's own pitch text
+straight into the new unit's body, so an inception unit's score rail shows \`pitch\` as an
+expects-only stage (Finding 78 part 2, ordering rule 1) rather than one helm's flow ever
+places.
+`;
+
+const AGENT_KITE = `---
+name: kite
+description: "Founding framer"
+kind: native
+produces: [founding-brief, charter]
+model: claude-sonnet-5
+skills: [product-brief]
+tools: [Read, Write]
+knowledge: [house-style]
+style:
+  avatar: Ki
+---
+
+You are Kite, helm's founding member. Turn a promoted pitch into a crisp founding
+brief: the problem, the target user, the one job to be done, the success signal. Once
+it's approved, draft the founding charter every later unit in this project will cite.
+Write in the calm, factual register of the studio. Produce a \`founding-brief\` artifact,
+then, after its gate, a \`charter\` artifact.
+`;
+
 const SKILL_FLOW_DESIGN = `---
 name: flow-design
 description: "Design a user flow: enumerate states and transitions, name the one happy path, and mark every branch that hides a product decision."
@@ -302,7 +359,7 @@ exit 1
 const TYPE_INCEPTION = `---
 name: inception
 glyph: "◈"
-expects: [pitch, product-brief, charter]
+expects: [pitch, founding-brief, charter]
 gates: [charter]
 output: charter
 ---
@@ -555,9 +612,11 @@ const FILES: Template[] = [
   { path: ".env.example", content: ENV_EXAMPLE },
   { path: ".devcontainer/devcontainer.json", content: DEVCONTAINER },
   { path: "teams/kestrel.md", content: TEAM_KESTREL },
+  { path: "teams/helm.md", content: TEAM_HELM },
   { path: "agents/wren.md", content: AGENT_WREN },
   { path: "agents/lyra.md", content: AGENT_LYRA },
   { path: "agents/finch.md", content: AGENT_FINCH },
+  { path: "agents/kite.md", content: AGENT_KITE },
   { path: "skills/flow-design.md", content: SKILL_FLOW_DESIGN },
   { path: "skills/spec-writing.md", content: SKILL_SPEC_WRITING },
   { path: "skills/new-project/SKILL.md", content: SKILL_NEW_PROJECT },
