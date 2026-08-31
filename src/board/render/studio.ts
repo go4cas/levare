@@ -16,6 +16,7 @@ import {
   captionTime,
 } from "../../derive.ts";
 import { orchestratorSpend } from "../../dispatch-trace.ts";
+import { isUnitTerminal } from "../status.ts";
 import { loadExtras } from "../../extra.ts";
 import { STUDIO_SCOPE } from "../../conversation.ts";
 import type { DaemonInvocation } from "../../daemon.ts";
@@ -100,7 +101,15 @@ export function renderStudio(repo: Repo, root: string, now: Date = new Date(), r
       // Item 5b: "no deploy target" is dropped entirely (absence is shown by absence, not a fabricated
       // negative line), and the release version shows ONLY when the project actually has releases.
       const release = latestRelease(repo, p.name);
-      const metaParts = [`${units.length} unit${units.length === 1 ? "" : "s"}`, ...(release ? [`released ${esc(release.unit)}`] : [])];
+      // Finding 168: a rejected/abandoned unit collapses out of "N units" the same as it does on the
+      // sidebar and project page — the daemon will never touch it again, so it isn't ongoing work.
+      const closedUnits = units.filter((u) => isUnitTerminal(u.status)).length;
+      const activeUnitCount = units.length - closedUnits;
+      const metaParts = [
+        `${activeUnitCount} unit${activeUnitCount === 1 ? "" : "s"}`,
+        ...(closedUnits ? [`${closedUnits} closed`] : []),
+        ...(release ? [`released ${esc(release.unit)}`] : []),
+      ];
       // Item 2, gate-review round 2: title and status chip share one line, chip right-aligned —
       // `.pcard__top{justify-content:space-between}` already does this once both live inside it,
       // matching the gate-card/unit-row anatomy elsewhere.
