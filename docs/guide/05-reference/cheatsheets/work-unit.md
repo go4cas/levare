@@ -14,7 +14,7 @@ A unit of work — the project/type/status/team declaration a flow walk runs aga
 | Field | Type | Required | Nullable | Enum values | Description |
 |---|---|---|---|---|---|
 | `type` | enum | ✅ | — | `inception` · `feature` · `fix` · `spike` · `research` | The work-unit type template this unit follows — what it's expected to produce and where it gates. |
-| `status` | enum | ✅ | — | `active` · `paused` · `blocked` · `shipped` · `abandoned` | Where this unit stands: active, paused, blocked, shipped, or abandoned. |
+| `status` | enum | ✅ | — | `active` · `paused` · `blocked` · `shipped` · `abandoned` · `rejected` | Where this unit stands: active, paused, blocked, shipped, abandoned, or rejected. |
 | `project` | string | — | — | — | The project this unit belongs to. |
 | `unit` | string | — | — | — | This unit's own identifier. |
 | `after` | string[] | — | — | — | Start-gate condition — this unit is invisible to the walk until every named condition is met. |

@@ -1268,6 +1268,14 @@ describe("the canonical status→colour map is the single source of truth", () =
     expect(chipClass(fromWorkUnitStatus("active"))).toBe("is-active");
   });
 
+  // Finding 165: a rejected unit is the same negative-terminal outcome `abandoned` already renders as
+  // — solid red "failed", not a fabricated activity and not conflated with `shipped`'s "done".
+  test('fromWorkUnitStatus("rejected") renders in the same "failed" family as "abandoned", distinct from "shipped"', () => {
+    expect(fromWorkUnitStatus("rejected")).toBe("failed");
+    expect(chipClass(fromWorkUnitStatus("rejected"))).toBe(chipClass(fromWorkUnitStatus("abandoned")));
+    expect(chipClass(fromWorkUnitStatus("rejected"))).not.toBe(chipClass(fromWorkUnitStatus("shipped")));
+  });
+
   function team(over: Partial<Team> & { name: string; flow: Team["flow"]; produces: string[]; members: string[] }): Team {
     return { consumes: [], style: { color: "#2E6FB0" }, charter: "", learnings: "", ...over };
   }
@@ -1362,6 +1370,7 @@ describe("Studio's Projects section is an In-flight worklist (UI2 item 6)", () =
     const idleProj = project({ name: "idle" });
     const activeUnit = unit({ unit: "widget", project: "busy", type: "feature", status: "active" });
     const shippedUnit = unit({ unit: "done-thing", project: "idle", type: "feature", status: "shipped" });
+    const rejectedUnit = unit({ unit: "spiked-idea", project: "idle", type: "feature", status: "rejected" });
     return {
       root: "/tmp/synthetic-mixed",
       teams: new Map([[t.name, t]]),
@@ -1369,7 +1378,7 @@ describe("Studio's Projects section is an In-flight worklist (UI2 item 6)", () =
       projects: new Map([[busy.name, busy], [idleProj.name, idleProj]]),
       agents: new Map(),
       connectors: new Map(),
-      units: [activeUnit, shippedUnit],
+      units: [activeUnit, shippedUnit, rejectedUnit],
       artifacts: new Map(),
       studio: {},
     };
@@ -1378,6 +1387,13 @@ describe("Studio's Projects section is an In-flight worklist (UI2 item 6)", () =
   test("only the project with an active work unit appears; the idle-but-not-empty project is excluded", () => {
     const html = renderStudio(mixedRepo(), "/tmp/nonexistent-levare-synthetic-mixed", now);
     expect(html).toContain('<a class="pcard" href="/project/busy">');
+    expect(html).not.toContain('<a class="pcard" href="/project/idle">');
+  });
+
+  // Finding 165: a rejected unit is terminal exactly like a shipped one — `idle` carries both a
+  // shipped AND a rejected unit and neither keeps it "in flight".
+  test("a rejected unit is as terminal as a shipped one — it never keeps a project in flight", () => {
+    const html = renderStudio(mixedRepo(), "/tmp/nonexistent-levare-synthetic-mixed", now);
     expect(html).not.toContain('<a class="pcard" href="/project/idle">');
   });
 

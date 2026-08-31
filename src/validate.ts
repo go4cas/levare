@@ -438,8 +438,8 @@ export const WORK_UNIT_SCHEMA: Schema = {
     status: {
       type: "enum",
       required: true,
-      enum: ["active", "paused", "blocked", "shipped", "abandoned"],
-      description: "Where this unit stands: active, paused, blocked, shipped, or abandoned.",
+      enum: ["active", "paused", "blocked", "shipped", "abandoned", "rejected"],
+      description: "Where this unit stands: active, paused, blocked, shipped, abandoned, or rejected.",
     },
     project: { type: "str", required: false, description: "The project this unit belongs to." },
     unit: { type: "str", required: false, description: "This unit's own identifier." },
