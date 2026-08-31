@@ -15,6 +15,7 @@ import {
   latestRelease,
   captionTime,
 } from "../../derive.ts";
+import { orchestratorSpend } from "../../dispatch-trace.ts";
 import { loadExtras } from "../../extra.ts";
 import { STUDIO_SCOPE } from "../../conversation.ts";
 import type { DaemonInvocation } from "../../daemon.ts";
@@ -49,7 +50,10 @@ function runningNowHtml(running: DaemonInvocation[], now: Date): string {
 export function renderStudio(repo: Repo, root: string, now: Date = new Date(), running: DaemonInvocation[] = [], status: OrchestratorStatus = resolveOrchestratorStatus()): string {
   const extras = loadExtras(root);
   const gates = openGates(repo);
-  const spend = repoSpend(repo);
+  // Findings 162/95: Orchestrator calls (interpret/narrate/converse) have no unit to bill against, so
+  // this studio-wide figure adds their trace-derived spend on top of the artifact-derived `repoSpend` —
+  // otherwise the Orchestrator's own real, priced usage never appeared in any total at all.
+  const spend = repoSpend(repo) + orchestratorSpend(root).usd;
   const median = medianGateResponseDays(repo);
   const shippedUnits = repo.units.filter((u) => u.status === "shipped").length;
 

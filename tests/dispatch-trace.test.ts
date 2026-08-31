@@ -13,6 +13,7 @@ import {
   writeOrchestratorTrace,
   writeCliDispatchTrace,
   sweepDispatchTraces,
+  orchestratorSpend,
   DISPATCH_LOG_DIR_NAME,
   type NativeDispatchOutcome,
   type CliDispatchTraceIdentityOpts,
@@ -496,6 +497,81 @@ describe("buildOrchestratorTrace / buildOrchestratorTraceStart — Finding 94: a
     // already guarantees by construction (a wall-clock kill never lets the worker report idle at all).
     const bothSet = buildOrchestratorTrace({ ...idleOutcome, timedOut: true }, orchIdentityOpts);
     expect(bothSet.outcome).toBe("timeout");
+  });
+});
+
+// Findings 162/95: Orchestrator calls have no unit/project to attach a usage-bearing artifact to, so
+// their spend can only ever be read back from the trace files themselves — the one total in this
+// codebase that is NOT a sum over Repo.artifacts. This is that reader.
+describe("orchestratorSpend — studio-level total read back from trace files, since Orchestrator calls have no unit to bill", () => {
+  const orchIdentityOpts = { call: "interpret" as const, model: "claude-sonnet-5", timeoutMs: 45_000, env: { PATH: "/usr/bin", HOME: "/home/operator" }, anthropicApiKeyPresent: true, startedAt: "2026-08-20T00:00:00.000Z", prompt: "how are we doing" };
+
+  test("no dispatch-logs directory at all → zero, not a thrown error", () => {
+    const studioRoot = mkdtempSync(join(tmpdir(), "levare-orch-spend-"));
+    try {
+      expect(orchestratorSpend(studioRoot)).toEqual({ usd: 0, calls: 0 });
+    } finally {
+      rmSync(studioRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("sums receipt.usd across ok AND error-outcome orchestrator traces alike", () => {
+    const studioRoot = mkdtempSync(join(tmpdir(), "levare-orch-spend-"));
+    try {
+      writeOrchestratorTrace(
+        studioRoot,
+        buildOrchestratorTrace({ ok: true, timedOut: false, durationMs: 900, endedAt: "2026-08-20T00:00:00.900Z", stdout: "", stderr: "", receipt: { model: "claude-sonnet-5", tokens_in: 100, tokens_out: 50, wall_clock_s: 0.9, usd: 0.0127, unreported: false } }, orchIdentityOpts),
+      );
+      writeOrchestratorTrace(
+        studioRoot,
+        buildOrchestratorTrace(
+          { ok: false, error: "sdk query did not succeed (error_max_turns)", timedOut: false, durationMs: 45_000, endedAt: "2026-08-20T00:01:00.000Z", stdout: "", stderr: "", receipt: { model: "claude-sonnet-5", tokens_in: 400, tokens_out: 150, wall_clock_s: 45, usd: 0.0372, unreported: false } },
+          { ...orchIdentityOpts, call: "converse", startedAt: "2026-08-20T00:00:30.000Z" },
+        ),
+      );
+      const spend = orchestratorSpend(studioRoot);
+      expect(spend.calls).toBe(2);
+      // orchestratorSpend rounds to the nearest cent, matching derive.ts#unitSpend's own convention.
+      expect(spend.usd).toBeCloseTo(0.05, 2);
+    } finally {
+      rmSync(studioRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("an in_progress (never-finished) trace counts as neither a call nor spend", () => {
+    const studioRoot = mkdtempSync(join(tmpdir(), "levare-orch-spend-"));
+    try {
+      writeOrchestratorTrace(studioRoot, buildOrchestratorTraceStart(orchIdentityOpts));
+      expect(orchestratorSpend(studioRoot)).toEqual({ usd: 0, calls: 0 });
+    } finally {
+      rmSync(studioRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("a finished call with no reported usage (idle abort) is visible as a call but contributes zero — never fabricated", () => {
+    const studioRoot = mkdtempSync(join(tmpdir(), "levare-orch-spend-"));
+    try {
+      writeOrchestratorTrace(
+        studioRoot,
+        buildOrchestratorTrace({ ok: false, error: "idle for 20000ms", timedOut: false, idle: true, durationMs: 20_050, endedAt: "2026-08-20T00:00:20.050Z", stdout: "", stderr: "" }, orchIdentityOpts),
+      );
+      expect(orchestratorSpend(studioRoot)).toEqual({ usd: 0, calls: 1 });
+    } finally {
+      rmSync(studioRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("member (non-orchestrator) dispatch traces in the same directory are ignored", () => {
+    const studioRoot = mkdtempSync(join(tmpdir(), "levare-orch-spend-"));
+    try {
+      writeDispatchTrace(
+        studioRoot,
+        buildDispatchTrace(baseReq(), okOutcome({ receipt: { model: "claude-sonnet-5", tokens_in: 1, tokens_out: 1, wall_clock_s: 1, usd: 2.19, unreported: false } }), { homeScoped: false, anthropicApiKeyPresent: true, startedAt: "2026-08-20T00:00:00.000Z", timeoutMs: 600_000 }),
+      );
+      expect(orchestratorSpend(studioRoot)).toEqual({ usd: 0, calls: 0 });
+    } finally {
+      rmSync(studioRoot, { recursive: true, force: true });
+    }
   });
 });
 

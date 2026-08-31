@@ -22,7 +22,7 @@
 //      never fails the dispatch it's cleaning up after) and enforces both a file-count cap and a max-age
 //      cap, whichever is stricter for a given file.
 
-import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describeMemberEnv } from "./env.ts";
 import type { InvokeRequest } from "./adapters.ts";
@@ -436,6 +436,39 @@ function orchestratorTraceFileName(record: OrchestratorTraceRecord, now: string)
  * retention sweep as `writeDispatchTrace`. */
 export function writeOrchestratorTrace(studioRoot: string, record: OrchestratorTraceRecord, now: string = record.started_at): void {
   writeTraceFile(studioRoot, orchestratorTraceFileName(record, now), record, `orchestrator trace for ${record.call}()`);
+}
+
+/**
+ * Findings 162/95: `interpret()`/`narrate()`/`converse()` have no unit or project to attach a
+ * usage-bearing artifact to (`OrchestratorTraceIdentityOpts`'s own doc — there is genuinely nowhere
+ * unit-scoped to bill this cost against), so unlike every other total in this codebase (all of them a
+ * sum over `Repo.artifacts`), Orchestrator spend can only ever be read back from the trace files
+ * themselves. Best-effort and read-only, mirroring `sweepDispatchTraces`: a missing/unreadable
+ * directory or a corrupt trace file contributes nothing rather than throwing. `calls` counts every
+ * FINISHED call (`in_progress` excluded) regardless of whether it carried a priced receipt, so a studio
+ * can tell "zero calls" apart from "calls happened, none reported usage".
+ */
+export function orchestratorSpend(studioRoot: string): { usd: number; calls: number } {
+  const dir = join(studioRoot, DISPATCH_LOG_DIR_NAME);
+  let entries: string[];
+  try {
+    entries = readdirSync(dir).filter((f) => f.endsWith(".json") && f.includes("-orchestrator-"));
+  } catch {
+    return { usd: 0, calls: 0 };
+  }
+  let usd = 0;
+  let calls = 0;
+  for (const name of entries) {
+    try {
+      const record = JSON.parse(readFileSync(join(dir, name), "utf8")) as OrchestratorTraceRecord;
+      if (record.outcome === "in_progress") continue;
+      calls += 1;
+      if (typeof record.receipt?.usd === "number") usd += record.receipt.usd;
+    } catch {
+      /* corrupt/partial trace file — contributes nothing, doesn't fail the total */
+    }
+  }
+  return { usd: Math.round(usd * 100) / 100, calls };
 }
 
 // ---------------------------------------------------------------------------------------------

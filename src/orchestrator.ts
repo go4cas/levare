@@ -27,6 +27,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { loadRepo, type Repo } from "./repo.ts";
 import { openGates, medianGateResponseDays, repoSpend, type OpenGate } from "./derive.ts";
+import { orchestratorSpend } from "./dispatch-trace.ts";
 import { diagnose, type CliProbe, type ConnectorHealth, type EnvProbe } from "./doctor.ts";
 import { resolveGate, type GateOpResult } from "./board/gateops.ts";
 import type { Verb } from "./runner.ts";
@@ -140,7 +141,10 @@ export function computeStats(repo: Repo): StatsSnapshot {
     gatesOpen: openGates(repo).length,
     unitsShipped: repo.units.filter((u) => u.status === "shipped").length,
     medianGateResponseDays: medianGateResponseDays(repo),
-    spendUsd: repoSpend(repo),
+    // Findings 162/95: Orchestrator calls are studio-scoped, not unit-scoped (no unit to bill their
+    // trace-derived spend against) — added here on top of the artifact-derived `repoSpend`, mirroring
+    // board/render/studio.ts's own "Spend" tile.
+    spendUsd: repoSpend(repo) + orchestratorSpend(repo.root).usd,
   };
 }
 
