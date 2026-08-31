@@ -558,6 +558,12 @@ function writeBlocked(
   const failureClass = error instanceof AdapterError ? error.class : undefined;
   // Finding 167: sibling to `failureClass` — how it was decided (AdapterError.classSource's own doc).
   const failureClassSource = error instanceof AdapterError ? error.classSource : undefined;
+  // Findings 162/95: a dispatch that produced no artifact still cost something whenever the SDK
+  // reported a real receipt for the failed call (AdapterError.receipt's own doc) — stamped with the
+  // SAME `usage:` shape `adapters.ts#author` writes on a successful artifact, so `unitSpend`/
+  // `spentUsd`/every other artifact-derived total sees it for free. Absent (never a fabricated $0)
+  // whenever the SDK genuinely reported nothing — an idle abort or a transport-level kill.
+  const receipt = error instanceof AdapterError ? error.receipt : undefined;
   const doc = [
     "---",
     `kind: ${kind}`,
@@ -574,6 +580,20 @@ function writeBlocked(
     ...(failureClassSource ? [`blocked_class_source: ${failureClassSource}`] : []),
     `created: ${today}`,
     "files: []",
+    // Findings 162/95: same shape adapters.ts#author writes on a successful artifact — `unreported`
+    // stays a bare absence, never a written `usd: null` that would read as "priced at zero".
+    ...(receipt && !receipt.unreported
+      ? [
+          "usage:",
+          `  model: ${receipt.model ?? "null"}`,
+          `  tokens_in: ${receipt.tokens_in ?? "null"}`,
+          `  tokens_out: ${receipt.tokens_out ?? "null"}`,
+          `  usd: ${receipt.usd ?? "null"}`,
+          `  wall_clock_s: ${receipt.wall_clock_s ?? "null"}`,
+          ...(receipt.tokens_cache_read !== undefined ? [`  tokens_cache_read: ${receipt.tokens_cache_read ?? "null"}`] : []),
+          ...(receipt.tokens_cache_write !== undefined ? [`  tokens_cache_write: ${receipt.tokens_cache_write ?? "null"}`] : []),
+        ]
+      : []),
     "---",
     "",
     `# ${kind} — blocked`,
