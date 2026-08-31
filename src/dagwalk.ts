@@ -45,6 +45,7 @@ import { timeboxSeconds, bumpVersion, roundOf } from "./runner.ts";
 import { RunnerError, responsibleTeamsFor, resolveStep, unmetAfter, untilSatisfied } from "./flow.ts";
 import { patchFrontmatter, upsertFrontmatterField } from "./gates.ts";
 import { runnerCommit, transactionalWrite, type TxFile } from "./git.ts";
+import { AdapterError } from "./adapters.ts";
 import { locateArtifactFile } from "./locate.ts";
 import { unitArtifactPaths } from "./context.ts";
 import { resolveProjectRepoPath, workBranchName, branchExists, trialMerge, checkGuardrailsForMerge, formatMergeArtifact } from "./merge.ts";
@@ -551,6 +552,10 @@ function writeBlocked(
   consumes: string[] = [],
 ): AdvanceResult {
   const msg = error instanceof Error ? error.message : String(error);
+  // Finding 85: the ONE place a thrown AdapterError's `class` lands on disk — set only when the
+  // boundary that threw actually knew (adapters.ts#AdapterError.class's own doc); absent for any other
+  // thrown error (validation, off-contract doc) or an unclassified AdapterError alike.
+  const failureClass = error instanceof AdapterError ? error.class : undefined;
   const doc = [
     "---",
     `kind: ${kind}`,
@@ -563,6 +568,7 @@ function writeBlocked(
     "supersedes: null",
     "approved_by: null",
     `blocked_reason: ${JSON.stringify(msg)}`,
+    ...(failureClass ? [`blocked_class: ${failureClass}`] : []),
     `created: ${today}`,
     "files: []",
     "---",

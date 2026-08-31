@@ -159,6 +159,10 @@ export interface OpenGate {
   label: string;
   /** Why a blocked unit is blocked (its `blocked_reason`) — NOTES F1. */
   reason?: string;
+  /** Finding 85: `art.blocked_class`, carried onto the gate for an `artifact-blocked` gate only — who
+   * must act, when known. See `Artifact.blocked_class`'s own doc (types.ts) for what each value means;
+   * `board/render/shell.ts` reads this to withhold the Retry verb for `"operator"`. */
+  class?: "operator" | "transient";
   /**
    * NOTES F20: set only on the artifact a loop's `until` condition actually names (the one gate a
    * loop ever raises — F16). The server already refuses a `request` past `maxRounds` (ruling C14,
@@ -205,6 +209,7 @@ export function openGates(repo: Repo): OpenGate[] {
             team: repo.teams.get(teamName),
             member,
             label: art.kind,
+            class: art.blocked_class ?? undefined,
           });
           continue;
         }

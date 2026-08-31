@@ -601,13 +601,22 @@ export function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?
     const art = gate.artifact!;
     const ctx = esc(firstParagraph(art.body ?? ""));
     const age = ageLabel(art.created, now);
+    // Finding 85: an operator-actionable failure can never succeed via Retry until the studio/
+    // environment changes — the button is withheld entirely (never merely disabled: `board/
+    // gateops.ts#resolveBlockedArtifactGate` refuses the verb server-side too, so a stale client can't
+    // spend a costed dispatch attempt levare already knows will fail identically), leaving Skip/Abandon,
+    // the two verbs that still make sense. `ctx` above already names the operator's own action (it's
+    // the classified message `sdk-worker.ts#formatOperatorFailureError`/`formatAuthFailureError` wrote),
+    // so no separate hint text is needed here.
+    const isOperatorActionable = gate.class === "operator";
     const verbs = dispatching
       ? dispatchingHtml(dispatching, now)
       : `<div class="gate__verbs">
-        <button class="verb is-primary" data-verb="retry">Retry</button>
+        ${isOperatorActionable ? "" : `<button class="verb is-primary" data-verb="retry">Retry</button>`}
         <button class="verb is-secondary" data-verb="skip">Skip</button>
         <button class="verb is-danger" data-verb="abandon">Abandon</button>
       </div>`;
+    const badgeLabel = dispatching ? "dispatching" : isOperatorActionable ? "needs operator" : "blocked";
     return `<article class="gate gate--artifact-blocked${dispatching ? " is-dispatching" : ""}" data-gate-project="${esc(gate.project)}" data-gate-target="${esc(art.id)}">
       <div class="gate__top">
         <span class="gate__marker" aria-hidden="true">${glyph}</span>
@@ -617,7 +626,7 @@ export function gateCardHtml(repo: Repo, gate: OpenGate, now: Date, opts: { cta?
           <p class="gate__ctx">${dispatching ? "Dispatching now &mdash; the unit is being produced." : `Blocked: ${ctx}`}</p>
           <div class="gate__meta"><span>${esc(age)}</span></div>
         </div>
-        <span class="gate__badge is-blocked">${dispatching ? "dispatching" : "blocked"}</span>
+        <span class="gate__badge is-blocked">${badgeLabel}</span>
       </div>
       ${verbs}
     </article>`;

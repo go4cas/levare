@@ -10,6 +10,7 @@ import { loadRepo } from "../src/repo.ts";
 import { openGates } from "../src/derive.ts";
 import { renderStudio } from "../src/board/render.ts";
 import { unitSpend } from "../src/derive.ts";
+import { AdapterError } from "../src/adapters.ts";
 import type { AsyncMemberRunner } from "../src/dagwalk.ts";
 import type { Verb } from "../src/runner.ts";
 
@@ -67,6 +68,107 @@ async function blockLoyaltyFlowDesign(): Promise<void> {
   const result = await advanceUnit(root, repo, unit, failingRunner, { today: "2026-07-12" });
   expect(result.outcome).toBe("blocked");
 }
+
+/** Same shape as `blockLoyaltyFlowDesign`, but the failing runner throws a caller-supplied error — lets
+ * a test drive an `AdapterError` carrying a `class` through the exact same path a real one would. */
+async function blockLoyaltyFlowDesignWith(error: unknown): Promise<void> {
+  await resolveGate(root, "storefront", "loyalty-flow", "start", { memberRunner: stubAdapterRunner(loadRepo(root)), today: "2026-07-12" });
+  await resolveGate(root, "storefront", "product-brief-loyalty-flow-v1", "approve" as Verb, { today: "2026-07-12" });
+
+  const failingRunner: AsyncMemberRunner = {
+    capabilities: () => [{ member: "wren", kind: "product-brief" }, { member: "lyra", kind: "design" }, { member: "lyra", kind: "spec" }],
+    produce: () => {
+      throw error;
+    },
+  };
+  const repo = loadRepo(root);
+  const unit = repo.units.find((u) => u.unit === "loyalty-flow")!;
+  const { advanceUnit } = await import("../src/dagwalk.ts");
+  const result = await advanceUnit(root, repo, unit, failingRunner, { today: "2026-07-12" });
+  expect(result.outcome).toBe("blocked");
+}
+
+// Finding 85: an operator-actionable failure (credit balance, invalid/revoked key — Retry can never
+// succeed until the studio/environment changes) must not offer Retry the way a member-caused failure
+// does. `blockLoyaltyFlowDesign` (unchanged, above) is the pre-existing member-caused/default case —
+// every one of ITS tests staying green is the regression check that this unit changes nothing for it.
+describe("Finding 85: an operator-actionable blocked artifact withholds Retry, server-side and on the card", () => {
+  test("the AdapterError's class lands on the blocked artifact as blocked_class", async () => {
+    await blockLoyaltyFlowDesignWith(new AdapterError("sdk worker: request rejected (HTTP 400) — credit balance too low", { class: "operator" }));
+    const repo = loadRepo(root, { validate: false });
+    const art = [...(repo.artifacts.get("storefront/loyalty-flow")?.values() ?? [])].find((a) => a.kind === "design" && a.status === "blocked");
+    expect(art?.blocked_class).toBe("operator");
+    expect(art?.blocked_reason).toContain("credit balance too low");
+  });
+
+  test("openGates carries the class onto the gate, and the rendered card omits Retry but keeps Skip/Abandon", async () => {
+    await blockLoyaltyFlowDesignWith(new AdapterError("sdk worker: request rejected (HTTP 400) — credit balance too low", { class: "operator" }));
+    const repo = loadRepo(root, { validate: false });
+    const gate = openGates(repo).find((g) => g.type === "artifact-blocked");
+    expect(gate?.class).toBe("operator");
+
+    const html = renderStudio(repo, root, new Date("2026-07-12T00:00:00Z"), []);
+    const cardStart = html.indexOf("gate--artifact-blocked");
+    const card = html.slice(cardStart, html.indexOf("</article>", cardStart));
+    expect(card).not.toContain('data-verb="retry"');
+    expect(card).toContain('data-verb="skip"');
+    expect(card).toContain('data-verb="abandon"');
+    expect(card).toContain("credit balance too low"); // the classified message names the operator's own action
+  });
+
+  test("resolveGate refuses the retry verb server-side (409), even if a stale client still sends it", async () => {
+    await blockLoyaltyFlowDesignWith(new AdapterError("sdk worker: authentication failure (HTTP 401)", { class: "operator" }));
+    const blockedId = "design-loyalty-flow-v1";
+    let calls = 0;
+    const countingRunner: AsyncMemberRunner = {
+      capabilities: () => [{ member: "lyra", kind: "design" }],
+      produce: () => {
+        calls++;
+        throw new Error("should never be invoked — retry is refused before the member runs");
+      },
+    };
+    const result = await resolveGate(root, "storefront", blockedId, "retry" as Verb, { memberRunner: countingRunner, today: "2026-07-12" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.status).toBe(409);
+      expect(result.error).toContain("operator-actionable");
+    }
+    expect(calls).toBe(0); // never spent a costed dispatch attempt on a call levare already knows will fail
+
+    // Skip still works — the remedy that DOES make sense stays available.
+    const skipResult = await resolveGate(root, "storefront", blockedId, "skip" as Verb, { memberRunner: countingRunner, today: "2026-07-12" });
+    expect(skipResult.ok).toBe(true);
+  });
+
+  test("a member-caused failure (no class) is unchanged — Retry stays offered, exactly as F19 established", async () => {
+    await blockLoyaltyFlowDesign();
+    const repo = loadRepo(root, { validate: false });
+    const gate = openGates(repo).find((g) => g.type === "artifact-blocked");
+    expect(gate?.class).toBeUndefined();
+    const html = renderStudio(repo, root, new Date("2026-07-12T00:00:00Z"), []);
+    const cardStart = html.indexOf("gate--artifact-blocked");
+    const card = html.slice(cardStart, html.indexOf("</article>", cardStart));
+    expect(card).toContain('data-verb="retry"');
+  });
+
+  test("a retry that fails again on an operator-actionable AdapterError records the class on the new blocked artifact too", async () => {
+    await blockLoyaltyFlowDesign(); // member-caused first attempt — retry is offered
+    const blockedId = "design-loyalty-flow-v1";
+    const nowOperatorFailing: AsyncMemberRunner = {
+      capabilities: () => [{ member: "lyra", kind: "design" }],
+      produce: () => {
+        throw new AdapterError("sdk worker: request rejected (HTTP 400) — credit balance too low", { class: "operator" });
+      },
+    };
+    const result = await resolveGate(root, "storefront", blockedId, "retry" as Verb, { memberRunner: nowOperatorFailing, today: "2026-07-12" });
+    expect(result.ok).toBe(false);
+
+    const after = loadRepo(root, { validate: false });
+    const gate = openGates(after).find((g) => g.type === "artifact-blocked");
+    expect(gate?.class).toBe("operator");
+    expect(gate?.artifact?.id).not.toBe(blockedId); // a new blocked artifact, as F19's own retry-fails-again test established
+  });
+});
 
 describe("F19: a blocked artifact raises a gate with retry/skip/abandon", () => {
   test("the blocked artifact surfaces as its own gate, distinct from an in-review one — never approve/reject/request", async () => {
