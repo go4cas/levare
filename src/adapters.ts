@@ -88,10 +88,17 @@ export class AdapterError extends Error {
    * below (a studio-config check that already knows its own class deterministically, never a status
    * or message match — there's no "source" question to answer for those). */
   readonly classSource?: FailureClassSource;
-  constructor(message: string, opts?: { class?: FailureClass; classSource?: FailureClassSource }) {
+  /** Findings 162/95: the SDK's own receipt for this failed call, when a result message reported one
+   * (see `SdkWorkerResponse.receipt`'s own doc for exactly when that is) — carried here so
+   * `dagwalk.ts#writeBlocked` can stamp the SAME `usage:` field a successful artifact gets, instead of
+   * a failed dispatch's real, priced cost being dropped at this boundary. Absent whenever the SDK
+   * response carried none (idle/transport-level failures, and every non-SDK `AdapterError` site). */
+  readonly receipt?: Receipt;
+  constructor(message: string, opts?: { class?: FailureClass; classSource?: FailureClassSource; receipt?: Receipt }) {
     super(message);
     this.class = opts?.class;
     this.classSource = opts?.classSource;
+    this.receipt = opts?.receipt;
   }
 }
 
@@ -576,7 +583,7 @@ export function createSdkNativeBoundary(opts: SdkNativeBoundaryOptions = {}): Na
         console.error(`levare: native member '${req.member}' sdk call failed transiently, retrying once before gating (Finding 85): ${res.error}`);
         res = runOnce();
       }
-      if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`, { class: res.errorClass, classSource: res.errorClassSource });
+      if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`, { class: res.errorClass, classSource: res.errorClassSource, receipt: res.receipt });
       return { doc: res.result, receipt: res.receipt, sandbox: sandboxLevel };
     },
   };
@@ -622,7 +629,7 @@ export function createAsyncSdkNativeBoundary(opts: AsyncSdkNativeBoundaryOptions
         console.error(`levare: native member '${req.member}' sdk call failed transiently, retrying once before gating (Finding 85): ${res.error}`);
         res = await runOnce();
       }
-      if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`, { class: res.errorClass, classSource: res.errorClassSource });
+      if (!res.ok) throw new AdapterError(`native member '${req.member}' sdk call failed: ${res.error}`, { class: res.errorClass, classSource: res.errorClassSource, receipt: res.receipt });
       return { doc: res.result, receipt: res.receipt, sandbox: sandboxLevel };
     },
   };
@@ -699,7 +706,11 @@ function traceNativeDispatchFinish(studioRoot: string | undefined, req: InvokeRe
       endedAt,
       stdout: wide.stdout,
       stderr: wide.stderr,
-      receipt: res.ok ? res.receipt : undefined,
+      // Findings 162/95: unconditional — `res.receipt` is already `undefined` whenever the SDK
+      // genuinely reported nothing (idle/transport-level failures); gating it on `res.ok` here dropped
+      // a real, priced cost on an error-result failure (error_max_turns etc.), matching the ORCHESTRATOR
+      // trace's own `buildOrchestratorTrace` (dispatch-trace.ts), which never had this gate.
+      receipt: res.receipt,
     },
     nativeDispatchTraceIdentityOpts(req, ctx, nativeDispatchFinishNativeBinaryResolved(res, ctx)),
   );

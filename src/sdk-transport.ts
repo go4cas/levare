@@ -186,6 +186,13 @@ export type SdkWorkerResponse =
       /** Finding 167: present only alongside `errorClass` — see `FailureClassSource`'s own doc for
        * what each value means. */
       errorClassSource?: FailureClassSource;
+      /** Findings 162/95: set only when a real SDK result message (success OR error subtype) arrived
+       * before this failure was decided — an `error_max_turns`/`error_during_execution` result carries
+       * the SDK's own priced `total_cost_usd`, exactly like a success result (sdk-worker.ts#consumeQuery).
+       * Absent on an idle abort (no result message ever arrives) and on a transport-level kill/failure
+       * (this response is synthesized outside the worker, which never got to report anything) — those
+       * are genuine zero-usage gaps, never backfilled with an estimate. */
+      receipt?: Receipt;
     };
 
 /**
