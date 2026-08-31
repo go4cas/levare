@@ -218,6 +218,48 @@ describe("golden walk against stub members", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Finding 166: reject terminates the unit here too, matching board/gateops.ts#doReject
+// (Finding 165, PR #85) — a replayed session ending in a different terminal state than the live path
+// it reproduces isn't reproduction, and replay (its own scratch state, never the live daemon's) has no
+// safety argument for pausing instead of terminating.
+// ---------------------------------------------------------------------------
+
+describe("Finding 166: reject terminates the unit in the Runner too", () => {
+  test("rejecting a plain flow gate (brief) sets the unit to 'rejected', not 'paused'", () => {
+    const repo = loadRepo("fixtures/golden");
+    const script = new Script([
+      { expect: "start", verb: "start", by: CAS },
+      { expect: "brief", verb: "reject", by: CAS },
+      // loyalty-flow's after: is satisfied (E5 fixture), so its own start gate is raised too, same as
+      // every other golden-fixture script in this file.
+      { expect: "start", verb: "notyet", by: CAS },
+    ]);
+    const result = new Runner(repo, { members: new StubRunner(), decisions: script }).run();
+    expect(result.unitStatus.get("storefront/checkout-flow")).toBe("rejected");
+    expect(result.artifacts.get("storefront/checkout-flow")!.get("product-brief-v1")!.status).toBe("rejected");
+  });
+
+  test("rejecting a mid-loop gate (spec review, round 1) sets the unit to 'rejected', matching gateops.ts#doReject — used for both plain and loop artifacts alike", () => {
+    const repo = loadRepo("fixtures/golden");
+    const script = new Script([
+      { expect: "start", verb: "start", by: CAS },
+      { expect: "brief", verb: "approve", by: CAS },
+      { expect: "design", verb: "approve", by: CAS },
+      { expect: "spec review", verb: "reject", by: CAS },
+      { expect: "start", verb: "notyet", by: CAS },
+    ]);
+    const result = new Runner(repo, { members: new StubRunner(), decisions: script }).run();
+    const end = result.events.find((e) => e.t === "loop-end");
+    expect(end).toMatchObject({ reason: "rejected", round: 1 });
+    expect(result.unitStatus.get("storefront/checkout-flow")).toBe("rejected");
+  });
+
+  // The on_exhaust escalation's own reject is deliberately unaffected by this fix — it already stays
+  // "paused" (matching gateops.ts#doRescopeArtifact's re-plannable pause, not doReject's terminal one)
+  // per the pre-existing "loop exhaustion" describe block below, which this fix must leave green.
+});
+
+// ---------------------------------------------------------------------------
 // Loop exhaustion → on_exhaust: gate
 // ---------------------------------------------------------------------------
 

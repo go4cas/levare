@@ -344,7 +344,13 @@ export class Runner {
       }
       if (d.verb === "reject") {
         art.status = "rejected";
-        this.setUnitStatus(key, "paused", `gate '${current.stepLabel}' rejected`);
+        // Finding 166: matches board/gateops.ts#doReject (Finding 165, PR #85) — reject is terminal for
+        // the unit, not a pause. A replayed session ending in a different terminal state than the live
+        // path it reproduces isn't reproduction; replay has no safety argument for pausing instead
+        // (it runs on its own scratch state, never the live daemon's). The `"paused"` FlowOutcome return
+        // value is unchanged — `walkUnit`'s own guard only overwrites `unitStatus` when it's still
+        // `"active"` (line below this function's caller), so this more specific terminal status sticks.
+        this.setUnitStatus(key, "rejected", `gate '${current.stepLabel}' rejected`);
         return "paused";
       }
       // request: re-invoke producer, supersede, loop.
@@ -404,7 +410,10 @@ export class Runner {
       } else if (d.verb === "reject") {
         art.status = "rejected";
         this.emit({ t: "loop-end", unit: unit.unit, reason: "rejected", round });
-        this.setUnitStatus(key, "paused", "loop rejected");
+        // Finding 166: same terminal-status match as runFlowGate's own reject branch above — a mid-loop
+        // reject is `board/gateops.ts#doReject`'s exact live counterpart (both dispatch through the same
+        // "reject" verb, gateops.ts's own resolveGate never distinguishes loop membership for it).
+        this.setUnitStatus(key, "rejected", "loop rejected");
         return "paused";
       }
       // request → next round supersedes both artifacts.

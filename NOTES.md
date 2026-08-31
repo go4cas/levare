@@ -17691,3 +17691,53 @@ case.
 
 `bun test` → 1912 pass, 9 skip, 0 fail across 124 files, 6456 expect() calls. `bunx tsc --noEmit`
 clean.
+
+# NOTES REPLAY-REJECT-PARITY — Finding 166: runner.ts's reject paused where the board path terminates
+
+PR #85 (Finding 165) made `board/gateops.ts#doReject` patch `unit.md` to `status: rejected` in the
+same transaction as the artifact — the live path's reject is now terminal for the unit. `runner.ts`
+(the phase-2 batch Runner replay drives, `src/replay.ts`) never got the matching update: both of its
+own "reject" branches (`runFlowGate`'s plain-gate reject and `runLoop`'s mid-loop reject — the same
+`resolveGate` "reject" verb dispatches to `doReject` for either shape, gateops.ts never distinguishes
+loop membership for it) still called `setUnitStatus(key, "paused", ...)`. A replayed session ending in
+a different terminal state than the live session it reproduces isn't reproduction — and unlike the
+live daemon, replay runs on its own scratch state (a fresh `loadRepo` per scenario, `runScenario`'s own
+doc), so the "pause rather than fully close, in case a Conductor wants a different outcome" caution
+`doReject`'s own ruling already rejected for the live path has no separate safety argument here either.
+
+Fixed both sites to `setUnitStatus(key, "rejected", ...)`. The `FlowOutcome` return value at each site
+stays `"paused"` — `walkUnit`'s own caller (`if (outcome === "paused") { if (this.unitStatus.get(key)
+=== "active") this.setUnitStatus(key, "paused", ...) }`) only overwrites `unitStatus` when it's still
+`"active"`, so the more specific `"rejected"` written inside `runFlowGate`/`runLoop` is never clobbered
+— the same guard that already lets `doApproveMerge`'s eventual `"shipped"` survive an intermediate
+`"paused"` FlowOutcome, applied here without changing it.
+
+Left alone, deliberately: the `on_exhaust: gate` escalation reject (`runLoop`'s third `setUnitStatus`
+call, "loop exhausted → escalation gate") matches `board/gateops.ts#doRescopeArtifact`, not `doReject`
+— that board path rejects the ARTIFACT but pauses the UNIT on purpose ("the Conductor's next move is
+deliberate re-planning, not another round"), and stays that way here too. The two "did not converge"/
+"loop exhausted" fallbacks (no explicit reject verb, just a give-up) were never reject-driven and are
+untouched.
+
+## What was checked before assuming this was safe to bundle as a sixth commit
+
+`fixtures/golden/expected.json`'s oracle scenario (`GOLDEN_SCRIPT`, replay.ts) never rejects at all —
+unaffected. The `exhaust` scenario (`EXHAUST_SCRIPT`) rejects only at the exhaustion escalation gate,
+the one case left alone above — its printed "final: unit storefront/checkout-flow [paused]" is
+unchanged. Grepped every test file for `verb: "reject"`: the only existing one
+(`tests/runner.test.ts`'s "loop exhaustion" describe) is that same escalation case and needed no
+change — confirmed green, unmodified, after this fix. No prior test exercised a plain or mid-loop
+reject through `Runner` at all.
+
+## Test
+
+`tests/runner.test.ts` (new describe, "Finding 166"): rejecting the golden fixture's plain `brief`
+gate sets `unitStatus` to `"rejected"` (not `"paused"`) and the artifact to `"rejected"`; rejecting the
+mid-loop `spec review` gate in round 1 sets `unitStatus` to `"rejected"` and still emits `loop-end`
+`{reason: "rejected", round: 1}`. The pre-existing "loop exhaustion" test (on_exhaust escalation reject
+→ `"paused"`) is the regression check that this fix leaves alone, unmodified.
+
+## Verification
+
+`bun test` → 1914 pass, 9 skip, 0 fail across 124 files, 6468 expect() calls. `bunx tsc --noEmit`
+clean.
