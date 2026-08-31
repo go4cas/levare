@@ -651,9 +651,10 @@ describe("registry screen", () => {
     // vocabulary — a single bordered container, not a bare heading beside a separately-bordered panel).
     const cardOpens = (html.match(/<article class="entity card"/g) || []).length;
     expect(cardOpens).toBeGreaterThan(0);
-    // teams(1) + agents(4, incl. rook — ruling C9's isolated-scratch-dir fixture) + skills(3) +
-    // knowledge(2) + types(5) + connectors(2) + evals(1)
-    expect(cardOpens).toBe(1 + 4 + 3 + 2 + 5 + 2 + 1);
+    // teams(2, incl. helm — Finding 78 part 2's inception team) + agents(5, incl. rook — ruling C9's
+    // isolated-scratch-dir fixture, and kite — helm's own founding member) + skills(3) + knowledge(2) +
+    // types(5) + connectors(2) + evals(1)
+    expect(cardOpens).toBe(2 + 5 + 3 + 2 + 5 + 2 + 1);
 
     // Every entity card carries its own Edit-source actions and validity indicator inside it — never
     // a bare <div class="card"> floating outside, and never an editbar with nothing bordering it.
@@ -667,7 +668,7 @@ describe("registry screen", () => {
 
     // Sanity: for a specific entity (kestrel), the header, the flow-strip body, and the edit trigger
     // all sit between the same opening <article> and its closing </article> — genuinely one container.
-    const kestrelCard = /<article class="entity card"[^>]*data-entity="teams"[^>]*>[\s\S]*?<\/article>/.exec(html)![0];
+    const kestrelCard = /<article class="entity card" id="teams-kestrel"[^>]*>[\s\S]*?<\/article>/.exec(html)![0];
     expect(kestrelCard).toContain('class="entity__head"');
     expect(kestrelCard).toContain('class="flowstrip"');
     expect(kestrelCard).toContain('class="editbar"');
@@ -679,7 +680,7 @@ describe("registry screen", () => {
   // so kestrel's card (fixtures/golden, declares guardrails) no longer carries a warning about a gap
   // that no longer exists.
   test("kestrel's card carries no guardrails-enforcement warning — the gap it once named is closed", () => {
-    const kestrelCard = /<article class="entity card"[^>]*data-entity="teams"[^>]*>[\s\S]*?<\/article>/.exec(html)![0];
+    const kestrelCard = /<article class="entity card" id="teams-kestrel"[^>]*>[\s\S]*?<\/article>/.exec(html)![0];
     expect(kestrelCard).not.toContain("guardrails are declared but not yet enforced");
     expect(kestrelCard).not.toContain("merge phase (v1.1)");
   });
@@ -820,7 +821,7 @@ describe("registry screen", () => {
     expect((html.match(/data-edit-open/g) || []).length).toBe(cardOpens);
     // The kestrel card's trigger targets teams/kestrel.md — the exact path both the write route and
     // the live-validation check route confine to — and names the entity for the overlay's heading.
-    const kestrelCard = /<article class="entity card"[^>]*data-entity="teams"[^>]*>[\s\S]*?<\/article>/.exec(html)![0];
+    const kestrelCard = /<article class="entity card" id="teams-kestrel"[^>]*>[\s\S]*?<\/article>/.exec(html)![0];
     expect(kestrelCard).toContain('data-path="teams/kestrel.md"');
     expect(kestrelCard).toMatch(/<button class="togglebtn" data-edit-open data-path="teams\/kestrel\.md" data-editor-name="kestrel" data-editor-kind="team">/);
     expect(kestrelCard).toMatch(/<textarea class="rawmd-source" data-path="teams\/kestrel\.md" hidden>/);
@@ -917,11 +918,14 @@ describe("run screen — score rail node markers survive a real gate resolution"
     const beforeScore = scoreBlock(before);
 
     // Sanity on the fixture shape this pins: 5 expected kinds plus storefront's own project-level
-    // merge step (repo: set, not the "." self-reference — Finding 87), 3 of them (code, review,
+    // merge step (repo: set, not the "." self-reference — Finding 87), 3 of them (review, code,
     // merge) genuinely have no artifact at all yet — the exact "artifact-shaped assumption" case.
+    // Finding 78 part 2: the rail sorts by kestrel's own flow position (brief → design → spec/review
+    // loop), not by `expects`' authoring order — "review" (flow-placed) now sorts ahead of "code" (an
+    // expects-only kind no flow step ever resolves to, ordering rule 1: sorts last among its peers).
     const beforeNodes = scoreNodes(loadRepo(scratchRoot), loadRepo(scratchRoot).units.find((u) => u.unit === "checkout-flow")!);
-    expect(beforeNodes.map((n) => n.kind)).toEqual(["product-brief", "design", "spec", "code", "review", "merge"]);
-    expect(beforeNodes.filter((n) => !n.artifact).map((n) => n.kind)).toEqual(["code", "review", "merge"]);
+    expect(beforeNodes.map((n) => n.kind)).toEqual(["product-brief", "design", "spec", "review", "code", "merge"]);
+    expect(beforeNodes.filter((n) => !n.artifact).map((n) => n.kind)).toEqual(["review", "code", "merge"]);
 
     expect(stepCount(beforeScore)).toBe(6);
     expect(snodeClassesOf(beforeScore).length).toBe(6); // one marker per step — no gaps before the approve
@@ -934,8 +938,8 @@ describe("run screen — score rail node markers survive a real gate resolution"
       "snode done",
       "snode done",
       "snode is-gate-open",
-      "snode blocked",
       "snode upcoming",
+      "snode blocked",
       "snode upcoming",
     ]);
 
@@ -957,8 +961,8 @@ describe("run screen — score rail node markers survive a real gate resolution"
       "snode done",
       "snode done",
       "snode done",
-      "snode blocked",
       "snode upcoming",
+      "snode blocked",
       "snode upcoming",
     ]);
   });
