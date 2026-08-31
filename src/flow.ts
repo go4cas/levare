@@ -16,7 +16,7 @@
 // module, so importing `Repo` here would recreate the exact cycle this module exists to end. Every
 // real `Repo` already satisfies this shape structurally, so callers just pass one straight through.
 
-import type { Artifact, Team, TypeTemplate, WorkUnit } from "./types.ts";
+import type { Artifact, FlowNode, Team, TypeTemplate, WorkUnit } from "./types.ts";
 
 /** A flow-resolution failure: a step binds to no member, or to more than one. Never guessed through. */
 export class RunnerError extends Error {}
@@ -129,6 +129,82 @@ export function unreachableExpectedKinds(
   return expects.filter(
     (kind) => !teams.some((team) => capabilities.some((c) => team.members.includes(c.member) && c.kind === kind)),
   );
+}
+
+/**
+ * Finding 78 part 2: the flow-step labels a team's flow declares, in encounter order — a step
+ * contributes its own label, a loop contributes both `between` labels (author, then critic), a gate
+ * contributes nothing (no kind). Shared by `flowKindOrder` below (typed `Team.flow`) and validate.ts's
+ * own raw-YAML walk (`flowStepLabels`) so the two never re-derive "what order do a flow's labels occur
+ * in" independently.
+ */
+function flowStepLabelsOf(flow: FlowNode[]): string[] {
+  const labels: string[] = [];
+  for (const node of flow) {
+    if (node.kind === "step") labels.push(node.step);
+    else if (node.kind === "loop") labels.push(...node.between);
+  }
+  return labels;
+}
+
+/**
+ * Finding 78 part 2, ordering rule 4: resolve a sequence of flow-step labels to the kinds they bind
+ * to, deduplicated at each kind's FIRST occurrence — "the rail answers *where are we*, and that is
+ * where the kind first becomes live", never a later repeat of the same kind (e.g. a loop producing the
+ * same kind on two of its rounds). A label that resolves to zero or more than one capability is
+ * skipped, never guessed — that failure is already named on its own terms by validate.ts's
+ * UNBINDABLE_STEP/AMBIGUOUS_STEP, and this function must not re-report or silently paper over it.
+ */
+export function kindOrderForLabels(
+  labels: string[],
+  members: string[],
+  capabilities: Array<{ member: string; kind: string }>,
+): string[] {
+  const seen = new Set<string>();
+  const order: string[] = [];
+  for (const label of labels) {
+    const matches = capabilities.filter((c) => members.includes(c.member) && kindMatches(c.kind, label));
+    if (matches.length !== 1) continue;
+    const kind = matches[0].kind;
+    if (!seen.has(kind)) {
+      seen.add(kind);
+      order.push(kind);
+    }
+  }
+  return order;
+}
+
+/** `kindOrderForLabels` over one team's own flow (NOTES Finding 78 part 2). */
+export function flowKindOrder(team: Team, capabilities: Array<{ member: string; kind: string }>): string[] {
+  return kindOrderForLabels(flowStepLabelsOf(team.flow), team.members, capabilities);
+}
+
+/**
+ * Finding 78 part 2 — the score rail's actual sort key: every kind the unit's responsible team(s)
+ * FLOW places, in the order it becomes live, followed by every kind the type merely `expects` but no
+ * flow step resolves to (ordering rule 1 — flow says nothing about it, so flow cannot position it; it
+ * sorts after everything flow places, in `expects` order among its own peers). Multiple responsible
+ * teams (NOTES ruling 3) contribute their own flow orders in `responsibleTeamsFor`'s own team order;
+ * once `levare validate`'s CONFLICTING_KIND_ORDER check has passed, any kind two teams' flows both
+ * place is guaranteed to agree on its relative position, so concatenating is safe — the first team to
+ * place a given kind wins its position, exactly like `kindOrderForLabels`'s own within-team rule 4.
+ */
+export function railKindOrder(repo: FlowRepo, unit: WorkUnit, capabilities: Array<{ member: string; kind: string }>): string[] {
+  const type = repo.types.get(unit.type);
+  const expects = type?.expects ?? [];
+  if (expects.length === 0) return [];
+  const seen = new Set<string>();
+  const flowOrder: string[] = [];
+  for (const team of responsibleTeamsFor(repo, unit)) {
+    for (const kind of flowKindOrder(team, capabilities)) {
+      if (expects.includes(kind) && !seen.has(kind)) {
+        seen.add(kind);
+        flowOrder.push(kind);
+      }
+    }
+  }
+  const expectsOnly = expects.filter((kind) => !seen.has(kind));
+  return [...flowOrder, ...expectsOnly];
 }
 
 /** A unit's unmet `after:` ids — [] means the start gate condition is satisfied. */
