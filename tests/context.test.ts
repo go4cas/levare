@@ -83,6 +83,45 @@ describe("context assembly (§6 recipe)", () => {
   });
 });
 
+// Finding 163: item 6 used to be the flow step's label alone — the member never saw the unit's own
+// body or its type template, so a generic brief was the only brief its context could support (the
+// jot/version-flag incident this finding is named for). Both now render inside section 6, verbatim.
+describe("Finding 163: the unit's own body and type template reach the member (recipe item 6)", () => {
+  const repo = loadRepo(ROOT);
+
+  test("the unit's own body (unit.md, frontmatter stripped) is inlined verbatim", () => {
+    const out = assembleContext(repo, { root: ROOT, agent: "lyra", unit: "checkout-flow", capabilities: CAPABILITIES });
+    const task = out.slice(out.indexOf("── 6. task"), out.indexOf("── 7."));
+    expect(task).toContain("Rebuild the storefront checkout as a single-page flow");
+  });
+
+  test("the unit's type template body (types/<type>.md) is inlined verbatim", () => {
+    const out = assembleContext(repo, { root: ROOT, agent: "lyra", unit: "checkout-flow", capabilities: CAPABILITIES });
+    const task = out.slice(out.indexOf("── 6. task"), out.indexOf("── 7."));
+    expect(task).toContain("### type: feature");
+    expect(task).toContain("A full product increment");
+  });
+
+  test("the unit section header states it is context, not a licence to override the approved chain", () => {
+    const out = assembleContext(repo, { root: ROOT, agent: "lyra", unit: "checkout-flow", capabilities: CAPABILITIES });
+    expect(out).toContain("context, not a licence to override the approved artifacts in item 7");
+  });
+
+  test("an empty unit body renders `(none)`, same as every other optional recipe section", () => {
+    const cloned = { ...repo, units: repo.units.map((u) => (u.unit === "checkout-flow" ? { ...u, body: "" } : u)) };
+    const out = assembleContext(cloned, { root: ROOT, agent: "lyra", unit: "checkout-flow", capabilities: CAPABILITIES });
+    const task = out.slice(out.indexOf("── 6. task"), out.indexOf("── 7."));
+    const unitHeader = task.indexOf("### unit:");
+    expect(task.slice(unitHeader)).toContain("### unit: storefront/checkout-flow — context, not a licence to override the approved artifacts in item 7\n(none)");
+  });
+
+  test("a unit whose type has no matching types/<type>.md is reported, not silently dropped", () => {
+    const cloned = { ...repo, units: repo.units.map((u) => (u.unit === "checkout-flow" ? { ...u, type: "ghost" } : u)) };
+    const out = assembleContext(cloned, { root: ROOT, agent: "lyra", unit: "checkout-flow", capabilities: CAPABILITIES });
+    expect(out).toContain("### type: ghost\n(not found: types/ghost.md)");
+  });
+});
+
 // Ruling C9 (NOTES D6): delivery of consumed artifacts (recipe item 7) is a per-agent declaration.
 // An agent that cannot reach the studio filesystem (an isolated scratch-dir CLI member) declares
 // `context_artifacts: inline` and gets the full text instead of an unopenable path.

@@ -2,10 +2,17 @@
 // `levare context <agent> --unit <u> --dry-run` prints the exact bytes a member would receive:
 //
 //   1. agent definition body            5. project house rules
-//   2. referenced skills                6. the task string from the flow step
-//   3. referenced knowledge files       7. consumed artifacts — paths or inline, per agent declaration
-//   4. team charter + team LEARNINGS.md
+//   2. referenced skills                6. the flow step, the unit's type template, and the unit's
+//   3. referenced knowledge files           own body (Finding 163) — what kind of work this is and
+//   4. team charter + team LEARNINGS.md     what the operator actually asked for
+//                                        7. consumed artifacts — paths or inline, per agent declaration
 //
+// Finding 163: item 6 used to be the flow step's label alone (e.g. `spec`) — the member never saw the
+// unit's name, its type, or a syllable of what the operator wrote in `unit.md`. The type template
+// (`types/<type>.md`) was itself never read past its frontmatter (`expects`/`gates`/`glyph`) anywhere
+// in this codebase, so a `feature` and a `spike` were indistinguishable to a member too. Both now
+// render here. Neither overrides the approved artifact chain in item 7 — see that item's own section
+// header for the same caveat item 6's now states explicitly.
 // Item 7's delivery mode is a per-agent declaration (ruling C9, NOTES D6): `agent.context_artifacts`
 // defaults to `"paths"` — root-relative paths only, unchanged since phase 3 — for a member with
 // filesystem access to the studio. A member that cannot reach the studio (e.g. a wrapped CLI
@@ -156,6 +163,17 @@ export function assembleContext(repo: Repo, opts: AssembleOptions): string {
 
   out.push("── 6. task ──");
   out.push(chosen.label);
+  out.push("");
+
+  const type = repo.types.get(unitRow.type);
+  out.push(`### type: ${unitRow.type}`);
+  out.push(type ? (type.body?.trim() || "(none)") : `(not found: types/${unitRow.type}.md)`);
+  out.push("");
+
+  out.push(
+    `### unit: ${unitRow.project}/${unitRow.unit} — context, not a licence to override the approved artifacts in item 7`,
+  );
+  out.push(unitRow.body?.trim() || "(none)");
   out.push("");
 
   out.push(
