@@ -7,6 +7,7 @@ import { assertExitCode } from "./spawn-helpers.ts";
 import { validatePath, validateArtifactSource } from "../src/validate.ts";
 import { loadPricing } from "../src/pricing.ts";
 import { loadRepo, parseArtifactDoc } from "../src/repo.ts";
+import { scaffoldStudio } from "../src/init.ts";
 
 describe("golden fixture", () => {
   test("fixtures/golden validates clean", () => {
@@ -831,6 +832,266 @@ describe("Finding 171: a work unit's `type` references the types/ registry, not 
 
   test("the five scaffold types are unaffected — a freshly-scaffolded studio still validates", () => {
     expect(validatePath("fixtures/golden").ok).toBe(true);
+  });
+});
+
+// Finding 174: `connectors:`/`knowledge:` on teams and agents, `skills:` on agents, and an artifact's
+// `produced_by` were never checked against their registry directory — a typo passed `levare validate`
+// clean while context.ts#readEntityBody quietly embedded a `(not found: ...)` placeholder into the
+// member's real context (connectors: worse still, env.ts#grantedConnectors just silently drops an
+// unresolved grant). These prove all four fail loudly, naming the broken reference and (for the three
+// filename-resolved kinds) every name that DOES resolve — the same "list what's known" idiom
+// UNKNOWN_TYPE already uses, immediately preceding this block.
+describe("Finding 174: connectors:/knowledge:/skills:/produced_by must resolve against their registry", () => {
+  function buildStudio(
+    opts: {
+      teamConnectors?: string[];
+      teamKnowledge?: string[];
+      agentConnectors?: string[];
+      agentKnowledge?: string[];
+      agentSkills?: string[];
+    } = {},
+  ): string {
+    const dir = mkdtempSync(join(tmpdir(), "levare-named-refs-"));
+    mkdirSync(join(dir, "teams"), { recursive: true });
+    mkdirSync(join(dir, "agents"), { recursive: true });
+    mkdirSync(join(dir, "connectors"), { recursive: true });
+    mkdirSync(join(dir, "knowledge"), { recursive: true });
+    mkdirSync(join(dir, "skills"), { recursive: true });
+    mkdirSync(join(dir, "types"), { recursive: true });
+    mkdirSync(join(dir, "work", "acme", "launch"), { recursive: true });
+
+    writeFileSync(
+      join(dir, "connectors", "github.md"),
+      ["---", "name: github", "kind: cli", "command: gh", "env: [GITHUB_TOKEN]", "scope: test", "role: tool", "---", "", "Github.", ""].join("\n"),
+    );
+    writeFileSync(join(dir, "knowledge", "house-style.md"), "---\n---\n\nHouse style.\n");
+    writeFileSync(join(dir, "skills", "flow-design.md"), "---\nname: flow-design\ndescription: test\n---\n\nFlow design.\n");
+
+    const line = (key: string, values: string[] | undefined) => (values && values.length ? `${key}: [${values.join(", ")}]` : null);
+    writeFileSync(
+      join(dir, "agents", "wren.md"),
+      [
+        "---",
+        "name: wren",
+        "kind: native",
+        "produces: [product-brief]",
+        "model: claude-sonnet-5",
+        line("connectors", opts.agentConnectors),
+        line("knowledge", opts.agentKnowledge),
+        line("skills", opts.agentSkills),
+        "style:",
+        "  avatar: Wr",
+        "---",
+        "",
+        "Wren.",
+        "",
+      ]
+        .filter((l): l is string => l !== null)
+        .join("\n"),
+    );
+    writeFileSync(
+      join(dir, "teams", "kestrel.md"),
+      [
+        "---",
+        "name: kestrel",
+        "consumes: []",
+        "produces: [product-brief]",
+        "members: [wren]",
+        "flow:",
+        "  - step: brief",
+        "style:",
+        "  color: '#000'",
+        line("connectors", opts.teamConnectors),
+        line("knowledge", opts.teamKnowledge),
+        "---",
+        "",
+        "Kestrel.",
+        "",
+      ]
+        .filter((l): l is string => l !== null)
+        .join("\n"),
+    );
+    writeFileSync(join(dir, "types", "feature.md"), ["---", "name: feature", "glyph: '?'", "expects: [product-brief]", "gates: []", "---", "", "Feature.", ""].join("\n"));
+    writeFileSync(join(dir, "work", "acme", "launch", "unit.md"), "---\ntype: feature\nstatus: active\n---\n\n# launch\n\nNamed-reference test fixture.\n");
+    return dir;
+  }
+
+  function writeBrief(dir: string, producedBy: string): void {
+    writeFileSync(
+      join(dir, "work", "acme", "launch", "product-brief-v1.md"),
+      [
+        "---",
+        "kind: product-brief",
+        "id: product-brief-v1",
+        "unit: launch",
+        "project: acme",
+        "status: in-review",
+        `produced_by: ${producedBy}`,
+        "consumes: []",
+        "supersedes: null",
+        "approved_by: null",
+        "created: 2026-08-31",
+        "files: []",
+        "---",
+        "",
+        "Brief.",
+        "",
+      ].join("\n"),
+    );
+  }
+
+  test("team.connectors naming nothing under connectors/ fails UNKNOWN_CONNECTOR, listing known connectors", () => {
+    const dir = buildStudio({ teamConnectors: ["ghost-connector"] });
+    try {
+      const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_CONNECTOR" && e.file.includes("teams/kestrel.md"));
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("ghost-connector");
+      expect(err!.message).toContain("kestrel");
+      expect(err!.message).toContain("github");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("agent.connectors naming nothing under connectors/ fails UNKNOWN_CONNECTOR", () => {
+    const dir = buildStudio({ agentConnectors: ["ghost-connector"] });
+    try {
+      const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_CONNECTOR" && e.file.includes("agents/wren.md"));
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("ghost-connector");
+      expect(err!.message).toContain("wren");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a real connector grant on team and agent both validate cleanly", () => {
+    const dir = buildStudio({ teamConnectors: ["github"], agentConnectors: ["github"] });
+    try {
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_CONNECTOR");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("team.knowledge naming nothing under knowledge/ fails UNKNOWN_KNOWLEDGE, listing known knowledge", () => {
+    const dir = buildStudio({ teamKnowledge: ["house-styl"] });
+    try {
+      const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_KNOWLEDGE" && e.file.includes("teams/kestrel.md"));
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("house-styl");
+      expect(err!.message).toContain("house-style");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("agent.knowledge naming nothing under knowledge/ fails UNKNOWN_KNOWLEDGE", () => {
+    const dir = buildStudio({ agentKnowledge: ["house-styl"] });
+    try {
+      const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_KNOWLEDGE" && e.file.includes("agents/wren.md"));
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("house-styl");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a real knowledge reference on team and agent both validate cleanly", () => {
+    const dir = buildStudio({ teamKnowledge: ["house-style"], agentKnowledge: ["house-style"] });
+    try {
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_KNOWLEDGE");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("agent.skills naming nothing under skills/ fails UNKNOWN_SKILL, listing known skills", () => {
+    const dir = buildStudio({ agentSkills: ["ghost-skill"] });
+    try {
+      const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_SKILL");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("ghost-skill");
+      expect(err!.message).toContain("flow-design");
+      expect(err!.file).toContain("agents/wren.md");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("agent.skills resolves the bundled Agent Skills form skills/<name>/SKILL.md, not just a flat file", () => {
+    const dir = buildStudio({ agentSkills: ["bundled-skill"] });
+    try {
+      mkdirSync(join(dir, "skills", "bundled-skill"), { recursive: true });
+      writeFileSync(join(dir, "skills", "bundled-skill", "SKILL.md"), "---\nname: bundled-skill\ndescription: test\n---\n\nBundled.\n");
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_SKILL");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a real flat skill validates cleanly", () => {
+    const dir = buildStudio({ agentSkills: ["flow-design"] });
+    try {
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_SKILL");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an artifact's produced_by naming a team that doesn't exist fails UNKNOWN_PRODUCED_BY", () => {
+    const dir = buildStudio();
+    try {
+      writeBrief(dir, "ghost-team/wren");
+      const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_PRODUCED_BY");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("ghost-team");
+      expect(err!.message).toContain("no team named");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an artifact's produced_by naming a member that doesn't exist fails UNKNOWN_PRODUCED_BY", () => {
+    const dir = buildStudio();
+    try {
+      writeBrief(dir, "kestrel/ghost-member");
+      const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_PRODUCED_BY");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("ghost-member");
+      expect(err!.message).toContain("no agent named");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an artifact's produced_by naming a real team/member validates cleanly", () => {
+    const dir = buildStudio();
+    try {
+      writeBrief(dir, "kestrel/wren");
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_PRODUCED_BY");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("fixtures/golden carries no dangling connectors/knowledge/skills/produced_by reference", () => {
+    expect(validatePath("fixtures/golden").errors.map((e) => e.code)).not.toEqual(
+      expect.arrayContaining(["UNKNOWN_CONNECTOR", "UNKNOWN_KNOWLEDGE", "UNKNOWN_SKILL", "UNKNOWN_PRODUCED_BY"]),
+    );
+  });
+
+  test("a freshly-scaffolded studio (src/init.ts) carries no dangling connectors/knowledge/skills/produced_by reference", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-scaffold-named-refs-"));
+    try {
+      scaffoldStudio(dir);
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toEqual(
+        expect.arrayContaining(["UNKNOWN_CONNECTOR", "UNKNOWN_KNOWLEDGE", "UNKNOWN_SKILL", "UNKNOWN_PRODUCED_BY"]),
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
