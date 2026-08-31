@@ -155,6 +155,81 @@ describe("applyStudioEnv", () => {
     }
   });
 
+  // Finding 138: a `.env` line removed between calls must unset the value this function itself set on
+  // an earlier call — not leave the stale value live until restart.
+  test("a name present on one call and absent from .env on the next is unset", () => {
+    const root = scratchRoot();
+    try {
+      writeFileSync(join(root, ".env"), "GEMINI_API_KEY=from-dotenv\n");
+      const target: Record<string, string | undefined> = {};
+      const first = applyStudioEnv(root, target);
+      expect(target.GEMINI_API_KEY).toBe("from-dotenv");
+      expect(first.get("GEMINI_API_KEY")).toBe("dotenv");
+
+      writeFileSync(root + "/.env", ""); // the operator deletes the line
+      const second = applyStudioEnv(root, target);
+      expect(target.GEMINI_API_KEY).toBeUndefined();
+      expect(second.has("GEMINI_API_KEY")).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a shell-exported name is never unset even when .env stops declaring it", () => {
+    const root = scratchRoot();
+    try {
+      writeFileSync(join(root, ".env"), "GEMINI_API_KEY=from-dotenv\n");
+      const target: Record<string, string | undefined> = { GEMINI_API_KEY: "from-shell" };
+      applyStudioEnv(root, target);
+      expect(target.GEMINI_API_KEY).toBe("from-shell");
+
+      writeFileSync(join(root, ".env"), ""); // the line disappears from .env
+      const second = applyStudioEnv(root, target);
+      expect(target.GEMINI_API_KEY).toBe("from-shell"); // still never touched
+      expect(second.has("GEMINI_API_KEY")).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a name deleted and then re-added to .env is applied again as dotenv-owned", () => {
+    const root = scratchRoot();
+    try {
+      writeFileSync(join(root, ".env"), "GEMINI_API_KEY=first\n");
+      const target: Record<string, string | undefined> = {};
+      applyStudioEnv(root, target);
+      expect(target.GEMINI_API_KEY).toBe("first");
+
+      writeFileSync(root + "/.env", ""); // deleted
+      applyStudioEnv(root, target);
+      expect(target.GEMINI_API_KEY).toBeUndefined();
+
+      writeFileSync(join(root, ".env"), "GEMINI_API_KEY=second\n"); // re-added, different value
+      const third = applyStudioEnv(root, target);
+      expect(target.GEMINI_API_KEY).toBe("second");
+      expect(third.get("GEMINI_API_KEY")).toBe("dotenv");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("an unchanged .env produces no change across repeated calls", () => {
+    const root = scratchRoot();
+    try {
+      writeFileSync(join(root, ".env"), "GEMINI_API_KEY=stable\nANTHROPIC_API_KEY=also-stable\n");
+      const target: Record<string, string | undefined> = {};
+      applyStudioEnv(root, target);
+      const before = { ...target };
+
+      const second = applyStudioEnv(root, target);
+      expect(target).toEqual(before);
+      expect(second.get("GEMINI_API_KEY")).toBe("dotenv");
+      expect(second.get("ANTHROPIC_API_KEY")).toBe("dotenv");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("a name applyStudioEnv has never touched is treated as shell on every call, even after a name it does own is added", () => {
     const root = scratchRoot();
     try {
