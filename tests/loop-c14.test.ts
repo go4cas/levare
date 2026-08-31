@@ -306,11 +306,14 @@ describe("C14: max_rounds/on_exhaust — a non-converging loop escalates, never 
       expect(req3.error).toContain("on_exhaust");
       expect(existsSync(join(unitDir, "spec-loyalty-flow-v4.md"))).toBe(false);
 
-      // The Conductor's only remaining moves are approve/reject; reject pauses the unit, never a spin.
+      // The Conductor's only remaining moves are approve/reject; reject terminates the unit (Finding
+      // 165), never a spin.
       const rejected = await resolveGate(root, "storefront", "spec-loyalty-flow-v3", "reject" as Verb, { today: "2026-07-12" });
       expect(rejected.ok).toBe(true);
       const spec3 = readFileSync(join(unitDir, "spec-loyalty-flow-v3.md"), "utf8");
       expect(spec3).toContain("status: rejected");
+      const unitAfter = readFileSync(join(unitDir, "unit.md"), "utf8");
+      expect(unitAfter).toContain("status: rejected");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

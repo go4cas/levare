@@ -166,7 +166,7 @@ export async function resolveGate(root: string, project: string, target: string,
 
   if (verb === "approve" && art.kind === "merge") return doApproveMerge(root, repo, unit, located.file, target, today, opts.note);
   if (verb === "approve") return await doApprove(root, repo, unit, art, located.file, target, today, opts.note, extra, opts.connectorSpawn, opts.now, opts.connectorBaseEnv);
-  if (verb === "reject") return doReject(root, located.file, target, opts.note, extra);
+  if (verb === "reject") return doReject(root, unit, located.file, target, opts.note, extra);
   if (verb === "request") return await doRequest(root, repo, unit, located.file, art, opts.note, memberRunner, extra, today, opts.daemon);
   return { ok: false, status: 400, error: `verb '${verb}' is not valid for an artifact gate` };
 }
@@ -383,12 +383,21 @@ function doRecheckMerge(root: string, repo: Repo, unit: WorkUnit, file: string, 
   return { ok: true, commit: result.commit, changedFiles: files.map((f) => f.path) };
 }
 
-function doReject(root: string, file: string, id: string, note: string | undefined, extraFiles: TxFile[]): GateOpResult {
+// Finding 165: reject is a terminal decision (nothing ever supersedes a rejected artifact), so it must
+// close the unit exactly as a merge-gate approval does (doApproveMerge's own `status: shipped` patch,
+// same transaction, same `patchFrontmatter` mechanism — no second mechanism invented here). Approve
+// advances, request-changes loops, reject ends it: the unit's own status now says so, so the daemon's
+// walk (advanceUnit's `unit.status !== "active"` guard, dagwalk.ts) skips it exactly as it already
+// skips `paused`/`shipped`, and every render surface that treats "not active" as "not in flight" stops
+// showing this unit as live without needing its own new case.
+function doReject(root: string, unit: WorkUnit, file: string, id: string, note: string | undefined, extraFiles: TxFile[]): GateOpResult {
   const src = readFileSync(file, "utf8");
   const patched = patchFrontmatter(src, { status: "rejected" });
   const errs = validateArtifactSource(patched, file, dirname(file), root);
   if (errs.length > 0) return { ok: false, status: 422, error: formatValidationErrors(errs) };
-  const files: TxFile[] = [{ path: file, content: patched }, ...extraFiles];
+  const unitFile = join(unit.dir, "unit.md");
+  const unitPatched = patchFrontmatter(readFileSync(unitFile, "utf8"), { status: "rejected" });
+  const files: TxFile[] = [{ path: file, content: patched }, { path: unitFile, content: unitPatched }, ...extraFiles];
   const result = transactionalWrite(root, files, `reject ${id}${note ? `\n\n${note}` : ""}`, conductorCommit);
   if (!result.ok) return { ok: false, status: 500, error: result.error };
   return { ok: true, commit: result.commit, changedFiles: files.map((f) => f.path) };
