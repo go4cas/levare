@@ -177,8 +177,8 @@ describe("scaffoldStudio", () => {
     board.close();
     expect(res.status).toBe(200);
     expect(body).toContain('class="apphead"');
-    expect(body).toContain('teams <span class="ct">1</span>');
-    expect(body).toContain('agents <span class="ct">3</span>');
+    expect(body).toContain('teams <span class="ct">2</span>');
+    expect(body).toContain('agents <span class="ct">4</span>');
     expect(body).not.toContain("This isn't a levare studio yet");
   });
 });
@@ -289,6 +289,8 @@ describe("F1: the scaffolded studio is runnable, not merely valid", () => {
     // Capabilities come from the scaffolded agents' own `produces:` — no stub map anywhere.
     expect(caps).toEqual([
       { member: "finch", kind: "review" },
+      { member: "kite", kind: "founding-brief" },
+      { member: "kite", kind: "charter" },
       { member: "lyra", kind: "design" },
       { member: "lyra", kind: "spec" },
       { member: "wren", kind: "product-brief" },

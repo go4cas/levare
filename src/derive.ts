@@ -11,7 +11,7 @@
 import type { Artifact, ArtifactStatus, Team, TypeTemplate, Usage, WorkUnit } from "./types.ts";
 import type { Repo } from "./repo.ts";
 import { firstParagraph, repoCapabilities } from "./repo.ts";
-import { isLoopCompanionKind, loopMembershipFor, responsibleTeamsFor, unreachableExpectedKinds } from "./gates.ts";
+import { isLoopCompanionKind, loopMembershipFor, railKindOrder, responsibleTeamsFor, unreachableExpectedKinds } from "./gates.ts";
 import { roundOf } from "./runner.ts";
 import type { DaemonInvocation } from "./daemon.ts";
 import { resolveMemberTimeoutS } from "./adapters.ts";
@@ -366,13 +366,17 @@ export interface ScoreNode {
  * is unaffected.
  */
 export function scoreNodes(repo: Repo, unit: WorkUnit, running: DaemonInvocation[] = []): ScoreNode[] {
-  const type = repo.types.get(unit.type);
-  const expects = type?.expects ?? [];
   const artifacts = [...(repo.artifacts.get(`${unit.project}/${unit.unit}`)?.values() ?? [])];
   const inv = running.find((r) => r.project === unit.project && r.unit === unit.unit);
   const capabilities = repoCapabilities(repo);
   const unreachable = new Set(unreachableExpectedKinds(repo, unit, capabilities));
-  const nodes: ScoreNode[] = expects.map((kind) => {
+  // Finding 78 part 2: the rail sorts by the team's declared flow position, not by `expects`'
+  // authoring order — `railKindOrder` places every kind the responsible team(s)' flow actually
+  // resolves to, in the order it becomes live, then appends the kinds `expects` names but no flow
+  // step reaches (ordering rule 1). Safe once `levare validate`'s new checks pass (loadRepo's default
+  // validate:true refuses an off-contract repo before this ever runs) — see flow.ts#railKindOrder.
+  const order = railKindOrder(repo, unit, capabilities);
+  const nodes: ScoreNode[] = order.map((kind) => {
     // Prefer the live (non-superseded) artifact of this kind; fall back to the most recent one so a
     // rejected/blocked kind still renders its true state rather than reading as untouched.
     const live = artifacts.filter((a) => a.kind === kind);

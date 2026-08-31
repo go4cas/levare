@@ -1,7 +1,7 @@
 ---
 name: inception
 glyph: "◈"
-expects: [pitch, product-brief, charter]
+expects: [pitch, founding-brief, charter]
 gates: [charter]
 output: charter
 ---

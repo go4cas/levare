@@ -9,10 +9,10 @@
 // live in flow.ts (NOTES R3) — this module re-exports them for its existing callers and builds the
 // loop-membership helpers on top.
 
-import { kindMatches, responsibleTeamsFor, responsibleTeamFor, resolveStep, unmetAfter, unreachableExpectedKinds } from "./flow.ts";
+import { kindMatches, railKindOrder, responsibleTeamsFor, responsibleTeamFor, resolveStep, unmetAfter, unreachableExpectedKinds } from "./flow.ts";
 import type { FlowLoop, Team } from "./types.ts";
 
-export { responsibleTeamsFor, responsibleTeamFor, resolveStep, unmetAfter, unreachableExpectedKinds };
+export { railKindOrder, responsibleTeamsFor, responsibleTeamFor, resolveStep, unmetAfter, unreachableExpectedKinds };
 
 export interface LoopMembership {
   loop: FlowLoop;

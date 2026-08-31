@@ -12,7 +12,7 @@ import { spawnSync } from "node:child_process";
 import { parseFrontmatter, YamlError, type YamlValue } from "./yaml.ts";
 import { loadPricing, type Pricing } from "./pricing.ts";
 import { readOverlaid, type OverlayFile } from "./overlay.ts";
-import { kindMatches } from "./flow.ts";
+import { kindMatches, kindOrderForLabels } from "./flow.ts";
 import { SDK_TOOL_NAMES } from "./sdk-transport.ts";
 import type { SandboxDetection } from "./sandbox.ts";
 import { approvalExemptFields } from "./approval-fields.ts";
@@ -903,6 +903,7 @@ export function validatePath(target: string, overlay?: OverlayFile, sandbox?: Sa
     validateAgentTeamMembership(target, errors, overlay);
     validateResponsibleTeam(target, errors, overlay);
     validateUncoverableExpectedKinds(target, warnings, overlay);
+    validateFlowExpectsAgreement(target, errors, overlay);
     validateAgentContextScope(target, errors, overlay);
     validateEnvNotTracked(target, errors);
     validateKnownModels(target, errors, overlay);
@@ -2630,6 +2631,164 @@ function validateUncoverableExpectedKinds(root: string, warnings: ValidationWarn
           `(${candidates.join(", ")}) declares producing ${uncoverable.length === 1 ? "it" : "any of them"} — this may be a legitimate ` +
           "configuration (a unit that only ever needs part of its type's shape), but the board's score rail will show these stage(s) " +
           "as not covered, never as merely queued",
+        file: unitFile,
+      });
+    }
+  }
+}
+
+/**
+ * Finding 78 part 2: the two validation errors that must hold before the score rail is allowed to
+ * sort by flow position (flow.ts#railKindOrder) instead of `expects`' own authoring order. `type.
+ * expects` (flat, type-level) and `team.flow` (step/gate/loop, team-level) are two independently
+ * authored files with nothing else enforcing that they agree — exactly the "derives a view from two
+ * files with no correspondence check" shape Finding 129 asks every unit to sweep for. Sorting by flow
+ * without settling their disagreements would trade a wrong order for a plausible-looking wrong one
+ * (Findings 73/77's own class), so both cases are refused here, at `validate` time, never rendered.
+ *
+ * (1) UNDECLARED_FLOW_KIND — a responsible team's flow resolves a step (or loop half) to a kind the
+ *     unit's type never lists in `expects:`. The team is doing work the type does not expect; the rail
+ *     hiding it today (it only ever shows `expects` kinds) is a symptom, not a fix — refuse the studio
+ *     rather than invent a position for a kind the type never asked for.
+ * (2) CONFLICTING_KIND_ORDER — a unit with more than one responsible team (flow.ts#responsibleTeamsFor,
+ *     ruling C4) where a kind two of those teams both flow-place disagrees on its position relative to
+ *     some other kind they both place. `railKindOrder`'s concatenation would then depend on which team
+ *     happens to run first — a coin-flip this product already refuses everywhere else
+ *     (AMBIGUOUS_PRODUCER's own C12/F10 precedent).
+ *
+ * Deliberately does NOT re-check that a flow step resolves to exactly one capability at all —
+ * `validateStudioBindings`'s UNBINDABLE_STEP/AMBIGUOUS_STEP already own that failure, unconditionally,
+ * for every team regardless of which (if any) unit uses it; `kindOrderForLabels` (flow.ts) silently
+ * skips an unresolved label rather than re-reporting it, so this function never doubles up on it.
+ */
+function validateFlowExpectsAgreement(root: string, errors: ValidationError[], overlay?: OverlayFile): void {
+  const workRoot = join(root, "work");
+  const teamsDir = join(root, "teams");
+  const agentsDir = join(root, "agents");
+  const typesDir = join(root, "types");
+  if (!existsSync(workRoot) || !existsSync(teamsDir) || !existsSync(agentsDir) || !existsSync(typesDir)) return;
+
+  const agentProduces = new Map<string, string[]>();
+  for (const name of readdirSync(agentsDir).sort()) {
+    if (!name.endsWith(".md") || name.endsWith(".learnings.md")) continue;
+    let data: Record<string, YamlValue>;
+    try {
+      ({ data } = parseFrontmatter(readOverlaid(join(agentsDir, name), overlay)));
+    } catch {
+      continue; // its own PARSE_ERROR was already recorded by the per-file pass.
+    }
+    if (typeof data.name === "string") agentProduces.set(data.name, strList(data.produces));
+  }
+
+  const teamMembers = new Map<string, string[]>();
+  const teamProduces = new Map<string, string[]>();
+  const teamFlowLabels = new Map<string, string[]>();
+  const teamFiles = new Map<string, string>();
+  for (const file of readdirSync(teamsDir).sort()) {
+    if (!file.endsWith(".md") || file.endsWith(".learnings.md")) continue;
+    const path = join(teamsDir, file);
+    let data: Record<string, YamlValue>;
+    try {
+      ({ data } = parseFrontmatter(readOverlaid(path, overlay)));
+    } catch {
+      continue;
+    }
+    const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+    teamMembers.set(name, strList(data.members));
+    teamProduces.set(name, strList(data.produces));
+    teamFlowLabels.set(name, flowStepLabels(data.flow));
+    teamFiles.set(name, path);
+  }
+
+  const typeExpects = new Map<string, string[]>();
+  const typeFiles = new Map<string, string>();
+  for (const file of readdirSync(typesDir).sort()) {
+    if (!file.endsWith(".md")) continue;
+    const path = join(typesDir, file);
+    let data: Record<string, YamlValue>;
+    try {
+      ({ data } = parseFrontmatter(readOverlaid(path, overlay)));
+    } catch {
+      continue;
+    }
+    const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+    typeExpects.set(name, strList(data.expects));
+    typeFiles.set(name, path);
+  }
+
+  // A candidate team's actual flow-kind order — resolved against live member capabilities, same
+  // ground truth `resolveStep`/`unreachableExpectedKinds` use, never the team's own declared
+  // `produces:` aggregate (flow.ts's own doc explains why that field is never authoritative here).
+  const kindOrderFor = (team: string): string[] => {
+    const members = teamMembers.get(team) ?? [];
+    const caps = members.flatMap((m) => (agentProduces.get(m) ?? []).map((kind) => ({ member: m, kind })));
+    return kindOrderForLabels(teamFlowLabels.get(team) ?? [], members, caps);
+  };
+
+  for (const project of listDirs(workRoot)) {
+    for (const unitName of listDirs(join(workRoot, project))) {
+      const unitFile = join(workRoot, project, unitName, "unit.md");
+      if (!existsSync(unitFile)) continue;
+      let data: Record<string, YamlValue>;
+      try {
+        ({ data } = parseFrontmatter(readFileSync(unitFile, "utf8")));
+      } catch {
+        continue;
+      }
+      const type = typeof data.type === "string" ? data.type : undefined;
+      const expects = type ? (typeExpects.get(type) ?? []) : [];
+      if (!type || expects.length === 0) continue;
+      const teamOverride = typeof data.team === "string" ? data.team : undefined;
+      // Same candidate-team selection as validateUncoverableExpectedKinds above: an explicit `team:`
+      // names the sole candidate; otherwise every team whose declared `produces:` covers at least one
+      // expected kind is one (AMBIGUOUS_PRODUCER already refuses a genuine produces-level conflict
+      // between candidates; UNKNOWN_TEAM/TEAM_CANNOT_PRODUCE already refuse a bad override).
+      const candidates = teamOverride
+        ? teamProduces.has(teamOverride)
+          ? [teamOverride]
+          : []
+        : [...teamProduces.entries()].filter(([, produces]) => produces.some((k) => expects.includes(k))).map(([name]) => name);
+      if (candidates.length === 0) continue; // no responsible team at all — a different failure, caught elsewhere.
+
+      // (1) UNDECLARED_FLOW_KIND.
+      for (const team of candidates) {
+        for (const kind of kindOrderFor(team)) {
+          if (expects.includes(kind)) continue;
+          errors.push({
+            code: "UNDECLARED_FLOW_KIND",
+            message:
+              `unit '${unitName}' (type '${type}'): team '${team}' flow produces kind '${kind}', which '${type}' does not expect ` +
+              `(expects: [${expects.join(", ") || "nothing"}]) — either add '${kind}' to ${typeFiles.get(type)}'s expects:, or ` +
+              `remove/rename the flow step in ${teamFiles.get(team)} that produces it`,
+            file: teamFiles.get(team) ?? unitFile,
+          });
+        }
+      }
+
+      // (2) CONFLICTING_KIND_ORDER — only reachable with more than one responsible team.
+      if (candidates.length < 2) continue;
+      const teamOrders = candidates.map((team) => ({ team, order: kindOrderFor(team).filter((k) => expects.includes(k)) }));
+      const placedByKind = new Map<string, string[]>();
+      for (const { team, order } of teamOrders) {
+        for (const kind of order) {
+          const arr = placedByKind.get(kind) ?? [];
+          arr.push(team);
+          placedByKind.set(kind, arr);
+        }
+      }
+      const shared = new Set([...placedByKind.entries()].filter(([, teams]) => teams.length > 1).map(([kind]) => kind));
+      if (shared.size === 0) continue;
+      const projections = teamOrders.map(({ team, order }) => ({ team, projection: order.filter((k) => shared.has(k)) }));
+      const first = JSON.stringify(projections[0].projection);
+      if (projections.every((p) => JSON.stringify(p.projection) === first)) continue;
+      errors.push({
+        code: "CONFLICTING_KIND_ORDER",
+        message:
+          `unit '${unitName}' (type '${type}') has more than one responsible team (${candidates.join(", ")}), and they disagree on the ` +
+          `relative order of kind(s) [${[...shared].join(", ")}] that more than one of them flow-places: ` +
+          `${projections.map((p) => `${p.team} → [${p.projection.join(", ")}]`).join("; ")} — there is no single correct score-rail order; ` +
+          "reconcile the teams' flows so the shared kinds agree on relative order, or add 'team:' to " +
+          `${unitFile} naming the one responsible team`,
         file: unitFile,
       });
     }

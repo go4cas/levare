@@ -61,6 +61,10 @@ describe("capabilities are derived from the agent definitions on disk", () => {
     const repo = loadRepo(root);
     expect(repoCapabilities(repo)).toEqual([
       { member: "finch", kind: "review" },
+      // kite: helm's own founding member (Finding 78 part 2) — the team that serves `type: inception`
+      // units, distinct from kestrel's feature-shaping roster.
+      { member: "kite", kind: "founding-brief" },
+      { member: "kite", kind: "charter" },
       { member: "lyra", kind: "design" },
       { member: "lyra", kind: "spec" },
       // rook: an isolated-scratch-dir CLI research member (ruling C9, NOTES D6) — not on any team's
