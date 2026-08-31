@@ -16,7 +16,7 @@ import { diagnose } from "../../doctor.ts";
 import type { DaemonInvocation } from "../../daemon.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
 import { getVersionInfo, versionChip } from "../../version.ts";
-import { statusLabel } from "../status.ts";
+import { statusLabel, isUnitTerminal } from "../status.ts";
 import { statusBadge, neutralChip, counter, pendingState, card, confirmModal, toastViewport, orchTurn, renderPersistedTurns, tag, callout } from "../components.ts";
 import { loadConversationTail } from "../../conversation.ts";
 import { deriveTeamStyle } from "../team-color.ts";
@@ -417,8 +417,13 @@ export function railNav(repo: Repo, extras: RegistryExtras, opts: { activeRegist
   const projectRows = [...repo.projects.values()]
     .sort((a, b) => projectLastActivity(repo, b.name).localeCompare(projectLastActivity(repo, a.name)))
     .map((p) => {
-      const units = repo.units.filter((u) => u.project === p.name).length;
-      return `<a class="rel" href="/project/${esc(p.name)}"><span class="nm">${esc(p.name)}</span><span class="ag">${units}</span></a>`;
+      const units = repo.units.filter((u) => u.project === p.name);
+      // Finding 168: a rejected/abandoned unit is never deleted (still on disk, still reachable from
+      // the project page's own "closed" list) but the daemon will never touch it again — the sidebar
+      // count must read as ongoing work, not "everything that ever happened here".
+      const closed = units.filter((u) => isUnitTerminal(u.status)).length;
+      const count = closed ? `${units.length - closed} &middot; ${closed} closed` : `${units.length}`;
+      return `<a class="rel" href="/project/${esc(p.name)}"><span class="nm">${esc(p.name)}</span><span class="ag">${count}</span></a>`;
     });
 
   const health = diagnose(
