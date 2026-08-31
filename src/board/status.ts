@@ -112,6 +112,16 @@ export function fromWorkUnitStatus(status: WorkUnitStatus): CanonicalStatus {
   }
 }
 
+/** Finding 168: `abandoned`/`rejected` are unit-level terminal (see `fromWorkUnitStatus` above) —
+ * the daemon (`dagwalk.ts`'s `unit.status !== "active"` guard) will never act on either again, and
+ * every surface that counts or lists a project's units must exclude them from "active" the same way.
+ * The unit itself is never deleted — it stays on disk, reachable by its own URL, terminal only means
+ * "not counted as ongoing work". `shipped` is deliberately NOT terminal here: it is a success, already
+ * reported on its own (a "shipped"/"released" figure), not folded into this failure-shaped count. */
+export function isUnitTerminal(status: WorkUnitStatus): boolean {
+  return fromWorkUnitStatus(status) === "failed";
+}
+
 /** `ArtifactStatus` → the canonical palette. `superseded`/`skipped`/`draft` all read as an honest
  * neutral "waiting" — none of them is a live gate, a failure, or a finished state. */
 export function fromArtifactStatus(status: ArtifactStatus): CanonicalStatus {
