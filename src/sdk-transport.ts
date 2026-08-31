@@ -138,6 +138,15 @@ export interface SdkWorkerRequest {
   idleTimeoutMs?: number;
 }
 
+// Finding 85: who a dispatch failure is a problem FOR, decided the moment it's known — never
+// recovered later by pattern-matching a message string (that shape, disfavored, is Finding 118's).
+// `"operator"` means retry cannot possibly succeed until the studio/environment changes (an
+// invalid/expired credential, a rejected request the vendor will never accept as-is — credit balance,
+// billing, a malformed call); `"transient"` means the SDK's own retry policy already exhausted itself
+// on a rate-limit/5xx/connection-error shape and the LAST word was still failure. Absent means
+// member-caused (or genuinely unknown) — the pre-Finding-85 default, unchanged: Retry stays offered.
+export type FailureClass = "operator" | "transient";
+
 // `nativeBinaryResolved` (Finding 112): optional on BOTH branches — the worker itself always knows the
 // answer and reports it (`sdk-worker.ts#runSdkWorkerFromStdin`), but a TRANSPORT-level failure (worker
 // script not found, timed out before responding, exited without valid JSON) never reaches the worker's
@@ -158,6 +167,11 @@ export type SdkWorkerResponse =
        * never conflated with a plain non-timeout failure) — see `formatIdleFailureError`'s own doc.
        */
       idle?: boolean;
+      /** Finding 85: set by `sdk-worker.ts#runSdkWorkerFromStdin` — the ONE place this worker's own
+       * failure is classified, since it's the only layer that ever saw the SDK's `error_status`. Absent
+       * on a transport-level failure (script not found, non-JSON output) and on an idle abort — neither
+       * carries a vendor status to classify from, and a documented gap beats a guessed one. */
+      errorClass?: FailureClass;
     };
 
 /**

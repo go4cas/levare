@@ -33,7 +33,7 @@ import { existsSync } from "node:fs";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SettingSource, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { extractFromBunfs } from "@anthropic-ai/claude-agent-sdk/extract";
-import type { SdkWorkerRequest, SdkWorkerResponse } from "./sdk-transport.ts";
+import type { SdkWorkerRequest, SdkWorkerResponse, FailureClass } from "./sdk-transport.ts";
 import type { Receipt } from "./types.ts";
 import { isCompiledBuild } from "./version.ts";
 // The SAME embedded asset sdk-transport.ts imports — this file runs as a fresh self-invocation of
@@ -218,6 +218,27 @@ export function isNonRetryableAuthStatus(errorStatus: number | null | undefined)
   return errorStatus === 401 || errorStatus === 403;
 }
 
+/**
+ * Finding 85: the OTHER operator-actionable shape a vendor call can reject with — any 4xx besides the
+ * already-terminal 401/403 (`isNonRetryableAuthStatus`, left untouched — this is a sibling check, not a
+ * widening of it) and besides 429 (rate limit stays retryable, same reasoning as that function's own).
+ * Anthropic's API returns this range for requests it will never accept as sent — most namely an
+ * insufficient credit balance, but also a malformed/oversized request — and no amount of retrying
+ * changes that outcome. Deliberately excludes `null` (a connection error, no HTTP response at all — no
+ * status to classify from) and 5xx (a vendor-side failure, `transient`'s own territory below).
+ */
+export function isOperatorActionableStatus(errorStatus: number | null | undefined): boolean {
+  return typeof errorStatus === "number" && errorStatus >= 400 && errorStatus < 500 && errorStatus !== 429 && !isNonRetryableAuthStatus(errorStatus);
+}
+
+/** The operator-facing message for a non-auth operator-actionable abort (Finding 85) — mirrors
+ * `formatAuthFailureError`'s own factoring, but never claims "credentials are invalid or expired": that
+ * would be a guess this status range doesn't support (it also covers a rejected request the vendor will
+ * never accept as-is, e.g. an insufficient credit balance). */
+export function formatOperatorFailureError(status: number, attempt: number): string {
+  return `sdk worker: request rejected (HTTP ${status}) on attempt ${attempt} — aborted without retrying, the vendor will not accept this call as sent (check API key permissions, account credit/billing, or the request itself)`;
+}
+
 /** The operator-facing message for an aborted auth failure — factored out (mirrors `deriveReceipt`'s
  * own precedent) so a test can assert it names authentication explicitly, without spawning the real
  * SDK. Deliberately says "aborted without retrying", never "timed out": the whole point of Finding 92
@@ -281,6 +302,9 @@ export interface ConsumeQueryResult {
    * both could theoretically be true, mirroring the original inline loop's own ordering (an auth abort
    * always breaks the loop immediately, before an idle race on the next iteration could ever run). */
   authFailure: { status: number; attempt: number } | undefined;
+  /** Finding 85: the sibling of `authFailure` for `isOperatorActionableStatus`'s wider net — set
+   * instead of (never alongside) `authFailure`, same first-non-retryable-status-wins ordering. */
+  operatorFailure: { status: number; attempt: number } | undefined;
   /** Finding 124: `true` only when the idle race (`raceIdle`) actually fired — never inferred from
    * `sawSuccess`/`failure` being falsy, which would conflate "aborted for being genuinely idle" with
    * every other way a dispatch can fail to produce a result. */
@@ -305,6 +329,7 @@ export async function consumeQuery(iterator: AsyncIterator<SDKMessage>, opts: Co
   let failure: string | undefined;
   let retryCount = 0;
   let authFailure: { status: number; attempt: number } | undefined;
+  let operatorFailure: { status: number; attempt: number } | undefined;
   let respondingModel: string | null = null;
   let idle = false;
 
@@ -343,6 +368,15 @@ export async function consumeQuery(iterator: AsyncIterator<SDKMessage>, opts: Co
         opts.abortController.abort();
         break;
       }
+      if (isOperatorActionableStatus(message.error_status)) {
+        operatorFailure = { status: message.error_status as number, attempt: message.attempt };
+        console.error(
+          `levare: sdk worker query() aborting — error_status=${message.error_status} is not retryable ` +
+            `(operator-actionable), refusing the SDK's remaining ${message.max_retries - message.attempt} retries`,
+        );
+        opts.abortController.abort();
+        break;
+      }
     }
     if (message.type === "assistant") {
       if (typeof message.message?.model === "string") respondingModel = message.message.model;
@@ -361,7 +395,7 @@ export async function consumeQuery(iterator: AsyncIterator<SDKMessage>, opts: Co
     }
   }
 
-  return { sawSuccess, resultText, structuredOutput, receipt, failure, retryCount, authFailure, idle };
+  return { sawSuccess, resultText, structuredOutput, receipt, failure, retryCount, authFailure, operatorFailure, idle };
 }
 
 /** Read one `SdkWorkerRequest` from stdin, run it through the real SDK, print one `SdkWorkerResponse`
@@ -422,7 +456,21 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
         `${consumed.sawSuccess ? "success" : consumed.idle ? "idle" : "no success result"})`,
     );
     if (consumed.authFailure) {
-      respond({ ok: false, error: formatAuthFailureError(consumed.authFailure.status, consumed.authFailure.attempt), nativeBinaryResolved });
+      respond({
+        ok: false,
+        error: formatAuthFailureError(consumed.authFailure.status, consumed.authFailure.attempt),
+        errorClass: "operator",
+        nativeBinaryResolved,
+      });
+      return;
+    }
+    if (consumed.operatorFailure) {
+      respond({
+        ok: false,
+        error: formatOperatorFailureError(consumed.operatorFailure.status, consumed.operatorFailure.attempt),
+        errorClass: "operator",
+        nativeBinaryResolved,
+      });
       return;
     }
     if (consumed.idle) {
@@ -430,7 +478,18 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
       return;
     }
     if (!consumed.sawSuccess) {
-      respond({ ok: false, error: consumed.failure ?? "sdk query produced no result message", nativeBinaryResolved });
+      // Finding 85: a failure reached here only after the SDK's OWN retry policy already exhausted
+      // itself on the message stream (every abortable status above was ruled out) — `retryCount > 0`
+      // means at least one of those retries was for a rate-limit/5xx/connection-error shape and the
+      // LAST word was still failure, the `transient` class's own definition. `retryCount === 0` means
+      // the very first attempt failed for a reason the stream never named as retryable — genuinely
+      // unknown, left unclassified rather than guessed (member-caused default, unchanged).
+      respond({
+        ok: false,
+        error: consumed.failure ?? "sdk query produced no result message",
+        errorClass: consumed.retryCount > 0 ? "transient" : undefined,
+        nativeBinaryResolved,
+      });
       return;
     }
     respond({ ok: true, result: consumed.resultText, structuredOutput: consumed.structuredOutput, receipt: consumed.receipt, nativeBinaryResolved });
