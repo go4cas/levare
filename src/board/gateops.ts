@@ -25,6 +25,7 @@ import { locateArtifactFile } from "../locate.ts";
 import { unitArtifactPaths } from "../context.ts";
 import { conductorCommit, CONDUCTOR_NAME, CONDUCTOR_EMAIL, transactionalWrite, dirtyRegistryFiles, type TxFile } from "../git.ts";
 import { advanceUnit, latestLiveArtifact, type AsyncMemberRunner } from "../dagwalk.ts";
+import { AdapterError } from "../adapters.ts";
 import { executeProposal, type ExecuteProposalOptions } from "../execution.ts";
 import { resolveProjectRepoPath, workBranchName, trialMerge, checkGuardrailsForMerge, executeMerge, createWorkBranch, checkoutBehindMerge, formatCheckoutSyncNotice } from "../merge.ts";
 import { violationLine } from "../guardrails.ts";
@@ -572,7 +573,15 @@ async function doRequest(
 // time), but a loop member's retry (see the round-accounting note below, at this function's one call
 // site) rewrites its OWN slot in place — `newId === art.id` there, so `supersedes` must carry whatever
 // the artifact being retried already superseded, not self-reference.
-function blockedRetryDoc(art: Artifact, newId: string, msg: string, createdAt: string, supersedes: string | null, consumes: string[] = []): string {
+function blockedRetryDoc(
+  art: Artifact,
+  newId: string,
+  msg: string,
+  createdAt: string,
+  supersedes: string | null,
+  consumes: string[] = [],
+  failureClass?: "operator" | "transient",
+): string {
   return [
     "---",
     `kind: ${art.kind}`,
@@ -585,6 +594,7 @@ function blockedRetryDoc(art: Artifact, newId: string, msg: string, createdAt: s
     `supersedes: ${supersedes ?? "null"}`,
     "approved_by: null",
     `blocked_reason: ${JSON.stringify(msg)}`,
+    ...(failureClass ? [`blocked_class: ${failureClass}`] : []),
     `created: ${createdAt}`,
     "files: []",
     "---",
@@ -644,6 +654,17 @@ async function resolveBlockedArtifactGate(
   }
 
   // retry
+  // Finding 85: server-side enforcement, not just a hidden UI button (mirrors doApproveMerge's own
+  // re-check-at-execution-time discipline for a conflicted trial) — an operator-actionable block can
+  // never succeed via retry until the studio/environment changes, so the verb is refused outright
+  // rather than spending a costed dispatch attempt levare already knows will fail identically.
+  if (art.blocked_class === "operator") {
+    return {
+      ok: false,
+      status: 409,
+      error: `artifact '${art.id}' is blocked on an operator-actionable failure, not the member: ${art.blocked_reason ?? "(no reason recorded)"} — fix the studio/environment, then Skip or Abandon; Retry cannot succeed here`,
+    };
+  }
   const [teamName, member] = art.produced_by.split("/");
   const hasCap = memberRunner.capabilities().some((c) => c.member === member && c.kind === art.kind);
   if (!hasCap) return { ok: false, status: 501, error: `no producer available to retry '${art.produced_by}' for kind '${art.kind}'` };
@@ -686,6 +707,10 @@ async function resolveBlockedArtifactGate(
     // supersedes the last one under a fresh id, so the gate stays actionable without losing the chain;
     // a loop member's failure rewrites its own same slot (see above) — never a second file.
     const msg = e instanceof Error ? e.message : String(e);
+    // Finding 85: same classification the FIRST attempt would have gotten (dagwalk.ts#writeBlocked's
+    // identical extraction) — a retry that fails operator-actionably a second time must say so too,
+    // not silently drop back to the unclassified default just because it came through this path.
+    const failureClass = e instanceof AdapterError ? e.class : undefined;
     // NOTES DISPATCH-TRACE (blocked-artifact consumes defect): same computation as dagwalk.ts#produceOne
     // and AdapterRunner#author — approved artifacts plus this retry's own `extraConsumes` — so a retry
     // that fails again records what it actually had available instead of the previous hardcoded `[]`.
@@ -693,7 +718,7 @@ async function resolveBlockedArtifactGate(
     const consumes = unitArtifactPaths(root, art.project, art.unit)
       .filter((a) => a.status === "approved" || extraSet.has(a.id))
       .map((a) => a.id);
-    const doc = blockedRetryDoc(art, newId, msg, createdAt, membership ? art.supersedes : art.id, consumes);
+    const doc = blockedRetryDoc(art, newId, msg, createdAt, membership ? art.supersedes : art.id, consumes, failureClass);
     const files: TxFile[] = membership
       ? [{ path: located.file, content: doc }]
       : [

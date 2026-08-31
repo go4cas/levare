@@ -222,6 +222,16 @@ export const ARTIFACT_SCHEMA: Schema = {
       nullable: true,
       description: "Why this artifact is blocked, when status is blocked — written by the runner when a member fails to produce it. Never cleared by a later status change, so it survives a successful retry's supersession as the record of what actually happened to the superseded attempt.",
     },
+    // Finding 85: who must act on `blocked_reason` — set once, at the boundary that threw, never
+    // re-derived from the reason's own text later.
+    blocked_class: {
+      type: "enum",
+      required: false,
+      nullable: true,
+      enum: ["operator", "transient"],
+      description:
+        "Who must act on blocked_reason, when known: operator (the studio/environment needs fixing — retry cannot succeed) or transient (a rate-limit/5xx/connection failure that already survived one levare-level retry and still failed). Absent means member-caused or unknown — Retry stays offered.",
+    },
     // NOTES MERGE-1 (PRD Amendment 2, M1/M2): reserved for `kind: merge` — the trial-merge report a
     // merge gate carries. Structurally optional on every artifact (mirroring `execution:`'s own
     // reservation for `kind: proposal`) rather than schema-gated by kind — a merge gate is levare's

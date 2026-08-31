@@ -44,6 +44,7 @@ A markdown deliverable with YAML frontmatter, produced by a member and tracked t
 | `execution.output_digest` | string | — | ✅ | — | A hash of stdout+stderr, not the raw bytes — never grows a commit unbounded and never risks echoing a secret the connector's output happened to include. |
 | `execution.warning` | string | — | ✅ | — | A human-readable warning about the execution, or null. |
 | `blocked_reason` | string | — | ✅ | — | Why this artifact is blocked, when status is blocked — written by the runner when a member fails to produce it. Never cleared by a later status change, so it survives a successful retry's supersession as the record of what actually happened to the superseded attempt. |
+| `blocked_class` | enum | — | ✅ | `operator` · `transient` | Who must act on blocked_reason, when known: operator (the studio/environment needs fixing — retry cannot succeed) or transient (a rate-limit/5xx/connection failure that already survived one levare-level retry and still failed). Absent means member-caused or unknown — Retry stays offered. |
 | `merge` | map | — | ✅ | — | Reserved for kind: merge — the trial-merge report, written by levare when the gate opens and rewritten in place by the recheck verb. |
 | `merge.branch` | string | ✅ | — | — | The work branch being merged. |
 | `merge.target` | string | ✅ | — | — | The branch it merges into. |

@@ -319,6 +319,7 @@ function toArtifact(d: Record<string, YamlValue>, body: string): Artifact {
     usage: (d.usage as Usage | null) ?? null,
     body: body.trim(),
     blocked_reason: optStr(d.blocked_reason) ?? null,
+    blocked_class: (d.blocked_class as Artifact["blocked_class"]) ?? null,
     // NOTES CAP-A: reserved for kind: proposal — undefined for every other artifact.
     connector: optStr(d.connector) ?? null,
     action: optStr(d.action) ?? null,

@@ -1345,6 +1345,171 @@ describe("native adapter — dispatch trace native_binary_resolved (Finding 112)
   });
 });
 
+// Finding 85: a failure must say whose problem it is. `SdkWorkerResponse.errorClass` (sdk-worker.ts's
+// own classification of the SDK's `error_status`) is the ONE signal both native boundaries act on:
+// `"operator"` rides straight onto the thrown AdapterError's own `class`; `"transient"` gets exactly
+// one extra dispatch-level retry (a fresh worker spawn) before ever gating, capped so this never
+// recreates Finding 92's seven-retries-into-a-timeout shape one level up.
+describe("native adapter — failure classification (Finding 85)", () => {
+  test("createSdkNativeBoundary carries an operator-actionable errorClass onto the thrown AdapterError, unchanged message", () => {
+    const repo = loadRepo(ROOT);
+    const agent = repo.agents.get("lyra")!;
+    const transport: SdkTransport = { run: () => ({ ok: false, error: "sdk worker: request rejected (HTTP 400)", errorClass: "operator" }) };
+    const boundary = createSdkNativeBoundary({ transport });
+    let caught: unknown;
+    try {
+      boundary.invoke(baseReq(agent, { agent }));
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(AdapterError);
+    expect((caught as AdapterError).class).toBe("operator");
+    expect((caught as AdapterError).message).toContain("HTTP 400");
+  });
+
+  test("createSdkNativeBoundary never retries an operator-actionable failure — one spawn, one gate", () => {
+    const repo = loadRepo(ROOT);
+    const agent = repo.agents.get("lyra")!;
+    let calls = 0;
+    const transport: SdkTransport = {
+      run: () => {
+        calls++;
+        return { ok: false, error: "sdk worker: authentication failure", errorClass: "operator" };
+      },
+    };
+    const boundary = createSdkNativeBoundary({ transport });
+    expect(() => boundary.invoke(baseReq(agent, { agent }))).toThrow(AdapterError);
+    expect(calls).toBe(1);
+  });
+
+  test("createSdkNativeBoundary retries a transient failure exactly once, succeeding on the second spawn", () => {
+    const repo = loadRepo(ROOT);
+    const agent = repo.agents.get("lyra")!;
+    let calls = 0;
+    const transport: SdkTransport = {
+      run: () => {
+        calls++;
+        if (calls === 1) return { ok: false, error: "sdk query did not succeed", errorClass: "transient" };
+        return { ok: true, result: "native output" };
+      },
+    };
+    const boundary = createSdkNativeBoundary({ transport });
+    const result = boundary.invoke(baseReq(agent, { agent }));
+    expect(calls).toBe(2);
+    expect(result.doc).toBe("native output");
+  });
+
+  test("createSdkNativeBoundary retries a transient failure only once — a second transient failure gates, never a third spawn", () => {
+    const repo = loadRepo(ROOT);
+    const agent = repo.agents.get("lyra")!;
+    let calls = 0;
+    const transport: SdkTransport = {
+      run: () => {
+        calls++;
+        return { ok: false, error: "sdk query did not succeed", errorClass: "transient" };
+      },
+    };
+    const boundary = createSdkNativeBoundary({ transport });
+    let caught: unknown;
+    try {
+      boundary.invoke(baseReq(agent, { agent }));
+    } catch (e) {
+      caught = e;
+    }
+    expect(calls).toBe(2);
+    expect(caught).toBeInstanceOf(AdapterError);
+    expect((caught as AdapterError).class).toBe("transient");
+  });
+
+  test("a failure with no errorClass at all (the pre-Finding-85 default) throws an AdapterError with class undefined — unchanged behavior", () => {
+    const repo = loadRepo(ROOT);
+    const agent = repo.agents.get("lyra")!;
+    const transport: SdkTransport = { run: () => ({ ok: false, error: "sdk worker exited 1" }) };
+    const boundary = createSdkNativeBoundary({ transport });
+    let caught: unknown;
+    try {
+      boundary.invoke(baseReq(agent, { agent }));
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(AdapterError);
+    expect((caught as AdapterError).class).toBeUndefined();
+  });
+
+  test("createAsyncSdkNativeBoundary mirrors the sync boundary's class propagation and one-retry cap", async () => {
+    const repo = loadRepo(ROOT);
+    const agent = repo.agents.get("lyra")!;
+    let calls = 0;
+    const transport: AsyncSdkTransport = {
+      run: async () => {
+        calls++;
+        return { ok: false, error: "sdk query did not succeed", errorClass: "transient" };
+      },
+    };
+    const boundary = createAsyncSdkNativeBoundary({ transport });
+    await expect(boundary.invoke(baseReq(agent, { agent }))).rejects.toThrow(AdapterError);
+    expect(calls).toBe(2);
+  });
+
+  test("createAsyncSdkNativeBoundary recovers on the async retry too", async () => {
+    const repo = loadRepo(ROOT);
+    const agent = repo.agents.get("lyra")!;
+    let calls = 0;
+    const transport: AsyncSdkTransport = {
+      run: async () => {
+        calls++;
+        if (calls === 1) return { ok: false, error: "sdk query did not succeed", errorClass: "transient" };
+        return { ok: true, result: "native output" };
+      },
+    };
+    const boundary = createAsyncSdkNativeBoundary({ transport });
+    const result = await boundary.invoke(baseReq(agent, { agent }));
+    expect(calls).toBe(2);
+    expect(result.doc).toBe("native output");
+  });
+
+  // Studio-authoring/config failures (Finding 129 sweep): every one of these is caught before any
+  // vendor call happens at all, so they classify `operator` regardless of what the SDK itself says.
+  // Uses `remoteTestRepo`/`fakeServerConnector` (defined below, in the "remote adapter — real stdio MCP
+  // boundary" describe block) — the same synthetic-repo helper those tests already build every one of
+  // these same failure shapes against.
+  test("a remote agent with no 'server' declared is an operator-actionable AdapterError", async () => {
+    const agent = { name: "echo" };
+    const repo = remoteTestRepo(agent);
+    const boundary = createAsyncStdioRemoteBoundary(repo);
+    let caught: unknown;
+    try {
+      await boundary.call(baseReq(repo.agents.get("echo")!));
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(AdapterError);
+    expect((caught as AdapterError).class).toBe("operator");
+  });
+
+  test("a cli agent with no command template is an operator-actionable AdapterError", () => {
+    const repo = loadRepo(ROOT);
+    // Mutating the loaded agent directly (no `cliCommand` override) exercises the REAL
+    // `defaultCliCommand`, the only place this specific check lives.
+    repo.agents.get("finch")!.command = undefined;
+    const runner = new AdapterRunner(repo, {
+      pricing,
+      capabilities: [{ member: "finch", kind: "review" }],
+      native: nativeMock,
+      remote: remoteMock,
+      spawn: fakeSpawn(),
+    });
+    let caught: unknown;
+    try {
+      runner.produce("finch", "review", "checkout-flow", "storefront");
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(AdapterError);
+    expect((caught as AdapterError).class).toBe("operator");
+  });
+});
+
 describe("remote adapter (mocked MCP)", () => {
   test("routes a remote agent through the MCP boundary and normalizes the receipt", () => {
     const repo = loadRepo(ROOT);
