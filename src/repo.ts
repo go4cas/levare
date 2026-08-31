@@ -212,7 +212,7 @@ function toAgent(d: Record<string, YamlValue>, body: string): Agent {
   };
 }
 
-function toType(d: Record<string, YamlValue>): TypeTemplate {
+function toType(d: Record<string, YamlValue>, body: string): TypeTemplate {
   return {
     name: reqStr(d, "name"),
     glyph: reqStr(d, "glyph"),
@@ -221,6 +221,7 @@ function toType(d: Record<string, YamlValue>): TypeTemplate {
     output: optStr(d.output),
     timebox: d.timebox === undefined ? undefined : (d.timebox as string | null),
     promotable_to: d.promotable_to === undefined ? undefined : (d.promotable_to as string | null),
+    body: body.trim(),
   };
 }
 
@@ -251,7 +252,7 @@ function loadWork(workRoot: string): { units: WorkUnit[]; artifacts: Repo["artif
       const unitDir = join(workRoot, project, unit);
       const unitFile = join(unitDir, "unit.md");
       if (!existsSync(unitFile)) continue;
-      const { data } = parseFrontmatter(readFileSync(unitFile, "utf8"));
+      const { data, body } = parseFrontmatter(readFileSync(unitFile, "utf8"));
       units.push({
         type: reqStr(data, "type"),
         status: (data.status as WorkUnitStatus) ?? "active",
@@ -262,6 +263,7 @@ function loadWork(workRoot: string): { units: WorkUnit[]; artifacts: Repo["artif
         timebox: data.timebox === undefined ? undefined : (data.timebox as string | null),
         budget: data.budget === undefined ? undefined : (data.budget as number | null),
         blocked_reason: optStr(data.blocked_reason),
+        body: body.trim(),
         dir: unitDir,
       });
       artifacts.set(`${project}/${unit}`, loadUnitArtifacts(unitDir));
