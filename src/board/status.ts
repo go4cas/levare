@@ -93,8 +93,9 @@ export function statusChip(status: CanonicalStatus, label?: string, extraClass?:
   return `<span class="${cls}">${esc(label ?? statusLabel(status))}</span>`;
 }
 
-/** `WorkUnitStatus` → the canonical palette. `abandoned` is the unit-level terminal negative outcome
- * (the brief's "failed"); `paused` is an honest solid-neutral-gray "waiting", not a fabricated activity. */
+/** `WorkUnitStatus` → the canonical palette. `abandoned` and `rejected` are both unit-level terminal
+ * negative outcomes (the brief's "failed"); `paused` is an honest solid-neutral-gray "waiting", not a
+ * fabricated activity. */
 export function fromWorkUnitStatus(status: WorkUnitStatus): CanonicalStatus {
   switch (status) {
     case "shipped":
@@ -106,6 +107,7 @@ export function fromWorkUnitStatus(status: WorkUnitStatus): CanonicalStatus {
     case "blocked":
       return "blocked";
     case "abandoned":
+    case "rejected":
       return "failed";
   }
 }

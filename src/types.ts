@@ -271,7 +271,7 @@ export interface Project {
   houseRules: string;
 }
 
-export type WorkUnitStatus = "active" | "paused" | "blocked" | "shipped" | "abandoned";
+export type WorkUnitStatus = "active" | "paused" | "blocked" | "shipped" | "abandoned" | "rejected";
 
 export interface WorkUnit {
   type: string;

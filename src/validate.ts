@@ -438,8 +438,8 @@ export const WORK_UNIT_SCHEMA: Schema = {
     status: {
       type: "enum",
       required: true,
-      enum: ["active", "paused", "blocked", "shipped", "abandoned"],
-      description: "Where this unit stands: active, paused, blocked, shipped, or abandoned.",
+      enum: ["active", "paused", "blocked", "shipped", "abandoned", "rejected"],
+      description: "Where this unit stands: active, paused, blocked, shipped, abandoned, or rejected.",
     },
     project: { type: "str", required: false, description: "The project this unit belongs to." },
     unit: { type: "str", required: false, description: "This unit's own identifier." },
@@ -892,6 +892,7 @@ export function validatePath(target: string, overlay?: OverlayFile, sandbox?: Sa
 
   // Cross-artifact checks over everything discovered.
   crossReference(artifacts, errors);
+  validateRejectedArtifactUnitStatus(artifacts, errors);
   const immutability = gitImmutabilityCheck(target, artifacts, errors);
 
   return { ok: errors.length === 0, errors, warnings, fileCount, immutability };
@@ -2730,6 +2731,41 @@ function crossReference(artifacts: DiscoveredArtifact[], errors: ValidationError
       for (const c of a.data.consumes) if (typeof c === "string") resolve(c, "consumes");
     }
     if (typeof a.data.supersedes === "string") resolve(a.data.supersedes, "supersedes");
+  }
+}
+
+// Finding 165: reject terminates the unit — a rejected artifact is a dead end (nothing ever
+// supersedes it), so the ONLY consistent unit status once one exists is `rejected` itself. A studio
+// written before this ruling (or repaired by hand) can have `status: rejected` on the artifact and
+// something else on `unit.md` — the exact inconsistency the ruling closes going forward. Flag it as a
+// real error, not a warning: a unit in this state is invisible to the daemon's walk in neither the old
+// nor the new sense (dagwalk.ts's `unit.status !== "active"` guard already stops it if the unit was
+// left `active`... but every render surface still reads the unit as live). No auto-repair here — an
+// operator with an already-rejected artifact edits `unit.md`'s `status:` to `rejected` by hand (the
+// same one-line fix `doReject` now makes atomically going forward).
+function validateRejectedArtifactUnitStatus(artifacts: DiscoveredArtifact[], errors: ValidationError[]): void {
+  const unitStatusCache = new Map<string, string | undefined>();
+  for (const a of artifacts) {
+    if (a.data.status !== "rejected") continue;
+    const unitDir = a.isFolder ? dirname(a.dir) : a.dir;
+    let status = unitStatusCache.get(unitDir);
+    if (!unitStatusCache.has(unitDir)) {
+      const unitFile = join(unitDir, "unit.md");
+      try {
+        const { data } = parseFrontmatter(readFileSync(unitFile, "utf8"));
+        status = typeof data.status === "string" ? data.status : undefined;
+      } catch {
+        status = undefined;
+      }
+      unitStatusCache.set(unitDir, status);
+    }
+    if (status !== "rejected") {
+      errors.push({
+        code: "REJECTED_ARTIFACT_UNIT_NOT_TERMINATED",
+        message: `artifact '${String(a.data.id ?? basename(a.file))}' is rejected, but its unit's status is '${status ?? "unset"}', not 'rejected' — a rejected artifact never advances, so the unit must be marked rejected too (edit ${join(unitDir, "unit.md")})`,
+        file: a.file,
+      });
+    }
   }
 }
 
