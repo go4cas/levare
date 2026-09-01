@@ -25,7 +25,7 @@ produced_by: press/lyra                 # team/member that authored it
 consumes: [product-brief-v1]            # its lineage — the dependency graph
 supersedes: null                        # or the id of the version it replaces
 approved_by: null                       # the Conductor, once approved
-created: 2026-07-11
+created: 2026-07-11T14:03:22.451Z
 files: []                               # supplementary files travelling with it
 usage:                                  # the cost receipt (optional)
   model: claude-sonnet-5
@@ -92,16 +92,26 @@ and every version is still on disk.
 
 ## The receipt
 
-The `usage:` block records what a member's invocation cost. Three numbers with three reliabilities:
+The `usage:` block records what a member's invocation cost. Three numbers, three reliabilities —
+and `usd` is not computed the same way twice:
 
 ```yaml
 usage:
   model: claude-sonnet-5    # the model that ACTUALLY ran (from the SDK's own report)
   tokens_in: 1507           # when the member reported them
   tokens_out: 845
-  usd: 0.0152               # estimated from knowledge/model-pricing.md
+  usd: 0.0152                # see below — not one formula for every member kind
   wall_clock_s: 12.0        # when levare timed the member
 ```
+
+For a `cli`/`remote` member, `usd` **is** an estimate — priced from `tokens_in`/`tokens_out` against
+`knowledge/model-pricing.md`'s flat per-model rate. For a `kind: native` member, it isn't: `usd` is the
+Claude Agent SDK's **own reported `total_cost_usd`**, used verbatim — real vendor billing, not a derived
+figure. **Don't check a native receipt's `usd` by multiplying `tokens_in`/`tokens_out` against the
+pricing table** — you'll land 40–50% off, because the SDK's cost also prices prompt-cache read/write
+tokens at their own separate rates, and those tokens are reported nowhere in `tokens_in`/`tokens_out` —
+only in the native-only `usage.tokens_cache_read`/`usage.tokens_cache_write` fields (see the [artifact
+cheatsheet](cheatsheets/artifact.md)).
 
 Two honest special cases:
 
@@ -112,6 +122,51 @@ Two honest special cases:
 And a guard worth knowing about: levare compares the model it *requested* against the model the
 receipt *reports*. If a vendor silently substitutes a different model, the artifact is **blocked**,
 naming both. A receipt that disagrees with the request is not accepted quietly.
+
+---
+
+## What else levare records
+
+Beyond the fields above, five more are levare's own — not authored by the member, and each written
+only when its own circumstance actually applies.
+
+**`verdict` / `verdict_source`** — on a `kind: review` artifact, levare reads the review's own body
+rather than asking the critic to declare a verdict separately: markdown decoration is stripped from
+each line, then exactly one resulting line — `APPROVED` or `CHANGES REQUESTED`, optionally
+`Verdict: `-prefixed — must match in its entirety. Found → `verdict` carries it and
+`verdict_source: extracted`. Zero or more than one match → `verdict` stays absent and
+`verdict_source: not-found`, so a failed scan is visible rather than silently guessed. `declared` is
+reserved for a future structured channel and isn't written yet. See [4.6 · Your first
+loop](../04-workflow/06-first-loop.md#what-the-critic-actually-said) for the extraction rule worked
+through a real review.
+
+**`blocked_class` / `blocked_class_source`** — when an artifact is `blocked` (see [4.8 · When a member
+fails](../04-workflow/08-when-a-member-fails.md)), `blocked_reason` carries the vendor's own error
+text, but not whose problem it is. `blocked_class` answers that, when levare can tell: `operator` (the
+studio/environment needs fixing — Retry cannot succeed) or `transient` (a rate-limit/5xx/connection
+failure that already survived one levare-level retry and still failed). Absent means member-caused or
+unknown, and Retry stays offered. `blocked_class_source` says how it was decided: `status` from a real
+HTTP error status the SDK's retry stream carried, `message` from matching the failure text against a
+known vendor error string when the call never made an HTTP round trip at all.
+
+**`merge_result`** — a `kind: merge` artifact's gate opens with a trial-merge report (`merge:` — branch,
+commits ahead, diffstat, conflicts). `merge_result` is different: levare writes it only once approval
+actually executes a clean merge (and push, where the project declares a remote) — the merge commit SHA,
+whether it pushed, and `checkout_behind`, which flags that the project's own primary checkout still has
+every merged file staged for deletion until synced by hand. A failed merge writes nothing here at all.
+
+**`code_commit` / `code_commit_actor`** — when a dispatch has its own worktree, `code_commit` names the
+commit SHA its file changes landed on the work branch as, or `none` if the dispatch changed nothing.
+`code_commit_actor` is present only when that commit's author/committer identity doesn't match the
+member's expected git identity — it names who it actually was instead.
+
+**`registry`** — a content hash over `teams/`, `agents/`, `connectors/`, `projects/`, `skills/`,
+`knowledge/`, `types/`, and `studio.md` exactly as they stood on disk when this artifact was produced —
+deliberately not `HEAD`, which `work/` commits move independently of the registry. Two artifacts
+sharing the same `registry` value ran under byte-identical definitions, full stop; a different value
+means something governing the dispatch changed between them, whether or not the commit history shows it.
+
+**Full field list, enum values, and skeleton:** the [artifact cheatsheet](cheatsheets/artifact.md).
 
 ---
 

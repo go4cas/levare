@@ -96,7 +96,7 @@ produced_by: lyra                       # which member authored it
 consumes: [product-brief-v1, design-checkout-v1]   # its lineage
 supersedes: null                        # or the id of the version it replaces
 files: []                               # supplementary files travelling with it
-created: 2026-07-11
+created: 2026-07-11T14:03:22.451Z
 ---
 
 The body is the actual document.
