@@ -8,7 +8,7 @@ import { loadRepo, repoCapabilities } from "./repo.ts";
 import { assembleContext } from "./context.ts";
 import { runDoctor, type PromptCheck } from "./doctor.ts";
 import { detectSandbox } from "./sandbox.ts";
-import { remoteAgentImplemented } from "./env.ts";
+import { remoteAgentImplemented, teamOf } from "./env.ts";
 import { serve } from "./board/serve.ts";
 import { initStudio, GIT_IDENTITY_NOTE } from "./init.ts";
 import { createUnit } from "./new.ts";
@@ -19,8 +19,15 @@ import { loadOrchestratorPromptSource, ORCHESTRATOR_PROMPT_PATH } from "./orches
 import { getVersionInfo, formatVersion } from "./version.ts";
 import { WORKER_COMMAND } from "./sdk-transport.ts";
 
-// Until the studio repo root is populated, the fixture golden tree stands in as the studio (NOTES
-// A1); context/doctor default their root there. `--root <path>` overrides.
+// Finding 180: this was ALSO context's default (and doctor's, before NOTES DOCS-WALKTHROUGH-2 fixed
+// doctor to default to cwd) — `levare context <agent> --unit <u>` run from any real studio, with no
+// `--root`, silently resolved to `fixtures/golden`, a path that only exists inside levare's own source
+// checkout, and failed with `NOT_FOUND fixtures/golden`: a path the operator has never heard of. That
+// defeated the one tool an operator has to inspect what a member actually receives (the blindness
+// Findings 163/174 were about) unless they happened to pass `--root` unprompted — `--help`'s own
+// `[--root <path>]` reads as optional with a sensible default, same as `doctor`'s `[root]`, so nothing
+// signals the trap. `context` now defaults to cwd too, below. `serve` is the one remaining caller —
+// deliberately out of this fix's scope (not the finding this closes; worth its own look separately).
 const DEFAULT_ROOT = "fixtures/golden";
 
 function flag(args: string[], name: string): string | undefined {
@@ -73,17 +80,33 @@ export function runReplayCmd(path: string, stubs: boolean): number {
 }
 
 // `levare context <agent> --unit <u> [--step s] [--root r] [--dry-run]` — print the exact §6 context.
+// `[root]`'s own default (Finding 180): the current directory, same as `doctor`/`serve` — an operator
+// runs this from inside their studio, not levare's own source checkout.
 export function runContextCmd(rest: string[]): number {
-  const agent = rest.find((a) => !a.startsWith("-"));
+  const arg = rest.find((a) => !a.startsWith("-"));
   const unit = flag(rest, "--unit");
-  if (!agent || !unit) {
+  if (!arg || !unit) {
     console.error("usage: levare context <agent> --unit <unit> [--step <step>] [--root <path>] [--dry-run]");
     return 2;
   }
-  const root = flag(rest, "--root") ?? DEFAULT_ROOT;
+  const root = flag(rest, "--root") ?? ".";
   const step = flag(rest, "--step");
+  // Finding 180: accept the `<team>/<agent>` form levare prints everywhere else — this command's own
+  // header (`context · team/agent · ...`), `produced_by`, the board — not just the bare agent name
+  // `repo.agents` is keyed by. A team prefix that doesn't match the agent's real team fails loudly
+  // rather than being silently ignored (a typo'd team is more likely than an intentional mismatch).
+  const slash = arg.lastIndexOf("/");
+  const agent = slash === -1 ? arg : arg.slice(slash + 1);
+  const teamPrefix = slash === -1 ? undefined : arg.slice(0, slash);
   try {
     const repo = loadRepo(root);
+    if (teamPrefix !== undefined) {
+      const actualTeam = teamOf(repo, agent)?.name;
+      if (actualTeam !== teamPrefix) {
+        console.error(`agent '${agent}' belongs to team '${actualTeam ?? "(none)"}', not '${teamPrefix}'`);
+        return 1;
+      }
+    }
     // Capabilities come from the studio's own agent definitions (`produces:`), never from the
     // fixture stubs — `levare context` on a real studio must print what that studio would actually
     // send its member (NOTES F1).
@@ -116,9 +139,10 @@ function checkOrchestratorPrompt(): PromptCheck {
 // bare `levare doctor` resolved to `DEFAULT_ROOT` (`fixtures/golden`, levare's own dev fixture),
 // which only exists inside levare's own source checkout. Run from a real studio, or an empty
 // directory, or anywhere else, it failed with `NOT_FOUND fixtures/golden` — location-independent,
-// since the fixture path is compiled in, not discovered. `context`/`serve` keep `DEFAULT_ROOT` (a
-// deliberate dev convenience for those two, unaffected by this fix); `doctor [root]`'s own
-// documented default is the current directory.
+// since the fixture path is compiled in, not discovered. `context` had the identical defect until
+// Finding 180 (see DEFAULT_ROOT's own doc above) — `serve` still defaults to `DEFAULT_ROOT`,
+// deliberately out of that fix's scope. `doctor [root]`'s own documented default is the current
+// directory.
 export function runDoctorCmd(rest: string[]): number {
   const root = rest.find((a) => !a.startsWith("-")) ?? ".";
   try {
