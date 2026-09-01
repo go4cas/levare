@@ -278,10 +278,25 @@ set** — add `types/<name>.md` and a work unit can declare `type: <name>`; `lev
 unit's `type` against whatever's actually defined here, not a fixed list. A unit naming a type nothing
 defines fails loudly (`UNKNOWN_TYPE`), listing every type that *does* resolve.
 
-`output` is a human-readable description of the expected terminal artifact — display only. `timebox`
-is a spike/timebox duration, Runner-enforced. `promotable_to` names the knowledge kind a completed unit
-of this type — a research report, most naturally — can be promoted into `knowledge/` through a gate,
+`output` names the artifact kind this type's flow terminates on, and must be one of that same type's
+own `expects` — `levare validate` checks the correspondence (`UNDECLARED_OUTPUT_KIND`). `gates` is NOT
+checked against anything: its values mix flow step labels (which only exist relative to whichever team
+ends up bound to a unit of this type — never declared on the type itself) with the literal keyword
+`merge` (a synthetic final gate levare opens itself, never a step any team declares), so there is no
+single well-defined target to check it against; a typo here validates clean. `timebox` is a
+spike/timebox duration, Runner-enforced. `promotable_to` names the knowledge kind a completed unit of
+this type — a research report, most naturally — can be promoted into `knowledge/` through a gate,
 rather than living only as a one-off artifact.
+
+```markdown
+---
+name: feature
+glyph: "▸"
+expects: [product-brief, design, spec, code, review]
+gates: [brief, design, spec, merge]
+output: code
+---
+```
 
 **Full field list, enum values, and skeleton:** the [Type cheatsheet](cheatsheets/type.md).
 

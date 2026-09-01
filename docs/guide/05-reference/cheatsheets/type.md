@@ -17,7 +17,7 @@ A work-unit template: what a unit of this type is expected to produce, and where
 | `glyph` | string | ✅ | — | — | A short display glyph for this type. |
 | `expects` | string[] | ✅ | — | — | Artifact kinds a unit of this type is expected to produce. |
 | `gates` | string[] | ✅ | — | — | Where this type gates in the flow. |
-| `output` | string | — | — | — | A human-readable description of this type's expected output. |
+| `output` | string | — | — | — | The artifact kind this type's flow terminates on — must be one of this type's own expects. |
 | `timebox` | string | — | ✅ | — | Spike/timebox duration for units of this type, Runner-enforced. |
 | `promotable_to` | string | — | ✅ | — | The knowledge kind a research report of this type promotes to through a gate. |
 

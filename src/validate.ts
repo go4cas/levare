@@ -644,8 +644,25 @@ const TYPE_SCHEMA: Schema = {
     name: { type: "str", required: true, description: "The work-unit type's name." },
     glyph: { type: "str", required: true, description: "A short display glyph for this type." },
     expects: { type: "str[]", required: true, description: "Artifact kinds a unit of this type is expected to produce." },
+    // Finding 169 (investigated, left unchecked): `gates` reads like it should cross-check against
+    // something, but there is no single well-defined target to check it against. Its values are a mix
+    // of team.flow STEP labels (a type has no team of its own — a step label only exists relative to
+    // whichever team a unit ends up bound to, resolved dynamically per-unit via produces∩expects, never
+    // declared on the type) and the literal keyword "merge" (a synthetic final gate dagwalk.ts opens
+    // itself once a unit's flow is exhausted — never a step any team declares). Worse, the scaffold's
+    // own five types deliberately leave three of them (fix/spike/research) with no team covering them
+    // at all (validateUncoverableExpectedKinds's own "legitimate configuration" — a type doesn't own a
+    // team, so nothing here is even wrong): checking gates values against "a real flow step somewhere"
+    // would flag spike's `gates: [findings]` and research's `gates: [report]` in the fresh scaffold
+    // itself, a false positive on a studio nothing is wrong with. A wrong check is worse than none, so
+    // this stays a free string — see validateResponsibleTeam's own doc for the produces∩expects
+    // resolution that IS the real, team-binding mechanism.
     gates: { type: "str[]", required: true, description: "Where this type gates in the flow." },
-    output: { type: "str", required: false, description: "A human-readable description of this type's expected output." },
+    // Finding 169: cross-checked against this SAME type's own `expects` — see
+    // validateTypeOutputAgreesWithExpects below. Unlike `gates` above, this one has an honest, closed,
+    // single-file target: every scaffold type's `output` (charter/code/findings/report) already names
+    // one of its own `expects` kinds, so the correspondence is real, not invented.
+    output: { type: "str", required: false, description: "The artifact kind this type's flow terminates on — must be one of this type's own expects." },
     timebox: { type: "str", required: false, nullable: true, description: "Spike/timebox duration for units of this type, Runner-enforced." },
     promotable_to: {
       type: "str",
@@ -905,6 +922,7 @@ export function validatePath(target: string, overlay?: OverlayFile, sandbox?: Sa
   if (st.isDirectory()) {
     validateStudioBindings(target, errors, overlay);
     validateAgentTeamMembership(target, errors, overlay);
+    validateTypeOutputAgreesWithExpects(target, errors, overlay);
     validateResponsibleTeam(target, errors, overlay);
     validateNamedReferences(target, errors, overlay);
     validateUncoverableExpectedKinds(target, warnings, overlay);
@@ -2407,6 +2425,43 @@ function validateAgentTeamMembership(root: string, errors: ValidationError[], ov
         "silently takes on only the first team's connector grants and charter; duplicate and rename the agent per " +
         "team instead (e.g. 'scribe-press', 'scribe-docs')",
       file: existsSync(agentFile) ? agentFile : teamsDir,
+    });
+  }
+}
+
+/**
+ * Finding 169 (output half only — see TYPE_SCHEMA's own `gates` doc for why that half stays
+ * unchecked): `output` names the artifact kind a type's flow terminates on, and every one of the five
+ * scaffold types already satisfies the one honest correspondence available for it — output is always a
+ * member of that SAME type's own `expects`. This is a single-file check (no team/registry lookup at
+ * all, unlike every other check in this file): a type declaring `output: X` where X never appears in
+ * its own `expects: [...]` is definitionally inconsistent — nothing could ever produce X as this type's
+ * final stage if X isn't even in the set of kinds the type expects to see.
+ */
+function validateTypeOutputAgreesWithExpects(root: string, errors: ValidationError[], overlay?: OverlayFile): void {
+  const typesDir = join(root, "types");
+  if (!existsSync(typesDir)) return;
+
+  for (const file of readdirSync(typesDir).sort()) {
+    if (!file.endsWith(".md")) continue;
+    const path = join(typesDir, file);
+    let data: Record<string, YamlValue>;
+    try {
+      ({ data } = parseFrontmatter(readOverlaid(path, overlay)));
+    } catch {
+      continue; // its own PARSE_ERROR was already recorded by the per-file pass.
+    }
+    const output = typeof data.output === "string" ? data.output : undefined;
+    if (!output) continue;
+    const expects = strList(data.expects);
+    if (expects.includes(output)) continue;
+    const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+    errors.push({
+      code: "UNDECLARED_OUTPUT_KIND",
+      message:
+        `type '${name}' declares output: '${output}', but '${output}' is not among its own expects: [${expects.join(", ") || "nothing"}] — ` +
+        `a type's output must be one of the kinds it expects`,
+      file: path,
     });
   }
 }
