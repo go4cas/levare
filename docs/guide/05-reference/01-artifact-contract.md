@@ -25,7 +25,7 @@ produced_by: press/lyra                 # team/member that authored it
 consumes: [product-brief-v1]            # its lineage — the dependency graph
 supersedes: null                        # or the id of the version it replaces
 approved_by: null                       # the Conductor, once approved
-created: 2026-07-11
+created: 2026-07-11T14:03:22.451Z
 files: []                               # supplementary files travelling with it
 usage:                                  # the cost receipt (optional)
   model: claude-sonnet-5
