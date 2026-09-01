@@ -1,9 +1,12 @@
 import { test, expect, describe } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, cpSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadRepo } from "../src/repo.ts";
 import { assembleContext, ContextError } from "../src/context.ts";
 import { main } from "../src/cli.ts";
 import { CAPABILITIES } from "../fixtures/stubs/member-stub.ts";
+import { assertExitCode } from "./spawn-helpers.ts";
 
 // Context assembly is the §6 recipe, frozen. fixtures/context/lyra.txt is a reviewed deliverable:
 // the exact bytes a member receives. These tests pin the recipe order and the paths-only rule, and
@@ -30,12 +33,56 @@ describe("context assembly (§6 recipe)", () => {
     };
     let code: number;
     try {
-      code = main(["context", "lyra", "--unit", "checkout-flow", "--dry-run"]);
+      code = main(["context", "lyra", "--unit", "checkout-flow", "--root", ROOT, "--dry-run"]);
     } finally {
       process.stdout.write = orig;
     }
     expect(code).toBe(0);
     expect(chunks.join("")).toBe(readFileSync("fixtures/context/lyra.txt", "utf8"));
+  });
+
+  // Finding 180: the command's own header (`context · kestrel/lyra · ...`, printed by the frozen
+  // fixture below) prints the `team/agent` form, but the argument only ever accepted the bare agent
+  // name — an operator pasting what levare itself just showed them got "no agent 'kestrel/lyra'".
+  test("`levare context kestrel/lyra --unit checkout-flow --dry-run` accepts the team/agent form its own header prints", () => {
+    const chunks: string[] = [];
+    const orig = process.stdout.write.bind(process.stdout);
+    (process.stdout.write as unknown as (s: string) => boolean) = (s: string) => {
+      chunks.push(s);
+      return true;
+    };
+    let code: number;
+    try {
+      code = main(["context", "kestrel/lyra", "--unit", "checkout-flow", "--root", ROOT, "--dry-run"]);
+    } finally {
+      process.stdout.write = orig;
+    }
+    expect(code).toBe(0);
+    expect(chunks.join("")).toBe(readFileSync("fixtures/context/lyra.txt", "utf8"));
+  });
+
+  test("a team/agent form naming the wrong team fails loudly, naming the agent's real team", () => {
+    const chunks: string[] = [];
+    const errs: string[] = [];
+    const origOut = process.stdout.write.bind(process.stdout);
+    const origErr = console.error;
+    (process.stdout.write as unknown as (s: string) => boolean) = (s: string) => {
+      chunks.push(s);
+      return true;
+    };
+    console.error = (s: string) => {
+      errs.push(s);
+    };
+    let code: number;
+    try {
+      code = main(["context", "helm/lyra", "--unit", "checkout-flow", "--root", ROOT, "--dry-run"]);
+    } finally {
+      process.stdout.write = origOut;
+      console.error = origErr;
+    }
+    expect(code).toBe(1);
+    expect(chunks.join("")).toBe("");
+    expect(errs.join("\n")).toContain("kestrel");
   });
 
   test("the recipe sections appear once, in the fixed §6 order", () => {
@@ -159,5 +206,29 @@ describe("ruling C9: context_artifacts — paths (default) vs inline", () => {
     const cloned = { ...repo, agents: new Map(repo.agents).set("lyra", inlineAgent) };
     const inlineOut = assembleContext(cloned, { root: ROOT, agent: "lyra", unit: "checkout-flow", capabilities: CAPABILITIES });
     expect(inlineOut.split("\n")[1]).toContain("consumed artifacts (inline)");
+  });
+});
+
+// Finding 180: `levare context <agent> --unit <u>` documents `[--root <path>]` as optional in `--help`,
+// same shape as `doctor`'s `[root]` (NOTES DOCS-WALKTHROUGH-2), but the bare form used to resolve
+// against `fixtures/golden` — a path that only exists inside levare's own source checkout — everywhere
+// else. A test that merely runs from the repo root proves nothing (the old default's relative-path
+// fallback happened to succeed there too); this spawns the real CLI with `cwd` set to a studio OUTSIDE
+// the repo, with no `--root` at all.
+describe("context: bare `[--root]` defaults to the current directory (Finding 180)", () => {
+  test("`levare context <agent> --unit <u>` with no --root, run from a studio outside the repo, contexts that studio — not fixtures/golden", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-context-cwd-"));
+    try {
+      cpSync("fixtures/golden", dir, { recursive: true });
+      const levareBin = join(process.cwd(), "levare");
+      const p = Bun.spawnSync([levareBin, "context", "lyra", "--unit", "checkout-flow", "--dry-run"], { cwd: dir });
+      assertExitCode("<compiled> context (cwd outside repo)", p, 0);
+      const out = p.stdout.toString();
+      expect(out).not.toContain("NOT_FOUND");
+      expect(out).not.toContain("fixtures/golden");
+      expect(out).toContain("context · kestrel/lyra ·");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

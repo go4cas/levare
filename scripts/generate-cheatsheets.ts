@@ -70,13 +70,15 @@ const BODY_PURPOSE: Record<string, string> = {
 // This is generation machinery only; it never appears in a rendered field table.
 const MODEL_PLACEHOLDER = "claude-sonnet-5";
 
-// Finding 171: the work-unit skeleton's `type:` must name a real types/ entity now that levare
-// validate checks it against the registry (UNKNOWN_TYPE) instead of a fixed enum. ENTITIES walks
-// `types` (via REGISTRY_SCHEMAS) before `work-unit`, into the SAME shared scratchRoot (generateAll
-// below), so by the time the work-unit skeleton is healed a types/skeleton.md already exists — this
-// must equal the `name` TYPE_SCHEMA's own "str" default (`example-${key}`) produces for it, the same
-// generic rule every other entity's `name:` field gets, so the two placeholders can never drift apart.
-const TYPE_NAME_PLACEHOLDER = "example-name";
+// Finding 171 (type:) / Finding 177 (project:): both name a real registry entity by its declared
+// `name:` field now that levare validate checks them (UNKNOWN_TYPE, UNKNOWN_PROJECT) instead of leaving
+// them free strings. ENTITIES walks `types` and `projects` (via REGISTRY_SCHEMAS) before `artifact`/
+// `work-unit`, into the SAME shared scratchRoot (generateAll below), so by the time those skeletons are
+// healed a types/skeleton.md and projects/skeleton.md already exist — both with `name: example-name`,
+// the generic "str" default (`example-${key}`) every entity's own `name:` field gets. This placeholder
+// must equal that value, so a type/project reference and the registry entity it resolves to can never
+// drift apart.
+const ENTITY_NAME_PLACEHOLDER = "example-name";
 
 // Error codes the skeleton-repair loop below knows how to fix generically by re-filling the named
 // field with one placeholder element — both are "declared non-empty but is empty" checks the schema's
@@ -112,13 +114,13 @@ const ENTITIES: EntityDef[] = [
   {
     schema: ARTIFACT_SCHEMA,
     dir: null,
-    place: (root: string) => join(root, "work", "example-project", "example-unit", "skeleton.md"),
+    place: (root: string) => join(root, "work", "example-name", "example-unit", "skeleton.md"),
     pathHint: "work/<project>/<unit>/<file>.md",
   },
   {
     schema: WORK_UNIT_SCHEMA,
     dir: null,
-    place: (root: string) => join(root, "work", "example-project", "example-unit", "unit.md"),
+    place: (root: string) => join(root, "work", "example-name", "example-unit", "unit.md"),
     pathHint: "work/<project>/<unit>/unit.md",
   },
   {
@@ -257,7 +259,7 @@ function placeholderValue(key: string, spec: FieldSpec): YamlValue {
     }
     case "str":
       if (key === "model" || key === "orchestrator_model") return MODEL_PLACEHOLDER;
-      if (key === "type") return TYPE_NAME_PLACEHOLDER;
+      if (key === "type" || key === "project") return ENTITY_NAME_PLACEHOLDER;
       return `example-${key}`;
   }
 }

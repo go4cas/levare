@@ -80,7 +80,7 @@ describe("offline commands run with the SDK genuinely unresolvable (NOTES REV1 f
   });
 
   test("`levare context <agent> --unit <unit> --dry-run` succeeds and never mentions the SDK package", () => {
-    const r = run(["context", "lyra", "--unit", "checkout-flow", "--dry-run"]);
+    const r = run(["context", "lyra", "--unit", "checkout-flow", "--root", "fixtures/golden", "--dry-run"]);
     expect(r.stderr).not.toContain("claude-agent-sdk");
     expect(r.stderr).not.toContain("Cannot find module");
     expect(r.stdout.length).toBeGreaterThan(0);

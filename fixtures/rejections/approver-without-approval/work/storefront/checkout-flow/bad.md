@@ -1,9 +1,9 @@
 ---
 kind: spec
-id: spec-approver-draft
+id: spec-approver-in-review
 unit: checkout-flow
 project: storefront
-status: draft
+status: in-review
 produced_by: kestrel/lyra
 consumes: []
 supersedes: null
@@ -11,4 +11,4 @@ approved_by: "cas 2026-07-11"
 created: 2026-07-11
 files: []
 ---
-A draft may not name an approver.
+An in-review artifact may not name an approver.

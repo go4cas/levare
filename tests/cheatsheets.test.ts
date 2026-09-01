@@ -102,9 +102,9 @@ describe("cheatsheet skeletons validate for real", () => {
       try {
         const filePath =
           schema === ARTIFACT_SCHEMA
-            ? join(scratchRoot, "work", "example-project", "example-unit", "skeleton.md")
+            ? join(scratchRoot, "work", "example-name", "example-unit", "skeleton.md")
             : schema === WORK_UNIT_SCHEMA
-              ? join(scratchRoot, "work", "example-project", "example-unit", "unit.md")
+              ? join(scratchRoot, "work", "example-name", "example-unit", "unit.md")
               : schema === STUDIO_SCHEMA
                 ? join(scratchRoot, "studio.md")
                 : join(scratchRoot, dir!, "skeleton.md");

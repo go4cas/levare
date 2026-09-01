@@ -1,6 +1,6 @@
 ---
 name: checkout-flow
-unit: checkout-flow
+unit: feature
 rubric:
   - "brief names one job-to-be-done and a success signal"
   - "spec consumes both the brief and the design"

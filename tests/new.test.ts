@@ -43,6 +43,11 @@ describe("createUnit — the happy paths", () => {
     const root = tmpRoot();
     scaffoldStudio(root); // one team (kestrel)
     for (const f of ["inception", "fix", "spike", "research"]) rmSync(join(root, "types", `${f}.md`));
+    // Finding 170 (UNKNOWN_CONSUMED_KIND): with `inception` gone, 'pitch' is no longer expected by any
+    // remaining type — kestrel's own `consumes: [pitch, product-brief]` would otherwise now name an
+    // orphaned kind. Trim it to what's still real, exactly as an operator pruning inception would.
+    const kestrelFile = join(root, "teams", "kestrel.md");
+    writeFileSync(kestrelFile, readFileSync(kestrelFile, "utf8").replace("consumes: [pitch, product-brief]", "consumes: [product-brief]"));
 
     const result = createUnit({ root, project: "studio", unit: "pilot", env: envWithNoIdentity() });
     expect(result.ok).toBe(true);
@@ -233,6 +238,10 @@ describe("createUnit — fails loudly, never silently", () => {
     const root = tmpRoot();
     scaffoldStudio(root);
     for (const f of ["inception", "feature", "fix", "spike", "research"]) rmSync(join(root, "types", `${f}.md`));
+    // Finding 170 (UNKNOWN_CONSUMED_KIND): with every type gone, nothing expects 'pitch' or
+    // 'product-brief' any more — kestrel's `consumes:` would otherwise name two orphaned kinds.
+    const kestrelFile = join(root, "teams", "kestrel.md");
+    writeFileSync(kestrelFile, readFileSync(kestrelFile, "utf8").replace("consumes: [pitch, product-brief]", "consumes: []"));
     const result = createUnit({ root, project: "studio", unit: "x", env: envWithNoIdentity() });
     expect(result).toMatchObject({ ok: false, code: "NO_TYPES" });
   });

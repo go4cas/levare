@@ -85,9 +85,9 @@ A group with a job: what it consumes, what it produces, its members, and its flo
 | Field | Required | Notes |
 |---|---|---|
 | `name` | ✅ | Must match the filename |
-| `consumes` | ✅ | Kinds this team takes as input |
+| `consumes` | ✅ | Kinds this team takes as input. Every kind here must be expected by some work-unit type, or `UNKNOWN_CONSUMED_KIND` |
 | `produces` | ✅ | Kinds this team offers the DAG. Every kind here must be produced by a member of the team, or `UNPRODUCIBLE_KIND` |
-| `members` | ✅ | Agent names |
+| `members` | ✅ | Agent names. Every name here must resolve to a real `agents/<name>.md`, or `UNKNOWN_MEMBER` |
 | `flow` | ✅ | The declarative sequence (see below) |
 | `style.color` | ✅ | Hex; the team's identity colour on the board |
 | `knowledge` | — | Knowledge injected for every member of the team |
@@ -113,7 +113,9 @@ each turn. If `until` can never be satisfied by the loop's members, `validate` r
 (`LOOP_UNTIL_UNREACHABLE`).
 
 `knowledge` and `connectors` are checked against their registry directories, same as an agent's own
-(`UNKNOWN_KNOWLEDGE` / `UNKNOWN_CONNECTOR`).
+(`UNKNOWN_KNOWLEDGE` / `UNKNOWN_CONNECTOR`). `consumes` is checked against the union of every type's
+`expects:` — not against "produced by some team", since a legitimate seed kind (e.g. `pitch`, folded
+into a fresh unit's body on promotion rather than ever team-produced) would otherwise be rejected.
 
 `guardrails` (`protected_paths`, `protected_branches`, `never`) constrains what this team's diffs and
 branches may touch — path and branch namespaces are never cross-matched (ruling C6), so a path listed
@@ -278,10 +280,25 @@ set** — add `types/<name>.md` and a work unit can declare `type: <name>`; `lev
 unit's `type` against whatever's actually defined here, not a fixed list. A unit naming a type nothing
 defines fails loudly (`UNKNOWN_TYPE`), listing every type that *does* resolve.
 
-`output` is a human-readable description of the expected terminal artifact — display only. `timebox`
-is a spike/timebox duration, Runner-enforced. `promotable_to` names the knowledge kind a completed unit
-of this type — a research report, most naturally — can be promoted into `knowledge/` through a gate,
+`output` names the artifact kind this type's flow terminates on, and must be one of that same type's
+own `expects` — `levare validate` checks the correspondence (`UNDECLARED_OUTPUT_KIND`). `gates` is NOT
+checked against anything: its values mix flow step labels (which only exist relative to whichever team
+ends up bound to a unit of this type — never declared on the type itself) with the literal keyword
+`merge` (a synthetic final gate levare opens itself, never a step any team declares), so there is no
+single well-defined target to check it against; a typo here validates clean. `timebox` is a
+spike/timebox duration, Runner-enforced. `promotable_to` names the knowledge kind a completed unit of
+this type — a research report, most naturally — can be promoted into `knowledge/` through a gate,
 rather than living only as a one-off artifact.
+
+```markdown
+---
+name: feature
+glyph: "▸"
+expects: [product-brief, design, spec, code, review]
+gates: [brief, design, spec, merge]
+output: code
+---
+```
 
 **Full field list, enum values, and skeleton:** the [Type cheatsheet](cheatsheets/type.md).
 
@@ -335,8 +352,8 @@ work against, rather than re-deciding "is this good?" from scratch every time.
 
 **The why**
 
-Unlike a work unit's own `type:` field (`UNKNOWN_TYPE`), an eval's `unit:` isn't currently cross-checked
-against `types/` — a typo here validates clean, so double-check it against `types/` yourself.
+Same as a work unit's own `type:` field: `unit:` is checked against `types/` (`UNKNOWN_TYPE`) — a typo
+fails loudly, naming every type that *does* resolve.
 
 **Body:** not used — only the frontmatter is read; the body is stored but never rendered or consumed.
 

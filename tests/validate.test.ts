@@ -1152,6 +1152,342 @@ describe("Finding 174: connectors:/knowledge:/skills:/produced_by/after: must re
   });
 });
 
+// Findings 169/170/177: the remaining schema-audit gaps, closed with the same mechanism Finding 174
+// established (validateNamedReferences/validateResponsibleTeam), extended rather than reinvented.
+describe("Finding 169: type.output must be one of that same type's own expects", () => {
+  function buildStudio(output: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "levare-type-output-"));
+    mkdirSync(join(dir, "types"), { recursive: true });
+    writeFileSync(
+      join(dir, "types", "feature.md"),
+      ["---", "name: feature", "glyph: '?'", "expects: [product-brief, code]", "gates: [merge]", `output: ${output}`, "---", "", "Feature.", ""].join("\n"),
+    );
+    return dir;
+  }
+
+  test("output naming a kind not in the type's own expects fails UNDECLARED_OUTPUT_KIND", () => {
+    const dir = buildStudio("ghost-kind");
+    try {
+      const err = validatePath(dir).errors.find((e) => e.code === "UNDECLARED_OUTPUT_KIND");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("feature");
+      expect(err!.message).toContain("ghost-kind");
+      expect(err!.message).toContain("product-brief, code");
+      expect(err!.file).toContain("types/feature.md");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("output naming a real member of its own expects validates cleanly", () => {
+    const dir = buildStudio("code");
+    try {
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNDECLARED_OUTPUT_KIND");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Finding 170: team.consumes must be expected by some work-unit type", () => {
+  function buildStudio(consumes: string[], expects: string[] = ["product-brief"]): string {
+    const dir = mkdtempSync(join(tmpdir(), "levare-team-consumes-"));
+    mkdirSync(join(dir, "teams"), { recursive: true });
+    mkdirSync(join(dir, "agents"), { recursive: true });
+    mkdirSync(join(dir, "types"), { recursive: true });
+    writeFileSync(
+      join(dir, "agents", "wren.md"),
+      ["---", "name: wren", "kind: native", "produces: [product-brief]", "model: claude-sonnet-5", "style:", "  avatar: Wr", "---", "", "Wren.", ""].join("\n"),
+    );
+    writeFileSync(
+      join(dir, "teams", "kestrel.md"),
+      [
+        "---",
+        "name: kestrel",
+        `consumes: [${consumes.join(", ")}]`,
+        "produces: [product-brief]",
+        "members: [wren]",
+        "flow:",
+        "  - step: brief",
+        "style:",
+        "  color: '#000'",
+        "---",
+        "",
+        "Kestrel.",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(join(dir, "types", "feature.md"), ["---", "name: feature", "glyph: '?'", `expects: [${expects.join(", ")}]`, "gates: []", "---", "", "Feature.", ""].join("\n"));
+    return dir;
+  }
+
+  test("a consumed kind no type expects fails UNKNOWN_CONSUMED_KIND, naming the team and listing known kinds", () => {
+    const dir = buildStudio(["ghost-kind"]);
+    try {
+      const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_CONSUMED_KIND");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("kestrel");
+      expect(err!.message).toContain("ghost-kind");
+      expect(err!.message).toContain("product-brief");
+      expect(err!.file).toContain("teams/kestrel.md");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // The crux of Finding 170's design: NOT checked against "produced by some team" — a legitimate
+  // expects-only seed kind (e.g. `pitch`, folded into a fresh unit's body on idea promotion, never
+  // team-produced — see helm.md's own doc in fixtures/golden) must still validate cleanly.
+  test("a consumed kind that's a legitimate seed — expected by a type but produced by no team — validates cleanly", () => {
+    const dir = buildStudio(["pitch"], ["pitch", "product-brief"]);
+    try {
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_CONSUMED_KIND");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a consumed kind a type expects and a team produces validates cleanly", () => {
+    const dir = buildStudio(["product-brief"]);
+    try {
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_CONSUMED_KIND");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Finding 177: team.members must resolve to a real agent", () => {
+  function buildStudio(members: string[]): string {
+    const dir = mkdtempSync(join(tmpdir(), "levare-team-members-"));
+    mkdirSync(join(dir, "teams"), { recursive: true });
+    mkdirSync(join(dir, "agents"), { recursive: true });
+    writeFileSync(
+      join(dir, "agents", "wren.md"),
+      ["---", "name: wren", "kind: native", "produces: [product-brief]", "model: claude-sonnet-5", "style:", "  avatar: Wr", "---", "", "Wren.", ""].join("\n"),
+    );
+    writeFileSync(
+      join(dir, "teams", "kestrel.md"),
+      ["---", "name: kestrel", "consumes: []", "produces: []", `members: [${members.join(", ")}]`, "flow:", "  - gate: human", "style:", "  color: '#000'", "---", "", "Kestrel.", ""].join(
+        "\n",
+      ),
+    );
+    return dir;
+  }
+
+  test("a member naming no agent fails UNKNOWN_MEMBER, naming the team and listing known agents", () => {
+    const dir = buildStudio(["ghost-member"]);
+    try {
+      const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_MEMBER");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("kestrel");
+      expect(err!.message).toContain("ghost-member");
+      expect(err!.message).toContain("wren");
+      expect(err!.file).toContain("teams/kestrel.md");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Before this check, a bad member name surfaced only indirectly (validateStudioBindings' roster
+  // string), and only when that member was load-bearing for a flow step. This team's one flow step
+  // (`gate: human`, no `step:`) needs no member at all, proving the bad name is now flagged regardless.
+  test("a redundant bad member name is flagged even when no flow step needs it", () => {
+    const dir = buildStudio(["wren", "ghost-member"]);
+    try {
+      const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_MEMBER");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("ghost-member");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a real member name validates cleanly", () => {
+    const dir = buildStudio(["wren"]);
+    try {
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_MEMBER");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Finding 177: eval.unit must resolve to a real type (now that types/ is registry-backed, Finding 171)", () => {
+  function buildStudio(unit: string | undefined): string {
+    const dir = mkdtempSync(join(tmpdir(), "levare-eval-unit-"));
+    mkdirSync(join(dir, "types"), { recursive: true });
+    mkdirSync(join(dir, "evals"), { recursive: true });
+    writeFileSync(join(dir, "types", "feature.md"), ["---", "name: feature", "glyph: '?'", "expects: [code]", "gates: []", "---", "", "Feature.", ""].join("\n"));
+    const lines = ["---", "name: my-eval", ...(unit !== undefined ? [`unit: ${unit}`] : []), "rubric: []", "---", "", "Eval.", ""];
+    writeFileSync(join(dir, "evals", "my-eval.md"), lines.join("\n"));
+    return dir;
+  }
+
+  test("unit naming no type fails UNKNOWN_TYPE, naming the eval and listing known types", () => {
+    const dir = buildStudio("ghost-type");
+    try {
+      const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_TYPE" && e.file.includes("evals/my-eval.md"));
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("my-eval");
+      expect(err!.message).toContain("ghost-type");
+      expect(err!.message).toContain("feature");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("unit naming a real type validates cleanly", () => {
+    const dir = buildStudio("feature");
+    try {
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_TYPE");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("unit omitted entirely (an optional field) validates cleanly", () => {
+    const dir = buildStudio(undefined);
+    try {
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_TYPE");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Finding 177: unit/artifact project: must resolve to a real projects/<name>.md", () => {
+  function buildStudioWithProject(realProject: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "levare-project-refs-"));
+    mkdirSync(join(dir, "projects"), { recursive: true });
+    writeFileSync(
+      join(dir, "projects", `${realProject}.md`),
+      ["---", `name: ${realProject}`, "repo: .", "remote: null", "default_branch: main", "deploy: null", "pace: auto", "---", "", "Project.", ""].join("\n"),
+    );
+    return dir;
+  }
+
+  function writeUnit(dir: string, dirName: string, projectField?: string): void {
+    mkdirSync(join(dir, "work", dirName, "launch"), { recursive: true });
+    const lines = ["---", "type: feature", "status: active", ...(projectField !== undefined ? [`project: ${projectField}`] : []), "---", "", "# launch", ""];
+    writeFileSync(join(dir, "work", dirName, "launch", "unit.md"), lines.join("\n"));
+  }
+
+  function writeArtifact(dir: string, project: string): void {
+    mkdirSync(join(dir, "work", "acme", "launch"), { recursive: true });
+    writeFileSync(
+      join(dir, "work", "acme", "launch", "brief-v1.md"),
+      [
+        "---",
+        "kind: product-brief",
+        "id: brief-v1",
+        "unit: launch",
+        `project: ${project}`,
+        "status: in-review",
+        "produced_by: kestrel/wren",
+        "consumes: []",
+        "supersedes: null",
+        "approved_by: null",
+        "created: 2026-08-31",
+        "files: []",
+        "---",
+        "",
+        "Brief.",
+        "",
+      ].join("\n"),
+    );
+  }
+
+  test("a unit whose directory name has no matching projects/<name>.md fails UNKNOWN_PROJECT (the fallback is checked too)", () => {
+    const dir = buildStudioWithProject("acme");
+    try {
+      writeUnit(dir, "ghost-project");
+      const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_PROJECT" && e.file.includes("work/ghost-project/launch/unit.md"));
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("ghost-project");
+      expect(err!.message).toContain("acme");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a unit's explicit project: overriding a real directory name is still checked against projects/", () => {
+    const dir = buildStudioWithProject("acme");
+    try {
+      writeUnit(dir, "acme", "ghost-project");
+      const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_PROJECT");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("ghost-project");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a unit resolving (by directory name) to a real project validates cleanly with no project: field at all", () => {
+    const dir = buildStudioWithProject("acme");
+    try {
+      writeUnit(dir, "acme");
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_PROJECT");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an artifact's project: naming no real project fails UNKNOWN_PROJECT", () => {
+    const dir = buildStudioWithProject("acme");
+    try {
+      writeArtifact(dir, "ghost-project");
+      const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_PROJECT");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("ghost-project");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an artifact's project: naming a real project validates cleanly", () => {
+    const dir = buildStudioWithProject("acme");
+    try {
+      writeArtifact(dir, "acme");
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_PROJECT");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a studio with no projects/ directory at all skips the check entirely — a partial-registry fixture isn't punished", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-project-refs-none-"));
+    try {
+      writeUnit(dir, "whatever-project");
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_PROJECT");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Findings 169/170/177: fixtures/golden and a fresh scaffold carry none of the new codes", () => {
+  const NEW_CODES = ["UNDECLARED_OUTPUT_KIND", "UNKNOWN_CONSUMED_KIND", "UNKNOWN_MEMBER", "UNKNOWN_PROJECT"];
+
+  test("fixtures/golden validates clean under every new check", () => {
+    const r = validatePath("fixtures/golden");
+    expect(r.errors.map((e) => e.code)).not.toEqual(expect.arrayContaining(NEW_CODES));
+    expect(r.ok).toBe(true);
+  });
+
+  test("a freshly-scaffolded studio (src/init.ts) validates clean under every new check", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-scaffold-169-170-177-"));
+    try {
+      scaffoldStudio(dir);
+      const r = validatePath(dir);
+      expect(r.errors.map((e) => e.code)).not.toEqual(expect.arrayContaining(NEW_CODES));
+      expect(r.ok).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("PRD v1.1: `mode:` was removed from the team schema (invariant 7)", () => {
   test("a team definition declaring `mode:` fails validation with a REMOVED_FIELD error naming it and v1.1", () => {
     const r = validatePath("fixtures/rejections/team-bad-mode");

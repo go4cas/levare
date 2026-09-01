@@ -107,7 +107,15 @@ export interface Schema {
 
 // NOTES F19: "skipped" — a Conductor's explicit "skip" verb on a blocked artifact, marking the step
 // abandoned so the walk can continue past it.
-const STATUS_ENUM = ["draft", "in-review", "approved", "rejected", "superseded", "blocked", "skipped"];
+//
+// Finding 179: "draft" was removed from this enum. Nothing ever wrote it — adapters.ts#author stamps
+// every artifact it produces as "status: in-review" directly, never "draft" first (there is no
+// levare-authored draft state; a member's return value becomes a reviewable artifact in one step, per
+// ruling C12). The only other trace was the ArtifactStatus type-union member (types.ts) and this enum
+// — nothing anywhere branched on the value. Unlike Finding 169's removal question (a declared KEY with
+// no reader, where an existing artifact could still carry it), this is an enum VALUE no artifact on
+// disk has ever been written with, so there is no migration concern in dropping it.
+const STATUS_ENUM = ["in-review", "approved", "rejected", "superseded", "blocked", "skipped"];
 
 export const ARTIFACT_SCHEMA: Schema = {
   name: "artifact",
@@ -120,7 +128,7 @@ export const ARTIFACT_SCHEMA: Schema = {
       type: "enum",
       required: true,
       enum: STATUS_ENUM,
-      description: "Where this artifact stands in review (§6): draft, in-review, approved, rejected, superseded, blocked, or skipped.",
+      description: "Where this artifact stands in review (§6): in-review, approved, rejected, superseded, blocked, or skipped.",
     },
     produced_by: { type: "str", required: true, description: "The member (agent) that produced this artifact." },
     consumes: { type: "str[]", required: true, description: "Other artifacts this one was produced from." },
@@ -644,8 +652,25 @@ const TYPE_SCHEMA: Schema = {
     name: { type: "str", required: true, description: "The work-unit type's name." },
     glyph: { type: "str", required: true, description: "A short display glyph for this type." },
     expects: { type: "str[]", required: true, description: "Artifact kinds a unit of this type is expected to produce." },
+    // Finding 169 (investigated, left unchecked): `gates` reads like it should cross-check against
+    // something, but there is no single well-defined target to check it against. Its values are a mix
+    // of team.flow STEP labels (a type has no team of its own — a step label only exists relative to
+    // whichever team a unit ends up bound to, resolved dynamically per-unit via produces∩expects, never
+    // declared on the type) and the literal keyword "merge" (a synthetic final gate dagwalk.ts opens
+    // itself once a unit's flow is exhausted — never a step any team declares). Worse, the scaffold's
+    // own five types deliberately leave three of them (fix/spike/research) with no team covering them
+    // at all (validateUncoverableExpectedKinds's own "legitimate configuration" — a type doesn't own a
+    // team, so nothing here is even wrong): checking gates values against "a real flow step somewhere"
+    // would flag spike's `gates: [findings]` and research's `gates: [report]` in the fresh scaffold
+    // itself, a false positive on a studio nothing is wrong with. A wrong check is worse than none, so
+    // this stays a free string — see validateResponsibleTeam's own doc for the produces∩expects
+    // resolution that IS the real, team-binding mechanism.
     gates: { type: "str[]", required: true, description: "Where this type gates in the flow." },
-    output: { type: "str", required: false, description: "A human-readable description of this type's expected output." },
+    // Finding 169: cross-checked against this SAME type's own `expects` — see
+    // validateTypeOutputAgreesWithExpects below. Unlike `gates` above, this one has an honest, closed,
+    // single-file target: every scaffold type's `output` (charter/code/findings/report) already names
+    // one of its own `expects` kinds, so the correspondence is real, not invented.
+    output: { type: "str", required: false, description: "The artifact kind this type's flow terminates on — must be one of this type's own expects." },
     timebox: { type: "str", required: false, nullable: true, description: "Spike/timebox duration for units of this type, Runner-enforced." },
     promotable_to: {
       type: "str",
@@ -905,6 +930,7 @@ export function validatePath(target: string, overlay?: OverlayFile, sandbox?: Sa
   if (st.isDirectory()) {
     validateStudioBindings(target, errors, overlay);
     validateAgentTeamMembership(target, errors, overlay);
+    validateTypeOutputAgreesWithExpects(target, errors, overlay);
     validateResponsibleTeam(target, errors, overlay);
     validateNamedReferences(target, errors, overlay);
     validateUncoverableExpectedKinds(target, warnings, overlay);
@@ -919,6 +945,7 @@ export function validatePath(target: string, overlay?: OverlayFile, sandbox?: Sa
 
   // Cross-artifact checks over everything discovered.
   validateProducedByReferences(target, artifacts, errors, overlay);
+  validateProjectReferences(target, artifacts, errors, overlay);
   crossReference(artifacts, errors);
   validateRejectedArtifactUnitStatus(artifacts, errors);
   const immutability = gitImmutabilityCheck(target, artifacts, errors);
@@ -2412,6 +2439,43 @@ function validateAgentTeamMembership(root: string, errors: ValidationError[], ov
 }
 
 /**
+ * Finding 169 (output half only — see TYPE_SCHEMA's own `gates` doc for why that half stays
+ * unchecked): `output` names the artifact kind a type's flow terminates on, and every one of the five
+ * scaffold types already satisfies the one honest correspondence available for it — output is always a
+ * member of that SAME type's own `expects`. This is a single-file check (no team/registry lookup at
+ * all, unlike every other check in this file): a type declaring `output: X` where X never appears in
+ * its own `expects: [...]` is definitionally inconsistent — nothing could ever produce X as this type's
+ * final stage if X isn't even in the set of kinds the type expects to see.
+ */
+function validateTypeOutputAgreesWithExpects(root: string, errors: ValidationError[], overlay?: OverlayFile): void {
+  const typesDir = join(root, "types");
+  if (!existsSync(typesDir)) return;
+
+  for (const file of readdirSync(typesDir).sort()) {
+    if (!file.endsWith(".md")) continue;
+    const path = join(typesDir, file);
+    let data: Record<string, YamlValue>;
+    try {
+      ({ data } = parseFrontmatter(readOverlaid(path, overlay)));
+    } catch {
+      continue; // its own PARSE_ERROR was already recorded by the per-file pass.
+    }
+    const output = typeof data.output === "string" ? data.output : undefined;
+    if (!output) continue;
+    const expects = strList(data.expects);
+    if (expects.includes(output)) continue;
+    const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+    errors.push({
+      code: "UNDECLARED_OUTPUT_KIND",
+      message:
+        `type '${name}' declares output: '${output}', but '${output}' is not among its own expects: [${expects.join(", ") || "nothing"}] — ` +
+        `a type's output must be one of the kinds it expects`,
+      file: path,
+    });
+  }
+}
+
+/**
  * Ruling C12/F10 defect 2 — team ambiguity: "levare must not guess" extended to WHICH team is
  * responsible for a unit, not just which member. The Conductor found this live: a `press` team (one
  * member, produces `product-brief`) started a unit whose work `press` was meant to do — and `kestrel`
@@ -2584,6 +2648,19 @@ function validateResponsibleTeam(root: string, errors: ValidationError[], overla
  * id and listing every real unit id in that project. Resolves by directory basename, defaulted from —
  * or overridden by — the unit's own `unit:` field (repo.ts's `optStr(data.unit) ?? unit` fallback),
  * mirrored here exactly, and scoped per-project since `after:` never crosses a project boundary.
+ *
+ * Findings 170/177 add three more: `team.members` (resolves by declared `name:`, like `team:`/`type:` —
+ * an agent's reference name can differ from its filename, so this does NOT belong in the
+ * filename-resolved trio above), `eval.unit` (a type reference, checked the same way `unit.type` is —
+ * see UNKNOWN_TYPE in validateResponsibleTeam), and `team.consumes` (checked against the union of every
+ * type's `expects:` — the studio's own declared artifact-kind vocabulary. NOT checked against "produced
+ * by some team": kestrel's own `consumes: [pitch, ...]` in the golden fixture is real and correct, but
+ * `pitch` is never produced by any team — orchestrator.ts#promoteIdea folds an idea's pitch text
+ * straight into a fresh inception unit's body, exactly the "expects-only seed stage" helm.md's own doc
+ * describes; checking against team.produces would reject that legitimate shape. Checking against
+ * expects: instead still catches a real typo (`consumes: [prodct-brief]` matches nothing) without
+ * rejecting a seed kind that is a legitimate part of the studio's vocabulary but simply never
+ * team-produced).
  */
 function validateNamedReferences(root: string, errors: ValidationError[], overlay?: OverlayFile): void {
   const connectorsDir = join(root, "connectors");
@@ -2591,6 +2668,8 @@ function validateNamedReferences(root: string, errors: ValidationError[], overla
   const skillsDir = join(root, "skills");
   const teamsDir = join(root, "teams");
   const agentsDir = join(root, "agents");
+  const typesDir = join(root, "types");
+  const evalsDir = join(root, "evals");
 
   const knownConnectors = existsSync(connectorsDir) ? readdirSync(connectorsDir).filter((f) => f.endsWith(".md")).map((f) => basename(f, ".md")).sort() : [];
   const knownKnowledge = existsSync(knowledgeDir) ? readdirSync(knowledgeDir).filter((f) => f.endsWith(".md")).map((f) => basename(f, ".md")).sort() : [];
@@ -2605,6 +2684,43 @@ function validateNamedReferences(root: string, errors: ValidationError[], overla
   const connectorSet = new Set(knownConnectors);
   const knowledgeSet = new Set(knownKnowledge);
   const skillSet = new Set(knownSkills);
+
+  // Agent names, resolved by declared `name:` (not filename) — the same key `team.members`/`team:`
+  // resolve by elsewhere (validateStudioBindings' `produces` map, gates.ts#responsibleTeamsFor).
+  const knownAgents: string[] = [];
+  if (existsSync(agentsDir)) {
+    for (const f of readdirSync(agentsDir).sort()) {
+      if (!f.endsWith(".md") || f.endsWith(".learnings.md")) continue;
+      try {
+        const { data } = parseFrontmatter(readOverlaid(join(agentsDir, f), overlay));
+        knownAgents.push(typeof data.name === "string" ? data.name : basename(f, ".md"));
+      } catch {
+        continue; // its own PARSE_ERROR was already recorded by the per-file pass.
+      }
+    }
+  }
+  const agentSet = new Set(knownAgents);
+  knownAgents.sort();
+
+  // Type names and the union of every type's `expects:` — the closed vocabulary `eval.unit` and
+  // `team.consumes` each resolve against.
+  const knownTypes: string[] = [];
+  const knownExpectedKinds = new Set<string>();
+  if (existsSync(typesDir)) {
+    for (const f of readdirSync(typesDir).sort()) {
+      if (!f.endsWith(".md")) continue;
+      try {
+        const { data } = parseFrontmatter(readOverlaid(join(typesDir, f), overlay));
+        knownTypes.push(typeof data.name === "string" ? data.name : basename(f, ".md"));
+        for (const k of strList(data.expects)) knownExpectedKinds.add(k);
+      } catch {
+        continue;
+      }
+    }
+  }
+  const typeSet = new Set(knownTypes);
+  knownTypes.sort();
+  const sortedExpectedKinds = [...knownExpectedKinds].sort();
 
   const checkRefs = (list: YamlValue, set: Set<string>, known: string[], code: string, dirLabel: string, entityLabel: string, file: string) => {
     for (const name of strList(list)) {
@@ -2630,6 +2746,31 @@ function validateNamedReferences(root: string, errors: ValidationError[], overla
       const teamName = typeof data.name === "string" ? data.name : basename(f, ".md");
       checkRefs(data.connectors, connectorSet, knownConnectors, "UNKNOWN_CONNECTOR", "connectors", `team '${teamName}'`, file);
       checkRefs(data.knowledge, knowledgeSet, knownKnowledge, "UNKNOWN_KNOWLEDGE", "knowledge", `team '${teamName}'`, file);
+      // Finding 177: a team naming an agent nothing defines. Before this, a redundant bad member name
+      // surfaced only indirectly (validateStudioBindings' roster lists it as "(no agent definition)"),
+      // and only when that specific member was needed to cover a flow step — a bad name that happens
+      // not to be load-bearing for any step was never flagged at all.
+      for (const member of strList(data.members)) {
+        if (agentSet.has(member)) continue;
+        errors.push({
+          code: "UNKNOWN_MEMBER",
+          message: `team '${teamName}' declares member: '${member}', but no agent named '${member}' is defined — known agents: ${knownAgents.join(", ") || "(none defined)"}`,
+          file,
+        });
+      }
+      // Finding 170: see this function's own doc above for why this resolves against the union of
+      // every type's `expects:`, not against "produced by some team".
+      if (existsSync(typesDir)) {
+        for (const kind of strList(data.consumes)) {
+          if (knownExpectedKinds.has(kind)) continue;
+          errors.push({
+            code: "UNKNOWN_CONSUMED_KIND",
+            message:
+              `team '${teamName}' declares it consumes '${kind}', but no work-unit type expects '${kind}' — known kinds: ${sortedExpectedKinds.join(", ") || "(none defined)"}`,
+            file,
+          });
+        }
+      }
     }
   }
 
@@ -2647,6 +2788,30 @@ function validateNamedReferences(root: string, errors: ValidationError[], overla
       checkRefs(data.connectors, connectorSet, knownConnectors, "UNKNOWN_CONNECTOR", "connectors", `agent '${agentName}'`, file);
       checkRefs(data.knowledge, knowledgeSet, knownKnowledge, "UNKNOWN_KNOWLEDGE", "knowledge", `agent '${agentName}'`, file);
       checkRefs(data.skills, skillSet, knownSkills, "UNKNOWN_SKILL", "skills", `agent '${agentName}'`, file);
+    }
+  }
+
+  // Finding 177: eval.unit names a work-unit type — same registry, same resolution, same code as
+  // unit.type's own UNKNOWN_TYPE (validateResponsibleTeam), now that Finding 171 made types/ a real
+  // operator-authored registry rather than a closed five-value enum.
+  if (existsSync(evalsDir)) {
+    for (const f of readdirSync(evalsDir).sort()) {
+      if (!f.endsWith(".md")) continue;
+      const file = join(evalsDir, f);
+      let data: Record<string, YamlValue>;
+      try {
+        ({ data } = parseFrontmatter(readOverlaid(file, overlay)));
+      } catch {
+        continue;
+      }
+      const evalName = typeof data.name === "string" ? data.name : basename(f, ".md");
+      const unit = typeof data.unit === "string" ? data.unit : undefined;
+      if (unit === undefined || typeSet.has(unit)) continue;
+      errors.push({
+        code: "UNKNOWN_TYPE",
+        message: `eval '${evalName}' declares unit: '${unit}', but no such type is defined — known types: ${knownTypes.join(", ") || "(none defined)"}`,
+        file,
+      });
     }
   }
 
@@ -2739,6 +2904,71 @@ function validateProducedByReferences(root: string, artifacts: DiscoveredArtifac
         file: a.file,
       });
     }
+  }
+}
+
+/**
+ * Finding 177: a unit's or artifact's `project:` was never cross-checked against a real
+ * `projects/<name>.md` — repo.ts#loadWork resolves a WorkUnit's effective project from its declared
+ * `project:` field, defaulted from its own `work/<project>/` directory name (the SAME `optStr(...) ??
+ * <dir>` fallback `unit:`/`after:` above already mirror); an artifact's `project:` is a required field
+ * with no such fallback. Both resolve by declared `name:` (like `team:`/`type:` — repo.ts#loadEntities
+ * keys the projects/ registry by declared name, not filename, and dagwalk.ts's own
+ * `repo.projects.get(unit.project)` is exactly the lookup this anticipates), so a project file renamed
+ * on disk without updating its `name:` field would silently break every unit/artifact naming it — the
+ * same class of gap UNKNOWN_TEAM/UNKNOWN_TYPE already close for teams and types.
+ *
+ * Skips entirely when the studio has no `projects/` directory at all (the same gate every other
+ * cross-entity check here uses) — a partial-registry rejection fixture exercising an unrelated check
+ * must not also start failing UNKNOWN_PROJECT.
+ */
+function validateProjectReferences(root: string, artifacts: DiscoveredArtifact[], errors: ValidationError[], overlay?: OverlayFile): void {
+  const projectsDir = join(root, "projects");
+  const workRoot = join(root, "work");
+  if (!existsSync(projectsDir)) return;
+
+  const projectNames = new Set<string>();
+  for (const f of readdirSync(projectsDir).sort()) {
+    if (!f.endsWith(".md")) continue;
+    try {
+      const { data } = parseFrontmatter(readOverlaid(join(projectsDir, f), overlay));
+      projectNames.add(typeof data.name === "string" ? data.name : basename(f, ".md"));
+    } catch {
+      continue;
+    }
+  }
+  const knownProjects = [...projectNames].sort().join(", ") || "(none defined)";
+
+  if (existsSync(workRoot)) {
+    for (const project of listDirs(workRoot)) {
+      for (const unitName of listDirs(join(workRoot, project))) {
+        const unitFile = join(workRoot, project, unitName, "unit.md");
+        if (!existsSync(unitFile)) continue;
+        let data: Record<string, YamlValue>;
+        try {
+          ({ data } = parseFrontmatter(readFileSync(unitFile, "utf8")));
+        } catch {
+          continue; // its own PARSE_ERROR was already recorded by the per-file pass.
+        }
+        const resolved = typeof data.project === "string" ? data.project : project;
+        if (projectNames.has(resolved)) continue;
+        errors.push({
+          code: "UNKNOWN_PROJECT",
+          message: `unit '${unitName}' resolves to project: '${resolved}', but no such project is defined under projects/ — known projects: ${knownProjects}`,
+          file: unitFile,
+        });
+      }
+    }
+  }
+
+  for (const a of artifacts) {
+    const project = typeof a.data.project === "string" ? a.data.project : undefined;
+    if (project === undefined || projectNames.has(project)) continue;
+    errors.push({
+      code: "UNKNOWN_PROJECT",
+      message: `artifact declares project: '${project}', but no such project is defined under projects/ — known projects: ${knownProjects}`,
+      file: a.file,
+    });
   }
 }
 
