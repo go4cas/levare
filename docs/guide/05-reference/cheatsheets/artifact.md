@@ -75,7 +75,7 @@ A markdown deliverable with YAML frontmatter, produced by a member and tracked t
 kind: example-kind
 id: example-id
 unit: example-unit
-project: example-project
+project: example-name
 status: draft
 produced_by: example-produced_by
 consumes: []
