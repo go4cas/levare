@@ -71,7 +71,7 @@ teams/       who does the work — name, consumes/produces, flow (step / gate / 
 agents/      native (Claude Agent SDK), cli (wrapped foreign CLI), or remote (MCP) members
 skills/      reusable instructions a member's context can include
 knowledge/   reference documents injected into member context by name
-types/       the five work-unit templates: inception, feature, fix, spike, research
+types/       work-unit templates — ships five (inception, feature, fix, spike, research), not a closed set
 connectors/  external services members can be granted (env var *names* only — never secrets)
 projects/    pointers to the products you're building (repo, deploy, pace, house rules)
 evals/       rubrics scoring a unit type's output — empty until you write one
