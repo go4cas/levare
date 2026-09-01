@@ -92,16 +92,26 @@ and every version is still on disk.
 
 ## The receipt
 
-The `usage:` block records what a member's invocation cost. Three numbers with three reliabilities:
+The `usage:` block records what a member's invocation cost. Three numbers, three reliabilities —
+and `usd` is not computed the same way twice:
 
 ```yaml
 usage:
   model: claude-sonnet-5    # the model that ACTUALLY ran (from the SDK's own report)
   tokens_in: 1507           # when the member reported them
   tokens_out: 845
-  usd: 0.0152               # estimated from knowledge/model-pricing.md
+  usd: 0.0152                # see below — not one formula for every member kind
   wall_clock_s: 12.0        # when levare timed the member
 ```
+
+For a `cli`/`remote` member, `usd` **is** an estimate — priced from `tokens_in`/`tokens_out` against
+`knowledge/model-pricing.md`'s flat per-model rate. For a `kind: native` member, it isn't: `usd` is the
+Claude Agent SDK's **own reported `total_cost_usd`**, used verbatim — real vendor billing, not a derived
+figure. **Don't check a native receipt's `usd` by multiplying `tokens_in`/`tokens_out` against the
+pricing table** — you'll land 40–50% off, because the SDK's cost also prices prompt-cache read/write
+tokens at their own separate rates, and those tokens are reported nowhere in `tokens_in`/`tokens_out` —
+only in the native-only `usage.tokens_cache_read`/`usage.tokens_cache_write` fields (see the [artifact
+cheatsheet](cheatsheets/artifact.md)).
 
 Two honest special cases:
 
