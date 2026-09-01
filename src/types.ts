@@ -310,7 +310,6 @@ export interface WorkUnit {
 }
 
 export type ArtifactStatus =
-  | "draft"
   | "in-review"
   | "approved"
   | "rejected"

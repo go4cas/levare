@@ -122,8 +122,8 @@ export function isUnitTerminal(status: WorkUnitStatus): boolean {
   return fromWorkUnitStatus(status) === "failed";
 }
 
-/** `ArtifactStatus` → the canonical palette. `superseded`/`skipped`/`draft` all read as an honest
- * neutral "waiting" — none of them is a live gate, a failure, or a finished state. */
+/** `ArtifactStatus` → the canonical palette. `superseded`/`skipped` both read as an honest neutral
+ * "waiting" — neither is a live gate, a failure, or a finished state. */
 export function fromArtifactStatus(status: ArtifactStatus): CanonicalStatus {
   switch (status) {
     case "approved":
@@ -136,7 +136,6 @@ export function fromArtifactStatus(status: ArtifactStatus): CanonicalStatus {
       return "blocked";
     case "superseded":
     case "skipped":
-    case "draft":
       return "waiting";
   }
 }

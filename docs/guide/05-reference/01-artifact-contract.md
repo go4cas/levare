@@ -66,7 +66,6 @@ approved brief rather than from nothing.
 
 | Status | Meaning |
 |---|---|
-| `draft` | Being written; not yet offered for review |
 | `in-review` | Produced, awaiting a Conductor decision |
 | `approved` | Accepted by the Conductor — **immutable** |
 | `rejected` | Refused on content grounds |

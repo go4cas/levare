@@ -107,7 +107,15 @@ export interface Schema {
 
 // NOTES F19: "skipped" — a Conductor's explicit "skip" verb on a blocked artifact, marking the step
 // abandoned so the walk can continue past it.
-const STATUS_ENUM = ["draft", "in-review", "approved", "rejected", "superseded", "blocked", "skipped"];
+//
+// Finding 179: "draft" was removed from this enum. Nothing ever wrote it — adapters.ts#author stamps
+// every artifact it produces as "status: in-review" directly, never "draft" first (there is no
+// levare-authored draft state; a member's return value becomes a reviewable artifact in one step, per
+// ruling C12). The only other trace was the ArtifactStatus type-union member (types.ts) and this enum
+// — nothing anywhere branched on the value. Unlike Finding 169's removal question (a declared KEY with
+// no reader, where an existing artifact could still carry it), this is an enum VALUE no artifact on
+// disk has ever been written with, so there is no migration concern in dropping it.
+const STATUS_ENUM = ["in-review", "approved", "rejected", "superseded", "blocked", "skipped"];
 
 export const ARTIFACT_SCHEMA: Schema = {
   name: "artifact",
@@ -120,7 +128,7 @@ export const ARTIFACT_SCHEMA: Schema = {
       type: "enum",
       required: true,
       enum: STATUS_ENUM,
-      description: "Where this artifact stands in review (§6): draft, in-review, approved, rejected, superseded, blocked, or skipped.",
+      description: "Where this artifact stands in review (§6): in-review, approved, rejected, superseded, blocked, or skipped.",
     },
     produced_by: { type: "str", required: true, description: "The member (agent) that produced this artifact." },
     consumes: { type: "str[]", required: true, description: "Other artifacts this one was produced from." },

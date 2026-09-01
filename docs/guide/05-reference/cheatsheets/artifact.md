@@ -17,7 +17,7 @@ A markdown deliverable with YAML frontmatter, produced by a member and tracked t
 | `id` | string | ✅ | — | — | This artifact's identifier, unique within its unit. |
 | `unit` | string | ✅ | — | — | The work unit this artifact belongs to. |
 | `project` | string | ✅ | — | — | The project this artifact belongs to. |
-| `status` | enum | ✅ | — | `draft` · `in-review` · `approved` · `rejected` · `superseded` · `blocked` · `skipped` | Where this artifact stands in review (§6): draft, in-review, approved, rejected, superseded, blocked, or skipped. |
+| `status` | enum | ✅ | — | `in-review` · `approved` · `rejected` · `superseded` · `blocked` · `skipped` | Where this artifact stands in review (§6): in-review, approved, rejected, superseded, blocked, or skipped. |
 | `produced_by` | string | ✅ | — | — | The member (agent) that produced this artifact. |
 | `consumes` | string[] | ✅ | — | — | Other artifacts this one was produced from. |
 | `supersedes` | string | ✅ | ✅ | — | The artifact id this one replaces, or null if it supersedes nothing. |
@@ -76,7 +76,7 @@ kind: example-kind
 id: example-id
 unit: example-unit
 project: example-name
-status: draft
+status: in-review
 produced_by: example-produced_by
 consumes: []
 supersedes: null
