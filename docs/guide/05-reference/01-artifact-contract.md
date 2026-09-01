@@ -125,4 +125,49 @@ naming both. A receipt that disagrees with the request is not accepted quietly.
 
 ---
 
+## What else levare records
+
+Beyond the fields above, five more are levare's own — not authored by the member, and each written
+only when its own circumstance actually applies.
+
+**`verdict` / `verdict_source`** — on a `kind: review` artifact, levare reads the review's own body
+rather than asking the critic to declare a verdict separately: markdown decoration is stripped from
+each line, then exactly one resulting line — `APPROVED` or `CHANGES REQUESTED`, optionally
+`Verdict: `-prefixed — must match in its entirety. Found → `verdict` carries it and
+`verdict_source: extracted`. Zero or more than one match → `verdict` stays absent and
+`verdict_source: not-found`, so a failed scan is visible rather than silently guessed. `declared` is
+reserved for a future structured channel and isn't written yet. See [4.6 · Your first
+loop](../04-workflow/06-first-loop.md#what-the-critic-actually-said) for the extraction rule worked
+through a real review.
+
+**`blocked_class` / `blocked_class_source`** — when an artifact is `blocked` (see [4.8 · When a member
+fails](../04-workflow/08-when-a-member-fails.md)), `blocked_reason` carries the vendor's own error
+text, but not whose problem it is. `blocked_class` answers that, when levare can tell: `operator` (the
+studio/environment needs fixing — Retry cannot succeed) or `transient` (a rate-limit/5xx/connection
+failure that already survived one levare-level retry and still failed). Absent means member-caused or
+unknown, and Retry stays offered. `blocked_class_source` says how it was decided: `status` from a real
+HTTP error status the SDK's retry stream carried, `message` from matching the failure text against a
+known vendor error string when the call never made an HTTP round trip at all.
+
+**`merge_result`** — a `kind: merge` artifact's gate opens with a trial-merge report (`merge:` — branch,
+commits ahead, diffstat, conflicts). `merge_result` is different: levare writes it only once approval
+actually executes a clean merge (and push, where the project declares a remote) — the merge commit SHA,
+whether it pushed, and `checkout_behind`, which flags that the project's own primary checkout still has
+every merged file staged for deletion until synced by hand. A failed merge writes nothing here at all.
+
+**`code_commit` / `code_commit_actor`** — when a dispatch has its own worktree, `code_commit` names the
+commit SHA its file changes landed on the work branch as, or `none` if the dispatch changed nothing.
+`code_commit_actor` is present only when that commit's author/committer identity doesn't match the
+member's expected git identity — it names who it actually was instead.
+
+**`registry`** — a content hash over `teams/`, `agents/`, `connectors/`, `projects/`, `skills/`,
+`knowledge/`, `types/`, and `studio.md` exactly as they stood on disk when this artifact was produced —
+deliberately not `HEAD`, which `work/` commits move independently of the registry. Two artifacts
+sharing the same `registry` value ran under byte-identical definitions, full stop; a different value
+means something governing the dispatch changed between them, whether or not the commit history shows it.
+
+**Full field list, enum values, and skeleton:** the [artifact cheatsheet](cheatsheets/artifact.md).
+
+---
+
 Next: **[5.2 · Registry entities](02-registry-entities.md)**
