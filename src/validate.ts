@@ -535,6 +535,7 @@ const TEAM_SCHEMA: Schema = {
     },
     knowledge: { type: "str[]", required: false, description: "Knowledge documents (by name) injected into every member's context." },
     connectors: { type: "str[]", required: false, description: "Connector grants — the Runner injects each named connector's env into this team's members." },
+    skills: { type: "str[]", required: false, description: "Skill grants (by name) — unioned into every member's own skills:, deduped, and included in that member's context." },
   },
   // `mode:` (the `mode: led` escape hatch) was cut in PRD v1.1 (invariant 7 restated: exactly one LLM
   // orchestrator, declarative `flow` executed by the Runner, no escape hatch). A team still declaring
@@ -2697,9 +2698,10 @@ function validateResponsibleTeam(root: string, errors: ValidationError[], overla
 }
 
 /**
- * Finding 174: a grant or reference to something that doesn't exist must fail loudly. Before this,
- * `team`/`agent` `connectors:`, `team`/`agent` `knowledge:`, and `agent` `skills:` were never checked
- * against their registry directory at all — a typo in `knowledge: [house-styl]` passed `levare
+ * Finding 174 (team `skills:` added by Finding 172): a grant or reference to something that doesn't
+ * exist must fail loudly. Before this, `team`/`agent` `connectors:`, `team`/`agent` `knowledge:`, and
+ * `agent`/`team` `skills:` were never checked against their registry directory at all — a typo in
+ * `knowledge: [house-styl]` passed `levare
  * validate` clean, and context.ts#readEntityBody quietly embedded a `(not found: knowledge/house-
  * styl.md)` placeholder into the member's real context instead of failing anywhere. `connectors:` was
  * worse still: env.ts#grantedConnectors silently drops an unresolved name from the member's env with
@@ -2820,6 +2822,8 @@ function validateNamedReferences(root: string, errors: ValidationError[], overla
       const teamName = typeof data.name === "string" ? data.name : basename(f, ".md");
       checkRefs(data.connectors, connectorSet, knownConnectors, "UNKNOWN_CONNECTOR", "connectors", `team '${teamName}'`, file);
       checkRefs(data.knowledge, knowledgeSet, knownKnowledge, "UNKNOWN_KNOWLEDGE", "knowledge", `team '${teamName}'`, file);
+      // Finding 172: team.skills resolves exactly like agent.skills below — same skillsDir/knownSkills.
+      checkRefs(data.skills, skillSet, knownSkills, "UNKNOWN_SKILL", "skills", `team '${teamName}'`, file);
       // Finding 177: a team naming an agent nothing defines. Before this, a redundant bad member name
       // surfaced only indirectly (validateStudioBindings' roster lists it as "(no agent definition)"),
       // and only when that specific member was needed to cover a flow step — a bad name that happens

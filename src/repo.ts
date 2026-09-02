@@ -136,6 +136,7 @@ function toTeam(d: Record<string, YamlValue>, body: string, file: string): Team 
     guardrails: d.guardrails as Team["guardrails"],
     knowledge: d.knowledge ? strArr(d.knowledge) : undefined,
     connectors: d.connectors ? strArr(d.connectors) : undefined,
+    skills: d.skills ? strArr(d.skills) : undefined,
     charter: body.trim(),
     learnings,
   };

@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { readFileSync, mkdtempSync, cpSync, rmSync } from "node:fs";
+import { readFileSync, mkdtempSync, cpSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRepo } from "../src/repo.ts";
@@ -127,6 +127,66 @@ describe("context assembly (§6 recipe)", () => {
     const out = assembleContext(repo, { root: ROOT, agent: "lyra", unit: "checkout-flow", capabilities: CAPABILITIES });
     expect(out).toContain("Kestrel — the product-shaping team"); // charter
     expect(out).toContain("kestrel — learnings"); // LEARNINGS.md
+  });
+});
+
+// Finding 172: team.skills reaches every member's context, unioned with the member's own skills:,
+// deduped when both name the same skill.
+describe("Finding 172: team.skills is unioned into every member's own skills:, deduped", () => {
+  function buildStudio(): string {
+    const dir = mkdtempSync(join(tmpdir(), "levare-team-skills-"));
+    mkdirSync(join(dir, "teams"), { recursive: true });
+    mkdirSync(join(dir, "agents"), { recursive: true });
+    mkdirSync(join(dir, "skills"), { recursive: true });
+    mkdirSync(join(dir, "work", "acme", "launch"), { recursive: true });
+
+    writeFileSync(join(dir, "skills", "team-only-skill.md"), "---\nname: team-only-skill\ndescription: test\n---\n\nTeam-only skill body.\n");
+    writeFileSync(join(dir, "skills", "agent-only-skill.md"), "---\nname: agent-only-skill\ndescription: test\n---\n\nAgent-only skill body.\n");
+    writeFileSync(join(dir, "skills", "shared-skill.md"), "---\nname: shared-skill\ndescription: test\n---\n\nShared skill body.\n");
+    writeFileSync(
+      join(dir, "agents", "wren.md"),
+      ["---", "name: wren", "kind: native", "produces: [product-brief]", "model: claude-sonnet-5", "skills: [agent-only-skill, shared-skill]", "style:", "  avatar: Wr", "---", "", "Wren.", ""].join(
+        "\n",
+      ),
+    );
+    writeFileSync(
+      join(dir, "teams", "kestrel.md"),
+      [
+        "---",
+        "name: kestrel",
+        "consumes: []",
+        "produces: [product-brief]",
+        "members: [wren]",
+        "flow:",
+        "  - step: brief",
+        "style:",
+        "  color: '#000'",
+        "skills: [team-only-skill, shared-skill]",
+        "---",
+        "",
+        "Kestrel.",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(join(dir, "work", "acme", "launch", "unit.md"), "---\ntype: feature\nstatus: active\n---\n\n# launch\n\nTeam skills fixture.\n");
+    return dir;
+  }
+
+  test("team.skills and agent.skills both reach the member's context, deduped, with no not-found placeholders", () => {
+    const dir = buildStudio();
+    try {
+      const repo = loadRepo(dir);
+      const out = assembleContext(repo, { root: dir, agent: "wren", unit: "launch", capabilities: [{ member: "wren", kind: "product-brief" }] });
+      const skillsBlock = out.slice(out.indexOf("── 2. skills"), out.indexOf("── 3. knowledge"));
+      expect(skillsBlock).toContain("team-only-skill");
+      expect(skillsBlock).toContain("agent-only-skill");
+      expect(skillsBlock).toContain("shared-skill");
+      expect(skillsBlock).not.toContain("(not found");
+      // Deduped: shared-skill named on both team and agent must appear as ONE section, not two.
+      expect(skillsBlock.split("### shared-skill").length - 1).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

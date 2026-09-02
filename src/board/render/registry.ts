@@ -238,10 +238,13 @@ export function renderRegistry(
         ? `${g.protected_branches?.length ? `<div class="prow"><span class="k">protected_branches</span><span class="v mono">${g.protected_branches.map(esc).join(", ")}</span></div>` : ""}${g.protected_paths?.length ? `<div class="prow"><span class="k">protected_paths</span><span class="v mono">${g.protected_paths.map(esc).join(", ")}</span></div>` : ""}${g.never?.length ? `<div class="prow"><span class="k">never</span><span class="v chiprow">${g.never.map((n) => tag(n, "tag")).join("")}</span></div>` : ""}`
         : "";
       const knowledgeRow = t.knowledge?.length ? `<div class="prow"><span class="k">knowledge</span><span class="v chiprow">${t.knowledge.map((k) => tag(k, "tag")).join("")}</span></div>` : "";
+      // Finding 172: same Definition-row treatment as knowledgeRow above — a skill grant unioned into
+      // every member's own skills: (context.ts), so it belongs beside knowledge, not on the charter.
+      const skillsRow = t.skills?.length ? `<div class="prow"><span class="k">skills</span><span class="v chiprow">${t.skills.map((s) => tag(s, "tag")).join("")}</span></div>` : "";
       const inner = `${cardHeadline(t.description)}${leadText(firstParagraph(t.charter))}<div class="card__h">Declared flow</div><div class="flowstrip">${flow}</div>
       <div class="card__h">Definition</div>
       <div class="prow"><span class="k">members</span><span class="v chiprow">${memberAvatars}</span></div>
-      <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>${guardrailRows}${knowledgeRow}`;
+      <div class="prow"><span class="k">produces</span><span class="v chiprow">${producesChips}</span></div>${guardrailRows}${knowledgeRow}${skillsRow}`;
       // The declared colour, as a left-edge card border, is the card's identity instead of a
       // swatch/hex value printed inside it (RULE B). Routed through the same contrast-floored
       // derivation `avatar()` uses (team-color.ts) — the border and a team's member avatars must

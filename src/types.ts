@@ -54,6 +54,9 @@ export interface Team {
   knowledge?: string[];
   /** Connector grants (§5): the Runner injects each named connector's env into this team's members. */
   connectors?: string[];
+  /** Skill grants (Finding 172): union'd into every member's own `skills:` (context.ts), deduped —
+   * mirrors env.ts#grantedConnectors' agent∪team union. */
+  skills?: string[];
   /** Team charter (markdown body), injected into member context (§6). */
   charter: string;
   /** Team LEARNINGS.md content, injected after the charter (§6 recipe item 4); "" when none. */

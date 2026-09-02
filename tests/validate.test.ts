@@ -848,6 +848,7 @@ describe("Finding 174: connectors:/knowledge:/skills:/produced_by/after: must re
     opts: {
       teamConnectors?: string[];
       teamKnowledge?: string[];
+      teamSkills?: string[];
       agentConnectors?: string[];
       agentKnowledge?: string[];
       agentSkills?: string[];
@@ -905,6 +906,7 @@ describe("Finding 174: connectors:/knowledge:/skills:/produced_by/after: must re
         "  color: '#000'",
         line("connectors", opts.teamConnectors),
         line("knowledge", opts.teamKnowledge),
+        line("skills", opts.teamSkills),
         "---",
         "",
         "Kestrel.",
@@ -1034,6 +1036,28 @@ describe("Finding 174: connectors:/knowledge:/skills:/produced_by/after: must re
 
   test("a real flat skill validates cleanly", () => {
     const dir = buildStudio({ agentSkills: ["flow-design"] });
+    try {
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_SKILL");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("team.skills naming nothing under skills/ fails UNKNOWN_SKILL, listing known skills", () => {
+    const dir = buildStudio({ teamSkills: ["ghost-skill"] });
+    try {
+      const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_SKILL" && e.file.includes("teams/kestrel.md"));
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("ghost-skill");
+      expect(err!.message).toContain("flow-design");
+      expect(err!.message).toContain("kestrel");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a real skill grant on team and agent both validate cleanly", () => {
+    const dir = buildStudio({ teamSkills: ["flow-design"], agentSkills: ["flow-design"] });
     try {
       expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_SKILL");
     } finally {

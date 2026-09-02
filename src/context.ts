@@ -131,7 +131,11 @@ export function assembleContext(repo: Repo, opts: AssembleOptions): string {
   out.push("");
 
   out.push("── 2. skills ──");
-  const skills = agent.skills ?? [];
+  // Finding 172: team.skills ∪ agent.skills, deduped — team first, then agent, mirroring
+  // env.ts#grantedConnectors' own agent∪team union (order differs only in display, not membership: a
+  // Set drops the later duplicate either way, and one team per agent is enforced, so there is no
+  // multi-team accumulation to reason about here).
+  const skills = [...new Set([...(team.skills ?? []), ...(agent.skills ?? [])])];
   if (skills.length === 0) out.push("(none)");
   for (const s of skills) {
     out.push(`### ${s}`);
