@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 410" width="680" height="410" role="img" aria-labelledby="t d">
 <title id="t">How levare's concepts relate</title>
-<desc id="d">A studio is a git repository. Projects contain work units, which produce artifacts, which raise gates. Teams contain agents, who author the artifacts. Types define units; skills, knowledge, and connectors feed agents. Evals score a work-unit type's output.</desc>
+<desc id="d">A studio is a git repository. Projects contain work units, which produce artifacts, which raise gates. Teams contain agents, who author the artifacts. Types define units; skills, knowledge, and connectors feed agents; knowledge and connectors are also granted at the team level. Evals score a work-unit type's output. Ideas promote into work units.</desc>
 <style>
   .th{font:500 14px 'Hanken Grotesk',system-ui,sans-serif}
   .ts{font:400 11px 'IBM Plex Mono',ui-monospace,monospace}
@@ -22,6 +22,11 @@
 
 <text class="cap" x="20" y="58">studio · one git repository of markdown files</text>
 <rect class="box" x="20" y="72" width="640" height="276" rx="8"/>
+
+<g class="d"><rect x="200" y="64" width="120" height="22" rx="6" stroke-width="1"/>
+<text class="ts" x="260" y="79" text-anchor="middle">idea</text></g>
+<line x1="260" y1="86" x2="260" y2="108" class="arr" marker-end="url(#a)"/>
+<text class="lbl" x="326" y="99" text-anchor="middle">promotes</text>
 
 <g class="d"><rect x="40" y="110" width="120" height="44" rx="6" stroke-width="1"/>
 <text class="th" x="100" y="137" text-anchor="middle">project</text></g>
@@ -71,6 +76,10 @@
 <path d="M350 290 L392 244" class="arr" marker-end="url(#a)" fill="none"/>
 <path d="M460 290 L440 244" class="arr" marker-end="url(#a)" fill="none"/>
 <path d="M570 290 L472 244" class="arr" marker-end="url(#a)" fill="none"/>
+
+<path d="M260 240 L260 340 L460 340 L460 328" class="arr" marker-end="url(#a)" fill="none"/>
+<path d="M260 240 L260 340 L570 340 L570 328" class="arr" marker-end="url(#a)" fill="none"/>
+<text class="lbl" x="268" y="272" text-anchor="start">grants</text>
 
 <text class="cap" x="340" y="378" text-anchor="middle">Blue has a model · gray is a file · brass needs you.</text>
 <text class="cap" x="340" y="398" text-anchor="middle">Every box above is a markdown file you can open and edit.</text>

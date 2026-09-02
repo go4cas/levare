@@ -14,15 +14,16 @@ stops making sense.
 
 ## The whole picture
 
-![How levare's concepts relate: projects have work units, which have artifacts, which raise gates. Teams have agents, who author artifacts. Types define units; skills, knowledge, and connectors feed agents. Evals score a work-unit type's output.](img/concept-map.png)
+![How levare's concepts relate: an idea promotes into a work unit. Projects have work units, which have artifacts, which raise gates. Teams have agents, who author artifacts. Types define units; skills, knowledge, and connectors feed agents, and knowledge/connectors are also granted at the team level. Evals score a work-unit type's output.](img/concept-map.png)
 
 Read it in two lines:
 
-- **The work:** a *project* has *work units*; a unit produces *artifacts*; an artifact raises a *gate*
-  — and a gate is where you come in.
+- **The work:** an *idea* promotes into a *work unit* inside a *project*; a unit produces *artifacts*;
+  an artifact raises a *gate* — and a gate is where you come in.
 - **The workers:** a *team* has *agents*; an agent *authors* the artifacts. *Types* define what a unit
   is expected to produce, and *evals* score what it actually produced. *Skills*, *knowledge*, and
-  *connectors* are what an agent is given.
+  *connectors* are what an agent is given — knowledge and connectors can also be granted at the team
+  level, reaching every agent on it.
 
 Every one of those boxes is a markdown file in your studio. Nothing else exists.
 

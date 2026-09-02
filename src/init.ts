@@ -86,8 +86,9 @@ One team, \`kestrel\`, whose flow demonstrates all three flow shapes a team can 
 alternating until \`spec.approved\`, capped at 3 rounds with an escalation gate on exhaustion). Its
 three members show both non-remote agent kinds: \`wren\` and \`lyra\` are \`native\` (Claude Agent SDK
 subagents), \`finch\` is \`cli\` (a wrapped foreign CLI). \`skills/new-project/\` is a sample skill in
-the Agent Skills format — a folder carrying its own \`SKILL.md\` plus supporting files, here a
-\`scripts/create-repo.sh\` stub. Edit or delete any of it; it's a starting point, not a fixture.
+the Agent Skills format — a folder carrying its own \`SKILL.md\`, the other resolution
+\`skills:\` references support besides the flat \`skills/<name>.md\` convention the other two
+sample skills use. Edit or delete any of it; it's a starting point, not a fixture.
 
 ## Getting started
 
@@ -322,20 +323,27 @@ a reviewer must check gets its own line. Precision beats prose: if a build team 
 a question, the spec still has a gap.
 `;
 
-// Agent Skills format: a folder carrying its own SKILL.md plus supporting files (here a script),
-// rather than the flat `skills/<name>.md` convention the other two skills above use.
+// Agent Skills format: a folder carrying its own SKILL.md, rather than the flat
+// `skills/<name>.md` convention the other two skills above use — see docs/guide's registry
+// reference for the two shapes readEntityBody (context.ts) resolves.
 const SKILL_NEW_PROJECT = `---
 name: new-project
-description: "Stand up a new project — create the repo, clone, write the pointer, capture deploy target and house rules, commit."
-scripts: [scripts/create-repo.sh]
+description: "Register an existing project checkout with this studio."
 ---
 
 # new-project skill
 
-Run by the Orchestrator to promote an idea into a project (§7): create the remote repo,
-clone it locally, write the \`projects/<name>.md\` pointer, ask for the deploy target and
-house rules, commit. \`scripts/create-repo.sh\` is the remote-creation half of that recipe —
-swap it for whatever your host (GitHub, GitLab, a bare internal remote) actually needs.
+Promoting an idea into a project (§7) means registering a product repo that already exists —
+levare does not create or clone remote repositories for you. Stand up the remote yourself
+(\`gh repo create\`, or whatever your host needs) and get a local checkout, then run:
+
+\`\`\`sh
+levare project new <name> --repo <path-to-checkout>
+\`\`\`
+
+It reads \`default_branch\`/\`remote\` straight off that checkout, writes the
+\`projects/<name>.md\` pointer, and commits it. Pipe the house rules in on stdin (see below) —
+there is no second hand-edit step after creation.
 
 ## House rules
 
@@ -355,17 +363,6 @@ matters — a project with no test command yet should not be held to a rule it c
 
 House rules are per-project by design. A research or documentation project wants different
 ones, or none.
-`;
-
-const SCRIPT_CREATE_REPO = `#!/usr/bin/env bash
-# Stand up a new project's remote repository. Called by the new-project skill with the
-# project name as $1; expected to print the resulting clone URL on stdout.
-#
-# Replace this stub with whatever your host needs, e.g.:
-#   gh repo create "acme/$1" --private --clone=false
-set -euo pipefail
-echo "create-repo.sh is a stub — wire it to your git host before using the new-project skill." >&2
-exit 1
 `;
 
 const TYPE_INCEPTION = `---
@@ -431,7 +428,6 @@ glyph: "▤"
 expects: [question, report]
 gates: [report]
 output: report
-promotable_to: knowledge
 ---
 
 # Research
@@ -633,7 +629,6 @@ const FILES: Template[] = [
   { path: "skills/flow-design.md", content: SKILL_FLOW_DESIGN },
   { path: "skills/spec-writing.md", content: SKILL_SPEC_WRITING },
   { path: "skills/new-project/SKILL.md", content: SKILL_NEW_PROJECT },
-  { path: "skills/new-project/scripts/create-repo.sh", content: SCRIPT_CREATE_REPO },
   { path: "types/inception.md", content: TYPE_INCEPTION },
   { path: "types/feature.md", content: TYPE_FEATURE },
   { path: "types/fix.md", content: TYPE_FIX },

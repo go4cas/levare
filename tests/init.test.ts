@@ -93,9 +93,9 @@ describe("scaffoldStudio", () => {
     const finch = readFileSync(join(root, "agents/finch.md"), "utf8");
     expect(wren).toContain("kind: native");
     expect(finch).toContain("kind: cli");
-    // Agent Skills format: a folder carrying its own SKILL.md plus supporting files.
+    // Agent Skills format: a folder carrying its own SKILL.md (the bundled-folder resolution
+    // readEntityBody supports, alongside the flat skills/<name>.md convention above).
     expect(existsSync(join(root, "skills/new-project/SKILL.md"))).toBe(true);
-    expect(existsSync(join(root, "skills/new-project/scripts/create-repo.sh"))).toBe(true);
   });
 
   // NOTES DOCS-WALKTHROUGH-2 (Conductor ruling): the scaffold's own `kind: cli` example must be

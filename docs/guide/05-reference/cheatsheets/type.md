@@ -19,7 +19,7 @@ A work-unit template: what a unit of this type is expected to produce, and where
 | `gates` | string[] | ✅ | — | — | Where this type gates in the flow. |
 | `output` | string | — | — | — | The artifact kind this type's flow terminates on — must be one of this type's own expects. |
 | `timebox` | string | — | ✅ | — | Spike/timebox duration for units of this type, Runner-enforced. |
-| `promotable_to` | string | — | ✅ | — | The knowledge kind a research report of this type promotes to through a gate. |
+| `promotable_to` | string | — | ✅ | — | The knowledge kind a research report of this type would promote to — documentation only; not read by levare (see validate's TYPE_PROMOTABLE_TO_INERT warning). |
 
 ## Minimal valid skeleton
 
