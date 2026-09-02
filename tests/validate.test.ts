@@ -2345,3 +2345,79 @@ describe("PROJECT_REPO_UNRESOLVED (Finding 77)", () => {
     expect(r.warnings.map((w) => w.code)).not.toContain("PROJECT_REPO_UNRESOLVED");
   });
 });
+
+// Finding 183: `skill.scripts`/`type.promotable_to` stay accepted (unknown-key rejection would fail
+// every studio a pre-Finding-183 `levare init` scaffolded) but are inert — nothing in src/ reads
+// either field. Same shape as SUBSCRIPTION_NO_HOME: a warning names the gap, never an error.
+describe("Finding 183: skill.scripts and type.promotable_to are accepted but inert", () => {
+  test("a skill declaring scripts: still validates, and gets a SKILL_SCRIPTS_INERT warning naming it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-skill-scripts-inert-"));
+    mkdirSync(join(dir, "skills"), { recursive: true });
+    writeFileSync(join(dir, "skills", "old-recipe.md"), ["---", "name: old-recipe", "scripts: [scripts/run.sh]", "---", "", "# old-recipe", ""].join("\n"));
+    try {
+      const r = validatePath(dir);
+      expect(r.ok).toBe(true); // legal declaration — a warning, never an error
+      const w = r.warnings.find((w) => w.code === "SKILL_SCRIPTS_INERT");
+      expect(w).toBeDefined();
+      expect(w!.message).toContain("old-recipe");
+      expect(w!.message).toContain("scripts");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a skill with no scripts: stays silent", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-skill-scripts-inert-silent-"));
+    mkdirSync(join(dir, "skills"), { recursive: true });
+    writeFileSync(join(dir, "skills", "plain.md"), ["---", "name: plain", "---", "", "# plain", ""].join("\n"));
+    try {
+      const r = validatePath(dir);
+      expect(r.warnings.map((w) => w.code)).not.toContain("SKILL_SCRIPTS_INERT");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a type declaring promotable_to: still validates, and gets a TYPE_PROMOTABLE_TO_INERT warning naming it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-type-promotable-to-inert-"));
+    mkdirSync(join(dir, "types"), { recursive: true });
+    writeFileSync(
+      join(dir, "types", "research.md"),
+      ["---", "name: research", 'glyph: "x"', "expects: [report]", "gates: [report]", "output: report", "promotable_to: knowledge", "---", "", "# Research", ""].join("\n"),
+    );
+    try {
+      const r = validatePath(dir);
+      expect(r.ok).toBe(true); // legal declaration — a warning, never an error
+      const w = r.warnings.find((w) => w.code === "TYPE_PROMOTABLE_TO_INERT");
+      expect(w).toBeDefined();
+      expect(w!.message).toContain("research");
+      expect(w!.message).toContain("promotable_to");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a type with no promotable_to: stays silent", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-type-promotable-to-inert-silent-"));
+    mkdirSync(join(dir, "types"), { recursive: true });
+    writeFileSync(
+      join(dir, "types", "fix.md"),
+      ["---", "name: fix", 'glyph: "x"', "expects: [code]", "gates: [merge]", "output: code", "---", "", "# Fix", ""].join("\n"),
+    );
+    try {
+      const r = validatePath(dir);
+      expect(r.warnings.map((w) => w.code)).not.toContain("TYPE_PROMOTABLE_TO_INERT");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the scaffolded studio no longer writes either inert field, so it validates with neither warning", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-scaffold-inert-silent-"));
+    scaffoldStudio(dir);
+    const r = validatePath(dir);
+    expect(r.warnings.map((w) => w.code)).not.toContain("SKILL_SCRIPTS_INERT");
+    expect(r.warnings.map((w) => w.code)).not.toContain("TYPE_PROMOTABLE_TO_INERT");
+    rmSync(dir, { recursive: true, force: true });
+  });
+});

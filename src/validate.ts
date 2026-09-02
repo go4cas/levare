@@ -672,11 +672,15 @@ const TYPE_SCHEMA: Schema = {
     // one of its own `expects` kinds, so the correspondence is real, not invented.
     output: { type: "str", required: false, description: "The artifact kind this type's flow terminates on — must be one of this type's own expects." },
     timebox: { type: "str", required: false, nullable: true, description: "Spike/timebox duration for units of this type, Runner-enforced." },
+    // Finding 183: accepted but inert — a knowledge promotion's destination always comes from the
+    // gate's own knowledgeName (orchestrator.ts#proposeKnowledgePromotion), never looked up here. Kept
+    // accepted (not rejected as an unknown key) purely for backward compatibility: removing it would
+    // fail every studio scaffolded by a `levare init` that wrote it. See validateTypePromotableToInertWarning.
     promotable_to: {
       type: "str",
       required: false,
       nullable: true,
-      description: "The knowledge kind a research report of this type promotes to through a gate.",
+      description: "The knowledge kind a research report of this type would promote to — documentation only; not read by levare (see validate's TYPE_PROMOTABLE_TO_INERT warning).",
     },
   },
 };
@@ -805,12 +809,18 @@ const EVAL_SCHEMA: Schema = {
   },
 };
 
+// Finding 183: `scripts` is accepted but inert — `readEntityBody` (context.ts) reads only a skill's
+// SKILL.md body into a member's context, never the bundled files a folder-form skill carries alongside
+// it, so nothing in a member's context can name (or reach) a script listed here. Kept accepted (not
+// rejected as an unknown key) purely for backward compatibility: removing it would fail every studio
+// scaffolded by a `levare init` that wrote it (the pre-Finding-183 `new-project` skill declared
+// `scripts: [scripts/create-repo.sh]`). See validateSkillScriptsInertWarning.
 const SKILL_SCHEMA: Schema = {
   name: "skill",
   fields: {
     name: { type: "str", required: true, description: "The skill's name, referenced by name from an agent's or team's skills: list." },
     description: { type: "str", required: false, description: "A human-readable summary of what this skill does." },
-    scripts: { type: "str[]", required: false, description: "Scripts this skill bundles." },
+    scripts: { type: "str[]", required: false, description: "Bundled script paths — documentation only; not read by levare (see validate's SKILL_SCRIPTS_INERT warning). Put any instructions a member needs directly in the skill body instead." },
   },
 };
 
@@ -1065,6 +1075,8 @@ function validateSingleFile(
   if (kind.schema === CONNECTOR_SCHEMA) validateActionPlaceholderPosition(data, file, warnings);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorEffects(data, file, errors);
   if (kind.schema === CONNECTOR_SCHEMA) validateConnectorFetchAtDispatch(data, file, warnings);
+  if (kind.schema === SKILL_SCHEMA) validateSkillScriptsInertWarning(data, file, warnings);
+  if (kind.schema === TYPE_SCHEMA) validateTypePromotableToInertWarning(data, file, warnings);
 }
 
 function discoverFolderArtifacts(root: string, errors: ValidationError[], artifacts: DiscoveredArtifact[]): void {
@@ -1730,6 +1742,30 @@ function validateAgentSandboxDeclaredWarning(data: Record<string, YamlValue>, fi
   warnings.push({
     code: "SANDBOX_DECLARED_UNSANDBOXED",
     message: `agent '${name}' declares sandbox: unsandboxed — its process runs OUTSIDE levare's OS sandbox on every host, even where a working primitive exists, by explicit author declaration: ${data.sandbox_reason}`,
+    file,
+  });
+}
+
+// Finding 183: names a gap without refusing the studio, exactly like SUBSCRIPTION_NO_HOME does for an
+// unscoped subscription connector — `scripts:` validates and is preserved, but a Conductor reading
+// `levare validate`'s output should know it does nothing.
+function validateSkillScriptsInertWarning(data: Record<string, YamlValue>, file: string, warnings: ValidationWarning[]): void {
+  if (!Array.isArray(data.scripts) || data.scripts.length === 0) return;
+  const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+  warnings.push({
+    code: "SKILL_SCRIPTS_INERT",
+    message: `skill '${name}' declares scripts: [${data.scripts.join(", ")}] — accepted but not read: a member's context includes only this skill's SKILL.md body, never a bundled file alongside it. Move any instructions into the body, or drop the field.`,
+    file,
+  });
+}
+
+// Same shape as validateSkillScriptsInertWarning above, for the type schema's other inert field.
+function validateTypePromotableToInertWarning(data: Record<string, YamlValue>, file: string, warnings: ValidationWarning[]): void {
+  if (typeof data.promotable_to !== "string") return;
+  const name = typeof data.name === "string" ? data.name : basename(file, ".md");
+  warnings.push({
+    code: "TYPE_PROMOTABLE_TO_INERT",
+    message: `type '${name}' declares promotable_to: ${data.promotable_to} — accepted but not read: a knowledge promotion's destination always comes from the gate's own knowledge name, never this field. Documentation only; safe to leave or drop.`,
     file,
   });
 }

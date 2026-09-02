@@ -286,9 +286,11 @@ checked against anything: its values mix flow step labels (which only exist rela
 ends up bound to a unit of this type — never declared on the type itself) with the literal keyword
 `merge` (a synthetic final gate levare opens itself, never a step any team declares), so there is no
 single well-defined target to check it against; a typo here validates clean. `timebox` is a
-spike/timebox duration, Runner-enforced. `promotable_to` names the knowledge kind a completed unit of
-this type — a research report, most naturally — can be promoted into `knowledge/` through a gate,
-rather than living only as a one-off artifact.
+spike/timebox duration, Runner-enforced. `promotable_to` documents the knowledge kind a completed
+unit of this type — a research report, most naturally — is meant to be promoted into `knowledge/`
+through a gate, rather than living only as a one-off artifact — but the field itself is
+documentation only: the promotion gate's actual destination always comes from whatever
+`knowledgeName` the caller supplies, never a lookup on this field (`TYPE_PROMOTABLE_TO_INERT`).
 
 ```markdown
 ---
@@ -387,8 +389,9 @@ Reusable instructions a member's context can include by name.
 |---|---|---|
 | `name` | ✅ | Referenced by name from an agent's or team's `skills:` list |
 
-That's the whole schema — `description` (display-only) and `scripts` (bundled script paths) are both
-optional.
+That's the whole schema — `description` (display-only) and `scripts` (bundled script paths,
+documentation only — levare reads a skill's `SKILL.md` body into a member's context, never a file
+listed here; see the `SKILL_SCRIPTS_INERT` validate warning) are both optional.
 
 **The why**
 

@@ -15,7 +15,7 @@ Reusable instructions a member's context can include by name.
 |---|---|---|---|---|---|
 | `name` | string | ✅ | — | — | The skill's name, referenced by name from an agent's or team's skills: list. |
 | `description` | string | — | — | — | A human-readable summary of what this skill does. |
-| `scripts` | string[] | — | — | — | Scripts this skill bundles. |
+| `scripts` | string[] | — | — | — | Bundled script paths — documentation only; not read by levare (see validate's SKILL_SCRIPTS_INERT warning). Put any instructions a member needs directly in the skill body instead. |
 
 ## Minimal valid skeleton
 
