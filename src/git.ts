@@ -82,12 +82,11 @@ export function resolveGlobalAttributesFile(env: NodeJS.ProcessEnv = process.env
 
 // Finding 142 — ruled NOT a defect, stays hermetic: `commitAs` commits into the STUDIO's own repo
 // (conductorCommit/runnerCommit — board gate resolution, registry edits, the Orchestrator — and
-// new.ts/project-new.ts's operator-identity commits) and `runNewProjectSkill` (board/gateops.ts) commits
-// the founding state of a brand-new PROJECT repo levare itself just cloned. Both are levare's own
-// bookkeeping, not an operator's pre-existing, pre-configured project — unlike Finding 120's member
-// commits into a REAL project repo the operator owns and has configured, there is no "operator's own
-// config" here for excludesFile/attributesFile to honor; these writes should behave identically on every
-// machine regardless of whatever global git config happens to be set. Deliberately left hermetic; see
+// new.ts/project-new.ts's operator-identity commits). This is levare's own bookkeeping, not an
+// operator's pre-existing, pre-configured project — unlike Finding 120's member commits into a REAL
+// project repo the operator owns and has configured, there is no "operator's own config" here for
+// excludesFile/attributesFile to honor; these writes should behave identically on every machine
+// regardless of whatever global git config happens to be set. Deliberately left hermetic; see
 // resolveGlobalExcludesFile/resolveGlobalAttributesFile's own doc for the sites where the opposite
 // reasoning applies.
 export function commitAs(root: string, files: string[], message: string, identity: { name: string; email: string }): string {

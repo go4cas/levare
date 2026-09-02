@@ -10,14 +10,11 @@
 // command does not use). Every one of those six keys is always written below, never left for `validate`
 // to catch missing.
 //
-// `board/gateops.ts#runNewProjectSkill` is the only other writer of `projects/<name>.md` today — it
-// backs a different, still CLI-unreachable "new-project" GATE OP (clone a brand-new repo from a
-// `remoteDir` stand-in for `gh repo create`, commit as the Conductor). This command instead REGISTERS
-// an existing local checkout — the shape `repo:` documents and the guide has always taught — and,
-// exactly like `new.ts#createUnit`, commits under the OPERATOR's own resolved git identity, never
-// CONDUCTOR_NAME/RUNNER_NAME (this is the operator's own act, not a Conductor gate resolution). The two
-// writers deliberately produce the same six-key frontmatter shape/order (see buildFrontmatter below) so
-// a reader of either can't tell which command wrote a given project file.
+// This command REGISTERS an existing local checkout — the shape `repo:` documents and the guide has
+// always taught — and, exactly like `new.ts#createUnit`, commits under the OPERATOR's own resolved git
+// identity, never CONDUCTOR_NAME/RUNNER_NAME (this is the operator's own act, not a Conductor gate
+// resolution). This is now the only writer of `projects/<name>.md` (Finding 184 deleted the other,
+// tested-but-unreachable one, `board/gateops.ts#runNewProjectSkill`, per PRD Amendment 4).
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -99,8 +96,7 @@ function remoteUrl(repoPath: string, name: string): string | undefined {
   return url || undefined;
 }
 
-// Field order/format mirrors board/gateops.ts#runNewProjectSkill exactly (see this file's own header)
-// — `null` is the bare YAML keyword, never a quoted string, on both nullable fields.
+// `null` is the bare YAML keyword, never a quoted string, on both nullable fields.
 function buildFrontmatter(name: string, repo: string, remote: string | null, defaultBranch: string, deploy: string | null, pace: "auto" | "step", houseRules: string | undefined): string {
   const lines = ["---", `name: ${name}`, `repo: ${repo}`, `remote: ${remote ?? "null"}`, `default_branch: ${defaultBranch}`, `deploy: ${deploy ?? "null"}`, `pace: ${pace}`, "---", "", `# ${name}`, ""];
   if (houseRules) lines.push("## House rules", "", houseRules, "");

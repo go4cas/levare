@@ -5,7 +5,7 @@ import { assertSpawnOk, assertExitCode, spawnStdout } from "./spawn-helpers.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBoard } from "../src/board/serve.ts";
-import { resolveGate, runNewProjectSkill } from "../src/board/gateops.ts";
+import { resolveGate } from "../src/board/gateops.ts";
 import { validatePath } from "../src/validate.ts";
 import { stubAdapterRunner } from "../src/replay.ts";
 import { loadRepo } from "../src/repo.ts";
@@ -194,133 +194,6 @@ describe("C2/C7: board approval of a loop-first artifact also resolves its live 
       if (result.ok) expect(result.changedFiles).toEqual([join(root, "work/storefront/checkout-flow/spec-checkout-flow-v1.md")]);
     } finally {
       rmSync(root, { recursive: true, force: true });
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// (e) new-project skill: end-to-end against a scratch git dir, never real GitHub
-// ---------------------------------------------------------------------------
-
-describe("(e) new-project skill", () => {
-  test("creates the remote stand-in, clones it for real, writes the pointer, and commits", () => {
-    const root = seedScratchRepo();
-    const base = mkdtempSync(join(tmpdir(), "levare-newproj-"));
-    const remoteDir = join(base, "loyalty.git");
-    const cloneDir = join(base, "loyalty-checkout");
-    try {
-      // Stand-in for `gh repo create`: a bare local repo, never a real GitHub call.
-      const init = spawnSync("git", ["init", "-q", "--bare", remoteDir]);
-      assertExitCode("git init --bare", init, 0);
-      expect(existsSync(join(root, "projects/loyalty.md"))).toBe(false);
-
-      const result = runNewProjectSkill({
-        root,
-        name: "loyalty",
-        remoteDir,
-        cloneDir,
-        deploy: "https://loyalty.acme.dev",
-        houseRules: "Keep the redemption flow under two taps.",
-      });
-      expect(result.ok).toBe(true);
-      if (!result.ok) return;
-      expect(result.commit.length).toBe(40);
-
-      // The clone step was real, not mocked: an actual .git dir and working tree exist.
-      expect(existsSync(join(cloneDir, ".git"))).toBe(true);
-      expect(existsSync(join(cloneDir, "README.md"))).toBe(true);
-      const cloneLog = spawnStdout("git log --oneline (clone)", spawnSync("git", ["-C", cloneDir, "log", "--oneline"], { encoding: "utf8" })).trim();
-      expect(cloneLog).not.toBe("");
-
-      const pointer = join(root, "projects/loyalty.md");
-      const content = readFileSync(pointer, "utf8");
-      expect(content).toContain("name: loyalty");
-      expect(content).toContain(`repo: ${cloneDir}`);
-      expect(content).toContain(`remote: ${remoteDir}`);
-      expect(content).toContain("default_branch: main");
-      expect(content).toContain("deploy: https://loyalty.acme.dev");
-      expect(content).toContain("Keep the redemption flow under two taps.");
-
-      const log = spawnStdout("git log -1 (root)", spawnSync("git", ["-C", root, "log", "-1", "--format=%an|%ae|%s"], { encoding: "utf8" })).trim();
-      expect(log).toBe("cas|cas@levare.local|new-project loyalty");
-
-      // The new project's OWN "initial commit" (in cloneDir, not root) — a real, previously-unasserted
-      // gap: nothing checked this commit's author at all before NOTES "runner-authored-commit audit".
-      const cloneAuthor = spawnStdout("git log -1 (clone)", spawnSync("git", ["-C", cloneDir, "log", "-1", "--format=%an|%ae|%s"], { encoding: "utf8" })).trim();
-      expect(cloneAuthor).toBe("cas|cas@levare.local|initial commit");
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-      rmSync(base, { recursive: true, force: true });
-    }
-  });
-
-  // NOTES "runner-authored-commit audit": runNewProjectSkill's three git spawns were the one commit
-  // path anywhere in `src/` with no env override at all — not even git.ts's original CAP-B-FIX gap,
-  // which at least set identity via `-c` (env vars just could have silently overridden it). This
-  // reproduces exactly the scenario CAP-B-FIX's own NOTES entry named as the risk and never had a test
-  // for: git gives GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL/GIT_COMMITTER_NAME/GIT_COMMITTER_EMAIL environment
-  // variables HIGHER precedence than a `-c user.name=`/`-c user.email=` override — confirmed directly
-  // (a raw `git -c user.name=X commit` with those four vars set in ITS OWN env records the ENV values,
-  // not X). A REAL PROCESS SUBPROCESS is required to prove this, not a `process.env` mutation in this
-  // test's own process: confirmed empirically that Bun's `spawnSync`, when its `env` option is
-  // omitted, inherits the env this PARENT process itself started with, not a later runtime mutation to
-  // `process.env` — so a `withEnv`-style mutation here would never reach `runNewProjectSkill`'s
-  // (pre-fix) omitted-env spawns at all, and the test would pass whether or not the product code
-  // actually defended against anything, exactly the "test result depends on something other than the
-  // behaviour it asserts" shape this whole audit exists to catch. Spawning a real nested bun process
-  // with the four vars set as ITS OWN startup env reproduces the actual risk this guards against: a
-  // wrapping shell, a CI runner, or a studio's own loaded `.env` setting these for an unrelated reason
-  // before `levare` ever starts.
-  test("the new project's initial commit resists an ambient GIT_AUTHOR_NAME/EMAIL leak (NOTES CAP-B-FIX's own named, previously-untested risk)", () => {
-    const root = seedScratchRepo();
-    const base = mkdtempSync(join(tmpdir(), "levare-newproj-leak-"));
-    const remoteDir = join(base, "leaktest.git");
-    const cloneDir = join(base, "leaktest-checkout");
-    const driver = join(base, "driver.ts");
-    try {
-      spawnSync("git", ["init", "-q", "--bare", remoteDir]);
-
-      writeFileSync(
-        driver,
-        [
-          `import { runNewProjectSkill } from ${JSON.stringify(join(process.cwd(), "src/board/gateops.ts"))};`,
-          `const result = runNewProjectSkill({ root: ${JSON.stringify(root)}, name: "leaktest", remoteDir: ${JSON.stringify(remoteDir)}, cloneDir: ${JSON.stringify(cloneDir)}, deploy: null, houseRules: "n/a" });`,
-          `if (!result.ok) { console.error(result.error); process.exit(1); }`,
-        ].join("\n"),
-      );
-
-      const leakEnv = {
-        ...process.env,
-        GIT_AUTHOR_NAME: "ambient-leak",
-        GIT_AUTHOR_EMAIL: "leak@example.com",
-        GIT_COMMITTER_NAME: "ambient-leak",
-        GIT_COMMITTER_EMAIL: "leak@example.com",
-      };
-      const run = spawnSync("bun", ["run", driver], { encoding: "utf8", env: leakEnv });
-      assertExitCode("bun run driver.ts (leak-env)", run, 0);
-
-      const cloneAuthor = spawnStdout("git log -1 (leak-env clone)", spawnSync("git", ["-C", cloneDir, "log", "-1", "--format=%an|%ae"], { encoding: "utf8" })).trim();
-      expect(cloneAuthor).toBe("cas|cas@levare.local");
-      expect(cloneAuthor).not.toContain("ambient-leak");
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-      rmSync(base, { recursive: true, force: true });
-    }
-  });
-
-  test("refuses to clobber an existing project pointer", () => {
-    const root = seedScratchRepo();
-    const base = mkdtempSync(join(tmpdir(), "levare-newproj-"));
-    const remoteDir = join(base, "storefront.git");
-    const cloneDir = join(base, "storefront-checkout");
-    try {
-      spawnSync("git", ["init", "-q", "--bare", remoteDir]);
-      const result = runNewProjectSkill({ root, name: "storefront", remoteDir, cloneDir, deploy: null, houseRules: "n/a" });
-      expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.status).toBe(409);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-      rmSync(base, { recursive: true, force: true });
     }
   });
 });

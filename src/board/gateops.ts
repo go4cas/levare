@@ -12,7 +12,7 @@
 // production itself now goes through the real `MemberRunner`/`AdapterRunner` boundary (E4) — the same
 // one the Runner and `levare replay` drive — rather than a board-only reuse of the stub's `render()`.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { loadRepo, type Repo } from "../repo.ts";
@@ -905,99 +905,6 @@ async function doStart(root: string, repo: Repo, unit: WorkUnit, memberRunner: A
     return { ok: false, status: 502, error: `start failed: ${result.error}` };
   }
   return { ok: true, commit: result.commit, changedFiles: [result.file] };
-}
-
-// ---------------------------------------------------------------------------
-// New project (NOTES REV4 item 3b) — moved here from orchestrator.ts: a mutating gate-op (git clone +
-// file writes), same family as every other write in this module, not Orchestrator dispatch logic. Not
-// wired into `orchestrator.ts#handle`'s intent grammar today — no `new-project` Intent variant exists
-// — called directly today only by its own test; the future "scaffold a new project" skill is expected
-// to dispatch here the same way `handle()` already dispatches gate decisions to `resolveGate` above.
-// ---------------------------------------------------------------------------
-
-export interface NewProjectOptions {
-  root: string;
-  name: string;
-  /** A bare git repo standing in for `gh repo create`'s result (scratch, never real GitHub). */
-  remoteDir: string;
-  /** Where to clone the new project's working checkout. */
-  cloneDir: string;
-  deploy: string | null;
-  houseRules: string;
-  defaultBranch?: string;
-}
-
-function titleCase(name: string): string {
-  return name.split(/[-_]/).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
-}
-
-// NOTES "runner-authored-commit audit": mirrors git.ts's own HERMETIC_GIT_ENV exactly (NOTES
-// CAP-B-FIX) — every spawn below sets identity via `-c user.name=`/`-c user.email=`, but git gives
-// GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL/GIT_COMMITTER_NAME/GIT_COMMITTER_EMAIL environment variables
-// higher precedence than a `-c` override, so the ambient env must be scrubbed here too, independently
-// — this module never imports git.ts's private copy, mirroring merge.ts's own identical duplication
-// and identical reasoning: this spawns against the new project's freshly-cloned checkout, a THIRD repo
-// distinct from both the studio (git.ts) and an existing project (merge.ts), and must never be
-// confused into sharing one via an accidentally-shared constant. Found by an audit this codebase's own
-// "does any other write path have the same dependency" question asked directly — this was the one
-// commit call anywhere in `src/` that had no env override at all (not even git.ts's original
-// CAP-B-FIX gap, which at least set identity via `-c`; this call didn't even isolate GIT_CONFIG_GLOBAL/
-// SYSTEM), so it was the least defended of the three, not merely the third example of the same thing.
-const HERMETIC_GIT_ENV: NodeJS.ProcessEnv = {
-  ...process.env,
-  GIT_CONFIG_GLOBAL: "/dev/null",
-  GIT_CONFIG_SYSTEM: "/dev/null",
-  GIT_TERMINAL_PROMPT: "0",
-  GIT_AUTHOR_NAME: undefined,
-  GIT_AUTHOR_EMAIL: undefined,
-  GIT_COMMITTER_NAME: undefined,
-  GIT_COMMITTER_EMAIL: undefined,
-};
-
-export function runNewProjectSkill(opts: NewProjectOptions): GateOpResult {
-  if (!existsSync(opts.remoteDir)) return { ok: false, status: 422, error: `remote '${opts.remoteDir}' does not exist — create-repo step failed` };
-  const branch = opts.defaultBranch ?? "main";
-
-  const clone = spawnSync("git", ["-c", "init.defaultBranch=" + branch, "clone", "-q", opts.remoteDir, opts.cloneDir], { encoding: "utf8", env: HERMETIC_GIT_ENV });
-  if (clone.status !== 0) return { ok: false, status: 500, error: `clone failed: ${clone.stderr}` };
-
-  writeFileSync(join(opts.cloneDir, "README.md"), `# ${opts.name}\n`);
-  // Reuse the one Conductor identity (git.ts) rather than a second inline "cas" literal — this commits
-  // into the freshly-cloned PROJECT repo (not the studio, so it can't call conductorCommit directly),
-  // but the identity it stamps must never drift from every other Conductor-authored commit.
-  //
-  // Finding 142 — ruled NOT a defect, stays hermetic (see git.ts#commitAs's own doc for the full
-  // reasoning): this is the founding commit of a brand-new project levare itself just cloned, not an
-  // operator's pre-existing, pre-configured checkout — there is no operator excludesFile/attributesFile
-  // to honor here, and this should commit identically regardless of the host's global git config.
-  const cloneGitArgs = (args: string[]) => ["-C", opts.cloneDir, "-c", `user.name=${CONDUCTOR_NAME}`, "-c", `user.email=${CONDUCTOR_EMAIL}`, "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args];
-  spawnSync("git", cloneGitArgs(["add", "-A"]), { encoding: "utf8", env: HERMETIC_GIT_ENV });
-  spawnSync("git", cloneGitArgs(["commit", "-q", "-m", "initial commit"]), { encoding: "utf8", env: HERMETIC_GIT_ENV });
-
-  const projectFile = join(opts.root, "projects", `${opts.name}.md`);
-  if (existsSync(projectFile)) return { ok: false, status: 409, error: `project '${opts.name}' already exists` };
-  mkdirSync(dirname(projectFile), { recursive: true });
-  const lines = [
-    "---",
-    `name: ${opts.name}`,
-    `repo: ${opts.cloneDir}`,
-    `remote: ${opts.remoteDir}`,
-    `default_branch: ${branch}`,
-    `deploy: ${opts.deploy ?? "null"}`,
-    "pace: auto",
-    "---",
-    "",
-    `# ${titleCase(opts.name)} — house rules`,
-    "",
-    opts.houseRules,
-    "",
-  ];
-  const result = transactionalWrite(opts.root, [{ path: projectFile, content: lines.join("\n") }], `new-project ${opts.name}`, conductorCommit, () => {
-    const v = validatePath(opts.root);
-    return v.ok ? null : formatValidationErrors(v.errors) || "validation failed";
-  });
-  if (!result.ok) return { ok: false, status: result.stage === "validate" ? 422 : 500, error: result.error };
-  return { ok: true, commit: result.commit, changedFiles: [projectFile] };
 }
 
 // ---------------------------------------------------------------------------
