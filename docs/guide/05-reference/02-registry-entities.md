@@ -241,7 +241,8 @@ stays a warning, named plainly rather than a silent no-op.
 
 `overrides` is a one-level merge over team defaults, scoped to this project — it doesn't name a
 specific team by field, so it isn't in the basics table above, but it's how a project can, say, raise a
-team's default budget without editing the team itself.
+team's default budget without editing the team itself. Its keys are checked against the known set
+(`budget`, `pace`) — an unrecognized key is `UNKNOWN_OVERRIDE_KEY`, not silently ignored.
 
 ```markdown
 ---

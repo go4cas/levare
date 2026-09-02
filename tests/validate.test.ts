@@ -1466,6 +1466,54 @@ describe("Finding 177: unit/artifact project: must resolve to a real projects/<n
   });
 });
 
+describe("Finding 182: project.overrides keys are checked against the known set", () => {
+  function buildStudioWithOverrides(overridesYaml: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "levare-project-overrides-"));
+    mkdirSync(join(dir, "projects"), { recursive: true });
+    writeFileSync(
+      join(dir, "projects", "acme.md"),
+      ["---", "name: acme", "repo: .", "remote: null", "default_branch: main", "deploy: null", "pace: auto", "overrides:", overridesYaml, "---", "", "Project.", ""].join("\n"),
+    );
+    return dir;
+  }
+
+  test("an unknown override key fails UNKNOWN_OVERRIDE_KEY, naming the valid keys", () => {
+    const dir = buildStudioWithOverrides("  budgt: 5");
+    try {
+      const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_OVERRIDE_KEY");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("budgt");
+      expect(err!.message).toContain("budget");
+      expect(err!.message).toContain("pace");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("budget and pace both validate cleanly", () => {
+    const dir = buildStudioWithOverrides("  budget: 5\n  pace: step");
+    try {
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_OVERRIDE_KEY");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a project with no overrides: at all validates cleanly", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-project-overrides-none-"));
+    mkdirSync(join(dir, "projects"), { recursive: true });
+    writeFileSync(
+      join(dir, "projects", "acme.md"),
+      ["---", "name: acme", "repo: .", "remote: null", "default_branch: main", "deploy: null", "pace: auto", "---", "", "Project.", ""].join("\n"),
+    );
+    try {
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_OVERRIDE_KEY");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("Findings 169/170/177: fixtures/golden and a fresh scaffold carry none of the new codes", () => {
   const NEW_CODES = ["UNDECLARED_OUTPUT_KIND", "UNKNOWN_CONSUMED_KIND", "UNKNOWN_MEMBER", "UNKNOWN_PROJECT"];
 

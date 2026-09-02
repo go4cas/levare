@@ -19,7 +19,7 @@ A pointer at a product repo, and its constitution.
 | `default_branch` | string | ✅ | — | — | The branch merges land on. |
 | `deploy` | string | ✅ | ✅ | — | How this project deploys, or null if undeclared. |
 | `pace` | enum | ✅ | — | `auto` · `step` | auto (the daemon advances the score by itself between gates) or step (advances only on explicit Conductor action). |
-| `overrides` | map | — | — | — | One-level merge over team defaults, scoped to this project. |
+| `overrides` | map | — | — | — | One-level merge over team defaults, scoped to this project. Keys are checked against the known set (currently budget, pace) — an unrecognized key fails UNKNOWN_OVERRIDE_KEY. |
 
 ## Minimal valid skeleton
 
