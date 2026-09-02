@@ -415,11 +415,12 @@ Prefer short sentences. Never use passive voice.
 ```markdown
 ---
 name: new-project
-description: Scaffold a new repo from the house template
-scripts: [scripts/create-repo.sh]
+description: Register an existing project checkout with this studio.
 ---
 
-Run scripts/create-repo.sh with the new repo's name.
+Promoting an idea into a project means registering a product repo that already exists —
+levare does not create or clone remote repositories for you. Once you have a local checkout,
+run `levare project new <name> --repo <path>`.
 ```
 
 **Full field list, enum values, and skeleton:** the [Skill cheatsheet](cheatsheets/skill.md).
