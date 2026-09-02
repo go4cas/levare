@@ -1,6 +1,6 @@
 # levare — Product Requirements Document
 
-**Version:** 1.1 · 2026-07-12 (amendment 1 folded in — see `docs/prd-amendment-1.md` for the historical record of each change)
+**Version:** 1.2 · 2026-09-02 (amendments 1 and 4 folded in — see `docs/prd-amendment-1.md` and `docs/prd-amendment-4.md` for the historical record of each change)
 **Author:** Cas (the Conductor), with architecture consolidated from design sessions
 **Builder:** Claude Code, staged `/goal` runs under auto mode (run plan is a separate document)
 **Companions:** `levare-design-brief.md` (design law), CD round-3.1 assets (`styles.css`, `app.js`, `studio.html`, `project.html`, `run.html`, `registry.html` — adopted as the board's actual templates and assets, not references), `Levare_Design_System.html` (token and derivation-rule reference).
@@ -107,7 +107,7 @@ Deterministic, target ≤ ~500 lines excluding tests. Responsibilities:
 
 ## 7. The Orchestrator
 
-A Claude Agent SDK application; the conversation is the product's single entry point. Behaviors: opens every session with a scope-appropriate **briefing** (gates on the Conductor oldest-first, what unblocked, doctor warnings); narrates context before each gate card; interprets intent into unit operations (open unit of type X, capture idea → `ideas/`, promote idea → project); runs the `new-project` skill (`gh repo create`, clone, write pointer, ask deploy target + house rules, commit); proposes — never applies — `LEARNINGS.md` appends at unit retro and knowledge promotions from research reports, both through gates; answers `stats` questions from the derived metrics. The Orchestrator holds no state; everything it "knows" is re-derived from the repo and the conversation.
+A Claude Agent SDK application; the conversation is the product's single entry point. Behaviors: opens every session with a scope-appropriate **briefing** (gates on the Conductor oldest-first, what unblocked, doctor warnings); narrates context before each gate card; interprets intent into unit operations (open unit of type X, capture idea → `ideas/`, promote idea → project — **targeting a project that already exists**, registered ahead of time with `levare project new`, itself run outside the conversation, not through chat); proposes — never applies — `LEARNINGS.md` appends at unit retro and knowledge promotions from research reports, both through gates; answers `stats` questions from the derived metrics. The Orchestrator holds no state; everything it "knows" is re-derived from the repo and the conversation. **[v1.2: standing up a project's remote repository — `gh repo create` or equivalent — is the operator's own step, before `levare project new`; levare does not create or clone remote repositories. See `docs/prd-amendment-4.md`.]**
 
 ## 8. Metrics
 
