@@ -738,6 +738,9 @@ export function formatMergeArtifact(unit: string, project: string, id: string, c
     `project: ${project}`,
     "status: in-review",
     "produced_by: levare-runner",
+    // Finding 181: always empty, not a placeholder. A merge is a git operation, not a derivation — it
+    // isn't written FROM the unit's spec/review artifacts the way those are written from each other;
+    // its lineage is `merge: { branch, target, ... }` above, not `consumes:`. Never populate this.
     "consumes: []",
     "supersedes: null",
     "approved_by: null",

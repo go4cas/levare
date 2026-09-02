@@ -535,6 +535,7 @@ const TEAM_SCHEMA: Schema = {
     },
     knowledge: { type: "str[]", required: false, description: "Knowledge documents (by name) injected into every member's context." },
     connectors: { type: "str[]", required: false, description: "Connector grants — the Runner injects each named connector's env into this team's members." },
+    skills: { type: "str[]", required: false, description: "Skill grants (by name) — unioned into every member's own skills:, deduped, and included in that member's context." },
   },
   // `mode:` (the `mode: led` escape hatch) was cut in PRD v1.1 (invariant 7 restated: exactly one LLM
   // orchestrator, declarative `flow` executed by the Runner, no escape hatch). A team still declaring
@@ -699,7 +700,11 @@ const PROJECT_SCHEMA: Schema = {
       enum: ["auto", "step"],
       description: "auto (the daemon advances the score by itself between gates) or step (advances only on explicit Conductor action).",
     },
-    overrides: { type: "map", required: false, description: "One-level merge over team defaults, scoped to this project." },
+    overrides: {
+      type: "map",
+      required: false,
+      description: "One-level merge over team defaults, scoped to this project. Keys are checked against the known set (currently budget, pace) — an unrecognized key fails UNKNOWN_OVERRIDE_KEY.",
+    },
   },
 };
 
@@ -951,6 +956,7 @@ export function validatePath(target: string, overlay?: OverlayFile, sandbox?: Sa
     const implementedRemoteAgents = validateAgentRemoteImplementation(target, warnings, overlay);
     validateSandboxTelling(target, warnings, overlay, sandbox, implementedRemoteAgents);
     validateProjectRepoResolution(target, warnings, overlay);
+    validateProjectOverrideKeys(target, errors, overlay);
   }
 
   // Cross-artifact checks over everything discovered.
@@ -1669,6 +1675,39 @@ function validateProjectRepoResolution(root: string, warnings: ValidationWarning
       message: `project '${projectName}' declares repo: '${raw}' which resolves to '${resolved}', but '${resolved}/.git' does not exist — no work branch or merge gate will be created for this project until repo: points at a real local checkout`,
       file,
     });
+  }
+}
+
+// Finding 182: repo.ts#toProject casts `overrides` straight to `Record<string, YamlValue>` with no
+// key-level check, so any map survives — `overrides: { budgt: 5 }` (a typo of `budget`) parses clean
+// and is silently never read by anything. Known override keys, and their one reader each: `budget`
+// (new.ts#createUnit) and `pace` (runner.ts#effectivePace). Hardcoded rather than derived from a
+// registry directory, like UNKNOWN_CONSUMED_KIND's `knownExpectedKinds` — there's no directory of
+// override keys to list, only these two call sites. Whoever adds a third override key must add it here.
+const KNOWN_PROJECT_OVERRIDE_KEYS = ["budget", "pace"];
+
+function validateProjectOverrideKeys(root: string, errors: ValidationError[], overlay?: OverlayFile): void {
+  const projectsDir = join(root, "projects");
+  if (!existsSync(projectsDir)) return;
+  for (const name of readdirSync(projectsDir).sort()) {
+    if (!name.endsWith(".md") || name.endsWith(".learnings.md")) continue;
+    const file = join(projectsDir, name);
+    let data: Record<string, YamlValue>;
+    try {
+      ({ data } = parseFrontmatter(readOverlaid(file, overlay)));
+    } catch {
+      continue; // its own PARSE_ERROR already recorded by the per-file pass.
+    }
+    if (data.overrides === undefined || data.overrides === null || typeof data.overrides !== "object") continue;
+    const projectName = typeof data.name === "string" ? data.name : basename(name, ".md");
+    for (const key of Object.keys(data.overrides as Record<string, YamlValue>)) {
+      if (KNOWN_PROJECT_OVERRIDE_KEYS.includes(key)) continue;
+      errors.push({
+        code: "UNKNOWN_OVERRIDE_KEY",
+        message: `project '${projectName}' declares overrides.${key}, but no code reads that override key — known override keys: ${KNOWN_PROJECT_OVERRIDE_KEYS.join(", ")}`,
+        file,
+      });
+    }
   }
 }
 
@@ -2659,9 +2698,10 @@ function validateResponsibleTeam(root: string, errors: ValidationError[], overla
 }
 
 /**
- * Finding 174: a grant or reference to something that doesn't exist must fail loudly. Before this,
- * `team`/`agent` `connectors:`, `team`/`agent` `knowledge:`, and `agent` `skills:` were never checked
- * against their registry directory at all — a typo in `knowledge: [house-styl]` passed `levare
+ * Finding 174 (team `skills:` added by Finding 172): a grant or reference to something that doesn't
+ * exist must fail loudly. Before this, `team`/`agent` `connectors:`, `team`/`agent` `knowledge:`, and
+ * `agent`/`team` `skills:` were never checked against their registry directory at all — a typo in
+ * `knowledge: [house-styl]` passed `levare
  * validate` clean, and context.ts#readEntityBody quietly embedded a `(not found: knowledge/house-
  * styl.md)` placeholder into the member's real context instead of failing anywhere. `connectors:` was
  * worse still: env.ts#grantedConnectors silently drops an unresolved name from the member's env with
@@ -2782,6 +2822,8 @@ function validateNamedReferences(root: string, errors: ValidationError[], overla
       const teamName = typeof data.name === "string" ? data.name : basename(f, ".md");
       checkRefs(data.connectors, connectorSet, knownConnectors, "UNKNOWN_CONNECTOR", "connectors", `team '${teamName}'`, file);
       checkRefs(data.knowledge, knowledgeSet, knownKnowledge, "UNKNOWN_KNOWLEDGE", "knowledge", `team '${teamName}'`, file);
+      // Finding 172: team.skills resolves exactly like agent.skills below — same skillsDir/knownSkills.
+      checkRefs(data.skills, skillSet, knownSkills, "UNKNOWN_SKILL", "skills", `team '${teamName}'`, file);
       // Finding 177: a team naming an agent nothing defines. Before this, a redundant bad member name
       // surfaced only indirectly (validateStudioBindings' roster lists it as "(no agent definition)"),
       // and only when that specific member was needed to cover a flow step — a bad name that happens

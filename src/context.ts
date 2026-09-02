@@ -131,7 +131,11 @@ export function assembleContext(repo: Repo, opts: AssembleOptions): string {
   out.push("");
 
   out.push("── 2. skills ──");
-  const skills = agent.skills ?? [];
+  // Finding 172: team.skills ∪ agent.skills, deduped — team first, then agent, mirroring
+  // env.ts#grantedConnectors' own agent∪team union (order differs only in display, not membership: a
+  // Set drops the later duplicate either way, and one team per agent is enforced, so there is no
+  // multi-team accumulation to reason about here).
+  const skills = [...new Set([...(team.skills ?? []), ...(agent.skills ?? [])])];
   if (skills.length === 0) out.push("(none)");
   for (const s of skills) {
     out.push(`### ${s}`);
@@ -141,7 +145,10 @@ export function assembleContext(repo: Repo, opts: AssembleOptions): string {
   if (skills.length === 0) out.push("");
 
   out.push("── 3. knowledge ──");
-  const knowledge = agent.knowledge ?? [];
+  // Finding 185: same gap Finding 172 closed for skills — team.knowledge was parsed, validated
+  // (UNKNOWN_KNOWLEDGE), and rendered on the team card, but never actually read here. team ∪ agent,
+  // deduped, same shape as the skills union above.
+  const knowledge = [...new Set([...(team.knowledge ?? []), ...(agent.knowledge ?? [])])];
   if (knowledge.length === 0) out.push("(none)");
   for (const k of knowledge) {
     out.push(`### ${k}`);

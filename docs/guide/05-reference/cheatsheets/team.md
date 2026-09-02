@@ -27,6 +27,7 @@ A group with a job — what it consumes, what it produces, its members, and its 
 | `guardrails.never` | string[] | — | — | — | Actions this team must never take. |
 | `knowledge` | string[] | — | — | — | Knowledge documents (by name) injected into every member's context. |
 | `connectors` | string[] | — | — | — | Connector grants — the Runner injects each named connector's env into this team's members. |
+| `skills` | string[] | — | — | — | Skill grants (by name) — unioned into every member's own skills:, deduped, and included in that member's context. |
 
 ### Removed fields
 

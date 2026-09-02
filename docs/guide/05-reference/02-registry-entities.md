@@ -92,6 +92,7 @@ A group with a job: what it consumes, what it produces, its members, and its flo
 | `style.color` | ✅ | Hex; the team's identity colour on the board |
 | `knowledge` | — | Knowledge injected for every member of the team |
 | `connectors` | — | Grants applied to every member |
+| `skills` | — | Skill grants applied to every member |
 
 **The why**
 
@@ -112,10 +113,20 @@ A loop dispatches **both** members each round; the Conductor's gate is at the lo
 each turn. If `until` can never be satisfied by the loop's members, `validate` rejects it
 (`LOOP_UNTIL_UNREACHABLE`).
 
-`knowledge` and `connectors` are checked against their registry directories, same as an agent's own
-(`UNKNOWN_KNOWLEDGE` / `UNKNOWN_CONNECTOR`). `consumes` is checked against the union of every type's
-`expects:` — not against "produced by some team", since a legitimate seed kind (e.g. `pitch`, folded
-into a fresh unit's body on promotion rather than ever team-produced) would otherwise be rejected.
+`knowledge`, `connectors`, and `skills` are checked against their registry directories, same as an
+agent's own (`UNKNOWN_KNOWLEDGE` / `UNKNOWN_CONNECTOR` / `UNKNOWN_SKILL`). `consumes` is checked
+against the union of every type's `expects:` — not against "produced by some team", since a legitimate
+seed kind (e.g. `pitch`, folded into a fresh unit's body on promotion rather than ever team-produced)
+would otherwise be rejected.
+
+A team's `skills` and `knowledge` are both unioned into every member's own `skills:`/`knowledge:` list
+(deduped) when its context is assembled — a five-member team that all need `github-issue` (or a shared
+`house-style` doc) grants it once here instead of repeating the line on five agent files, and a sixth
+member added later inherits it automatically. Don't confuse a skill with a team's **charter** (this
+file's own markdown body): a skill is a reusable procedure another team could grant verbatim — the same
+`flow-design.md` could sit under a design team's `skills:` and an engineering team's just as well. A
+charter is this team's own identity — who it is, how it works — prose that describes this team
+specifically and isn't meant to be lifted onto another one.
 
 `guardrails` (`protected_paths`, `protected_branches`, `never`) constrains what this team's diffs and
 branches may touch — path and branch namespaces are never cross-matched (ruling C6), so a path listed
@@ -241,7 +252,8 @@ stays a warning, named plainly rather than a silent no-op.
 
 `overrides` is a one-level merge over team defaults, scoped to this project — it doesn't name a
 specific team by field, so it isn't in the basics table above, but it's how a project can, say, raise a
-team's default budget without editing the team itself.
+team's default budget without editing the team itself. Its keys are checked against the known set
+(`budget`, `pace`) — an unrecognized key is `UNKNOWN_OVERRIDE_KEY`, not silently ignored.
 
 ```markdown
 ---
