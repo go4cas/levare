@@ -373,14 +373,6 @@ export function resolveProposal(root: string, proposal: Proposal, verb: "approve
 }
 
 // ---------------------------------------------------------------------------
-// new-project skill (§7: "runs the new-project skill (gh repo create, clone, write pointer, ask
-// deploy target + house rules, commit)"). Tests run this against a scratch git dir, never real
-// GitHub: the caller supplies `remoteDir`, a bare repo standing in for what `gh repo create` would
-// hand back, and this function performs a REAL `git clone` of it — end to end, nothing mocked below
-// the git-porcelain boundary.
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // The dispatcher — one entry point for every surface (chat, and anything else that wants the same
 // intent grammar). Gate decisions call the SAME `resolveGate` the POST /gates route calls (ruling C7).
 // ---------------------------------------------------------------------------
