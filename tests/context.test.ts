@@ -190,6 +190,77 @@ describe("Finding 172: team.skills is unioned into every member's own skills:, d
   });
 });
 
+// Finding 185: sibling of 172 — team.knowledge was parsed, validated (UNKNOWN_KNOWLEDGE), and
+// rendered on the team card, but context.ts read only agent.knowledge. Same union, same dedup.
+describe("Finding 185: team.knowledge is unioned into every member's own knowledge:, deduped", () => {
+  function buildStudio(): string {
+    const dir = mkdtempSync(join(tmpdir(), "levare-team-knowledge-"));
+    mkdirSync(join(dir, "teams"), { recursive: true });
+    mkdirSync(join(dir, "agents"), { recursive: true });
+    mkdirSync(join(dir, "knowledge"), { recursive: true });
+    mkdirSync(join(dir, "work", "acme", "launch"), { recursive: true });
+
+    writeFileSync(join(dir, "knowledge", "team-only-doc.md"), "---\nname: team-only-doc\n---\n\nTeam-only doc body.\n");
+    writeFileSync(join(dir, "knowledge", "agent-only-doc.md"), "---\nname: agent-only-doc\n---\n\nAgent-only doc body.\n");
+    writeFileSync(join(dir, "knowledge", "house-style.md"), "---\nname: house-style\n---\n\nHouse style body.\n");
+    writeFileSync(
+      join(dir, "agents", "wren.md"),
+      [
+        "---",
+        "name: wren",
+        "kind: native",
+        "produces: [product-brief]",
+        "model: claude-sonnet-5",
+        "knowledge: [agent-only-doc, house-style]",
+        "style:",
+        "  avatar: Wr",
+        "---",
+        "",
+        "Wren.",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(dir, "teams", "kestrel.md"),
+      [
+        "---",
+        "name: kestrel",
+        "consumes: []",
+        "produces: [product-brief]",
+        "members: [wren]",
+        "flow:",
+        "  - step: brief",
+        "style:",
+        "  color: '#000'",
+        "knowledge: [team-only-doc, house-style]",
+        "---",
+        "",
+        "Kestrel.",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(join(dir, "work", "acme", "launch", "unit.md"), "---\ntype: feature\nstatus: active\n---\n\n# launch\n\nTeam knowledge fixture.\n");
+    return dir;
+  }
+
+  test("team.knowledge and agent.knowledge both reach the member's context, deduped, with no not-found placeholders", () => {
+    const dir = buildStudio();
+    try {
+      const repo = loadRepo(dir);
+      const out = assembleContext(repo, { root: dir, agent: "wren", unit: "launch", capabilities: [{ member: "wren", kind: "product-brief" }] });
+      const knowledgeBlock = out.slice(out.indexOf("── 3. knowledge"), out.indexOf("── 4. team charter"));
+      expect(knowledgeBlock).toContain("team-only-doc");
+      expect(knowledgeBlock).toContain("agent-only-doc");
+      expect(knowledgeBlock).toContain("house-style");
+      expect(knowledgeBlock).not.toContain("(not found");
+      // Deduped: house-style named on both team and agent must appear as ONE section, not two.
+      expect(knowledgeBlock.split("### house-style").length - 1).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 // Finding 163: item 6 used to be the flow step's label alone — the member never saw the unit's own
 // body or its type template, so a generic brief was the only brief its context could support (the
 // jot/version-flag incident this finding is named for). Both now render inside section 6, verbatim.

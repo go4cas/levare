@@ -119,13 +119,14 @@ against the union of every type's `expects:` — not against "produced by some t
 seed kind (e.g. `pitch`, folded into a fresh unit's body on promotion rather than ever team-produced)
 would otherwise be rejected.
 
-A team's `skills` are unioned into every member's own `skills:` list (deduped) when its context is
-assembled — a five-member team that all need `github-issue` grants it once here instead of repeating
-the line on five agent files, and a sixth member added later inherits it automatically. Don't confuse a
-skill with a team's **charter** (this file's own markdown body): a skill is a reusable procedure another
-team could grant verbatim — the same `flow-design.md` could sit under a design team's `skills:` and an
-engineering team's just as well. A charter is this team's own identity — who it is, how it works — prose
-that describes this team specifically and isn't meant to be lifted onto another one.
+A team's `skills` and `knowledge` are both unioned into every member's own `skills:`/`knowledge:` list
+(deduped) when its context is assembled — a five-member team that all need `github-issue` (or a shared
+`house-style` doc) grants it once here instead of repeating the line on five agent files, and a sixth
+member added later inherits it automatically. Don't confuse a skill with a team's **charter** (this
+file's own markdown body): a skill is a reusable procedure another team could grant verbatim — the same
+`flow-design.md` could sit under a design team's `skills:` and an engineering team's just as well. A
+charter is this team's own identity — who it is, how it works — prose that describes this team
+specifically and isn't meant to be lifted onto another one.
 
 `guardrails` (`protected_paths`, `protected_branches`, `never`) constrains what this team's diffs and
 branches may touch — path and branch namespaces are never cross-matched (ruling C6), so a path listed

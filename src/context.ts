@@ -145,7 +145,10 @@ export function assembleContext(repo: Repo, opts: AssembleOptions): string {
   if (skills.length === 0) out.push("");
 
   out.push("── 3. knowledge ──");
-  const knowledge = agent.knowledge ?? [];
+  // Finding 185: same gap Finding 172 closed for skills — team.knowledge was parsed, validated
+  // (UNKNOWN_KNOWLEDGE), and rendered on the team card, but never actually read here. team ∪ agent,
+  // deduped, same shape as the skills union above.
+  const knowledge = [...new Set([...(team.knowledge ?? []), ...(agent.knowledge ?? [])])];
   if (knowledge.length === 0) out.push("(none)");
   for (const k of knowledge) {
     out.push(`### ${k}`);
