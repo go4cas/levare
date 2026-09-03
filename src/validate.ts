@@ -2956,28 +2956,31 @@ function validateNamedReferences(root: string, errors: ValidationError[], overla
   }
 }
 
-/**
- * Finding 174 (produced_by): the fourth name-based reference — `artifact.produced_by` — was only ever
- * checked incidentally, and only for `kind: proposal` artifacts with a connector attached
- * (isConnectorGrantedTo's `existsSync` guards happen to catch a nonexistent team/member, but under the
- * unrelated code CONNECTOR_NOT_GRANTED, and only on that narrow path). Every other artifact kind's
- * `produced_by` went unchecked entirely. In normal operation `produced_by` is always written by levare
- * itself (adapters.ts#author, dagwalk.ts) as `${team.name}/${member}` from real, already-validated
- * Team/Agent objects, so this exists to catch a hand-edited or manually-authored artifact naming a
- * team or member that doesn't exist — same class of silent-gap as the three checked above, on the one
- * name-based reference that (like `team:`) resolves by declared `name:`, not filename.
- */
+// Finding 174's original check only asked "does this team exist?" and "does this agent exist?" as two
+// INDEPENDENT facts, never "is this agent actually a member of this team?" — `produced_by: kestrel/lyra`
+// on an artifact `kestrel` never produced (say `lyra` is really a `helm` member) passed clean, the exact
+// silent-wrong-answer shape UNKNOWN_MEMBER/AGENT_IN_MULTIPLE_TEAMS already close for `team.members`
+// itself. It also skipped every value with no `/` at all as "malformed shape is out of scope" — but two
+// real, levare-authored shapes ARE bare: `merge.ts#formatMergeArtifact`'s fixed `produced_by:
+// levare-runner` (levare's own synthetic authorship for a merge gate it opens itself, never a team/agent
+// pair), and `adapters.ts#author`'s `team ? \`${team.name}/${req.member}\` : req.member` fallback for a
+// member on no team (legal — nothing requires every agent to have one; see the golden fixture's own
+// unused `rook`). A bare value that is neither of those (e.g. `nobody`) is a real gap: it named no team
+// to at least partially validate against, so it passed with NO check at all.
+export const SYSTEM_PRODUCED_BY = "levare-runner"; // must match merge.ts#formatMergeArtifact's literal.
+
 function validateProducedByReferences(root: string, artifacts: DiscoveredArtifact[], errors: ValidationError[], overlay?: OverlayFile): void {
   const teamsDir = join(root, "teams");
   const agentsDir = join(root, "agents");
   if (!existsSync(teamsDir) || !existsSync(agentsDir)) return;
 
-  const teamNames = new Set<string>();
+  const teamMembers = new Map<string, Set<string>>();
   for (const f of readdirSync(teamsDir).sort()) {
     if (!f.endsWith(".md") || f.endsWith(".learnings.md")) continue;
     try {
       const { data } = parseFrontmatter(readOverlaid(join(teamsDir, f), overlay));
-      teamNames.add(typeof data.name === "string" ? data.name : basename(f, ".md"));
+      const teamName = typeof data.name === "string" ? data.name : basename(f, ".md");
+      teamMembers.set(teamName, new Set(strList(data.members)));
     } catch {
       continue;
     }
@@ -2992,21 +2995,32 @@ function validateProducedByReferences(root: string, artifacts: DiscoveredArtifac
       continue;
     }
   }
+  const knownTeams = [...teamMembers.keys()].sort();
 
   for (const a of artifacts) {
     const producedBy = typeof a.data.produced_by === "string" ? a.data.produced_by : undefined;
-    if (!producedBy || !producedBy.includes("/")) continue; // malformed shape is out of scope here.
-    const [teamName, memberName] = producedBy.split("/");
-    if (!teamNames.has(teamName)) {
+    if (!producedBy) continue;
+    if (!producedBy.includes("/")) {
+      if (producedBy === SYSTEM_PRODUCED_BY || agentNames.has(producedBy)) continue;
       errors.push({
         code: "UNKNOWN_PRODUCED_BY",
-        message: `artifact declares produced_by: '${producedBy}', but no team named '${teamName}' is defined — known teams: ${[...teamNames].sort().join(", ") || "(none defined)"}`,
+        message: `artifact declares produced_by: '${producedBy}', but that's neither '${SYSTEM_PRODUCED_BY}' (levare's own synthetic authorship) nor a real agent name — known agents: ${[...agentNames].sort().join(", ") || "(none defined)"}`,
         file: a.file,
       });
-    } else if (!agentNames.has(memberName)) {
+      continue;
+    }
+    const [teamName, memberName] = producedBy.split("/");
+    const members = teamMembers.get(teamName);
+    if (!members) {
       errors.push({
         code: "UNKNOWN_PRODUCED_BY",
-        message: `artifact declares produced_by: '${producedBy}', but no agent named '${memberName}' is defined — known agents: ${[...agentNames].sort().join(", ") || "(none defined)"}`,
+        message: `artifact declares produced_by: '${producedBy}', but no team named '${teamName}' is defined — known teams: ${knownTeams.join(", ") || "(none defined)"}`,
+        file: a.file,
+      });
+    } else if (!members.has(memberName)) {
+      errors.push({
+        code: "UNKNOWN_PRODUCED_BY",
+        message: `artifact declares produced_by: '${producedBy}', but '${memberName}' is not a member of team '${teamName}' — that team's members: ${[...members].sort().join(", ") || "(none)"}`,
         file: a.file,
       });
     }

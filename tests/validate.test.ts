@@ -1086,7 +1086,67 @@ describe("Finding 174: connectors:/knowledge:/skills:/produced_by/after: must re
       const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_PRODUCED_BY");
       expect(err).toBeDefined();
       expect(err!.message).toContain("ghost-member");
-      expect(err!.message).toContain("no agent named");
+      expect(err!.message).toContain("not a member of team 'kestrel'");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Finding 187: existence of the team AND the agent used to be checked as two INDEPENDENT facts —
+  // `kestrel/scribe` passed clean as long as some `agents/scribe.md` existed ANYWHERE, even on a
+  // different team entirely. Real team membership is now required.
+  test("an artifact's produced_by naming a real agent who belongs to a DIFFERENT team fails UNKNOWN_PRODUCED_BY", () => {
+    const dir = buildStudio();
+    writeFileSync(
+      join(dir, "agents", "scribe.md"),
+      ["---", "name: scribe", "kind: native", "produces: [product-brief]", "model: claude-sonnet-5", "style:", "  avatar: Sc", "---", "", "Scribe.", ""].join("\n"),
+    );
+    writeFileSync(
+      join(dir, "teams", "press.md"),
+      ["---", "name: press", "consumes: []", "produces: [product-brief]", "members: [scribe]", "flow:", "  - step: brief", "style:", "  color: '#111'", "---", "", "Press.", ""].join("\n"),
+    );
+    try {
+      writeBrief(dir, "kestrel/scribe");
+      const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_PRODUCED_BY");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("scribe");
+      expect(err!.message).toContain("not a member of team 'kestrel'");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Finding 187: a bare (no `/`) produced_by used to skip this check entirely ("malformed shape is
+  // out of scope"). Two real levare-authored shapes are bare — the synthetic `levare-runner` merge
+  // producer, and a teamless agent's own name — and both must keep validating clean; anything else
+  // (a typo, a name nothing defines) must now fail loudly instead of silently passing.
+  test("produced_by: levare-runner (the synthetic merge producer) validates cleanly", () => {
+    const dir = buildStudio();
+    try {
+      writeBrief(dir, "levare-runner");
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_PRODUCED_BY");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("produced_by: <real agent name>, with no team/ prefix, validates cleanly (a teamless member)", () => {
+    const dir = buildStudio();
+    try {
+      writeBrief(dir, "wren");
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_PRODUCED_BY");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a bare produced_by naming neither levare-runner nor a real agent fails UNKNOWN_PRODUCED_BY", () => {
+    const dir = buildStudio();
+    try {
+      writeBrief(dir, "nobody");
+      const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_PRODUCED_BY");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("nobody");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

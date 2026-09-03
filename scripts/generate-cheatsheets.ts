@@ -21,6 +21,7 @@ import {
   ARTIFACT_SCHEMA,
   REGISTRY_SCHEMAS,
   STUDIO_SCHEMA,
+  SYSTEM_PRODUCED_BY,
   WORK_UNIT_SCHEMA,
   validatePath,
   type FieldSpec,
@@ -282,6 +283,11 @@ function placeholderValue(key: string, spec: FieldSpec): YamlValue {
     case "str":
       if (key === "model" || key === "orchestrator_model") return MODEL_PLACEHOLDER;
       if (key === "type" || key === "project") return ENTITY_NAME_PLACEHOLDER;
+      // Finding 187: produced_by must resolve to a real team/member or the levare-runner system
+      // producer — a generic `example-produced_by` (no `/`, not a real agent) now fails
+      // UNKNOWN_PRODUCED_BY. The system producer is always legal regardless of what the scratch
+      // registry's healed agents/teams happen to be named.
+      if (key === "produced_by") return SYSTEM_PRODUCED_BY;
       return `example-${key}`;
   }
 }
