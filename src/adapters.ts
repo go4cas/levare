@@ -291,6 +291,30 @@ function nativeSpawnEnv(req: InvokeRequest, baseEnv: Record<string, string | und
   return env;
 }
 
+// Finding 119 (RELEASE R2): shared by both native boundary constructors below — a pre-dispatch guard,
+// checked before either ever spawns a worker. `ANTHROPIC_API_KEY` present means this dispatch does not
+// depend on the granted connector's subscription login at all (nativeSpawnEnv above forwards the key
+// unconditionally, exactly like every other native call) — so a subscription connector merely also
+// being granted changes nothing, and this stays silent (the API-key path is unchanged). Absent, this
+// member's ONLY declared credential path is that connector's subscription login — which this same
+// dispatch's own `CLAUDE_CONFIG_DIR` redirect (sdk-transport.ts#LEVARE_CLAUDE_CONFIG_DIR, threaded in
+// unconditionally by buildNativeSandboxPolicy above) always points away from, and which on macOS is a
+// Keychain item no path grant can reach either way — a certain failure, not a maybe, so it is reported
+// plainly here rather than left to surface as the SDK's own cryptic "not logged in" once the worker
+// actually spawns. `repo` is undefined for every test double that never constructs a boundary with one
+// (this codebase's existing mocked-native convention) — nothing to check without it, so this no-ops.
+function guardNativeSubscriptionAuth(repo: Repo | undefined, member: string, baseEnv: Record<string, string | undefined>): void {
+  if (!repo || typeof baseEnv.ANTHROPIC_API_KEY === "string") return;
+  const sub = subscriptionConnector(repo, member);
+  if (!sub) return;
+  throw new AdapterError(
+    `native member '${member}' is granted connector '${sub.name}' (auth: subscription) but no ANTHROPIC_API_KEY is set — levare ` +
+      `redirects the CLI's config/session directory to a fresh temp path on every native dispatch, and on macOS the credential ` +
+      `lives in the Keychain, not a file, so '${member}' cannot reach ${sub.name}'s subscription login either way. Set ` +
+      `ANTHROPIC_API_KEY for '${member}', or change it to kind: cli to wrap ${sub.name}'s vendor CLI directly.`,
+  );
+}
+
 // NOTES MERGE-1: `{feature_repo}` (declared for `command`/`cwd` templates since before this goal) has
 // exactly one resolution — the unit's project repo, when it resolves to a real local checkout
 // (`req.projectRepoPath`). Undefined leaves the placeholder verbatim in the returned string, the same
@@ -552,6 +576,9 @@ export function createSdkNativeBoundary(opts: SdkNativeBoundaryOptions = {}): Na
   const pathToClaudeCodeExecutable = opts.pathToClaudeCodeExecutable ?? resolveNativeBinary(br?.platform, br?.arch, br?.requireFrom) ?? undefined;
   return {
     invoke(req: InvokeRequest): { doc: string; receipt?: Receipt; sandbox?: SandboxLevel } {
+      // Finding 119: fail fast, plainly, before any worker spawns — see guardNativeSubscriptionAuth's
+      // own doc.
+      guardNativeSubscriptionAuth(opts.repo, req.member, baseEnv);
       // Finding 81: reads the dispatched agent's own `timeout:` per-call — a boundary is constructed
       // once for the whole server lifetime, so this can never be resolved at construction time the way
       // `pathToClaudeCodeExecutable` above is. Mirrors `createAsyncStdioRemoteBoundary`'s identical
@@ -605,6 +632,9 @@ export function createAsyncSdkNativeBoundary(opts: AsyncSdkNativeBoundaryOptions
   const pathToClaudeCodeExecutable = opts.pathToClaudeCodeExecutable ?? resolveNativeBinary(br?.platform, br?.arch, br?.requireFrom) ?? undefined;
   return {
     async invoke(req: InvokeRequest): Promise<{ doc: string; receipt?: Receipt; sandbox?: SandboxLevel }> {
+      // Finding 119: see createSdkNativeBoundary's identical comment above — same fail-fast guard,
+      // async boundary.
+      guardNativeSubscriptionAuth(opts.repo, req.member, baseEnv);
       // Finding 81: see createSdkNativeBoundary's identical comment above — same per-call resolution,
       // same precedence, async boundary.
       const timeoutMs = opts.timeoutMs ?? resolveMemberTimeoutS(req.agent) * 1000;

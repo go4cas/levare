@@ -17741,3 +17741,92 @@ mid-loop `spec review` gate in round 1 sets `unitStatus` to `"rejected"` and sti
 
 `bun test` → 1914 pass, 9 skip, 0 fail across 124 files, 6468 expect() calls. `bunx tsc --noEmit`
 clean.
+
+# NOTES NATIVE-SUBSCRIPTION — Finding 119, RELEASE R2: say plainly that native + subscription auth is unsupported
+
+R2's own "Done when" offered two branches: make a `kind: native` member on subscription auth complete
+a real dispatch under levare's wrap, or have the wrap report plainly that the combination is
+unsupported and why. Taken here: the second. Making it work means either abandoning the
+`CLAUDE_CONFIG_DIR` redirect (sdk-transport.ts#LEVARE_CLAUDE_CONFIG_DIR, threaded into every native
+dispatch unconditionally by adapters.ts#buildNativeSandboxPolicy — Finding 75 part 3's own fix, kept
+for good reason) or reaching into the macOS Keychain from inside the sandbox, and neither is worth it
+for a combination an operator can trivially avoid with an API key.
+
+## What was reported before building
+
+1. **Detectable pre-dispatch, yes.** An agent's `kind: native` and its granted connector's
+   `auth: subscription` are both in the registry — env.ts#grantedConnectors' agent∪team union has no
+   kind check at all, so nothing stops the combination from being declared. Resolvable by hand-parsed
+   frontmatter alone (validate.ts's own established convention — modelRoleAgents' identical
+   agent/team/connector traversal, reused directly), so both `levare validate` and `levare doctor` can
+   name it before any dispatch.
+2. **Nothing stops the grant today.** Confirmed by reading env.ts#grantedConnectors and every
+   validate.ts cross-reference check — a `kind: native` agent granted an `auth: subscription` connector
+   (directly or via its team) validates clean today, with no telling at all.
+3. **The message.** Names the agent, the connector, both reasons (the config-dir redirect; the macOS
+   Keychain), and the remedy (an API-key connector, or `kind: cli` to wrap the vendor CLI directly) —
+   matching REJECTED_ARTIFACT_UNIT_NOT_TERMINATED's standard of naming the file, the problem, and what
+   to change.
+
+## Warning, not error — and why
+
+`NATIVE_SUBSCRIPTION_UNSUPPORTED` follows `SUBSCRIPTION_NO_HOME`'s precedent, not `UNKNOWN_SKILL`'s.
+The declaration is not structurally certain to fail: adapters.ts#nativeSpawnEnv forwards
+`ANTHROPIC_API_KEY` unconditionally into every native spawn, exactly like every other native member,
+regardless of what connectors are granted — so a member holding a useless-but-harmless subscription
+connector alongside a real API key dispatches exactly as it always has. The combination is only ever
+fatal for an operator who dropped the key specifically expecting the connector's subscription login to
+cover it — a runtime env fact validate/doctor cannot observe, not a structural certainty like an
+unresolvable reference. Refusing the studio over a declaration that might never matter would be
+SUBSCRIPTION_NO_HOME's own over-strict alternative, rejected for the same reason.
+
+## Three surfaces, one fact
+
+- **`levare validate`** (validate.ts#validateNativeSubscriptionAuth, new root-level cross-file check
+  alongside validateKnownModels/validateAgentRemoteImplementation): warns per native-agent-plus-
+  connector pair found.
+- **`levare doctor`** (cli.ts's `runDoctorCmd`, doctor.ts#formatDoctor's new `nativeSubscriptionAgents`
+  param): repeats the identical telling, the same posture `remoteAgents`/`cliToolAgents` already take —
+  computed directly off the loaded `Repo` via env.ts#subscriptionConnector, no hand-parsing needed here
+  since doctor already has a real repo.
+- **Real dispatch** (adapters.ts#guardNativeSubscriptionAuth, called at the top of both
+  `createSdkNativeBoundary` and `createAsyncSdkNativeBoundary`'s `invoke()`): fails fast with the exact
+  same message as an `AdapterError`, BEFORE any worker spawns — but ONLY when `ANTHROPIC_API_KEY` is
+  genuinely absent from the dispatch env. Present, the guard is a complete no-op: the API-key path is
+  byte-for-byte unchanged, proven by a dedicated test that asserts the transport's `run` was actually
+  invoked.
+
+## Sibling sweep (Finding 129, standing instruction)
+
+Checked for other "legal to declare, cannot run" member configurations sharing this shape. `kind:
+remote` and `kind: cli` members granted an `auth: subscription` connector are unaffected — neither
+spawns via the Claude Agent SDK's own `CLAUDE_CONFIG_DIR`-scoped path; both consume the connector's
+`home:` grant through the ordinary sandbox-scoping route (buildDispatchSandboxPolicy/
+buildRemoteSandboxPolicy) that `SUBSCRIPTION_NO_HOME`/doctor's own subscription warning already tell.
+The Orchestrator's own subscription auth (Finding 149) is a distinct, already-decided case — a
+singleton, not a registry-declared member, deliberately left to the SDK's own real-call honesty rather
+than a local guess — out of scope here. No other sibling gap found.
+
+## Test
+
+`tests/validate.test.ts` (new describe, "Finding 119"): a native agent directly granted a subscription
+connector gets the warning, naming the agent/connector/remedy, `r.ok` stays `true`; the identical grant
+via the agent's team is caught too; a `kind: cli` agent granted the same connector is unaffected; a
+native agent granted an `auth: env` connector is unaffected; `fixtures/golden` and a fresh `levare
+init` scaffold carry no such warning. `tests/doctor.test.ts` (new describe): `formatDoctor` prints the
+same telling when `nativeSubscriptionAgents` is non-empty, stays silent when empty or omitted.
+`tests/adapters.test.ts` (new describe, "Finding 119"): both boundaries throw a plain `AdapterError`
+naming the member/connector/`ANTHROPIC_API_KEY`/remedy when the key is absent; `ANTHROPIC_API_KEY`
+present dispatches exactly as before (asserted by proving the transport's `run` fired); no subscription
+connector granted, or no connectors at all, or no `repo` supplied — the guard never fires, matching the
+pre-this-unit behaviour exactly.
+
+Live verification against `~/source/jot-studio` and a real macOS host were both out of reach in this
+sandbox (no network, no `~/source`, no macOS host) — held tersely rather than re-litigated: confirmed
+instead against `fixtures/golden` and a freshly-scaffolded `levare init` studio, both unaffected, plus
+a synthetic studio built specifically to carry the combination, which reports exactly as designed.
+
+## Verification
+
+`bun test` → 2054 pass, 9 skip, 0 fail across 128 files, 6857 expect() calls (run twice, stable).
+`bunx tsc --noEmit` clean.

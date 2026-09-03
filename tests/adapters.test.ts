@@ -1246,6 +1246,135 @@ describe("native adapter — sandboxed real spawn (Finding 75, part 2)", () => {
   });
 });
 
+// Finding 119 (RELEASE R2): a `kind: native` member granted an `auth: subscription` connector cannot
+// authenticate through it — levare's own `CLAUDE_CONFIG_DIR` redirect (threaded into every native
+// dispatch, buildNativeSandboxPolicy above) and, on macOS, Keychain-only credential storage make that
+// connector's subscription login unreachable regardless. `guardNativeSubscriptionAuth` fails fast,
+// plainly, before either boundary ever spawns a worker — but ONLY when `ANTHROPIC_API_KEY` is absent:
+// present, this dispatch doesn't depend on the connector at all (nativeSpawnEnv forwards the key
+// unconditionally), so the API-key path must stay completely unchanged.
+describe("native adapter — subscription-auth pre-dispatch guard (Finding 119)", () => {
+  function subscriptionConnectorRepo(agentOverrides: Partial<Agent> = {}): Repo {
+    const connector: Connector = {
+      name: "codex",
+      kind: "cli",
+      command: "codex",
+      env: [],
+      auth: "subscription",
+      role: "model",
+      effects: "read",
+      gate: "proposal",
+    };
+    const agent = { name: "wren", kind: "native", produces: ["report"], style: { avatar: "Wr" }, body: "", connectors: ["codex"], ...agentOverrides } as Agent;
+    return {
+      root: "/tmp/synthetic-native-subscription",
+      teams: new Map(),
+      types: new Map(),
+      projects: new Map(),
+      agents: new Map([[agent.name, agent]]),
+      connectors: new Map([[connector.name, connector]]),
+      units: [],
+      artifacts: new Map(),
+      studio: {},
+    };
+  }
+
+  function reqFor(repo: Repo, apiKey: string | undefined): { req: InvokeRequest; env: Record<string, string | undefined> } {
+    const agent = repo.agents.get("wren")!;
+    const req = baseReq(agent, { agent, member: "wren" });
+    const env = apiKey !== undefined ? { ...process.env, ANTHROPIC_API_KEY: apiKey } : { ...process.env, ANTHROPIC_API_KEY: undefined };
+    return { req, env };
+  }
+
+  test("createSdkNativeBoundary throws a plain AdapterError, naming the member, the connector, and the remedy, when ANTHROPIC_API_KEY is absent", () => {
+    const repo = subscriptionConnectorRepo();
+    const { req, env } = reqFor(repo, undefined);
+    const transport: SdkTransport = { run: () => ({ ok: true, result: "should never spawn" }) };
+    const boundary = createSdkNativeBoundary({ transport, repo, env });
+    expect(() => boundary.invoke(req)).toThrow(AdapterError);
+    try {
+      boundary.invoke(req);
+    } catch (e) {
+      expect(e).toBeInstanceOf(AdapterError);
+      expect((e as Error).message).toContain("wren");
+      expect((e as Error).message).toContain("codex");
+      expect((e as Error).message).toContain("ANTHROPIC_API_KEY");
+      expect((e as Error).message).toContain("kind: cli");
+    }
+  });
+
+  test("createAsyncSdkNativeBoundary mirrors the same guard", async () => {
+    const repo = subscriptionConnectorRepo();
+    const { req, env } = reqFor(repo, undefined);
+    const transport: AsyncSdkTransport = { run: async () => ({ ok: true, result: "should never spawn" }) };
+    const boundary = createAsyncSdkNativeBoundary({ transport, repo, env });
+    await expect(boundary.invoke(req)).rejects.toThrow(AdapterError);
+  });
+
+  test("ANTHROPIC_API_KEY present → the API-key path is completely unchanged, no guard fires", () => {
+    const repo = subscriptionConnectorRepo();
+    const { req, env } = reqFor(repo, "sk-ant-test-key");
+    let spawned = false;
+    const transport: SdkTransport = {
+      run: () => {
+        spawned = true;
+        return { ok: true, result: "native output" };
+      },
+    };
+    const boundary = createSdkNativeBoundary({ transport, repo, env });
+    const { doc } = boundary.invoke(req);
+    expect(spawned).toBe(true);
+    expect(doc).toBe("native output");
+  });
+
+  test("no subscription connector granted → the guard never fires, even with no ANTHROPIC_API_KEY", () => {
+    const connector: Connector = { name: "docs", kind: "mcp", server: "docs-mcp", env: ["DOCS_TOKEN"], auth: "env", role: "tool", effects: "read", gate: "proposal" };
+    const repo = subscriptionConnectorRepo({ connectors: ["docs"] });
+    repo.connectors.set("docs", connector);
+    const { req, env } = reqFor(repo, undefined);
+    let spawned = false;
+    const transport: SdkTransport = {
+      run: () => {
+        spawned = true;
+        return { ok: true, result: "native output" };
+      },
+    };
+    const boundary = createSdkNativeBoundary({ transport, repo, env });
+    boundary.invoke(req);
+    expect(spawned).toBe(true);
+  });
+
+  test("no connectors granted at all → the guard never fires", () => {
+    const repo = subscriptionConnectorRepo({ connectors: [] });
+    const { req, env } = reqFor(repo, undefined);
+    let spawned = false;
+    const transport: SdkTransport = {
+      run: () => {
+        spawned = true;
+        return { ok: true, result: "native output" };
+      },
+    };
+    const boundary = createSdkNativeBoundary({ transport, repo, env });
+    boundary.invoke(req);
+    expect(spawned).toBe(true);
+  });
+
+  test("no repo supplied → the guard cannot check anything and never fires — the pre-this-unit behaviour, unchanged", () => {
+    const repo = subscriptionConnectorRepo();
+    const { req, env } = reqFor(repo, undefined);
+    let spawned = false;
+    const transport: SdkTransport = {
+      run: () => {
+        spawned = true;
+        return { ok: true, result: "native output" };
+      },
+    };
+    const boundary = createSdkNativeBoundary({ transport, env }); // no `repo` opt
+    boundary.invoke(req);
+    expect(spawned).toBe(true);
+  });
+});
+
 // Finding 112: `native_binary_resolved` used to be structurally `false` on every compiled build — the
 // parent never knows the worker's own resolution, so it always reported a negative indistinguishable
 // from a genuine missing-binary failure. The worker now reports the true answer back on
