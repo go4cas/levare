@@ -228,6 +228,28 @@ function removedFieldsSection(schema: Schema): string {
   return lines.join("\n") + "\n";
 }
 
+// Finding 190: the Required column above is computed solely from FieldSpec.required — a static,
+// schema-level boolean. It has no way to reflect validateAgentVariant's per-`kind` conditional
+// requirements (native needs `model`; cli needs `command`+`result`; remote needs `server`+`tool`), which
+// live entirely outside the FieldSpec DSL as separate imperative code — so those fields show as "—"
+// even though a real document of that `kind` fails MISSING_FIELD without them. Rather than teach the
+// Required column to lie less loudly with a half-encoded convention, this says so plainly, in the same
+// hand-authored, schema-keyed-so-it-can't-silently-drift-to-the-wrong-entity shape as BODY_PURPOSE.
+// Optional — most schemas have no `kind`-shaped conditional requirements at all.
+const CONDITIONAL_REQUIREMENTS: Partial<Record<string, string>> = {
+  agent:
+    "The Required column above is schema-level only — it can't express that requiredness here depends on `kind`. " +
+    "`validateAgentVariant` additionally requires: `kind: native` → `model`; `kind: cli` → `command` and `result`; " +
+    "`kind: remote` → `server` and `tool`. A `cli` agent that also declares `model` needs a `{model}` placeholder " +
+    "somewhere in `command`, or `MODEL_PLACEHOLDER_MISSING`.",
+};
+
+function conditionalRequirementsSection(schema: Schema): string {
+  const note = CONDITIONAL_REQUIREMENTS[schema.name];
+  if (!note) return "";
+  return `\n### Conditional requirements\n\n${note}\n`;
+}
+
 // ---------------------------------------------------------------------------
 // Skeleton generation — computed from the schema, then proven valid against the REAL validator
 // ---------------------------------------------------------------------------
@@ -431,7 +453,7 @@ ${description}
 ## Fields
 
 ${fieldTable(schema)}
-${vocabularySections(schema)}${removedFieldsSection(schema)}
+${vocabularySections(schema)}${removedFieldsSection(schema)}${conditionalRequirementsSection(schema)}
 ## Minimal valid skeleton
 
 \`\`\`markdown

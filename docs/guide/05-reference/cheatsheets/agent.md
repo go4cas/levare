@@ -43,6 +43,10 @@ A member: what it can produce, and how to invoke it.
 
 </details>
 
+### Conditional requirements
+
+The Required column above is schema-level only — it can't express that requiredness here depends on `kind`. `validateAgentVariant` additionally requires: `kind: native` → `model`; `kind: cli` → `command` and `result`; `kind: remote` → `server` and `tool`. A `cli` agent that also declares `model` needs a `{model}` placeholder somewhere in `command`, or `MODEL_PLACEHOLDER_MISSING`.
+
 ## Minimal valid skeleton
 
 ```markdown
