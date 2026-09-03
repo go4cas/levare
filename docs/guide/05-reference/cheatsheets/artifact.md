@@ -14,7 +14,7 @@ A markdown deliverable with YAML frontmatter, produced by a member and tracked t
 | Field | Type | Required | Nullable | Enum values | Description |
 |---|---|---|---|---|---|
 | `kind` | string | ✅ | — | — | The artifact kind (e.g. spec, review) — which work-unit-type step this satisfies. |
-| `id` | string | ✅ | — | — | This artifact's identifier, unique within its unit. |
+| `id` | string | ✅ | — | — | This artifact's identifier, unique within its project (crossReference's DUPLICATE_ID). |
 | `unit` | string | ✅ | — | — | The work unit this artifact belongs to. |
 | `project` | string | ✅ | — | — | The project this artifact belongs to. |
 | `status` | enum | ✅ | — | `in-review` · `approved` · `rejected` · `superseded` · `blocked` · `skipped` | Where this artifact stands in review (§6): in-review, approved, rejected, superseded, blocked, or skipped. |

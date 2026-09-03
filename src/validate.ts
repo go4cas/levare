@@ -121,7 +121,7 @@ export const ARTIFACT_SCHEMA: Schema = {
   name: "artifact",
   fields: {
     kind: { type: "str", required: true, description: "The artifact kind (e.g. spec, review) — which work-unit-type step this satisfies." },
-    id: { type: "str", required: true, description: "This artifact's identifier, unique within its unit." },
+    id: { type: "str", required: true, description: "This artifact's identifier, unique within its project (crossReference's DUPLICATE_ID)." },
     unit: { type: "str", required: true, description: "The work unit this artifact belongs to." },
     project: { type: "str", required: true, description: "The project this artifact belongs to." },
     status: {
