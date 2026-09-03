@@ -953,6 +953,7 @@ export function validatePath(target: string, overlay?: OverlayFile, sandbox?: Sa
     validateAgentContextScope(target, errors, overlay);
     validateEnvNotTracked(target, errors);
     validateKnownModels(target, errors, overlay);
+    validateNativeSubscriptionAuth(target, warnings, overlay);
     const implementedRemoteAgents = validateAgentRemoteImplementation(target, warnings, overlay);
     validateSandboxTelling(target, warnings, overlay, sandbox, implementedRemoteAgents);
     validateProjectRepoResolution(target, warnings, overlay);
@@ -2308,6 +2309,102 @@ function modelRoleAgents(root: string, overlay?: OverlayFile): Set<string> {
     }
   }
   return out;
+}
+
+/**
+ * Finding 119 (RELEASE R2): a `kind: native` member's spawn is the real Claude Agent SDK, and levare
+ * threads `CLAUDE_CONFIG_DIR` (redirected to a fresh temp path, sdk-transport.ts#LEVARE_CLAUDE_CONFIG_DIR)
+ * into EVERY native dispatch, unconditionally (adapters.ts#buildNativeSandboxPolicy) — so the CLI's
+ * own session/config directory, wherever the operator's real subscription login lives, is never the
+ * one a native dispatch actually reads. On macOS the credential isn't even a file: it's a Keychain
+ * item, unreachable from inside the sandbox regardless of any path grant. Nothing today stops a
+ * `kind: native` agent from being granted an `auth: subscription` connector — env.ts#grantedConnectors
+ * unions team and agent grants with no kind check at all — so this names the combination as soon as
+ * it's declared, hand-parsed off disk the same way modelRoleAgents above resolves the identical
+ * agent-connector union, rather than only surfacing as a cryptic SDK login failure on the member's
+ * first real dispatch (adapters.ts's own pre-dispatch guard, `nativeSubscriptionGuard`, names the same
+ * fact at the point a dispatch is actually attempted without an API key to fall back on).
+ */
+function nativeSubscriptionGrants(root: string, overlay?: OverlayFile): Array<{ agent: string; connector: string }> {
+  const out: Array<{ agent: string; connector: string }> = [];
+  const connectorsDir = join(root, "connectors");
+  if (!existsSync(connectorsDir)) return out;
+
+  const subscriptionConnectors = new Set<string>();
+  for (const file of readdirSync(connectorsDir).sort()) {
+    if (!file.endsWith(".md")) continue;
+    let data: Record<string, YamlValue>;
+    try {
+      ({ data } = parseFrontmatter(readOverlaid(join(connectorsDir, file), overlay)));
+    } catch {
+      continue;
+    }
+    if (data.auth === "subscription") {
+      subscriptionConnectors.add(typeof data.name === "string" ? data.name : basename(file, ".md"));
+    }
+  }
+  if (subscriptionConnectors.size === 0) return out;
+
+  const teamConnectorsByMember = new Map<string, Set<string>>();
+  const teamsDir = join(root, "teams");
+  if (existsSync(teamsDir)) {
+    for (const file of readdirSync(teamsDir).sort()) {
+      if (!file.endsWith(".md") || file.endsWith(".learnings.md")) continue;
+      let data: Record<string, YamlValue>;
+      try {
+        ({ data } = parseFrontmatter(readOverlaid(join(teamsDir, file), overlay)));
+      } catch {
+        continue;
+      }
+      const connectors = strList(data.connectors);
+      for (const member of strList(data.members)) {
+        const set = teamConnectorsByMember.get(member) ?? new Set<string>();
+        for (const c of connectors) set.add(c);
+        teamConnectorsByMember.set(member, set);
+      }
+    }
+  }
+
+  const agentsDir = join(root, "agents");
+  if (existsSync(agentsDir)) {
+    for (const file of readdirSync(agentsDir).sort()) {
+      if (!file.endsWith(".md") || file.endsWith(".learnings.md")) continue;
+      let data: Record<string, YamlValue>;
+      try {
+        ({ data } = parseFrontmatter(readOverlaid(join(agentsDir, file), overlay)));
+      } catch {
+        continue;
+      }
+      if (data.kind !== "native") continue;
+      const agentName = typeof data.name === "string" ? data.name : basename(file, ".md");
+      const granted = new Set<string>([...strList(data.connectors), ...(teamConnectorsByMember.get(agentName) ?? [])]);
+      for (const g of [...granted].sort()) {
+        if (subscriptionConnectors.has(g)) out.push({ agent: agentName, connector: g });
+      }
+    }
+  }
+  return out;
+}
+
+// A WARNING, not an error (SUBSCRIPTION_NO_HOME's precedent, not UNKNOWN_SKILL's): the member still
+// authenticates fine whenever `ANTHROPIC_API_KEY` is set (adapters.ts#nativeSpawnEnv forwards it
+// unconditionally, exactly like every other native member) — the declaration is only ever fatal for
+// an operator who dropped the key expecting this connector's subscription login to cover it instead,
+// a runtime env fact this pass cannot see, not a structural certainty like an unresolvable reference.
+function validateNativeSubscriptionAuth(root: string, warnings: ValidationWarning[], overlay?: OverlayFile): void {
+  const agentsDir = join(root, "agents");
+  for (const { agent, connector } of nativeSubscriptionGrants(root, overlay)) {
+    const file = join(agentsDir, `${agent}.md`);
+    warnings.push({
+      code: "NATIVE_SUBSCRIPTION_UNSUPPORTED",
+      message:
+        `agent '${agent}' is kind: native and granted connector '${connector}' (auth: subscription) — levare redirects the CLI's ` +
+        `config/session directory to a fresh temp path on every native dispatch, and on macOS the credential lives in the Keychain, ` +
+        `not a file, so '${agent}' cannot reach ${connector}'s subscription login either way. Grant '${agent}' an env-authenticated ` +
+        `connector (an API key) instead, or change it to kind: cli to wrap ${connector}'s vendor CLI directly.`,
+      file: existsSync(file) ? file : agentsDir,
+    });
+  }
 }
 
 function validateKnownModels(root: string, errors: ValidationError[], overlay?: OverlayFile): void {
