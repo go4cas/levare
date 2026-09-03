@@ -103,6 +103,8 @@ const REJECTIONS: Array<[string, string]> = [
   ["cwd-outside-studio-no-inline", "CWD_OUTSIDE_STUDIO_NO_INLINE"],
   ["loop-until-unreachable", "LOOP_UNTIL_UNREACHABLE"],
   ["bad-override-value", "BAD_OVERRIDE_VALUE"],
+  ["unit-path-mismatch", "UNIT_PATH_MISMATCH"],
+  ["artifact-unit-mismatch", "ARTIFACT_UNIT_MISMATCH"],
 ];
 
 describe("rejection fixtures", () => {
@@ -1634,6 +1636,117 @@ describe("Finding 182: project.overrides keys are checked against the known set"
     );
     try {
       expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_OVERRIDE_KEY");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Finding 192 (RULED): a declared unit: must agree with the directory it actually lives in", () => {
+  function writeUnit(dir: string, unitDirName: string, declaredUnit?: string): void {
+    mkdirSync(join(dir, "work", "acme", unitDirName), { recursive: true });
+    const lines = ["---", "type: feature", "status: active", ...(declaredUnit !== undefined ? [`unit: ${declaredUnit}`] : []), "---", "", "# unit", ""];
+    writeFileSync(join(dir, "work", "acme", unitDirName, "unit.md"), lines.join("\n"));
+  }
+
+  function artifactLines(id: string, unit: string): string[] {
+    return [
+      "---",
+      "kind: product-brief",
+      `id: ${id}`,
+      `unit: ${unit}`,
+      "project: acme",
+      "status: in-review",
+      "produced_by: kestrel/wren",
+      "consumes: []",
+      "supersedes: null",
+      "approved_by: null",
+      "created: 2026-08-31",
+      "files: []",
+      "---",
+      "",
+      "Brief.",
+      "",
+    ];
+  }
+
+  function writeSingleFileArtifact(dir: string, unitDirName: string, unit: string): void {
+    mkdirSync(join(dir, "work", "acme", unitDirName), { recursive: true });
+    writeFileSync(join(dir, "work", "acme", unitDirName, "brief-v1.md"), artifactLines("brief-v1", unit).join("\n"));
+  }
+
+  function writeFolderArtifact(dir: string, unitDirName: string, unit: string): void {
+    mkdirSync(join(dir, "work", "acme", unitDirName, "design-v1"), { recursive: true });
+    writeFileSync(join(dir, "work", "acme", unitDirName, "design-v1", "index.md"), artifactLines("design-v1", unit).join("\n"));
+  }
+
+  test("unit.md declaring unit: that disagrees with its own directory fails UNIT_PATH_MISMATCH", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-unit-path-"));
+    try {
+      writeUnit(dir, "launch", "not-launch");
+      const err = validatePath(dir).errors.find((e) => e.code === "UNIT_PATH_MISMATCH");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("not-launch");
+      expect(err!.message).toContain("launch");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("unit.md declaring unit: equal to its own directory validates cleanly", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-unit-path-"));
+    try {
+      writeUnit(dir, "launch", "launch");
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNIT_PATH_MISMATCH");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("unit.md with no unit: field at all (defaulted from the directory) validates cleanly", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-unit-path-"));
+    try {
+      writeUnit(dir, "launch");
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNIT_PATH_MISMATCH");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a single-file artifact's unit: disagreeing with its containing directory fails ARTIFACT_UNIT_MISMATCH", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-artifact-unit-"));
+    try {
+      writeSingleFileArtifact(dir, "launch", "some-other-unit");
+      const err = validatePath(dir).errors.find((e) => e.code === "ARTIFACT_UNIT_MISMATCH");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("some-other-unit");
+      expect(err!.message).toContain("launch");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a folder artifact's unit: disagreeing with its containing unit directory fails ARTIFACT_UNIT_MISMATCH", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-artifact-unit-"));
+    try {
+      writeFolderArtifact(dir, "launch", "some-other-unit");
+      const err = validatePath(dir).errors.find((e) => e.code === "ARTIFACT_UNIT_MISMATCH");
+      expect(err).toBeDefined();
+      // A folder artifact's containing unit is its PARENT directory (design-v1/index.md → launch/), not
+      // the artifact's own subdirectory — proves the isFolder ? dirname(a.dir) : a.dir branch, not just
+      // the single-file one above.
+      expect(err!.message).toContain("launch");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an artifact's unit: agreeing with its containing directory validates cleanly", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-artifact-unit-"));
+    try {
+      writeSingleFileArtifact(dir, "launch", "launch");
+      writeFolderArtifact(dir, "launch", "launch");
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("ARTIFACT_UNIT_MISMATCH");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

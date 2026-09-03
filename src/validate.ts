@@ -962,6 +962,7 @@ export function validatePath(target: string, overlay?: OverlayFile, sandbox?: Sa
   // Cross-artifact checks over everything discovered.
   validateProducedByReferences(target, artifacts, errors, overlay);
   validateProjectReferences(target, artifacts, errors, overlay);
+  validateUnitPathIdentity(target, artifacts, errors);
   crossReference(artifacts, errors);
   validateRejectedArtifactUnitStatus(artifacts, errors);
   const immutability = gitImmutabilityCheck(target, artifacts, errors);
@@ -3024,6 +3025,60 @@ function validateProducedByReferences(root: string, artifacts: DiscoveredArtifac
         file: a.file,
       });
     }
+  }
+}
+
+/**
+ * Finding 192 (RULED — the path is the identity, enforce equality; contrast Finding 191, which rules
+ * the opposite way for Agent/Team/Type/Project). Before this, a work unit's own `unit:` field and an
+ * artifact's `unit:` field were both "declared, trusted verbatim, defaulted from the directory but never
+ * checked against it": `repo.ts#loadWork`'s `optStr(data.unit) ?? unit` fallback only ever DEFAULTS from
+ * the containing directory name, never compares the two when `unit:` is actually present — so
+ * `work/<project>/foo/unit.md` declaring `unit: bar` validated clean, and an artifact anywhere under
+ * `foo/` declaring `unit: nonexistent-unit` validated clean too (`ARTIFACT_SCHEMA.unit` was checked for
+ * type only, never cross-referenced against anything). Meanwhile everything ELSE in this codebase
+ * already treats the containing directory as the real identity: `discoverFolderArtifacts` and
+ * `classify` derive an artifact's unit purely from `work/<project>/<unit>/...` path segments (never from
+ * frontmatter), `timeline.ts#gitLogRows` filters by `WorkUnit.dir` (the loader-computed real path), and
+ * the board's own URLs are `/run/<project>/<unit>` built from that same path. A declared `unit:` field
+ * that disagrees with the directory it sits in is not a second source of truth — it is a stale or
+ * hand-typo'd label next to the one the rest of the system already uses.
+ */
+function validateUnitPathIdentity(root: string, artifacts: DiscoveredArtifact[], errors: ValidationError[]): void {
+  const workRoot = join(root, "work");
+  if (!existsSync(workRoot)) return;
+
+  for (const project of listDirs(workRoot)) {
+    for (const unitName of listDirs(join(workRoot, project))) {
+      const unitFile = join(workRoot, project, unitName, "unit.md");
+      if (!existsSync(unitFile)) continue;
+      let data: Record<string, YamlValue>;
+      try {
+        ({ data } = parseFrontmatter(readFileSync(unitFile, "utf8")));
+      } catch {
+        continue; // its own PARSE_ERROR was already recorded by the per-file pass.
+      }
+      if (typeof data.unit === "string" && data.unit !== unitName) {
+        errors.push({
+          code: "UNIT_PATH_MISMATCH",
+          message: `unit.md under work/${project}/${unitName}/ declares unit: '${data.unit}', but its containing directory is '${unitName}' — every other consumer (the board, the git log filter, folder-artifact discovery) trusts the directory, not this field; make them agree`,
+          file: unitFile,
+        });
+      }
+    }
+  }
+
+  for (const a of artifacts) {
+    const unit = typeof a.data.unit === "string" ? a.data.unit : undefined;
+    if (unit === undefined) continue;
+    const unitDir = a.isFolder ? dirname(a.dir) : a.dir;
+    const unitDirName = basename(unitDir);
+    if (unit === unitDirName) continue;
+    errors.push({
+      code: "ARTIFACT_UNIT_MISMATCH",
+      message: `artifact '${String(a.data.id ?? basename(a.file))}' declares unit: '${unit}', but it physically lives under work/.../${unitDirName}/ — every other consumer trusts the containing directory, not this field; make them agree`,
+      file: a.file,
+    });
   }
 }
 
