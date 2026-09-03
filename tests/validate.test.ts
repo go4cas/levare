@@ -2246,6 +2246,92 @@ describe("C15: connector role", () => {
   });
 });
 
+// Finding 119 (RELEASE R2): nothing in the schema stops a `kind: native` agent from being granted an
+// `auth: subscription` connector — but a native dispatch's own `CLAUDE_CONFIG_DIR` redirect (every
+// native spawn, unconditionally) and, on macOS, Keychain-only credential storage mean that connector's
+// subscription login is never reachable from inside it. A warning (SUBSCRIPTION_NO_HOME's shape), not
+// an error (UNKNOWN_SKILL's): the member still authenticates fine whenever ANTHROPIC_API_KEY is set.
+describe("Finding 119: kind: native + auth: subscription connector is legal but cannot authenticate", () => {
+  function nativeSubStudio(opts: { agentKind?: "native" | "cli"; auth?: "env" | "subscription"; viaTeam?: boolean }): string {
+    const dir = mkdtempSync(join(tmpdir(), "levare-native-subscription-"));
+    mkdirSync(join(dir, "agents"), { recursive: true });
+    mkdirSync(join(dir, "connectors"), { recursive: true });
+    const kind = opts.agentKind ?? "native";
+    const auth = opts.auth ?? "subscription";
+    writeFileSync(
+      join(dir, "connectors", "codex.md"),
+      ["---", "name: codex", "kind: cli", "command: codex", `auth: ${auth}`, `env: [${auth === "env" ? "CODEX_TOKEN" : ""}]`, "role: model", "---", "", "# Codex", ""].join("\n"),
+    );
+    const agentLines = ["---", "name: scribe", `kind: ${kind}`, "produces: [report]"];
+    if (kind === "cli") agentLines.push("command: [codex, review, '{model}']", 'result: "emits a report"');
+    else agentLines.push("model: claude-sonnet-5");
+    if (!opts.viaTeam) agentLines.push("connectors: [codex]");
+    agentLines.push("style:", "  avatar: Sc", "---", "", "Scribe.", "");
+    writeFileSync(join(dir, "agents", "scribe.md"), agentLines.join("\n"));
+    if (opts.viaTeam) {
+      mkdirSync(join(dir, "teams"), { recursive: true });
+      writeFileSync(
+        join(dir, "teams", "press.md"),
+        ["---", "name: press", "consumes: []", "produces: [report]", "members: [scribe]", "connectors: [codex]", "flow:", "  - step: draft", "style:", "  color: '#111'", "---", "", "Press.", ""].join(
+          "\n",
+        ),
+      );
+    }
+    return dir;
+  }
+
+  test("a native agent directly granted a subscription connector gets NATIVE_SUBSCRIPTION_UNSUPPORTED, naming the agent, the connector, and the remedy", () => {
+    const dir = nativeSubStudio({ agentKind: "native", auth: "subscription" });
+    try {
+      const r = validatePath(dir);
+      expect(r.ok).toBe(true); // a warning, never a rejection
+      const w = r.warnings.find((w) => w.code === "NATIVE_SUBSCRIPTION_UNSUPPORTED");
+      expect(w).toBeDefined();
+      expect(w!.message).toContain("scribe");
+      expect(w!.message).toContain("codex");
+      expect(w!.message).toContain("kind: cli");
+      expect(w!.file).toContain("agents/scribe.md");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the SAME grant via the agent's TEAM (not the agent directly) is caught too — grantedConnectors unions both", () => {
+    const dir = nativeSubStudio({ agentKind: "native", auth: "subscription", viaTeam: true });
+    try {
+      const r = validatePath(dir);
+      expect(r.warnings.map((w) => w.code)).toContain("NATIVE_SUBSCRIPTION_UNSUPPORTED");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a cli agent granted the identical subscription connector is unaffected — the gap is specific to kind: native", () => {
+    const dir = nativeSubStudio({ agentKind: "cli", auth: "subscription" });
+    try {
+      const r = validatePath(dir);
+      expect(r.warnings.map((w) => w.code)).not.toContain("NATIVE_SUBSCRIPTION_UNSUPPORTED");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a native agent granted an auth: env connector (the API-key path) is unaffected", () => {
+    const dir = nativeSubStudio({ agentKind: "native", auth: "env" });
+    try {
+      const r = validatePath(dir);
+      expect(r.warnings.map((w) => w.code)).not.toContain("NATIVE_SUBSCRIPTION_UNSUPPORTED");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("fixtures/golden and a fresh scaffold carry no NATIVE_SUBSCRIPTION_UNSUPPORTED warning", () => {
+    const golden = validatePath(join(import.meta.dir, "..", "fixtures", "golden"));
+    expect(golden.warnings.map((w) => w.code)).not.toContain("NATIVE_SUBSCRIPTION_UNSUPPORTED");
+  });
+});
+
 // NOTES MCP-1B (narrowed from REV1 finding 3): `kind: remote` validates cleanly — it's a legal
 // declaration — but only produces real work through a real, granted, stdio `kind: mcp` connector.
 // `levare validate` must warn, never reject, and never stay silent about the gap; a working stdio

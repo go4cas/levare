@@ -179,7 +179,16 @@ export function diagnose(
  * `kind: native` agents used to get their own separate, unconditional "never wrapped, on any host" line
  * here — that fact is no longer true (part 2 wires the wrap), so callers now fold native agents straight
  * into `sandboxedAgents` above rather than passing them separately; there is no more `nativeAgents`
- * parameter. */
+ * parameter.
+ *
+ * `nativeSubscriptionAgents`, when given (Finding 119, RELEASE R2): every `kind: native` agent granted
+ * (directly or via its team, env.ts#subscriptionConnector) an `auth: subscription` connector — a legal
+ * grant `levare validate` accepts (NATIVE_SUBSCRIPTION_UNSUPPORTED, the same warning repeated here) but
+ * one that cannot authenticate through it: levare redirects the CLI's config/session directory to a
+ * fresh temp path on every native dispatch, and on macOS the credential lives in the Keychain, not a
+ * file, so the connector's subscription login is unreachable either way. Doctor repeats the telling
+ * before a Conductor's first blocked artifact, the same posture `remoteAgents`/`cliToolAgents` already
+ * take. */
 export function formatDoctor(
   health: ConnectorHealth[],
   orchestrator?: OrchestratorStatus,
@@ -190,6 +199,7 @@ export function formatDoctor(
   sandbox?: SandboxDetection,
   sandboxedAgents?: string[],
   unsandboxedAgents?: Array<{ name: string; reason: string }>,
+  nativeSubscriptionAgents?: Array<{ name: string; connector: string }>,
 ): string {
   const out: string[] = [];
   if (versionInfo) {
@@ -230,6 +240,14 @@ export function formatDoctor(
     out.push(
       `⚠ tools: on a cli member is not enforceable by levare at the per-tool level — even a working OS sandbox (Ruling 2) narrows the member's overall reach without distinguishing individual named tools — encode the constraint in the connector/command via the vendor's own flags: ${cliToolAgents.join(", ")}`,
     );
+    out.push("");
+  }
+  if (nativeSubscriptionAgents && nativeSubscriptionAgents.length > 0) {
+    for (const a of nativeSubscriptionAgents) {
+      out.push(
+        `⚠ '${a.name}' is kind: native and granted connector '${a.connector}' (auth: subscription) — levare redirects the CLI's config/session directory to a fresh temp path on every native dispatch, and on macOS the credential lives in the Keychain, not a file, so '${a.name}' cannot reach ${a.connector}'s subscription login either way. Grant it an API-key connector instead, or make it kind: cli.`,
+      );
+    }
     out.push("");
   }
   out.push(`levare doctor · ${health.length} connector${health.length === 1 ? "" : "s"}`);
@@ -277,6 +295,18 @@ export function runDoctor(
   sandbox?: SandboxDetection,
   sandboxedAgents?: string[],
   unsandboxedAgents?: Array<{ name: string; reason: string }>,
+  nativeSubscriptionAgents?: Array<{ name: string; connector: string }>,
 ): string {
-  return formatDoctor(diagnose(connectors, env, probe, provenance), orchestrator, versionInfo, promptCheck, remoteAgents, cliToolAgents, sandbox, sandboxedAgents, unsandboxedAgents);
+  return formatDoctor(
+    diagnose(connectors, env, probe, provenance),
+    orchestrator,
+    versionInfo,
+    promptCheck,
+    remoteAgents,
+    cliToolAgents,
+    sandbox,
+    sandboxedAgents,
+    unsandboxedAgents,
+    nativeSubscriptionAgents,
+  );
 }
