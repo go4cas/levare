@@ -672,6 +672,17 @@ describe("levare serve — SSE re-render trigger", () => {
       // Drain the initial ": connected" comment.
       await reader.read();
 
+      // `createBoard` calls `fs.watch(root, { recursive: true }, ...)` synchronously, but Node's
+      // FSWatcher exposes no "ready" event — registered is not armed. On macOS, FSEvents has a real (if
+      // usually small) gap between the two; on a loaded CI runner that gap can outlast a write issued
+      // immediately after registration, so the change is never observed at all (absent, not late — this
+      // is why raising the 20s bound below never helped: the actual reload path is 90-100ms once the
+      // watcher is armed, and the product's watcher itself was verified reliable against a live studio).
+      // This settle delay is a heuristic, not a guarantee, but it's the only honest option: there's no
+      // ready signal to await, and retrying the write until an event lands would stop this test from
+      // being able to catch a watcher that only delivers some fraction of real changes.
+      await new Promise((r) => setTimeout(r, 250));
+
       writeFileSync(join(root, "work/storefront/checkout-flow/unit.md"), readFileSync(join(root, "work/storefront/checkout-flow/unit.md"), "utf8") + "\n");
 
       const { value } = await reader.read();
