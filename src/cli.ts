@@ -8,7 +8,7 @@ import { loadRepo, repoCapabilities } from "./repo.ts";
 import { assembleContext } from "./context.ts";
 import { runDoctor, type PromptCheck } from "./doctor.ts";
 import { detectSandbox } from "./sandbox.ts";
-import { remoteAgentImplemented, teamOf } from "./env.ts";
+import { remoteAgentImplemented, subscriptionConnector, teamOf } from "./env.ts";
 import { serve } from "./board/serve.ts";
 import { initStudio, GIT_IDENTITY_NOTE } from "./init.ts";
 import { createUnit } from "./new.ts";
@@ -188,6 +188,15 @@ export function runDoctorCmd(rest: string[]): number {
     const unsandboxedAgents = [...repo.agents.values()]
       .filter((a) => a.kind === "cli" && a.sandbox === "unsandboxed" && a.sandbox_reason)
       .map((a) => ({ name: a.name, reason: a.sandbox_reason! }));
+    // Finding 119 (RELEASE R2): every `kind: native` agent granted (directly or via its team) an
+    // `auth: subscription` connector — nothing in the registry stops this grant, but a native
+    // dispatch's own `CLAUDE_CONFIG_DIR` redirect (sdk-transport.ts, threaded in unconditionally by
+    // adapters.ts#buildNativeSandboxPolicy) and, on macOS, the Keychain-only credential storage mean
+    // the connector's subscription login is never reachable from inside it. See
+    // validate.ts#validateNativeSubscriptionAuth for the same telling at `levare validate` time.
+    const nativeSubscriptionAgents = nativeAgents
+      .map((name) => ({ name, connector: subscriptionConnector(repo, name)?.name }))
+      .filter((a): a is { name: string; connector: string } => a.connector !== undefined);
     process.stdout.write(
       runDoctor(
         [...repo.connectors.values()],
@@ -202,6 +211,7 @@ export function runDoctorCmd(rest: string[]): number {
         detectSandbox(),
         sandboxedAgents,
         unsandboxedAgents,
+        nativeSubscriptionAgents,
       ),
     );
     return 0;

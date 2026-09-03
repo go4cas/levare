@@ -507,3 +507,27 @@ describe("doctor: cli-tools-not-enforceable telling (NOTES CAP-B)", () => {
     expect(out).not.toContain("not enforceable by levare");
   });
 });
+
+// Finding 119 (RELEASE R2): a `kind: native` agent granted an `auth: subscription` connector cannot
+// authenticate through it — levare's native dispatch redirects the CLI's config/session directory to a
+// fresh temp path on every call, and on macOS the credential lives in the Keychain, not a file. Doctor
+// repeats the same telling `levare validate`'s NATIVE_SUBSCRIPTION_UNSUPPORTED warning gives.
+describe("doctor: native + subscription connector telling (Finding 119)", () => {
+  test("formatDoctor prints the warning, naming the agent, the connector, and the remedy, when nativeSubscriptionAgents is non-empty", () => {
+    const out = formatDoctor(diagnose(connectors, env, noGh), undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, [{ name: "wren", connector: "codex" }]);
+    expect(out).toContain("wren");
+    expect(out).toContain("codex");
+    expect(out).toContain("kind: cli");
+    expect(out).toContain("Keychain");
+  });
+
+  test("with no native agent holding a subscription connector, no such line appears", () => {
+    const out = formatDoctor(diagnose(connectors, env, noGh), undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, []);
+    expect(out).not.toContain("Keychain");
+  });
+
+  test("omitting nativeSubscriptionAgents entirely leaves the report unchanged", () => {
+    const out = formatDoctor(diagnose(connectors, env, noGh));
+    expect(out).not.toContain("Keychain");
+  });
+});
