@@ -27,7 +27,7 @@ A member. What it can produce, and how to invoke it.
 
 | Field | Required | Notes |
 |---|---|---|
-| `name` | ✅ | Must match the filename |
+| `name` | ✅ | The reference key other files use (`produced_by`, `team.members`); doesn't need to match the filename — an agent, like a team/type/project, resolves by declared name (Finding 191) |
 | `kind` | ✅ | `native` · `cli` · `remote` |
 | `produces` | ✅ | The artifact kinds this member can author. **Binds the member to a flow step.** |
 | `style.avatar` | ✅ | 1–2 chars, shown on the board |
@@ -84,7 +84,7 @@ A group with a job: what it consumes, what it produces, its members, and its flo
 
 | Field | Required | Notes |
 |---|---|---|
-| `name` | ✅ | Must match the filename |
+| `name` | ✅ | The reference key other files use (`team:`, `produced_by`); doesn't need to match the filename (Finding 191) |
 | `consumes` | ✅ | Kinds this team takes as input. Every kind here must be expected by some work-unit type, or `UNKNOWN_CONSUMED_KIND` |
 | `produces` | ✅ | Kinds this team offers the DAG. Every kind here must be produced by a member of the team, or `UNPRODUCIBLE_KIND` |
 | `members` | ✅ | Agent names. Every name here must resolve to a real `agents/<name>.md`, or `UNKNOWN_MEMBER` |
@@ -147,7 +147,7 @@ An external system a member can be granted.
 
 | Field | Required | Notes |
 |---|---|---|
-| `name` | ✅ | Must match the filename |
+| `name` | ✅ | Looked up by FILENAME (`connectors:`/`server:` resolve against `connectors/<filename>.md`), not by this field — a connector, like a skill or knowledge document, resolves by file or bundle name (Finding 191) |
 | `kind` | ✅ | `cli` · `mcp` |
 | `env` | ✅* | Env var **names** only. Required non-empty for `auth: env`; must be empty for `auth: subscription` |
 | `actions` | ✅* | Required non-empty for `effects: write`. Action name → argv template, so a member can never supply raw argv |
@@ -231,7 +231,7 @@ A pointer at a product repo, and its constitution.
 
 | Field | Required | Notes |
 |---|---|---|
-| `name` | ✅ | Must match the filename |
+| `name` | ✅ | The reference key other files use (`project:`); doesn't need to match the filename (Finding 191) |
 | `repo` | ✅ | Where the product's code lives locally |
 | `remote` | ✅ (nullable) | Its git remote, or `null` if this project declares none. **The key is required; the value doesn't have to be a URL** — approved work still needs *somewhere* to be pointed at deciding, even when that decision is "nowhere yet" |
 | `default_branch` | ✅ | Usually `main` |
@@ -280,7 +280,7 @@ A work-unit template: what a unit of this type is expected to produce, and where
 
 | Field | Required | Notes |
 |---|---|---|
-| `name` | ✅ | Must match the filename |
+| `name` | ✅ | The reference key other files use (`type:`); doesn't need to match the filename (Finding 191) |
 | `glyph` | ✅ | The board marker |
 | `expects` | ✅ | The kinds a unit of this type should produce |
 | `gates` | ✅ | Where a human decision is required |
@@ -361,7 +361,7 @@ work against, rather than re-deciding "is this good?" from scratch every time.
 
 | Field | Required | Notes |
 |---|---|---|
-| `name` | ✅ | Must match the filename |
+| `name` | ✅ | Not referenced by anything else — an eval is a leaf, never looked up by name or filename (Finding 191) |
 | `unit` | — | Names a work-unit type (see [Type](#type--typesnamemd) above) — an open string, not a closed set |
 
 **The why**
@@ -481,7 +481,7 @@ A captured pitch with no project yet.
 
 | Field | Required | Notes |
 |---|---|---|
-| `name` | ✅ | Must match the filename |
+| `name` | ✅ | Looked up by FILENAME (`levare capture-idea`/`promote-idea` resolve against `ideas/<filename>.md`), not by this field (Finding 191) |
 
 `pitch` (the one-sentence summary used on promotion) and `tags` are both optional.
 
