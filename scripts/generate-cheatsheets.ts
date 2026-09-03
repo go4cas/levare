@@ -48,12 +48,12 @@ const DESCRIPTIONS: Record<string, string> = {
   studio: "The root-level studio singleton — settings that apply across the whole studio.",
 };
 
-const BODY_PURPOSE: Record<string, string> = {
+export const BODY_PURPOSE: Record<string, string> = {
   agent: "The member's system prompt (native) or wrapper notes (cli).",
   team: "The team charter, injected into every member's context; a sibling `<name>.learnings.md` is appended after it.",
   connector: "Not used — a connector carries no body content.",
   project: "The house rules, injected into every member's context for this project.",
-  type: "Not used — a type carries no body content.",
+  type: "Injected into every member's context, alongside the unit body (§6 recipe item 6).",
   knowledge: "Injected verbatim into a member's context under the knowledge section.",
   eval: "Not used — the frontmatter `rubric` is what's read; the body is stored but never rendered or consumed.",
   skill: "Injected verbatim into a member's context under the skills section.",
@@ -61,7 +61,7 @@ const BODY_PURPOSE: Record<string, string> = {
   artifact:
     "The artifact's actual document. Its first paragraph is the dashboard summary, and it's injected into a " +
     "consumer's context when that consuming agent declares `context_artifacts: inline`.",
-  "work-unit": "Not used — a human-readable brief may be written here, but nothing reads it back.",
+  "work-unit": "Injected into every member's context, alongside the unit's type body (§6 recipe item 6) — a brief the dispatched member actually reads.",
   studio: "Not used — the studio singleton carries no body content.",
 };
 

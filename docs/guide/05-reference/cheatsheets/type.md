@@ -31,10 +31,10 @@ expects: []
 gates: []
 ---
 
-This body is not used by levare — see "Body" below.
+Replace this line with the real content.
 ```
 
-**Body:** Not used — a type carries no body content.
+**Body:** Injected into every member's context, alongside the unit body (§6 recipe item 6).
 
 ---
 

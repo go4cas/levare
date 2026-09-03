@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { loadRepo } from "../src/repo.ts";
 import { assembleContext, ContextError } from "../src/context.ts";
 import { main } from "../src/cli.ts";
+import { BODY_PURPOSE } from "../scripts/generate-cheatsheets.ts";
 import { CAPABILITIES } from "../fixtures/stubs/member-stub.ts";
 import { assertExitCode } from "./spawn-helpers.ts";
 
@@ -297,6 +298,18 @@ describe("Finding 163: the unit's own body and type template reach the member (r
     const cloned = { ...repo, units: repo.units.map((u) => (u.unit === "checkout-flow" ? { ...u, type: "ghost" } : u)) };
     const out = assembleContext(cloned, { root: ROOT, agent: "lyra", unit: "checkout-flow", capabilities: CAPABILITIES });
     expect(out).toContain("### type: ghost\n(not found: types/ghost.md)");
+  });
+
+  // Finding 186: the generated type.md/work-unit.md cheatsheets said "Not used" for exactly the two
+  // bodies THIS describe block already proves are injected into every dispatch — PR #84 (this file's
+  // own tests above) added the behavior, but scripts/generate-cheatsheets.ts's BODY_PURPOSE map was
+  // never updated, and nothing tied the two together, so it drifted silently for ten days. Colocating
+  // this assertion with the behavior it must never contradict closes that gap: a future PR that removes
+  // the injection (breaking the tests above) OR reverts BODY_PURPOSE to "Not used" (breaking this one)
+  // fails loudly either way — the two can no longer drift apart unnoticed.
+  test("BODY_PURPOSE never re-claims 'Not used' for type/work-unit while this file proves their bodies ARE injected", () => {
+    expect(BODY_PURPOSE.type.startsWith("Not used")).toBe(false);
+    expect(BODY_PURPOSE["work-unit"].startsWith("Not used")).toBe(false);
   });
 });
 
