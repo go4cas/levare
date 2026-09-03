@@ -102,6 +102,9 @@ const REJECTIONS: Array<[string, string]> = [
   ["unbindable-step", "UNBINDABLE_STEP"],
   ["cwd-outside-studio-no-inline", "CWD_OUTSIDE_STUDIO_NO_INLINE"],
   ["loop-until-unreachable", "LOOP_UNTIL_UNREACHABLE"],
+  ["bad-override-value", "BAD_OVERRIDE_VALUE"],
+  ["unit-path-mismatch", "UNIT_PATH_MISMATCH"],
+  ["artifact-unit-mismatch", "ARTIFACT_UNIT_MISMATCH"],
 ];
 
 describe("rejection fixtures", () => {
@@ -1085,7 +1088,67 @@ describe("Finding 174: connectors:/knowledge:/skills:/produced_by/after: must re
       const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_PRODUCED_BY");
       expect(err).toBeDefined();
       expect(err!.message).toContain("ghost-member");
-      expect(err!.message).toContain("no agent named");
+      expect(err!.message).toContain("not a member of team 'kestrel'");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Finding 187: existence of the team AND the agent used to be checked as two INDEPENDENT facts —
+  // `kestrel/scribe` passed clean as long as some `agents/scribe.md` existed ANYWHERE, even on a
+  // different team entirely. Real team membership is now required.
+  test("an artifact's produced_by naming a real agent who belongs to a DIFFERENT team fails UNKNOWN_PRODUCED_BY", () => {
+    const dir = buildStudio();
+    writeFileSync(
+      join(dir, "agents", "scribe.md"),
+      ["---", "name: scribe", "kind: native", "produces: [product-brief]", "model: claude-sonnet-5", "style:", "  avatar: Sc", "---", "", "Scribe.", ""].join("\n"),
+    );
+    writeFileSync(
+      join(dir, "teams", "press.md"),
+      ["---", "name: press", "consumes: []", "produces: [product-brief]", "members: [scribe]", "flow:", "  - step: brief", "style:", "  color: '#111'", "---", "", "Press.", ""].join("\n"),
+    );
+    try {
+      writeBrief(dir, "kestrel/scribe");
+      const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_PRODUCED_BY");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("scribe");
+      expect(err!.message).toContain("not a member of team 'kestrel'");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Finding 187: a bare (no `/`) produced_by used to skip this check entirely ("malformed shape is
+  // out of scope"). Two real levare-authored shapes are bare — the synthetic `levare-runner` merge
+  // producer, and a teamless agent's own name — and both must keep validating clean; anything else
+  // (a typo, a name nothing defines) must now fail loudly instead of silently passing.
+  test("produced_by: levare-runner (the synthetic merge producer) validates cleanly", () => {
+    const dir = buildStudio();
+    try {
+      writeBrief(dir, "levare-runner");
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_PRODUCED_BY");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("produced_by: <real agent name>, with no team/ prefix, validates cleanly (a teamless member)", () => {
+    const dir = buildStudio();
+    try {
+      writeBrief(dir, "wren");
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_PRODUCED_BY");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a bare produced_by naming neither levare-runner nor a real agent fails UNKNOWN_PRODUCED_BY", () => {
+    const dir = buildStudio();
+    try {
+      writeBrief(dir, "nobody");
+      const err = validatePath(dir).errors.find((e) => e.code === "UNKNOWN_PRODUCED_BY");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("nobody");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1518,6 +1581,47 @@ describe("Finding 182: project.overrides keys are checked against the known set"
     const dir = buildStudioWithOverrides("  budget: 5\n  pace: step");
     try {
       expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_OVERRIDE_KEY");
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("BAD_OVERRIDE_VALUE");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Finding 189: UNKNOWN_OVERRIDE_KEY only ever checked the KEY — `overrides.pace: turbo` and
+  // `overrides.budget: many` both validated clean and were silently ignored at their one read site
+  // each (runner.ts#effectivePace, new.ts's override read), the same silent-typo shape the key check
+  // itself already closes, just one level deeper.
+  test("overrides.pace with an illegal value fails BAD_OVERRIDE_VALUE, not UNKNOWN_OVERRIDE_KEY", () => {
+    const dir = buildStudioWithOverrides("  pace: turbo");
+    try {
+      const errors = validatePath(dir).errors;
+      expect(errors.map((e) => e.code)).not.toContain("UNKNOWN_OVERRIDE_KEY");
+      const err = errors.find((e) => e.code === "BAD_OVERRIDE_VALUE");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("turbo");
+      expect(err!.message).toContain("auto");
+      expect(err!.message).toContain("step");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("overrides.budget with a non-numeric value fails BAD_OVERRIDE_VALUE", () => {
+    const dir = buildStudioWithOverrides("  budget: many");
+    try {
+      const err = validatePath(dir).errors.find((e) => e.code === "BAD_OVERRIDE_VALUE");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("many");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("overrides.budget with a non-positive number fails BAD_OVERRIDE_VALUE", () => {
+    const dir = buildStudioWithOverrides("  budget: -5");
+    try {
+      const err = validatePath(dir).errors.find((e) => e.code === "BAD_OVERRIDE_VALUE");
+      expect(err).toBeDefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1532,6 +1636,117 @@ describe("Finding 182: project.overrides keys are checked against the known set"
     );
     try {
       expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_OVERRIDE_KEY");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Finding 192 (RULED): a declared unit: must agree with the directory it actually lives in", () => {
+  function writeUnit(dir: string, unitDirName: string, declaredUnit?: string): void {
+    mkdirSync(join(dir, "work", "acme", unitDirName), { recursive: true });
+    const lines = ["---", "type: feature", "status: active", ...(declaredUnit !== undefined ? [`unit: ${declaredUnit}`] : []), "---", "", "# unit", ""];
+    writeFileSync(join(dir, "work", "acme", unitDirName, "unit.md"), lines.join("\n"));
+  }
+
+  function artifactLines(id: string, unit: string): string[] {
+    return [
+      "---",
+      "kind: product-brief",
+      `id: ${id}`,
+      `unit: ${unit}`,
+      "project: acme",
+      "status: in-review",
+      "produced_by: kestrel/wren",
+      "consumes: []",
+      "supersedes: null",
+      "approved_by: null",
+      "created: 2026-08-31",
+      "files: []",
+      "---",
+      "",
+      "Brief.",
+      "",
+    ];
+  }
+
+  function writeSingleFileArtifact(dir: string, unitDirName: string, unit: string): void {
+    mkdirSync(join(dir, "work", "acme", unitDirName), { recursive: true });
+    writeFileSync(join(dir, "work", "acme", unitDirName, "brief-v1.md"), artifactLines("brief-v1", unit).join("\n"));
+  }
+
+  function writeFolderArtifact(dir: string, unitDirName: string, unit: string): void {
+    mkdirSync(join(dir, "work", "acme", unitDirName, "design-v1"), { recursive: true });
+    writeFileSync(join(dir, "work", "acme", unitDirName, "design-v1", "index.md"), artifactLines("design-v1", unit).join("\n"));
+  }
+
+  test("unit.md declaring unit: that disagrees with its own directory fails UNIT_PATH_MISMATCH", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-unit-path-"));
+    try {
+      writeUnit(dir, "launch", "not-launch");
+      const err = validatePath(dir).errors.find((e) => e.code === "UNIT_PATH_MISMATCH");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("not-launch");
+      expect(err!.message).toContain("launch");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("unit.md declaring unit: equal to its own directory validates cleanly", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-unit-path-"));
+    try {
+      writeUnit(dir, "launch", "launch");
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNIT_PATH_MISMATCH");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("unit.md with no unit: field at all (defaulted from the directory) validates cleanly", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-unit-path-"));
+    try {
+      writeUnit(dir, "launch");
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNIT_PATH_MISMATCH");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a single-file artifact's unit: disagreeing with its containing directory fails ARTIFACT_UNIT_MISMATCH", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-artifact-unit-"));
+    try {
+      writeSingleFileArtifact(dir, "launch", "some-other-unit");
+      const err = validatePath(dir).errors.find((e) => e.code === "ARTIFACT_UNIT_MISMATCH");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("some-other-unit");
+      expect(err!.message).toContain("launch");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a folder artifact's unit: disagreeing with its containing unit directory fails ARTIFACT_UNIT_MISMATCH", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-artifact-unit-"));
+    try {
+      writeFolderArtifact(dir, "launch", "some-other-unit");
+      const err = validatePath(dir).errors.find((e) => e.code === "ARTIFACT_UNIT_MISMATCH");
+      expect(err).toBeDefined();
+      // A folder artifact's containing unit is its PARENT directory (design-v1/index.md → launch/), not
+      // the artifact's own subdirectory — proves the isFolder ? dirname(a.dir) : a.dir branch, not just
+      // the single-file one above.
+      expect(err!.message).toContain("launch");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an artifact's unit: agreeing with its containing directory validates cleanly", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-artifact-unit-"));
+    try {
+      writeSingleFileArtifact(dir, "launch", "launch");
+      writeFolderArtifact(dir, "launch", "launch");
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("ARTIFACT_UNIT_MISMATCH");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

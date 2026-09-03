@@ -19,7 +19,7 @@ A pointer at a product repo, and its constitution.
 | `default_branch` | string | ✅ | — | — | The branch merges land on. |
 | `deploy` | string | ✅ | ✅ | — | How this project deploys, or null if undeclared. |
 | `pace` | enum | ✅ | — | `auto` · `step` | auto (the daemon advances the score by itself between gates) or step (advances only on explicit Conductor action). |
-| `overrides` | map | — | — | — | One-level merge over team defaults, scoped to this project. Keys are checked against the known set (currently budget, pace) — an unrecognized key fails UNKNOWN_OVERRIDE_KEY. |
+| `overrides` | map | — | — | — | Per-project overrides for a fixed set of runtime-read keys (currently budget, pace). overrides.pace wins over the required pace field above (runner.ts#effectivePace); overrides.budget seeds a new unit's budget when levare new is run with no --budget flag (new.ts). An unrecognized key fails UNKNOWN_OVERRIDE_KEY; a recognized key with the wrong value shape fails BAD_OVERRIDE_VALUE. |
 
 ## Minimal valid skeleton
 

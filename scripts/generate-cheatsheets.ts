@@ -21,6 +21,7 @@ import {
   ARTIFACT_SCHEMA,
   REGISTRY_SCHEMAS,
   STUDIO_SCHEMA,
+  SYSTEM_PRODUCED_BY,
   WORK_UNIT_SCHEMA,
   validatePath,
   type FieldSpec,
@@ -48,12 +49,12 @@ const DESCRIPTIONS: Record<string, string> = {
   studio: "The root-level studio singleton — settings that apply across the whole studio.",
 };
 
-const BODY_PURPOSE: Record<string, string> = {
+export const BODY_PURPOSE: Record<string, string> = {
   agent: "The member's system prompt (native) or wrapper notes (cli).",
   team: "The team charter, injected into every member's context; a sibling `<name>.learnings.md` is appended after it.",
   connector: "Not used — a connector carries no body content.",
   project: "The house rules, injected into every member's context for this project.",
-  type: "Not used — a type carries no body content.",
+  type: "Injected into every member's context, alongside the unit body (§6 recipe item 6).",
   knowledge: "Injected verbatim into a member's context under the knowledge section.",
   eval: "Not used — the frontmatter `rubric` is what's read; the body is stored but never rendered or consumed.",
   skill: "Injected verbatim into a member's context under the skills section.",
@@ -61,7 +62,7 @@ const BODY_PURPOSE: Record<string, string> = {
   artifact:
     "The artifact's actual document. Its first paragraph is the dashboard summary, and it's injected into a " +
     "consumer's context when that consuming agent declares `context_artifacts: inline`.",
-  "work-unit": "Not used — a human-readable brief may be written here, but nothing reads it back.",
+  "work-unit": "Injected into every member's context, alongside the unit's type body (§6 recipe item 6) — a brief the dispatched member actually reads.",
   studio: "Not used — the studio singleton carries no body content.",
 };
 
@@ -228,6 +229,28 @@ function removedFieldsSection(schema: Schema): string {
   return lines.join("\n") + "\n";
 }
 
+// Finding 190: the Required column above is computed solely from FieldSpec.required — a static,
+// schema-level boolean. It has no way to reflect validateAgentVariant's per-`kind` conditional
+// requirements (native needs `model`; cli needs `command`+`result`; remote needs `server`+`tool`), which
+// live entirely outside the FieldSpec DSL as separate imperative code — so those fields show as "—"
+// even though a real document of that `kind` fails MISSING_FIELD without them. Rather than teach the
+// Required column to lie less loudly with a half-encoded convention, this says so plainly, in the same
+// hand-authored, schema-keyed-so-it-can't-silently-drift-to-the-wrong-entity shape as BODY_PURPOSE.
+// Optional — most schemas have no `kind`-shaped conditional requirements at all.
+const CONDITIONAL_REQUIREMENTS: Partial<Record<string, string>> = {
+  agent:
+    "The Required column above is schema-level only — it can't express that requiredness here depends on `kind`. " +
+    "`validateAgentVariant` additionally requires: `kind: native` → `model`; `kind: cli` → `command` and `result`; " +
+    "`kind: remote` → `server` and `tool`. A `cli` agent that also declares `model` needs a `{model}` placeholder " +
+    "somewhere in `command`, or `MODEL_PLACEHOLDER_MISSING`.",
+};
+
+function conditionalRequirementsSection(schema: Schema): string {
+  const note = CONDITIONAL_REQUIREMENTS[schema.name];
+  if (!note) return "";
+  return `\n### Conditional requirements\n\n${note}\n`;
+}
+
 // ---------------------------------------------------------------------------
 // Skeleton generation — computed from the schema, then proven valid against the REAL validator
 // ---------------------------------------------------------------------------
@@ -260,6 +283,11 @@ function placeholderValue(key: string, spec: FieldSpec): YamlValue {
     case "str":
       if (key === "model" || key === "orchestrator_model") return MODEL_PLACEHOLDER;
       if (key === "type" || key === "project") return ENTITY_NAME_PLACEHOLDER;
+      // Finding 187: produced_by must resolve to a real team/member or the levare-runner system
+      // producer — a generic `example-produced_by` (no `/`, not a real agent) now fails
+      // UNKNOWN_PRODUCED_BY. The system producer is always legal regardless of what the scratch
+      // registry's healed agents/teams happen to be named.
+      if (key === "produced_by") return SYSTEM_PRODUCED_BY;
       return `example-${key}`;
   }
 }
@@ -431,7 +459,7 @@ ${description}
 ## Fields
 
 ${fieldTable(schema)}
-${vocabularySections(schema)}${removedFieldsSection(schema)}
+${vocabularySections(schema)}${removedFieldsSection(schema)}${conditionalRequirementsSection(schema)}
 ## Minimal valid skeleton
 
 \`\`\`markdown

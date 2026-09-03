@@ -121,7 +121,7 @@ export const ARTIFACT_SCHEMA: Schema = {
   name: "artifact",
   fields: {
     kind: { type: "str", required: true, description: "The artifact kind (e.g. spec, review) — which work-unit-type step this satisfies." },
-    id: { type: "str", required: true, description: "This artifact's identifier, unique within its unit." },
+    id: { type: "str", required: true, description: "This artifact's identifier, unique within its project (crossReference's DUPLICATE_ID)." },
     unit: { type: "str", required: true, description: "The work unit this artifact belongs to." },
     project: { type: "str", required: true, description: "The project this artifact belongs to." },
     status: {
@@ -703,7 +703,7 @@ const PROJECT_SCHEMA: Schema = {
     overrides: {
       type: "map",
       required: false,
-      description: "One-level merge over team defaults, scoped to this project. Keys are checked against the known set (currently budget, pace) — an unrecognized key fails UNKNOWN_OVERRIDE_KEY.",
+      description: "Per-project overrides for a fixed set of runtime-read keys (currently budget, pace). overrides.pace wins over the required pace field above (runner.ts#effectivePace); overrides.budget seeds a new unit's budget when levare new is run with no --budget flag (new.ts). An unrecognized key fails UNKNOWN_OVERRIDE_KEY; a recognized key with the wrong value shape fails BAD_OVERRIDE_VALUE.",
     },
   },
 };
@@ -962,6 +962,7 @@ export function validatePath(target: string, overlay?: OverlayFile, sandbox?: Sa
   // Cross-artifact checks over everything discovered.
   validateProducedByReferences(target, artifacts, errors, overlay);
   validateProjectReferences(target, artifacts, errors, overlay);
+  validateUnitPathIdentity(target, artifacts, errors);
   crossReference(artifacts, errors);
   validateRejectedArtifactUnitStatus(artifacts, errors);
   const immutability = gitImmutabilityCheck(target, artifacts, errors);
@@ -1700,13 +1701,41 @@ function validateProjectOverrideKeys(root: string, errors: ValidationError[], ov
     }
     if (data.overrides === undefined || data.overrides === null || typeof data.overrides !== "object") continue;
     const projectName = typeof data.name === "string" ? data.name : basename(name, ".md");
-    for (const key of Object.keys(data.overrides as Record<string, YamlValue>)) {
-      if (KNOWN_PROJECT_OVERRIDE_KEYS.includes(key)) continue;
-      errors.push({
-        code: "UNKNOWN_OVERRIDE_KEY",
-        message: `project '${projectName}' declares overrides.${key}, but no code reads that override key — known override keys: ${KNOWN_PROJECT_OVERRIDE_KEYS.join(", ")}`,
-        file,
-      });
+    const overrides = data.overrides as Record<string, YamlValue>;
+    for (const key of Object.keys(overrides)) {
+      if (!KNOWN_PROJECT_OVERRIDE_KEYS.includes(key)) {
+        errors.push({
+          code: "UNKNOWN_OVERRIDE_KEY",
+          message: `project '${projectName}' declares overrides.${key}, but no code reads that override key — known override keys: ${KNOWN_PROJECT_OVERRIDE_KEYS.join(", ")}`,
+          file,
+        });
+        continue;
+      }
+      // Finding 189: a known key with the wrong value shape passed clean and was silently ignored at
+      // both read sites (runner.ts#effectivePace's `override === "auto" || override === "step"` check,
+      // new.ts's `typeof override === "number" && Number.isFinite(override) && override > 0` check) —
+      // the exact same silent-typo shape UNKNOWN_OVERRIDE_KEY already closes for the key itself, now
+      // closed for the value too. `pace`'s legal values are the same enum `Project.pace` itself uses,
+      // read directly off the schema so the two can never drift apart.
+      if (key === "pace") {
+        const paceEnum = PROJECT_SCHEMA.fields.pace.enum ?? [];
+        if (typeof overrides.pace !== "string" || !paceEnum.includes(overrides.pace)) {
+          errors.push({
+            code: "BAD_OVERRIDE_VALUE",
+            message: `project '${projectName}' declares overrides.pace: ${JSON.stringify(overrides.pace)}, but effectivePace only recognizes [${paceEnum.join(", ")}] — anything else is silently ignored, falling back to this project's own pace`,
+            file,
+          });
+        }
+      } else if (key === "budget") {
+        const budget = overrides.budget;
+        if (typeof budget !== "number" || !Number.isFinite(budget) || budget <= 0) {
+          errors.push({
+            code: "BAD_OVERRIDE_VALUE",
+            message: `project '${projectName}' declares overrides.budget: ${JSON.stringify(budget)}, but new.ts only accepts a positive finite number — anything else is silently ignored, leaving a new unit's budget unset`,
+            file,
+          });
+        }
+      }
     }
   }
 }
@@ -2928,28 +2957,31 @@ function validateNamedReferences(root: string, errors: ValidationError[], overla
   }
 }
 
-/**
- * Finding 174 (produced_by): the fourth name-based reference — `artifact.produced_by` — was only ever
- * checked incidentally, and only for `kind: proposal` artifacts with a connector attached
- * (isConnectorGrantedTo's `existsSync` guards happen to catch a nonexistent team/member, but under the
- * unrelated code CONNECTOR_NOT_GRANTED, and only on that narrow path). Every other artifact kind's
- * `produced_by` went unchecked entirely. In normal operation `produced_by` is always written by levare
- * itself (adapters.ts#author, dagwalk.ts) as `${team.name}/${member}` from real, already-validated
- * Team/Agent objects, so this exists to catch a hand-edited or manually-authored artifact naming a
- * team or member that doesn't exist — same class of silent-gap as the three checked above, on the one
- * name-based reference that (like `team:`) resolves by declared `name:`, not filename.
- */
+// Finding 174's original check only asked "does this team exist?" and "does this agent exist?" as two
+// INDEPENDENT facts, never "is this agent actually a member of this team?" — `produced_by: kestrel/lyra`
+// on an artifact `kestrel` never produced (say `lyra` is really a `helm` member) passed clean, the exact
+// silent-wrong-answer shape UNKNOWN_MEMBER/AGENT_IN_MULTIPLE_TEAMS already close for `team.members`
+// itself. It also skipped every value with no `/` at all as "malformed shape is out of scope" — but two
+// real, levare-authored shapes ARE bare: `merge.ts#formatMergeArtifact`'s fixed `produced_by:
+// levare-runner` (levare's own synthetic authorship for a merge gate it opens itself, never a team/agent
+// pair), and `adapters.ts#author`'s `team ? \`${team.name}/${req.member}\` : req.member` fallback for a
+// member on no team (legal — nothing requires every agent to have one; see the golden fixture's own
+// unused `rook`). A bare value that is neither of those (e.g. `nobody`) is a real gap: it named no team
+// to at least partially validate against, so it passed with NO check at all.
+export const SYSTEM_PRODUCED_BY = "levare-runner"; // must match merge.ts#formatMergeArtifact's literal.
+
 function validateProducedByReferences(root: string, artifacts: DiscoveredArtifact[], errors: ValidationError[], overlay?: OverlayFile): void {
   const teamsDir = join(root, "teams");
   const agentsDir = join(root, "agents");
   if (!existsSync(teamsDir) || !existsSync(agentsDir)) return;
 
-  const teamNames = new Set<string>();
+  const teamMembers = new Map<string, Set<string>>();
   for (const f of readdirSync(teamsDir).sort()) {
     if (!f.endsWith(".md") || f.endsWith(".learnings.md")) continue;
     try {
       const { data } = parseFrontmatter(readOverlaid(join(teamsDir, f), overlay));
-      teamNames.add(typeof data.name === "string" ? data.name : basename(f, ".md"));
+      const teamName = typeof data.name === "string" ? data.name : basename(f, ".md");
+      teamMembers.set(teamName, new Set(strList(data.members)));
     } catch {
       continue;
     }
@@ -2964,24 +2996,89 @@ function validateProducedByReferences(root: string, artifacts: DiscoveredArtifac
       continue;
     }
   }
+  const knownTeams = [...teamMembers.keys()].sort();
 
   for (const a of artifacts) {
     const producedBy = typeof a.data.produced_by === "string" ? a.data.produced_by : undefined;
-    if (!producedBy || !producedBy.includes("/")) continue; // malformed shape is out of scope here.
-    const [teamName, memberName] = producedBy.split("/");
-    if (!teamNames.has(teamName)) {
+    if (!producedBy) continue;
+    if (!producedBy.includes("/")) {
+      if (producedBy === SYSTEM_PRODUCED_BY || agentNames.has(producedBy)) continue;
       errors.push({
         code: "UNKNOWN_PRODUCED_BY",
-        message: `artifact declares produced_by: '${producedBy}', but no team named '${teamName}' is defined — known teams: ${[...teamNames].sort().join(", ") || "(none defined)"}`,
+        message: `artifact declares produced_by: '${producedBy}', but that's neither '${SYSTEM_PRODUCED_BY}' (levare's own synthetic authorship) nor a real agent name — known agents: ${[...agentNames].sort().join(", ") || "(none defined)"}`,
         file: a.file,
       });
-    } else if (!agentNames.has(memberName)) {
+      continue;
+    }
+    const [teamName, memberName] = producedBy.split("/");
+    const members = teamMembers.get(teamName);
+    if (!members) {
       errors.push({
         code: "UNKNOWN_PRODUCED_BY",
-        message: `artifact declares produced_by: '${producedBy}', but no agent named '${memberName}' is defined — known agents: ${[...agentNames].sort().join(", ") || "(none defined)"}`,
+        message: `artifact declares produced_by: '${producedBy}', but no team named '${teamName}' is defined — known teams: ${knownTeams.join(", ") || "(none defined)"}`,
+        file: a.file,
+      });
+    } else if (!members.has(memberName)) {
+      errors.push({
+        code: "UNKNOWN_PRODUCED_BY",
+        message: `artifact declares produced_by: '${producedBy}', but '${memberName}' is not a member of team '${teamName}' — that team's members: ${[...members].sort().join(", ") || "(none)"}`,
         file: a.file,
       });
     }
+  }
+}
+
+/**
+ * Finding 192 (RULED — the path is the identity, enforce equality; contrast Finding 191, which rules
+ * the opposite way for Agent/Team/Type/Project). Before this, a work unit's own `unit:` field and an
+ * artifact's `unit:` field were both "declared, trusted verbatim, defaulted from the directory but never
+ * checked against it": `repo.ts#loadWork`'s `optStr(data.unit) ?? unit` fallback only ever DEFAULTS from
+ * the containing directory name, never compares the two when `unit:` is actually present — so
+ * `work/<project>/foo/unit.md` declaring `unit: bar` validated clean, and an artifact anywhere under
+ * `foo/` declaring `unit: nonexistent-unit` validated clean too (`ARTIFACT_SCHEMA.unit` was checked for
+ * type only, never cross-referenced against anything). Meanwhile everything ELSE in this codebase
+ * already treats the containing directory as the real identity: `discoverFolderArtifacts` and
+ * `classify` derive an artifact's unit purely from `work/<project>/<unit>/...` path segments (never from
+ * frontmatter), `timeline.ts#gitLogRows` filters by `WorkUnit.dir` (the loader-computed real path), and
+ * the board's own URLs are `/run/<project>/<unit>` built from that same path. A declared `unit:` field
+ * that disagrees with the directory it sits in is not a second source of truth — it is a stale or
+ * hand-typo'd label next to the one the rest of the system already uses.
+ */
+function validateUnitPathIdentity(root: string, artifacts: DiscoveredArtifact[], errors: ValidationError[]): void {
+  const workRoot = join(root, "work");
+  if (!existsSync(workRoot)) return;
+
+  for (const project of listDirs(workRoot)) {
+    for (const unitName of listDirs(join(workRoot, project))) {
+      const unitFile = join(workRoot, project, unitName, "unit.md");
+      if (!existsSync(unitFile)) continue;
+      let data: Record<string, YamlValue>;
+      try {
+        ({ data } = parseFrontmatter(readFileSync(unitFile, "utf8")));
+      } catch {
+        continue; // its own PARSE_ERROR was already recorded by the per-file pass.
+      }
+      if (typeof data.unit === "string" && data.unit !== unitName) {
+        errors.push({
+          code: "UNIT_PATH_MISMATCH",
+          message: `unit.md under work/${project}/${unitName}/ declares unit: '${data.unit}', but its containing directory is '${unitName}' — every other consumer (the board, the git log filter, folder-artifact discovery) trusts the directory, not this field; make them agree`,
+          file: unitFile,
+        });
+      }
+    }
+  }
+
+  for (const a of artifacts) {
+    const unit = typeof a.data.unit === "string" ? a.data.unit : undefined;
+    if (unit === undefined) continue;
+    const unitDir = a.isFolder ? dirname(a.dir) : a.dir;
+    const unitDirName = basename(unitDir);
+    if (unit === unitDirName) continue;
+    errors.push({
+      code: "ARTIFACT_UNIT_MISMATCH",
+      message: `artifact '${String(a.data.id ?? basename(a.file))}' declares unit: '${unit}', but it physically lives under work/.../${unitDirName}/ — every other consumer trusts the containing directory, not this field; make them agree`,
+      file: a.file,
+    });
   }
 }
 

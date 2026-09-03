@@ -31,10 +31,10 @@ type: example-name
 status: active
 ---
 
-This body is not used by levare — see "Body" below.
+Replace this line with the real content.
 ```
 
-**Body:** Not used — a human-readable brief may be written here, but nothing reads it back.
+**Body:** Injected into every member's context, alongside the unit's type body (§6 recipe item 6) — a brief the dispatched member actually reads.
 
 ---
 
