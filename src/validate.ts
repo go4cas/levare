@@ -703,7 +703,7 @@ const PROJECT_SCHEMA: Schema = {
     overrides: {
       type: "map",
       required: false,
-      description: "One-level merge over team defaults, scoped to this project. Keys are checked against the known set (currently budget, pace) — an unrecognized key fails UNKNOWN_OVERRIDE_KEY.",
+      description: "Per-project overrides for a fixed set of runtime-read keys (currently budget, pace). overrides.pace wins over the required pace field above (runner.ts#effectivePace); overrides.budget seeds a new unit's budget when levare new is run with no --budget flag (new.ts). An unrecognized key fails UNKNOWN_OVERRIDE_KEY; a recognized key with the wrong value shape fails BAD_OVERRIDE_VALUE.",
     },
   },
 };
@@ -1700,13 +1700,41 @@ function validateProjectOverrideKeys(root: string, errors: ValidationError[], ov
     }
     if (data.overrides === undefined || data.overrides === null || typeof data.overrides !== "object") continue;
     const projectName = typeof data.name === "string" ? data.name : basename(name, ".md");
-    for (const key of Object.keys(data.overrides as Record<string, YamlValue>)) {
-      if (KNOWN_PROJECT_OVERRIDE_KEYS.includes(key)) continue;
-      errors.push({
-        code: "UNKNOWN_OVERRIDE_KEY",
-        message: `project '${projectName}' declares overrides.${key}, but no code reads that override key — known override keys: ${KNOWN_PROJECT_OVERRIDE_KEYS.join(", ")}`,
-        file,
-      });
+    const overrides = data.overrides as Record<string, YamlValue>;
+    for (const key of Object.keys(overrides)) {
+      if (!KNOWN_PROJECT_OVERRIDE_KEYS.includes(key)) {
+        errors.push({
+          code: "UNKNOWN_OVERRIDE_KEY",
+          message: `project '${projectName}' declares overrides.${key}, but no code reads that override key — known override keys: ${KNOWN_PROJECT_OVERRIDE_KEYS.join(", ")}`,
+          file,
+        });
+        continue;
+      }
+      // Finding 189: a known key with the wrong value shape passed clean and was silently ignored at
+      // both read sites (runner.ts#effectivePace's `override === "auto" || override === "step"` check,
+      // new.ts's `typeof override === "number" && Number.isFinite(override) && override > 0` check) —
+      // the exact same silent-typo shape UNKNOWN_OVERRIDE_KEY already closes for the key itself, now
+      // closed for the value too. `pace`'s legal values are the same enum `Project.pace` itself uses,
+      // read directly off the schema so the two can never drift apart.
+      if (key === "pace") {
+        const paceEnum = PROJECT_SCHEMA.fields.pace.enum ?? [];
+        if (typeof overrides.pace !== "string" || !paceEnum.includes(overrides.pace)) {
+          errors.push({
+            code: "BAD_OVERRIDE_VALUE",
+            message: `project '${projectName}' declares overrides.pace: ${JSON.stringify(overrides.pace)}, but effectivePace only recognizes [${paceEnum.join(", ")}] — anything else is silently ignored, falling back to this project's own pace`,
+            file,
+          });
+        }
+      } else if (key === "budget") {
+        const budget = overrides.budget;
+        if (typeof budget !== "number" || !Number.isFinite(budget) || budget <= 0) {
+          errors.push({
+            code: "BAD_OVERRIDE_VALUE",
+            message: `project '${projectName}' declares overrides.budget: ${JSON.stringify(budget)}, but new.ts only accepts a positive finite number — anything else is silently ignored, leaving a new unit's budget unset`,
+            file,
+          });
+        }
+      }
     }
   }
 }

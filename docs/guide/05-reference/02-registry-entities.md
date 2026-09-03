@@ -250,10 +250,12 @@ A repo that can't be resolved gets its own warning: a `repo:` pointing at a path
 yet is `PROJECT_REPO_UNRESOLVED`, not a hard error — the walkthrough form is "clone it later," so this
 stays a warning, named plainly rather than a silent no-op.
 
-`overrides` is a one-level merge over team defaults, scoped to this project — it doesn't name a
-specific team by field, so it isn't in the basics table above, but it's how a project can, say, raise a
-team's default budget without editing the team itself. Its keys are checked against the known set
-(`budget`, `pace`) — an unrecognized key is `UNKNOWN_OVERRIDE_KEY`, not silently ignored.
+`overrides` is a project-scoped override for a fixed set of runtime-read keys — it doesn't name a
+single field above, so it isn't in the basics table, but `overrides.pace` wins over this project's own
+required `pace` above (`runner.ts#effectivePace`), and `overrides.budget` seeds a new unit's budget when
+`levare new` runs with no `--budget` flag. Its keys are checked against the known set (`budget`,
+`pace`) — an unrecognized key is `UNKNOWN_OVERRIDE_KEY`; a recognized key with the wrong value shape
+(e.g. `pace: sometimes`, `budget: many`) is `BAD_OVERRIDE_VALUE` — neither is silently ignored.
 
 ```markdown
 ---

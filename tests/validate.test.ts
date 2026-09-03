@@ -102,6 +102,7 @@ const REJECTIONS: Array<[string, string]> = [
   ["unbindable-step", "UNBINDABLE_STEP"],
   ["cwd-outside-studio-no-inline", "CWD_OUTSIDE_STUDIO_NO_INLINE"],
   ["loop-until-unreachable", "LOOP_UNTIL_UNREACHABLE"],
+  ["bad-override-value", "BAD_OVERRIDE_VALUE"],
 ];
 
 describe("rejection fixtures", () => {
@@ -1518,6 +1519,47 @@ describe("Finding 182: project.overrides keys are checked against the known set"
     const dir = buildStudioWithOverrides("  budget: 5\n  pace: step");
     try {
       expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("UNKNOWN_OVERRIDE_KEY");
+      expect(validatePath(dir).errors.map((e) => e.code)).not.toContain("BAD_OVERRIDE_VALUE");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Finding 189: UNKNOWN_OVERRIDE_KEY only ever checked the KEY — `overrides.pace: turbo` and
+  // `overrides.budget: many` both validated clean and were silently ignored at their one read site
+  // each (runner.ts#effectivePace, new.ts's override read), the same silent-typo shape the key check
+  // itself already closes, just one level deeper.
+  test("overrides.pace with an illegal value fails BAD_OVERRIDE_VALUE, not UNKNOWN_OVERRIDE_KEY", () => {
+    const dir = buildStudioWithOverrides("  pace: turbo");
+    try {
+      const errors = validatePath(dir).errors;
+      expect(errors.map((e) => e.code)).not.toContain("UNKNOWN_OVERRIDE_KEY");
+      const err = errors.find((e) => e.code === "BAD_OVERRIDE_VALUE");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("turbo");
+      expect(err!.message).toContain("auto");
+      expect(err!.message).toContain("step");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("overrides.budget with a non-numeric value fails BAD_OVERRIDE_VALUE", () => {
+    const dir = buildStudioWithOverrides("  budget: many");
+    try {
+      const err = validatePath(dir).errors.find((e) => e.code === "BAD_OVERRIDE_VALUE");
+      expect(err).toBeDefined();
+      expect(err!.message).toContain("many");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("overrides.budget with a non-positive number fails BAD_OVERRIDE_VALUE", () => {
+    const dir = buildStudioWithOverrides("  budget: -5");
+    try {
+      const err = validatePath(dir).errors.find((e) => e.code === "BAD_OVERRIDE_VALUE");
+      expect(err).toBeDefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
