@@ -3107,6 +3107,37 @@ describe("commit-on-produce (goal, Finding 74) — a dispatch's own worktree fil
       const { doc } = await runner.produceAsync("lyra", "spec", "checkout-flow", "storefront");
       expect(git(projectRepo, ["rev-parse", "levare/checkout-flow"]).trim()).toBe(beforeSha);
       expect(doc).toContain("code_commit: none");
+      // Goal 2026-09-11 ("native member cwd"): a worktree-existed-but-nothing-committed dispatch is
+      // exactly the live mason incident's own shape — flagged with a loud, greppable warning field
+      // rather than looking identical to an ordinary "nothing to change" dispatch.
+      expect(doc).toContain("code_commit_warning: this dispatch had a real dispatch worktree but nothing was committed");
+    } finally {
+      rmSync(projectRepo, { recursive: true, force: true });
+    }
+  });
+
+  test("code_commit_warning is absent when a real commit landed, and absent when there was no dispatch worktree at all", async () => {
+    const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+    try {
+      const repo = repoWithRealStorefrontRepo(projectRepo);
+      const asyncNative = {
+        invoke: async (r: InvokeRequest) => {
+          writeFileSync(join(r.projectRepoPath!, "jot-list.ts"), "export function list() {}\n");
+          return { doc: render(r.member, r.kind, r.unit, r.project) };
+        },
+      };
+      const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native: nativeMock, asyncNative, remote: remoteMock });
+      const { doc: committedDoc } = await runner.produceAsync("lyra", "spec", "checkout-flow", "storefront");
+      expect(committedDoc).toContain("code_commit:");
+      expect(committedDoc).not.toContain("code_commit_warning:");
+
+      // The golden fixture's own `storefront` (UNTOUCHED — no real local checkout): no dispatch
+      // worktree, so `code_commit` itself is absent and there is nothing to warn about.
+      const goldenRepo = loadRepo(ROOT);
+      const runnerNoRepo = new AdapterRunner(goldenRepo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native: nativeMock, remote: remoteMock });
+      const { doc: noWorktreeDoc } = runnerNoRepo.produce("lyra", "spec", "checkout-flow", "storefront");
+      expect(noWorktreeDoc).not.toContain("code_commit:");
+      expect(noWorktreeDoc).not.toContain("code_commit_warning:");
     } finally {
       rmSync(projectRepo, { recursive: true, force: true });
     }

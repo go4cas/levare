@@ -329,6 +329,65 @@ describe("sandbox: not-wrapped (Finding 75, part 1) — a legacy value, still nu
   });
 });
 
+// Goal 2026-09-11 ("native member cwd"): `code_commit_warning` (adapters.ts#author's own doc) flags the
+// live mason incident's own shape — a dispatch that DID have a real dispatch worktree, yet
+// `code_commit: none` — a fact that's otherwise indistinguishable from a member correctly deciding
+// there was nothing to change. `validateArtifactCodeCommitWarning` is its sole reader, on-disk.
+describe("code_commit_warning — surfaced as a levare validate warning (goal 2026-09-11, 'native member cwd')", () => {
+  function artifactDoc(extraFrontmatter: string): string {
+    return [
+      "---",
+      "kind: spec",
+      "id: spec-flow-v1",
+      "unit: flow",
+      "project: acme",
+      "status: in-review",
+      "produced_by: kestrel/lyra",
+      "consumes: []",
+      "supersedes: null",
+      "approved_by: null",
+      "created: 2026-08-31",
+      "files: []",
+      extraFrontmatter,
+      "---",
+      "",
+      "Body.",
+      "",
+    ]
+      .filter((l) => l !== "")
+      .join("\n");
+  }
+
+  test("present on disk → a CODE_COMMIT_WARNING validate warning, carrying the field's own message verbatim", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-code-commit-warning-"));
+    try {
+      mkdirSync(join(dir, "work", "acme", "flow"), { recursive: true });
+      writeFileSync(
+        join(dir, "work", "acme", "flow", "spec-flow-v1.md"),
+        artifactDoc("code_commit: none\ncode_commit_warning: this dispatch had a real dispatch worktree but nothing was committed — verify the member actually made the intended changes"),
+      );
+      const r = validatePath(dir);
+      const w = r.warnings.find((w) => w.code === "CODE_COMMIT_WARNING");
+      expect(w).toBeDefined();
+      expect(w!.message).toBe("this dispatch had a real dispatch worktree but nothing was committed — verify the member actually made the intended changes");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("absent from the artifact → never fires, whether code_commit is a real commit, none, or missing entirely", () => {
+    const dir = mkdtempSync(join(tmpdir(), "levare-code-commit-warning-absent-"));
+    try {
+      mkdirSync(join(dir, "work", "acme", "flow"), { recursive: true });
+      writeFileSync(join(dir, "work", "acme", "flow", "spec-flow-v1.md"), artifactDoc("code_commit: abc123"));
+      const r = validatePath(dir);
+      expect(r.warnings.map((w) => w.code)).not.toContain("CODE_COMMIT_WARNING");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 // Finding 75 (part 2, 2026-08-24): SANDBOX_NOT_WRAPPED is retired — `kind: native` is wired onto the
 // sandbox mechanism now (adapters.ts#createSdkNativeBoundary/createAsyncSdkNativeBoundary), so a native
 // agent is no longer a levare-can-never-fix-this fact; it folds into SANDBOX_UNAVAILABLE's own

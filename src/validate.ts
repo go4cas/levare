@@ -452,6 +452,15 @@ export const ARTIFACT_SCHEMA: Schema = {
       nullable: true,
       description: "Present only when code_commit's landed commit was authored/committed under an identity other than the member's expected git.ts#memberIdentity — names the observed author (and committer, if different) instead. Absent when the identity matched, including every commit levare's own commitDispatchWorktree made itself.",
     },
+    // Goal 2026-09-11 ("native member cwd"): present only when code_commit: none was recorded for a
+    // dispatch that DID have a real dispatch worktree — see adapters.ts#author's own doc and
+    // validateArtifactCodeCommitWarning below, the sole reader.
+    code_commit_warning: {
+      type: "str",
+      required: false,
+      nullable: true,
+      description: "Present only when code_commit: none was recorded for a dispatch that DID have a real dispatch worktree — flags a dispatch that produced a clean-looking artifact with no code changes for a human to check. Absent when there was no worktree, or a real commit landed.",
+    },
   },
 };
 
@@ -1070,6 +1079,7 @@ function validateSingleFile(
   }
   validateAgainstSchema(data, kind.schema, file, errors);
   if (kind.schema === ARTIFACT_SCHEMA) validateArtifactSemantics(data, file, errors, root, overlay);
+  if (kind.schema === ARTIFACT_SCHEMA) validateArtifactCodeCommitWarning(data, file, warnings);
   if (kind.isArtifact) {
     artifacts.push({ file, dir: dirname(file), isFolder: false, data });
   }
@@ -1298,6 +1308,17 @@ function isIsoDate(s: string): boolean {
   }
   if (ISO_DATETIME_RE.test(s)) return !Number.isNaN(new Date(s).getTime());
   return false;
+}
+
+// Goal 2026-09-11 ("native member cwd"): the sole reader of `code_commit_warning` (adapters.ts#author's
+// own doc for exactly when it's set) — surfaces it as a `levare validate` warning, mirroring every other
+// "present only when" conditional field's own warning-validator sibling (e.g.
+// validateAgentSandboxDeclaredWarning for AGENT_SCHEMA). A plain string presence check, never re-deriving
+// the "had a worktree but nothing committed" fact from `code_commit` alone — `author()` already computed
+// it once, from the one place (`DispatchCommitResult`) that actually knows.
+function validateArtifactCodeCommitWarning(data: Record<string, YamlValue>, file: string, warnings: ValidationWarning[]): void {
+  if (typeof data.code_commit_warning !== "string") return;
+  warnings.push({ code: "CODE_COMMIT_WARNING", message: data.code_commit_warning, file });
 }
 
 // ---------------------------------------------------------------------------

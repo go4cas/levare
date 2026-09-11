@@ -510,6 +510,13 @@ export interface Artifact {
    * `commitDispatchWorktree`'s own doc). Absent whenever the identity matched, including every commit
    * `commitDispatchWorktree` made itself. */
   code_commit_actor?: string | null;
+  /** Goal 2026-09-11 ("native member cwd"): present ONLY when `code_commit: none` was recorded for a
+   * dispatch that DID have a real dispatch worktree — a dispatch that changed nothing is ordinary
+   * (`code_commit: none` alone already says so), but the live mason incident showed a member that never
+   * even reached its worktree still producing a clean, green-looking artifact with no code at all.
+   * Absent whenever there was no worktree (nothing to warn about) or a real commit landed. See
+   * adapters.ts#author's own doc for exactly when this is set. */
+  code_commit_warning?: string | null;
 }
 
 export interface Usage {

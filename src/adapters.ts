@@ -2148,6 +2148,17 @@ export class AdapterRunner implements MemberRunner {
     // indistinguishable from one that committed real work. A failed commit attempt never reaches this
     // line at all (`commitCodeChanges` throws before `author()` is ever called).
     if (codeCommit) lines.push(`code_commit: ${codeCommit.committed ? codeCommit.commit : "none"}`);
+    // Goal 2026-09-11 ("native member cwd"): the live mason incident's own shape — a dispatch that DID
+    // have a real dispatch worktree, produced a clean-looking `in-review` artifact, yet `code_commit:
+    // none` — is otherwise indistinguishable from the ordinary, unremarkable case of a member correctly
+    // deciding there was nothing to change (a review artifact, say). `code_commit: none` alone already
+    // records that fact; this ADDS a loud, greppable signal specifically for the worktree-existed case,
+    // so `levare validate`/the artifact card can flag it for a human to check rather than let a
+    // no-code dispatch pass as silently as a real one. Present ONLY on `reason: "clean"` — never on a
+    // committed dispatch, and never when there was no worktree at all (nothing to warn about).
+    if (codeCommit && !codeCommit.committed && codeCommit.reason === "clean") {
+      lines.push(`code_commit_warning: this dispatch had a real dispatch worktree but nothing was committed — verify the member actually made the intended changes`);
+    }
     // Unit "member authorship survives a self-commit": present ONLY when the landed commit's own
     // author/committer doesn't match `memberIdentity(req.member)` — a member's own bare commit resolving
     // some other ambient identity (the live defect this unit closes), or a member deliberately overriding

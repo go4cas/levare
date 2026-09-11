@@ -1603,6 +1603,27 @@ describe("artifact render view", () => {
     expect(() => renderArtifact(repo, "storefront", "checkout-flow", "not-a-real-id", root, now)).toThrow();
   });
 
+  // Goal 2026-09-11 ("native member cwd"): code_commit_warning (adapters.ts#author's own doc) flags a
+  // dispatch that had a real dispatch worktree but committed nothing — the live mason incident's own
+  // shape, otherwise indistinguishable from an ordinary "nothing to change" dispatch. Surfaced as a
+  // `callout("warning", ...)` on the frontmatter card so it's visible without opening `levare validate`.
+  test("shows a warning callout on the frontmatter card when code_commit_warning is set", () => {
+    const repo2 = loadRepo(root);
+    const key = "storefront/checkout-flow";
+    const art = repo2.artifacts.get(key)!.get("spec-checkout-flow-v1")!;
+    repo2.artifacts.get(key)!.set("spec-checkout-flow-v1", {
+      ...art,
+      code_commit_warning: "this dispatch had a real dispatch worktree but nothing was committed — verify the member actually made the intended changes",
+    });
+    const withWarning = renderArtifact(repo2, "storefront", "checkout-flow", "spec-checkout-flow-v1", root, now);
+    expect(withWarning).toContain("notice--warning");
+    expect(withWarning).toContain("this dispatch had a real dispatch worktree but nothing was committed");
+  });
+
+  test("no warning callout when code_commit_warning is absent (the ordinary case)", () => {
+    expect(html).not.toContain("notice--warning");
+  });
+
   // Finding 145 site 3 sibling: this page never received `running` at all, so an in-review artifact
   // always read "at gate" even while its own redo was actively dispatching — the one board surface
   // that stayed blind to `dispatchingFor`, unlike every sibling route (studio/project/run).
