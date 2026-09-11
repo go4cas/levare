@@ -82,8 +82,23 @@ export interface AssembleOptions {
   root: string;
   agent: string;
   unit: string;
-  /** Which flow step's context to assemble; defaults to the agent's last step in flow order. */
+  /** Which flow step's context to assemble, by step LABEL; defaults to the agent's last step in flow
+   * order. Ignored when `kind` below is also given — `levare context --step` is the one caller that
+   * knows a label and has no dispatched kind to give it; a real dispatch always has a kind and never
+   * sets this. */
   step?: string;
+  /**
+   * The KIND actually being dispatched (`AdapterRunner#prepare`'s own `kind` argument, itself resolved
+   * from `flow.ts#resolveStep` before dispatch ever calls `#prepare`). Takes precedence over `step`
+   * when both are given, and threaded through so the task line, the header's `step X → Y`, and
+   * everything else this function derives from the resolved step describe what the member was
+   * ACTUALLY dispatched to produce — never silently the agent's LAST flow step, which is what an
+   * omitted `step` fell back to before this field existed (a member with more than one kind in a
+   * team's flow — e.g. a `design`/`spec` agent dispatched for `design` — was told to produce its last
+   * kind regardless of which one was actually dispatched). A `kind` that matches no step this agent
+   * can satisfy is a ContextError, never a silent fallback to the default.
+   */
+  kind?: string;
   /** Capability source (member→kind), same shape the Runner uses; provided by the caller. */
   capabilities: Capability[];
   /**
@@ -107,11 +122,25 @@ export function assembleContext(repo: Repo, opts: AssembleOptions): string {
   if (!unitRow) throw new ContextError(`no work unit '${opts.unit}' under ${opts.root}`);
   const project = repo.projects.get(unitRow.project);
 
-  // Resolve the step (default: the agent's last producing step in flow order).
+  // Resolve the step: by dispatched `kind` when given (ground truth for a real dispatch — see the
+  // field's own doc), else by `step` label (`levare context --step`), else the agent's last producing
+  // step in flow order (both flags omitted — the CLI's own no-flag default, unchanged).
   const steps = agentSteps(repo, team.name, opts.capabilities, opts.agent);
   if (steps.length === 0) throw new ContextError(`agent '${opts.agent}' produces no kind in team '${team.name}' flow`);
-  const chosen = opts.step ? steps.find((s) => s.label === opts.step) : steps[steps.length - 1];
-  if (!chosen) throw new ContextError(`agent '${opts.agent}' has no flow step '${opts.step}' (has: ${steps.map((s) => s.label).join(", ")})`);
+  let chosen: { label: string; kind: string } | undefined;
+  if (opts.kind !== undefined) {
+    chosen = steps.find((s) => s.kind === opts.kind);
+    if (!chosen) {
+      throw new ContextError(
+        `agent '${opts.agent}' was dispatched for kind '${opts.kind}', but produces no such kind in team '${team.name}' flow (has: ${steps.map((s) => s.kind).join(", ")})`,
+      );
+    }
+  } else if (opts.step !== undefined) {
+    chosen = steps.find((s) => s.label === opts.step);
+    if (!chosen) throw new ContextError(`agent '${opts.agent}' has no flow step '${opts.step}' (has: ${steps.map((s) => s.label).join(", ")})`);
+  } else {
+    chosen = steps[steps.length - 1];
+  }
 
   const extra = new Set(opts.extraConsumed ?? []);
   const consumed = unitArtifactPaths(opts.root, unitRow.project, opts.unit).filter((a) => a.status === "approved" || extra.has(a.id));

@@ -1831,7 +1831,7 @@ export class AdapterRunner implements MemberRunner {
     const agent = this.repo.agents.get(member);
     // Finding 85: no team/agent definition names this member at all — a studio-authoring gap.
     if (!agent) throw new AdapterError(`no agent definition for member '${member}'`, { class: "operator" });
-    const context = this.assemble(member, unit, project, extraConsumes);
+    const context = this.assemble(member, kind, unit, project, extraConsumes);
     const env = buildMemberEnv(this.repo, member, this.opts.baseEnv);
     const dispatchRepo = this.resolveDispatchRepo(project, unit);
     const req: InvokeRequest = { agent, member, kind, unit, project, context, env, tools: allowedTools(agent), projectRepoPath: dispatchRepo?.repoPath };
@@ -2334,9 +2334,9 @@ export class AdapterRunner implements MemberRunner {
   // success — assembleContext simply returns a context with an empty consumed section. A THROW is a
   // genuine recipe error (missing agent/team/unit/step): that is surfaced on stderr, never silently
   // swallowed as if it were an empty context.
-  private assemble(member: string, unit: string, project: string, extraConsumed: string[] = []): string {
+  private assemble(member: string, kind: string, unit: string, project: string, extraConsumed: string[] = []): string {
     try {
-      return assembleContext(this.repo, { root: this.repo.root, agent: member, unit, capabilities: this.capabilities(), extraConsumed });
+      return assembleContext(this.repo, { root: this.repo.root, agent: member, unit, kind, capabilities: this.capabilities(), extraConsumed });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`levare: context assembly error for member '${member}' (${project}/${unit}): ${msg}`);
