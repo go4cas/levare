@@ -30,7 +30,7 @@ import { DISPATCH_LOG_DIR_NAME } from "../src/dispatch-trace.ts";
 import { validateArtifactSource } from "../src/validate.ts";
 import { connectStdioMcpServer } from "../src/mcp-client.ts";
 import type { Agent, Connector } from "../src/types.ts";
-import { render } from "../fixtures/stubs/member-stub.ts";
+import { render, CAPABILITIES } from "../fixtures/stubs/member-stub.ts";
 import { detectSandbox, buildSandboxExecProfile } from "../src/sandbox.ts";
 import { createDispatchWorktree } from "../src/merge.ts";
 
@@ -99,6 +99,22 @@ describe("native adapter (mocked SDK boundary)", () => {
     // lyra grants no connector → GITHUB_TOKEN must not appear in its scoped env.
     expect(seen!.env.GITHUB_TOKEN).toBeUndefined();
     expect(seen!.env.PATH).toBe("/bin");
+  });
+
+  // Bug repro: lyra produces both `design` and `spec` in kestrel's flow (design is EARLIER). Dispatched
+  // for its FIRST kind (`design`), the assembled §6 context must tell it to produce `design` — not
+  // silently fall back to the agent's LAST flow step (`spec`), which is what assembleContext's
+  // `opts.step ?? steps[steps.length - 1]` default does when #prepare never threads the dispatched kind
+  // through. `capabilities: CAPABILITIES` mirrors a real studio, where a multi-kind agent's capability
+  // set names every kind it can produce, not just the one being dispatched right now.
+  test("dispatching a two-kind agent for its FIRST kind tells it to produce that kind, not the agent's last flow step", () => {
+    const repo = loadRepo(ROOT);
+    let seen: InvokeRequest | null = null;
+    const spy: NativeBoundary = { invoke: (r) => ((seen = r), { doc: render(r.member, r.kind, r.unit, r.project) }) };
+    const runner = new AdapterRunner(repo, { pricing, capabilities: CAPABILITIES, native: spy, remote: remoteMock });
+    runner.produce("lyra", "design", "checkout-flow", "storefront");
+    expect(seen!.context).toContain("step design → design");
+    expect(seen!.context.slice(seen!.context.indexOf("── 6. task ──"))).toMatch(/── 6\. task ──\ndesign\n/);
   });
 
   // NOTES F8 — the fabricated-usage dogfood defect: a native member's receipt must come from the SDK's
