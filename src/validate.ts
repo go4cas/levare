@@ -1979,6 +1979,16 @@ export function detectVersionManagerHomeGap(resolvedCommandPath: string | undefi
 // this container: `Bun.which` without an explicit `PATH` option resolves against whatever PATH the Bun
 // process itself started with, NOT a runtime mutation of `process.env.PATH` — the same integration
 // test that pins this warning's wiring caught the difference directly.
+//
+// NOTES home-any-auth: the version-manager shim gap this names is a property of `command`/`home:`
+// alone — a Volta-managed binary resolves through `~/.volta` regardless of whether the connector that
+// wraps it authenticates via `auth: subscription` or `auth: env`. Originally gated on `auth ===
+// "subscription"` (this check's own history — every `home:`-declaring connector this codebase had was
+// subscription-authenticated at the time), which left an `auth: env` connector with the identical shim
+// gap (e.g. a Volta-managed `gemini` declaring `home: [".gemini"]` but not `.volta`) validating clean
+// and passing doctor while failing identically at dispatch. Fires for ANY connector declaring `home:`
+// now — `env.ts#scopeHome`/`scopeHomeForConnector` already scope any auth mode's declared dotpaths
+// (see their own doc), so the warning must cover what actually gets scoped, not one auth mode of it.
 function validateConnectorHomeShimWarning(
   data: Record<string, YamlValue>,
   file: string,
@@ -1986,7 +1996,7 @@ function validateConnectorHomeShimWarning(
   which: (cmd: string) => string | null = (cmd) => Bun.which(cmd, { PATH: process.env.PATH ?? "" }),
   home: string | undefined = process.env.HOME,
 ): void {
-  if (data.auth !== "subscription" || !Array.isArray(data.home) || data.home.length === 0) return;
+  if (!Array.isArray(data.home) || data.home.length === 0) return;
   if (typeof data.command !== "string" || !data.command || !home) return;
   const declaredHome = data.home.filter((h): h is string => typeof h === "string");
   const gap = detectVersionManagerHomeGap(which(data.command) ?? undefined, declaredHome, home);

@@ -352,6 +352,38 @@ describe("doctor: names a version-manager shim gap in a scoped subscription conn
   });
 });
 
+// NOTES home-any-auth: the shim-gap check above was originally gated on auth: subscription — an
+// auth: env connector (e.g. a Volta-managed `gemini` CLI, GEMINI_API_KEY) declaring the identical
+// home:/command: shape hit the same shim gap but doctor stayed silent, since env.ts#scopeHome never
+// scoped an env connector's home: either. Both are fixed together; this pins doctor's own side.
+describe("doctor: names a version-manager shim gap for an auth: env connector too (NOTES home-any-auth)", () => {
+  const withScopedEnvHome: Connector[] = [
+    ...connectors,
+    { name: "gemini", kind: "cli", command: "gemini", env: ["GEMINI_API_KEY"], auth: "env", role: "model", effects: "read", gate: "proposal", home: [".gemini"] },
+  ];
+  const allPresent: EnvProbe = { has: () => true };
+  const foundGh: CliProbe = () => "found";
+  const viaVolta = () => "/Users/cas/.volta/bin/gemini";
+
+  test("names the manager and its root, without the subscription-specific shared-login framing", () => {
+    const health = diagnose(withScopedEnvHome, allPresent, foundGh, undefined, viaVolta, "/Users/cas");
+    const gemini = health.find((h) => h.name === "gemini")!;
+    expect(gemini.warning).toContain("`gemini` resolves through Volta (~/.volta)");
+    expect(gemini.warning).toContain("cannot be scoped narrowly");
+    expect(gemini.warning).not.toContain("any member granted this connector can still use the login");
+  });
+
+  test("says nothing once the manager's own root is also declared", () => {
+    const withVoltaGranted: Connector[] = [
+      ...connectors,
+      { name: "gemini", kind: "cli", command: "gemini", env: ["GEMINI_API_KEY"], auth: "env", role: "model", effects: "read", gate: "proposal", home: [".gemini", ".volta"] },
+    ];
+    const health = diagnose(withVoltaGranted, allPresent, foundGh, undefined, viaVolta, "/Users/cas");
+    const gemini = health.find((h) => h.name === "gemini")!;
+    expect(gemini.warning).toBeUndefined();
+  });
+});
+
 // NOTES C15: doctor reports each connector's role (model | tool) alongside kind/auth, and — when a
 // connector is actually broken (missing-env, the one live "broken" signal this file computes; cli/mcp
 // reachability stay advisory per this file's own header comment) — names the DIFFERENT real
