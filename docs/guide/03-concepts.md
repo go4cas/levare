@@ -192,8 +192,8 @@ And the **gate** is the constitution:
 
 ## Context: what a member actually sees
 
-Every member — native, CLI, or remote — receives the same seven-part context, assembled
-deterministically:
+Every member — native, CLI, or remote — receives the same context, assembled deterministically from
+seven core sections, plus two conditional ones shown only when they apply:
 
 ![The seven-part context recipe assembled for every member.](img/context-recipe.png)
 
@@ -204,6 +204,12 @@ levare context lyra --unit checkout-flow --dry-run
 ```
 
 That output is not an approximation. It is byte-for-byte what the member will receive.
+
+The two conditional sections never show up in a round-1 or single-step context, so the diagram and
+the byte-for-byte promise above hold exactly as pictured. A loop author's request-changes redo gets
+an eighth section — the Conductor's own note (see [4.6](04-workflow/06-first-loop.md)); previewable
+with `levare context lyra --unit checkout-flow --note "..." --dry-run`. A member granted a
+proposal-gated connector gets a further section naming its action vocabulary.
 
 **Skills** are reusable instructions (section 2). **Knowledge** is reference material injected by
 name (section 3). Both are just markdown in your studio, and both are how you teach a member
