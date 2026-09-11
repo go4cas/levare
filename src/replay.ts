@@ -159,8 +159,11 @@ export function productionAdapterRunner(repo: Repo, overrides: ProductionAdapter
     // `AdapterRunner.produceAsync` unchanged; a wrapper that drops the trailing argument silently
     // strands every live loop critic with an empty consumed set, regardless of how carefully
     // dagwalk.ts/adapters.ts thread it — this was the actual live defect (a contract-valid review
-    // whose entire content was "no product brief was provided to review").
-    produce: (member, kind, unit, project, extraConsumes) => runner.produceAsync(member, kind, unit, project, extraConsumes),
+    // whose entire content was "no product brief was provided to review"). `requestChangesNote` (goal
+    // REDO-CONTEXT) is the same shape of seam, one parameter further along — dropped here just as
+    // silently strands a loop author's redo with no note, regardless of how carefully board/gateops.ts
+    // and context.ts thread it.
+    produce: (member, kind, unit, project, extraConsumes, requestChangesNote) => runner.produceAsync(member, kind, unit, project, extraConsumes, requestChangesNote),
   };
 }
 

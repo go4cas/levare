@@ -114,6 +114,10 @@ export interface InvokeRequest {
   context: string;
   env: Record<string, string>;
   tools: string[];
+  /** Goal REDO-CONTEXT: set only on a loop author's request-changes redo — already baked into `context`
+   * (item 8 of the §6 recipe, context.ts) but carried here too so a boundary can act on it directly
+   * rather than re-parsing the assembled text. Absent on every other dispatch. */
+  requestChangesNote?: { note: string; on: string };
   /** NOTES MERGE-1 (goal item 1) / NOTES R4-SANDBOX (Ruling 1): the unit's project repo checkout this
    * dispatch actually runs against — only set when `resolveProjectRepoPath` finds a real local checkout
    * (a project with no `repo:`, or one that doesn't resolve locally, or the studio's own root, leaves
@@ -1707,8 +1711,15 @@ export class AdapterRunner implements MemberRunner {
    * drives a full scripted decision walk synchronously and is never reachable from a live `levare
    * serve` request path (invariant 10's native/remote deferral; the CLI kind's real, live spawn goes
    * through `produceAsync` instead — see NOTES F5). */
-  produce(member: string, kind: string, unit: string, project: string, extraConsumes: string[] = []): { doc: string; receipt: Receipt } {
-    const { agent, req, dispatchRepo } = this.prepare(member, kind, unit, project, extraConsumes);
+  produce(
+    member: string,
+    kind: string,
+    unit: string,
+    project: string,
+    extraConsumes: string[] = [],
+    requestChangesNote?: { note: string; on: string },
+  ): { doc: string; receipt: Receipt } {
+    const { agent, req, dispatchRepo } = this.prepare(member, kind, unit, project, extraConsumes, requestChangesNote);
     return this.withDispatchWorktree(member, dispatchRepo, req, (req2) => {
       let raw: string;
       let receipt: Receipt | undefined;
@@ -1749,8 +1760,15 @@ export class AdapterRunner implements MemberRunner {
    * caller's thread for the member's entire run. Native/remote stay synchronous underneath (they are
    * mocked boundaries, not live — invariant 10) but are still awaited here uniformly.
    */
-  async produceAsync(member: string, kind: string, unit: string, project: string, extraConsumes: string[] = []): Promise<{ doc: string; receipt: Receipt }> {
-    const { agent, req, dispatchRepo } = this.prepare(member, kind, unit, project, extraConsumes);
+  async produceAsync(
+    member: string,
+    kind: string,
+    unit: string,
+    project: string,
+    extraConsumes: string[] = [],
+    requestChangesNote?: { note: string; on: string },
+  ): Promise<{ doc: string; receipt: Receipt }> {
+    const { agent, req, dispatchRepo } = this.prepare(member, kind, unit, project, extraConsumes, requestChangesNote);
     return this.withDispatchWorktreeAsync(member, dispatchRepo, req, async (req2) => {
       let raw: string;
       let receipt: Receipt | undefined;
@@ -1825,7 +1843,14 @@ export class AdapterRunner implements MemberRunner {
   // env, and build the InvokeRequest every adapter kind reads from. `dispatchRepo`, when set, is
   // resolved here but not yet turned into a worktree — `withDispatchWorktree`/`withDispatchWorktreeAsync`
   // do that around the actual invoke call, since the worktree's lifetime must span exactly one dispatch.
-  private prepare(member: string, kind: string, unit: string, project: string, extraConsumes: string[] = []): {
+  private prepare(
+    member: string,
+    kind: string,
+    unit: string,
+    project: string,
+    extraConsumes: string[] = [],
+    requestChangesNote?: { note: string; on: string },
+  ): {
     agent: Agent;
     req: InvokeRequest;
     dispatchRepo?: { repoPath: string; branch?: string };
@@ -1833,10 +1858,10 @@ export class AdapterRunner implements MemberRunner {
     const agent = this.repo.agents.get(member);
     // Finding 85: no team/agent definition names this member at all — a studio-authoring gap.
     if (!agent) throw new AdapterError(`no agent definition for member '${member}'`, { class: "operator" });
-    const context = this.assemble(member, kind, unit, project, extraConsumes);
+    const context = this.assemble(member, kind, unit, project, extraConsumes, requestChangesNote);
     const env = buildMemberEnv(this.repo, member, this.opts.baseEnv);
     const dispatchRepo = this.resolveDispatchRepo(project, unit);
-    const req: InvokeRequest = { agent, member, kind, unit, project, context, env, tools: allowedTools(agent), projectRepoPath: dispatchRepo?.repoPath };
+    const req: InvokeRequest = { agent, member, kind, unit, project, context, env, tools: allowedTools(agent), projectRepoPath: dispatchRepo?.repoPath, requestChangesNote };
     return { agent, req, dispatchRepo };
   }
 
@@ -2336,9 +2361,16 @@ export class AdapterRunner implements MemberRunner {
   // success — assembleContext simply returns a context with an empty consumed section. A THROW is a
   // genuine recipe error (missing agent/team/unit/step): that is surfaced on stderr, never silently
   // swallowed as if it were an empty context.
-  private assemble(member: string, kind: string, unit: string, project: string, extraConsumed: string[] = []): string {
+  private assemble(
+    member: string,
+    kind: string,
+    unit: string,
+    project: string,
+    extraConsumed: string[] = [],
+    requestChangesNote?: { note: string; on: string },
+  ): string {
     try {
-      return assembleContext(this.repo, { root: this.repo.root, agent: member, unit, kind, capabilities: this.capabilities(), extraConsumed });
+      return assembleContext(this.repo, { root: this.repo.root, agent: member, unit, kind, capabilities: this.capabilities(), extraConsumed, requestChangesNote });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`levare: context assembly error for member '${member}' (${project}/${unit}): ${msg}`);
