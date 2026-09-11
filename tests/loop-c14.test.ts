@@ -411,8 +411,9 @@ describe("F16: only the artifact a loop's `until` names gates — never both loo
       });
       expect(req.ok).toBe(true);
 
-      // The AUTHOR (scribe) is who re-ran — never corvid re-reviewing an unrevised brief.
-      expect(calls[2]).toEqual({ member: "scribe", kind: "product-brief", extraConsumes: [] });
+      // The AUTHOR (scribe) is who re-ran — never corvid re-reviewing an unrevised brief. Goal
+      // REDO-CONTEXT: the redo's own consumed set now actually carries round 1's live review.
+      expect(calls[2]).toEqual({ member: "scribe", kind: "product-brief", extraConsumes: ["review-announcement-v1"] });
       expect(existsSync(join(unitDir, "product-brief-announcement-v2.md"))).toBe(true);
 
       // Round 1's review (the artifact actually resolved) is deliberately left untouched here — still

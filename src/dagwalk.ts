@@ -64,13 +64,18 @@ import type { Artifact, FlowLoop, Receipt, Team, WorkUnit } from "./types.ts";
 // fully synchronous.
 export interface AsyncMemberRunner {
   capabilities(): Array<{ member: string; kind: string }>;
-  /** `extraConsumes` (ruling C14) — see runner.ts's `MemberRunner.produce` doc; the same optional seam. */
+  /**
+   * `extraConsumes` (ruling C14) and `requestChangesNote` (goal REDO-CONTEXT) — see runner.ts's
+   * `MemberRunner.produce` doc; the same optional seams. This module's own call site below (a round's
+   * forward dispatch) never passes `requestChangesNote` — only board/gateops.ts#doRequest's redo does.
+   */
   produce(
     member: string,
     kind: string,
     unit: string,
     project: string,
     extraConsumes?: string[],
+    requestChangesNote?: { note: string; on: string },
   ): { doc: string; receipt?: Receipt } | Promise<{ doc: string; receipt?: Receipt }>;
 }
 

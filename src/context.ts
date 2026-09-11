@@ -7,6 +7,17 @@
 //   4. team charter + team LEARNINGS.md     what the operator actually asked for
 //                                        7. consumed artifacts — paths or inline, per agent declaration
 //
+// Two further sections are CONDITIONAL — present only when they apply, so a single-step dispatch or a
+// loop's round-1 context is byte-for-byte unchanged from before either existed:
+//
+//   8. conductor note — present only on a loop author's request-changes redo (`opts.requestChangesNote`,
+//      the goal REDO-CONTEXT fix): the Conductor's own free-text reason for the round, labelled with
+//      which prior artifact it was written against. Never folded into item 6's unit body — a member
+//      reading item 6 for "what kind of work is this" must not have to guess whether a paragraph there
+//      is the operator's standing brief or a one-off correction for this round alone.
+//   9. capability: proposal-gated connectors — unchanged from before (NOTES CAP-A item 5), renumbered
+//      from its former "8" to make room for the note above.
+//
 // Finding 163: item 6 used to be the flow step's label alone (e.g. `spec`) — the member never saw the
 // unit's name, its type, or a syllable of what the operator wrote in `unit.md`. The type template
 // (`types/<type>.md`) was itself never read past its frontmatter (`expects`/`gates`/`glyph`) anywhere
@@ -19,7 +30,8 @@
 // deliberately run in an isolated scratch directory, so a repo's own config can't alter its
 // behaviour) declares `"inline"`: section 7 then carries the full text (frontmatter + body) of every
 // consumed artifact instead of a pointer it could never open. The consumed set is the unit's
-// currently-approved artifacts — the vetted inputs available at that step — in both modes.
+// currently-approved artifacts — the vetted inputs available at that step — PLUS `extraConsumed`
+// (ruling C14) — in both modes.
 
 import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -108,6 +120,17 @@ export interface AssembleOptions {
    * artifact individually, is what the Conductor gates — see dagwalk.ts).
    */
   extraConsumed?: string[];
+  /**
+   * Set only on a loop author's request-changes redo (board/gateops.ts#doRequest, runner.ts#runLoop) —
+   * the Conductor's own note plus `on`, the id of the artifact being superseded by this redo. Rendered
+   * as its own labelled section (item 8), never appended to item 6's unit body — see this file's own
+   * header. Omitted entirely (no section 8 at all) for every other dispatch, so a single-step or
+   * round-1 context stays byte-for-byte unchanged. `on` is optional here only for `levare context
+   * --dry-run --note` (a preview, not a real redo — cli.ts's own doc): when omitted, it is derived from
+   * the latest on-disk artifact of the resolved step's own kind. Every real call site (gateops.ts,
+   * runner.ts) always supplies it explicitly.
+   */
+  requestChangesNote?: { note: string; on?: string };
 }
 
 /** Assemble the §6 context for an agent at a step in a unit and return it as an exact string. */
@@ -150,7 +173,8 @@ export function assembleContext(repo: Repo, opts: AssembleOptions): string {
   const out: string[] = [];
   out.push(`context · ${team.name}/${agent.name} · ${unitRow.project}/${opts.unit} · step ${chosen.label} → ${chosen.kind}`);
   out.push(
-    `recipe: agent · skills · knowledge · team charter+learnings · project house rules · task · ${inline ? "consumed artifacts (inline)" : "consumed paths"}`,
+    `recipe: agent · skills · knowledge · team charter+learnings · project house rules · task · ${inline ? "consumed artifacts (inline)" : "consumed paths"}` +
+      (opts.requestChangesNote ? " · conductor note" : ""),
   );
   out.push("");
 
@@ -228,6 +252,23 @@ export function assembleContext(repo: Repo, opts: AssembleOptions): string {
     out.push(`── end consumed artifact: ${c.id} ──`);
   }
 
+  // Goal REDO-CONTEXT: the Conductor's own request-changes note, when this dispatch is a loop author's
+  // redo — a distinct, labelled section, never smuggled into item 6's unit body (see this file's own
+  // header). Appended only when there's a note to show, so every other dispatch's context (round 1, a
+  // plain step, an approve/reject) is byte-for-byte unchanged.
+  if (opts.requestChangesNote) {
+    const on =
+      opts.requestChangesNote.on ??
+      unitArtifactPaths(opts.root, unitRow.project, opts.unit)
+        .filter((a) => a.id.startsWith(`${chosen.kind}-`))
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .pop()?.id ??
+      "(none)";
+    out.push("");
+    out.push(`── 8. conductor note · request changes on ${on} ──`);
+    out.push(opts.requestChangesNote.note.trim());
+  }
+
   // NOTES CAP-A (item 5): a member granted an `effects: write` + `gate: proposal` connector never
   // holds its credential (env.ts#buildMemberEnv withholds it) — it must be told, in its own context,
   // that direct calls are unavailable and how to act instead. Appended only when there's something to
@@ -243,7 +284,7 @@ function proposalCapabilitySection(repo: Repo, member: string): string[] {
   if (grants.length === 0) return [];
   const out: string[] = [
     "",
-    "── 8. capability: proposal-gated connectors ──",
+    "── 9. capability: proposal-gated connectors ──",
     "You are granted the connector(s) below, but direct calls are unavailable — their credentials are " +
       "withheld from your process. To act, produce an artifact of kind `proposal` naming `connector:`, " +
       "`action:` (one of the actions listed for that connector), and `params:` covering every " +

@@ -86,11 +86,15 @@ export function runContextCmd(rest: string[]): number {
   const arg = rest.find((a) => !a.startsWith("-"));
   const unit = flag(rest, "--unit");
   if (!arg || !unit) {
-    console.error("usage: levare context <agent> --unit <unit> [--step <step>, default: agent's last flow step] [--root <path>] [--dry-run]");
+    console.error("usage: levare context <agent> --unit <unit> [--step <step>, default: agent's last flow step] [--root <path>] [--note <text>] [--dry-run]");
     return 2;
   }
   const root = flag(rest, "--root") ?? ".";
   const step = flag(rest, "--step");
+  // Goal REDO-CONTEXT: preview item 8, the Conductor's own request-changes note, without a real
+  // gate resolution — `on` (the superseded artifact id) is left for assembleContext to derive from
+  // the resolved step's own latest on-disk artifact (this is a preview, not a real redo).
+  const note = flag(rest, "--note");
   // Finding 180: accept the `<team>/<agent>` form levare prints everywhere else — this command's own
   // header (`context · team/agent · ...`), `produced_by`, the board — not just the bare agent name
   // `repo.agents` is keyed by. A team prefix that doesn't match the agent's real team fails loudly
@@ -110,7 +114,9 @@ export function runContextCmd(rest: string[]): number {
     // Capabilities come from the studio's own agent definitions (`produces:`), never from the
     // fixture stubs — `levare context` on a real studio must print what that studio would actually
     // send its member (NOTES F1).
-    process.stdout.write(assembleContext(repo, { root, agent, unit, step, capabilities: repoCapabilities(repo) }));
+    process.stdout.write(
+      assembleContext(repo, { root, agent, unit, step, capabilities: repoCapabilities(repo), requestChangesNote: note ? { note } : undefined }),
+    );
     return 0;
   } catch (e) {
     console.error(String(e instanceof Error ? e.message : e));
@@ -477,7 +483,7 @@ function usage(): number {
       "       levare project new <name> --repo <path> [--remote <url>] [--default-branch <branch>] [--deploy <text>] [--pace auto|step] [--root <path>]\n" +
       "       levare validate <path>\n" +
       "       levare replay <path> --stubs\n" +
-      "       levare context <agent> --unit <unit> [--step <step>, default: agent's last flow step] [--root <path>] [--dry-run]\n" +
+      "       levare context <agent> --unit <unit> [--step <step>, default: agent's last flow step] [--root <path>] [--note <text>] [--dry-run]\n" +
       "       levare doctor [root]\n" +
       "       levare serve [root] [--port N] [--read-only] [--no-daemon]\n" +
       "       levare --version | -v",

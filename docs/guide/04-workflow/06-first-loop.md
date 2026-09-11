@@ -49,8 +49,9 @@ raise a gate.
 2. levare **immediately dispatches Corvid** — the member who produces the loop's other kind — with the
    brief in its context. No gate, no click. This is a round.
 3. Once both artifacts exist, levare raises a gate on the round's `product-brief` — regardless of what
-   Corvid wrote. **You** decide: approve, request changes (Scribe reworks, with the review in context —
-   round two), or reject.
+   Corvid wrote. **You** decide: approve, request changes (Scribe reworks — Corvid's own review, still
+   in-review at that moment, and your own note both land in Scribe's context, each its own labelled
+   section — round two), or reject.
 4. Approve, and the round's review is marked approved alongside it — satisfying `until: review.approved`.
    The loop ends and the walk continues.
 5. After `max_rounds`, `on_exhaust: gate` escalates to you regardless.

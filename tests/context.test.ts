@@ -349,6 +349,57 @@ describe("Finding 163: the unit's own body and type template reach the member (r
   });
 });
 
+// Goal REDO-CONTEXT: item 8, the Conductor's own request-changes note — present only when
+// `opts.requestChangesNote` is given (a loop author's redo), never for an ordinary dispatch.
+describe("recipe item 8: the conductor's request-changes note (goal REDO-CONTEXT)", () => {
+  const repo = loadRepo(ROOT);
+
+  test("no `requestChangesNote` — no section 8 at all, and the frozen fixture stays byte-for-byte unchanged", () => {
+    const out = assembleContext(repo, { root: ROOT, agent: "lyra", unit: "checkout-flow", capabilities: CAPABILITIES });
+    expect(out).not.toContain("── 8.");
+    expect(out).toBe(readFileSync("fixtures/context/lyra.txt", "utf8"));
+  });
+
+  test("`levare context --note` previews item 8 without a real gate resolution, deriving `on` from the resolved step's own latest artifact", () => {
+    const chunks: string[] = [];
+    const orig = process.stdout.write.bind(process.stdout);
+    (process.stdout.write as unknown as (s: string) => boolean) = (s: string) => {
+      chunks.push(s);
+      return true;
+    };
+    let code: number;
+    try {
+      code = main(["context", "lyra", "--unit", "checkout-flow", "--root", ROOT, "--note", "Please cite the pricing page.", "--dry-run"]);
+    } finally {
+      process.stdout.write = orig;
+    }
+    expect(code).toBe(0);
+    const out = chunks.join("");
+    expect(out).toContain("── 8. conductor note · request changes on");
+    expect(out).toContain("Please cite the pricing page.");
+  });
+
+  test("`requestChangesNote` renders as its own labelled section, naming the superseded id, distinct from item 6's unit body", () => {
+    const out = assembleContext(repo, {
+      root: ROOT,
+      agent: "lyra",
+      unit: "checkout-flow",
+      capabilities: CAPABILITIES,
+      requestChangesNote: { note: "Please cite the pricing page.", on: "spec-checkout-flow-v1" },
+    });
+    expect(out).toContain("── 8. conductor note · request changes on spec-checkout-flow-v1 ──");
+    expect(out).toContain("Please cite the pricing page.");
+    expect(out).toContain(" · conductor note");
+
+    // Distinct from item 6 — the note must not leak into the unit body section.
+    const task = out.slice(out.indexOf("── 6. task"), out.indexOf("── 7."));
+    expect(task).not.toContain("Please cite the pricing page.");
+
+    // After item 7 (consumed artifacts), before whatever comes next.
+    expect(out.indexOf("── 7.")).toBeLessThan(out.indexOf("── 8."));
+  });
+});
+
 // Ruling C9 (NOTES D6): delivery of consumed artifacts (recipe item 7) is a per-agent declaration.
 // An agent that cannot reach the studio filesystem (an isolated scratch-dir CLI member) declares
 // `context_artifacts: inline` and gets the full text instead of an unopenable path.
