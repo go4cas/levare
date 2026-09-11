@@ -86,7 +86,7 @@ export function runContextCmd(rest: string[]): number {
   const arg = rest.find((a) => !a.startsWith("-"));
   const unit = flag(rest, "--unit");
   if (!arg || !unit) {
-    console.error("usage: levare context <agent> --unit <unit> [--step <step>] [--root <path>] [--dry-run]");
+    console.error("usage: levare context <agent> --unit <unit> [--step <step>, default: agent's last flow step] [--root <path>] [--dry-run]");
     return 2;
   }
   const root = flag(rest, "--root") ?? ".";
@@ -477,7 +477,7 @@ function usage(): number {
       "       levare project new <name> --repo <path> [--remote <url>] [--default-branch <branch>] [--deploy <text>] [--pace auto|step] [--root <path>]\n" +
       "       levare validate <path>\n" +
       "       levare replay <path> --stubs\n" +
-      "       levare context <agent> --unit <unit> [--step <step>] [--root <path>] [--dry-run]\n" +
+      "       levare context <agent> --unit <unit> [--step <step>, default: agent's last flow step] [--root <path>] [--dry-run]\n" +
       "       levare doctor [root]\n" +
       "       levare serve [root] [--port N] [--read-only] [--no-daemon]\n" +
       "       levare --version | -v",
