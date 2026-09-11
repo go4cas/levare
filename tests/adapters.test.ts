@@ -4187,4 +4187,46 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
       rmSync(scriptDir, { recursive: true, force: true });
     }
   });
+
+  // Goal 2026-09-11 ("native member cwd"), Phase 2: a real dispatch with a worktree hands the member the
+  // explicit "your working directory is..." line (context.ts#withDispatchWorktreeLine) inside the SAME
+  // prompt the SDK boundary receives — proven end to end here rather than only at the pure-function
+  // level (tests/context.test.ts) — and a dispatch with no worktree never gets the line at all.
+  test("a real dispatch with a worktree hands the member the explicit worktree line in its own prompt; a dispatch with no worktree never does", () => {
+    const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+    try {
+      const repo = repoWithRealStorefrontRepo(projectRepo);
+      let seenPrompt: string | undefined;
+      const transport: SdkTransport = {
+        run(req) {
+          seenPrompt = req.prompt;
+          return { ok: true, result: "native output" };
+        },
+      };
+      const native = createSdkNativeBoundary({ transport, repo });
+      const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native, remote: remoteMock });
+      runner.produce("lyra", "spec", "checkout-flow", "storefront");
+      expect(seenPrompt).toBeDefined();
+      expect(seenPrompt).toContain("Your working directory is this unit's worktree at ");
+      expect(seenPrompt).toContain(". Build there; levare commits it.");
+
+      // The golden fixture's own `storefront` (UNTOUCHED — no real local checkout, NOTES MERGE-1): no
+      // worktree, so the line must be entirely absent.
+      let seenPromptNoRepo: string | undefined;
+      const transportNoRepo: SdkTransport = {
+        run(req) {
+          seenPromptNoRepo = req.prompt;
+          return { ok: true, result: "native output" };
+        },
+      };
+      const goldenRepo = loadRepo(ROOT);
+      const nativeNoRepo = createSdkNativeBoundary({ transport: transportNoRepo, repo: goldenRepo });
+      const runnerNoRepo = new AdapterRunner(goldenRepo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native: nativeNoRepo, remote: remoteMock });
+      runnerNoRepo.produce("lyra", "spec", "checkout-flow", "storefront");
+      expect(seenPromptNoRepo).toBeDefined();
+      expect(seenPromptNoRepo).not.toContain("Your working directory is this unit's worktree at");
+    } finally {
+      rmSync(projectRepo, { recursive: true, force: true });
+    }
+  });
 });

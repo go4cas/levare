@@ -40,7 +40,7 @@ import { normalizeReceipt } from "./receipts.ts";
 import { buildMemberEnv, teamOf, subscriptionConnector, scopeHome, scopeHomeForConnector, memberNetworkAllowed, grantedConnectors, grantedHomeDotpaths } from "./env.ts";
 import { connectStdioMcpServer, type McpToolCallResult } from "./mcp-client.ts";
 import { allowedTools } from "./guardrails.ts";
-import { assembleContext, unitArtifactPaths } from "./context.ts";
+import { assembleContext, unitArtifactPaths, withDispatchWorktreeLine } from "./context.ts";
 import {
   asyncSdkTransport,
   bunSdkTransport,
@@ -1939,7 +1939,16 @@ export class AdapterRunner implements MemberRunner {
     }
     AdapterRunner.logWorktreeDebug(`dispatch worktree created for '${member}' at '${created.worktree.path}' (gitDir '${created.worktree.gitDir}') for branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}'`);
     try {
-      return fn({ ...req, projectRepoPath: created.worktree.path, dispatchGitWriteGrant: dispatchGitWriteGrant(created.worktree.gitDir), dispatchWorktreeBaseSha: created.worktree.baseSha });
+      // Goal 2026-09-11 ("native member cwd"): the worktree's own path only exists from this point on —
+      // spliced into the already-assembled §6 task section (context.ts#withDispatchWorktreeLine's own
+      // doc) rather than threaded through assembleContext itself, since the worktree postdates it.
+      return fn({
+        ...req,
+        context: withDispatchWorktreeLine(req.context, created.worktree.path),
+        projectRepoPath: created.worktree.path,
+        dispatchGitWriteGrant: dispatchGitWriteGrant(created.worktree.gitDir),
+        dispatchWorktreeBaseSha: created.worktree.baseSha,
+      });
     } finally {
       created.worktree.cleanup();
     }
@@ -1966,7 +1975,15 @@ export class AdapterRunner implements MemberRunner {
     }
     AdapterRunner.logWorktreeDebug(`dispatch worktree created for '${member}' at '${created.worktree.path}' (gitDir '${created.worktree.gitDir}') for branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}'`);
     try {
-      return await fn({ ...req, projectRepoPath: created.worktree.path, dispatchGitWriteGrant: dispatchGitWriteGrant(created.worktree.gitDir), dispatchWorktreeBaseSha: created.worktree.baseSha });
+      // Goal 2026-09-11 ("native member cwd"): see withDispatchWorktree's own identical comment above —
+      // the sync/async split has no bearing on this, the worktree still postdates context assembly.
+      return await fn({
+        ...req,
+        context: withDispatchWorktreeLine(req.context, created.worktree.path),
+        projectRepoPath: created.worktree.path,
+        dispatchGitWriteGrant: dispatchGitWriteGrant(created.worktree.gitDir),
+        dispatchWorktreeBaseSha: created.worktree.baseSha,
+      });
     } finally {
       created.worktree.cleanup();
     }
