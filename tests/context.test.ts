@@ -124,6 +124,42 @@ describe("context assembly (§6 recipe)", () => {
     expect(() => assembleContext(repo, { root: ROOT, agent: "ghost", unit: "checkout-flow", capabilities: CAPABILITIES })).toThrow(ContextError);
   });
 
+  // Companion to the `--step` test above: a real dispatch (AdapterRunner#prepare) passes `kind`, not a
+  // flow label — `design` is lyra's FIRST step, so this only passes if `kind` is actually honored
+  // rather than falling back to the agent's last step (`spec`).
+  test("`kind: \"design\"` selects the earlier step by the dispatched KIND, not just by step label", () => {
+    const out = assembleContext(repo, { root: ROOT, agent: "lyra", unit: "checkout-flow", kind: "design", capabilities: CAPABILITIES });
+    expect(out).toContain("step design → design");
+    expect(out.slice(out.indexOf("── 6. task ──"))).toMatch(/── 6\. task ──\ndesign\n/);
+  });
+
+  test("`kind` takes precedence over a conflicting `step`", () => {
+    const out = assembleContext(repo, { root: ROOT, agent: "lyra", unit: "checkout-flow", step: "spec", kind: "design", capabilities: CAPABILITIES });
+    expect(out).toContain("step design → design");
+  });
+
+  test("a `kind` the agent produces nowhere in the team's flow is a hard ContextError, never a silent fallback", () => {
+    expect(() =>
+      assembleContext(repo, { root: ROOT, agent: "lyra", unit: "checkout-flow", kind: "architecture", capabilities: CAPABILITIES }),
+    ).toThrow(ContextError);
+  });
+
+  test("`--help` documents `levare context`'s no-flag `--step` default explicitly", () => {
+    const errs: string[] = [];
+    const origErr = console.error;
+    console.error = (s: string) => {
+      errs.push(s);
+    };
+    let code: number;
+    try {
+      code = main(["--help"]);
+    } finally {
+      console.error = origErr;
+    }
+    expect(code).toBe(2);
+    expect(errs.join("\n")).toContain("levare context <agent> --unit <unit> [--step <step>, default: agent's last flow step]");
+  });
+
   test("the team's charter AND its LEARNINGS.md are both injected (recipe item 4)", () => {
     const out = assembleContext(repo, { root: ROOT, agent: "lyra", unit: "checkout-flow", capabilities: CAPABILITIES });
     expect(out).toContain("Kestrel — the product-shaping team"); // charter
