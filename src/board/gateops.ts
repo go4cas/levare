@@ -486,6 +486,17 @@ async function doRequest(
     supersedeFile = authorLocated.file;
   }
 
+  // Goal REDO-CONTEXT: the redo's own consumed set and context must actually carry the round's live
+  // companion review (still `in-review` — extraConsumes, ruling C14's own seam, exactly as
+  // dagwalk.ts#produceOne hands it to a fresh critic) and the Conductor's note. The companion's kind
+  // is whichever half of the loop `art` itself is NOT (role === "second" means `art` IS the critic
+  // review being resolved; role === "first" means it's `membership.companionKind`, the review the C2
+  // cascade above is approving in the same transaction — still read here via `latestLiveArtifact`
+  // rather than assumed approved, since that write hasn't landed on disk yet).
+  const criticKind = membership?.role === "second" ? art.kind : membership?.companionKind;
+  const criticArt = criticKind ? latestLiveArtifact(repo, unit, criticKind) : undefined;
+  const requestChangesNote = { note, on: supersedeId };
+
   const hasCap = memberRunner.capabilities().some((c) => c.member === reinvokeMember && c.kind === reinvokeKind);
   if (!hasCap) {
     return { ok: false, status: 501, error: `no producer available to re-invoke '${teamName}/${reinvokeMember}' for kind '${reinvokeKind}'` };
@@ -526,7 +537,7 @@ async function doRequest(
   const invocation = daemon?.beginInvocation({ project: art.project, unit: art.unit, member: reinvokeMember, kind: reinvokeKind });
   let baseDoc: string;
   try {
-    ({ doc: baseDoc } = await memberRunner.produce(reinvokeMember, reinvokeKind, art.unit, art.project));
+    ({ doc: baseDoc } = await memberRunner.produce(reinvokeMember, reinvokeKind, art.unit, art.project, criticArt ? [criticArt.id] : [], requestChangesNote));
   } finally {
     if (invocation) daemon!.endInvocation(invocation);
   }

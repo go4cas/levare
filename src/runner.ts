@@ -44,8 +44,20 @@ export interface MemberRunner {
    * moment the companion runs. Optional and ignored by every implementation that predates this —
    * a JS/TS function assigned fewer parameters than an interface declares is still callable exactly
    * as before; only NEW call sites (dagwalk.ts's loop-companion production) ever pass it.
+   *
+   * `requestChangesNote` (goal REDO-CONTEXT): set only on a loop author's request-changes redo — the
+   * Conductor's own note, plus `on` (the id of the artifact this redo supersedes). Rendered as its
+   * own labelled section of the §6 recipe (context.ts), never folded into the unit body. Optional for
+   * the same backward-compat reason as `extraConsumes`.
    */
-  produce(member: string, kind: string, unit: string, project: string, extraConsumes?: string[]): { doc: string; receipt?: Receipt };
+  produce(
+    member: string,
+    kind: string,
+    unit: string,
+    project: string,
+    extraConsumes?: string[],
+    requestChangesNote?: { note: string; on: string },
+  ): { doc: string; receipt?: Receipt };
 }
 
 export type Verb =
@@ -286,10 +298,11 @@ export class Runner {
     round: number,
     supersedesId?: string,
     extraConsumes?: string[],
+    requestChangesNote?: { note: string; on: string },
   ): Produced | "budget-stop" | "timebox-stop" {
     this.pace(unit, project, stepLabel);
     const { member, kind } = resolveStep(team, stepLabel, this.members.capabilities());
-    const { doc, receipt } = this.members.produce(member, kind, unit.unit, unit.project, extraConsumes);
+    const { doc, receipt } = this.members.produce(member, kind, unit.unit, unit.project, extraConsumes, requestChangesNote);
 
     // Boundary contract enforcement (§6) with the same validator used on disk.
     const errs = validateArtifactSource(doc, `${member}:${kind}`, undefined, this.repo.root);
@@ -372,11 +385,18 @@ export class Runner {
     const [firstLabel, secondLabel] = loop.between;
     let prevFirstId: string | undefined;
     let prevSecondId: string | undefined;
+    // Goal REDO-CONTEXT: set by a "request" resolution below, consumed by the NEXT round's author
+    // step — mirrors board/gateops.ts#doRequest's own redo, so the batch engine and the live board
+    // agree on what a loop author's redo actually receives.
+    let pendingAuthorExtraConsumes: string[] | undefined;
+    let pendingAuthorNote: { note: string; on: string } | undefined;
 
     for (let round = 1; round <= loop.maxRounds; round++) {
       this.emit({ t: "loop-round", unit: unit.unit, round, of: loop.maxRounds });
 
-      const first = this.runStep(unit, team, project, firstLabel, round, prevFirstId);
+      const first = this.runStep(unit, team, project, firstLabel, round, prevFirstId, pendingAuthorExtraConsumes, pendingAuthorNote);
+      pendingAuthorExtraConsumes = undefined;
+      pendingAuthorNote = undefined;
       if (first === "budget-stop" || first === "timebox-stop") return "paused";
       // Ruling C14: the companion (critic) consumes the round's own author artifact, even though it is
       // still `in-review` (not yet approved) at this moment — `extraConsumes` is exactly the seam that
@@ -415,8 +435,13 @@ export class Runner {
         // "reject" verb, gateops.ts's own resolveGate never distinguishes loop membership for it).
         this.setUnitStatus(key, "rejected", "loop rejected");
         return "paused";
+      } else {
+        // request → next round supersedes both artifacts. The author's redo must actually receive
+        // this round's own review (still in-review — extraConsumes, same seam the critic's own
+        // consumption above uses) and the Conductor's note, exactly like the live board's redo.
+        pendingAuthorExtraConsumes = [second.id];
+        pendingAuthorNote = d.note ? { note: d.note, on: first.id } : undefined;
       }
-      // request → next round supersedes both artifacts.
     }
 
     // Exhausted: max_rounds reached without `until`.
