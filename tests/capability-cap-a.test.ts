@@ -611,7 +611,8 @@ describe("item 5 — context assembly names the proposal-gated connector's actio
     });
     repo.agents.get("finch")!.connectors = ["github"];
     const out = assembleContext(repo, { root: ROOT, agent: "finch", unit: "checkout-flow", capabilities: [{ member: "finch", kind: "review" }] });
-    expect(out).toContain("── 8. capability: proposal-gated connectors ──");
+    // Goal REDO-CONTEXT: item 8 is now the (conditional) conductor-note section; this section moved to 9.
+    expect(out).toContain("── 9. capability: proposal-gated connectors ──");
     expect(out).toContain("direct calls are unavailable");
     expect(out).toContain("### github (cli)");
     expect(out).toContain("create-issue: params [title, body]");
