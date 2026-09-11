@@ -167,13 +167,15 @@ Side-effecting connectors gated as proposals (the `effects: read | write` declar
 "levare cannot tell a read from a write" half of the capability layer (part A). Real `native` tool
 forwarding and a symlinked, per-run scoped `HOME` (the section above) close part B. **OS-level sandboxing
 (v2, NOTES R4-SANDBOX; extended to remote/MCP by PRD Amendment 3 ruling R3, NOTES MCP-1C) is now closed
-too:** every real `cli` spawn, AND a real `remote` member's own spawned MCP server process, run inside an
-OS sandbox wherever a working primitive exists on the host — `bubblewrap` on Linux (falling back to a raw
-`unshare` confinement when `bubblewrap` isn't installed but the kernel still allows it), a generated
-`sandbox-exec` profile on macOS; the SAME generator either way, never a second, looser profile for MCP.
-Filesystem is a hard limit when a primitive works: the member's process can reach its own per-dispatch
-working area (a `cli` member's git worktree; a `remote` member's fresh per-dispatch scratch cwd — an MCP
-tools/call has no cwd of its own), its own scoped `HOME` (a `remote` member's connector can declare its
+too:** every real `cli` spawn, a real `native` member's own SDK worker spawn, AND a real `remote` member's
+own spawned MCP server process, run inside an OS sandbox wherever a working primitive exists on the host —
+`bubblewrap` on Linux (falling back to a raw `unshare` confinement when `bubblewrap` isn't installed but
+the kernel still allows it), a generated `sandbox-exec` profile on macOS; the SAME generator either way,
+never a second, looser profile for MCP. Filesystem is a hard limit when a primitive works: the member's
+process can reach its own per-dispatch working area (a `cli` or `native` member's own dispatch worktree —
+a native member's own `cwd:` is optional and defaults to it, falling back to the studio root only when
+there's no repo-bearing project; a `remote` member's fresh per-dispatch scratch cwd — an MCP tools/call
+has no cwd of its own), its own scoped `HOME` (a `remote` member's connector can declare its
 OWN `home:` dotpaths a spawned server legitimately needs, the identical mechanism a subscription `cli`
 connector already uses), the studio root itself (read-only — so a command checked into the studio, and a
 `context_artifacts: paths` member's own consumed-artifact reads, both keep working), the running levare

@@ -614,7 +614,15 @@ const AGENT_SCHEMA: Schema = {
       enum: ["paths", "inline"],
       description: "How this member receives consumed artifacts: paths (default — root-relative paths only, for a member with filesystem access to the studio) or inline (the full text of every consumed artifact, for a member that cannot reach the studio filesystem).",
     },
-    cwd: { type: "str", required: false, description: "cli: the working directory this member's process spawns in." },
+    // Goal 2026-09-11 ("native member cwd"): a native member's own cwd: is optional, unlike cli's
+    // required-in-practice template — absent, adapters.ts#resolveNativeCwd defaults it to the dispatch
+    // worktree (or the studio root with no repo-bearing project), so this is no longer a cli-only field.
+    cwd: {
+      type: "str",
+      required: false,
+      description:
+        "cli/native: the working directory this member's process spawns in, {feature_repo}-substituted. cli: required in practice — the member has no other cwd. native: optional — absent, defaults to the dispatch worktree (or the studio root with no repo-bearing project); a declared value still wins.",
+    },
     timeout: { type: "num", required: false, description: "cli/native/remote: the spawn/dispatch timeout, in seconds." },
     result: { type: "str", required: false, description: "cli: required for kind: cli — how the member's result is read back." },
     // remote
