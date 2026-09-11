@@ -670,7 +670,16 @@ export function createBunSdkTransport(workerPath?: string): SdkTransport {
       }
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       let argv = workerPath !== undefined ? [process.execPath, workerPath] : workerSpawnArgv();
-      let cwd = workerSpawnCwd(workerPath);
+      // Goal 2026-09-11 ("native member cwd"): `req.cwd` — when the request itself already resolved one
+      // (adapters.ts#resolveNativeCwd: the dispatch worktree, or the studio root) — is the worker
+      // PROCESS's own OS-level spawn cwd too, not just a value inside the JSON payload the worker reads
+      // off stdin. Before this, the two were entirely decoupled: `workerSpawnCwd` never looked at the
+      // request at all, so the actual spawned process's own `process.cwd()` (what `pwd` reports from
+      // inside it) could diverge from the SDK's own `cwd` option — exactly the live mason incident (the
+      // dispatch trace recorded a real worktree; the member's own `pwd` reported the studio). Falls back
+      // to `workerSpawnCwd`'s own pinned/ambient default only when the request carries no cwd at all
+      // (every non-native dispatch, and every existing test double that never sets `req.cwd`).
+      let cwd = req.cwd ?? workerSpawnCwd(workerPath);
       let cleanupWrap: (() => void) | undefined;
       // Finding 75 (part 2): only the real self-invocation spawn is ever wrapped — a standalone
       // `workerPath` script is a test double, never a real OS process this codebase's own sandbox
@@ -749,7 +758,16 @@ export function createAsyncSdkTransport(workerPath?: string): AsyncSdkTransport 
       }
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       let argv = workerPath !== undefined ? [process.execPath, workerPath] : workerSpawnArgv();
-      let cwd = workerSpawnCwd(workerPath);
+      // Goal 2026-09-11 ("native member cwd"): `req.cwd` — when the request itself already resolved one
+      // (adapters.ts#resolveNativeCwd: the dispatch worktree, or the studio root) — is the worker
+      // PROCESS's own OS-level spawn cwd too, not just a value inside the JSON payload the worker reads
+      // off stdin. Before this, the two were entirely decoupled: `workerSpawnCwd` never looked at the
+      // request at all, so the actual spawned process's own `process.cwd()` (what `pwd` reports from
+      // inside it) could diverge from the SDK's own `cwd` option — exactly the live mason incident (the
+      // dispatch trace recorded a real worktree; the member's own `pwd` reported the studio). Falls back
+      // to `workerSpawnCwd`'s own pinned/ambient default only when the request carries no cwd at all
+      // (every non-native dispatch, and every existing test double that never sets `req.cwd`).
+      let cwd = req.cwd ?? workerSpawnCwd(workerPath);
       let cleanupWrap: (() => void) | undefined;
       // Finding 75 (part 2): see createBunSdkTransport's own identical guard/doc above — the same
       // real-self-invocation-only wrap, applied to the async spawn path.

@@ -490,12 +490,27 @@ function dispatchGitWriteGrant(worktreeGitDir: string): { root: string; subpaths
   return { root: gitCommonDir, subpaths: [pathJoin(gitCommonDir, "objects"), pathJoin(gitCommonDir, "refs"), logs, worktreeGitDir] };
 }
 
-function nativeWorkerRequest(req: InvokeRequest, pathToClaudeCodeExecutable: string | undefined, idleTimeoutMs: number) {
+// Goal 2026-09-11 ("native member cwd"): unlike a `cli` member (whose `cwd:` is a required, documented
+// template — `resolveFeatureRepo` above is entirely its own), a native member's `cwd:` is optional, and
+// the scaffold's own canonical native example declares none (init.ts#AGENT_LYRA). Before this, an
+// undeclared `agent.cwd` made `resolveFeatureRepo` bail to `undefined` immediately — silently discarding
+// whatever dispatch worktree `withDispatchWorktree` had just set on `req.projectRepoPath` (Phase 1's own
+// failing test: the live mason incident, a real worktree recorded on the dispatch trace, a member whose
+// own `pwd` reported the studio). A declared `cwd:` still wins outright, with `{feature_repo}`
+// substituted exactly as before; absent one, this defaults to the dispatch worktree/project repo path,
+// falling back to the studio root only when there is no repo-bearing project at all — a native member
+// never spawns with an unresolved (`undefined`) cwd anymore.
+function resolveNativeCwd(agentCwd: string | undefined, projectRepoPath: string | undefined, studioRoot: string | undefined): string | undefined {
+  if (agentCwd !== undefined) return resolveFeatureRepo(agentCwd, projectRepoPath);
+  return projectRepoPath ?? studioRoot;
+}
+
+function nativeWorkerRequest(req: InvokeRequest, pathToClaudeCodeExecutable: string | undefined, idleTimeoutMs: number, studioRoot: string | undefined) {
   // Tool allowlist (security-audit Surface 3/8's now-closed K5 pre-arm): `req.tools` is
   // `guardrails.ts#allowedTools(agent)` — exactly the agent's declared `tools:`, `[]` when it
   // declares none. Passed as BOTH `tools` and `allowedTools` so an agent declaring no tools reaches
   // the SDK with an empty allowlist, never an implicit/full one.
-  const cwd = resolveFeatureRepo(req.agent.cwd, req.projectRepoPath);
+  const cwd = resolveNativeCwd(req.agent.cwd, req.projectRepoPath, studioRoot);
   return { prompt: req.context, model: req.agent.model, tools: req.tools, allowedTools: req.tools, cwd, pathToClaudeCodeExecutable, idleTimeoutMs };
 }
 
@@ -599,7 +614,7 @@ export function createSdkNativeBoundary(opts: SdkNativeBoundaryOptions = {}): Na
         const startedAt = new Date().toISOString();
         const traceCtx = { startedAt, timeoutMs, baseEnv, pathToClaudeCodeExecutable };
         traceNativeDispatchStart(opts.studioRoot, req, traceCtx);
-        const res = transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable, idleTimeoutMs), { env, timeoutMs, wrapWorkerSpawn });
+        const res = transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable, idleTimeoutMs, opts.studioRoot), { env, timeoutMs, wrapWorkerSpawn });
         traceNativeDispatchFinish(opts.studioRoot, req, res, traceCtx);
         return res;
       };
@@ -652,7 +667,7 @@ export function createAsyncSdkNativeBoundary(opts: AsyncSdkNativeBoundaryOptions
         const startedAt = new Date().toISOString();
         const traceCtx = { startedAt, timeoutMs, baseEnv, pathToClaudeCodeExecutable };
         traceNativeDispatchStart(opts.studioRoot, req, traceCtx);
-        const res = await transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable, idleTimeoutMs), { env, timeoutMs, wrapWorkerSpawn });
+        const res = await transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable, idleTimeoutMs, opts.studioRoot), { env, timeoutMs, wrapWorkerSpawn });
         traceNativeDispatchFinish(opts.studioRoot, req, res, traceCtx);
         return res;
       };
