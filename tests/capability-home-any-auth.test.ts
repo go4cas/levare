@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRepo } from "../src/repo.ts";
@@ -79,11 +79,15 @@ describe("home: on an auth: env connector (not just auth: subscription)", () => 
       // contributes a target — the real HOME stays denied under a "full"-tier sandbox.
       expect(policy.grantedHomeTargets).toContain(target);
 
+      // buildSandboxExecProfile's own canon() resolves every granted path through realpathSync before
+      // emitting it — on macOS, tmpdir() sits under a symlink (/var/folders/... -> /private/var/...), so
+      // the profile's own re-allow line names the REALPATH form, not the raw tmpdir()-derived `target`
+      // above (sandbox.test.ts's own "canonicalized through a symlink" tests use this identical
+      // realpathSync-before-matching pattern for the same reason).
+      const targetCanonical = join(realpathSync(realHome), ".gemini");
       const profile = buildSandboxExecProfile({ ...policy, operatorHome: realHome });
-      const readAllow = new RegExp(`\\(allow file-read\\*\\s*\\n?\\s*\\(subpath "${target}"\\)`);
-      const writeAllow = new RegExp(`\\(allow file-write\\*\\s*\\n?\\s*\\(subpath "${target}"\\)`);
-      expect(profile).toMatch(readAllow);
-      expect(profile).toMatch(writeAllow);
+      expect(profile).toContain(`(allow file-read* (subpath ${JSON.stringify(targetCanonical)}))`);
+      expect(profile).toContain(`(allow file-write* (subpath ${JSON.stringify(targetCanonical)}))`);
     } finally {
       rmSync(realHome, { recursive: true, force: true });
     }
