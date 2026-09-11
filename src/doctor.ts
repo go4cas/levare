@@ -102,6 +102,12 @@ export function diagnose(
       const status: ConnectorHealth["status"] = envChecks.every((e) => e.present) ? "ok" : "missing-env";
       const health: ConnectorHealth = { name: c.name, kind: c.kind, auth: c.auth, role: c.role, env: envChecks, status };
       if (c.plan) health.plan = c.plan;
+      // NOTES home-any-auth: the version-manager shim gap is a property of `command`/`home:` alone — a
+      // Volta-managed binary resolves through `~/.volta` regardless of whether the connector wrapping it
+      // is `auth: subscription` or `auth: env` (env.ts#scopeHome scopes any auth mode's declared `home:`
+      // identically). Computed once here, for whichever branch below actually has a `warning` to attach
+      // it to.
+      const homeShimGap = c.home && c.home.length > 0 && c.command && home ? detectVersionManagerHomeGap(resolveCliPath(c.command), c.home, home) : undefined;
       if (c.auth === "subscription") {
         // NOTES C13/CAP-B: stated plainly, every time — the board and this report must never imply a
         // scoping guarantee levare is not providing. CAP-B narrows the honest claim rather than
@@ -110,13 +116,14 @@ export function diagnose(
         // only those paths) — but the login itself remains usable by any OTHER member granted this
         // SAME connector, which is the residual C13 always named and CAP-B does not close.
         if (c.home && c.home.length > 0) {
-          const gap = c.command && home ? detectVersionManagerHomeGap(resolveCliPath(c.command), c.home, home) : undefined;
-          health.warning = gap
-            ? `this credential is scoped to \`${c.home.join(", ")}\` under a per-run HOME — but any member granted this connector can still use the login (the grant is not per-member revocable; only the real login is). Also: \`${c.command}\` resolves through ${gap.manager} (~/${gap.dotpath}), which is NOT in that scoped list — a version-managed binary cannot be scoped narrowly; add '${gap.dotpath}' too (this exposes every toolchain ${gap.manager} manages, not just this connector) or install \`${c.command}\` outside a version manager.`
+          health.warning = homeShimGap
+            ? `this credential is scoped to \`${c.home.join(", ")}\` under a per-run HOME — but any member granted this connector can still use the login (the grant is not per-member revocable; only the real login is). Also: \`${c.command}\` resolves through ${homeShimGap.manager} (~/${homeShimGap.dotpath}), which is NOT in that scoped list — a version-managed binary cannot be scoped narrowly; add '${homeShimGap.dotpath}' too (this exposes every toolchain ${homeShimGap.manager} manages, not just this connector) or install \`${c.command}\` outside a version manager.`
             : `this credential is scoped to \`${c.home.join(", ")}\` under a per-run HOME — but any member granted this connector can still use the login (the grant is not per-member revocable; only the real login is).`;
         } else {
           health.warning = `levare cannot scope this credential — any member that can spawn \`${c.command ?? c.name}\` can use this login. The grant is documentation, not enforcement. Declare 'home:' to scope it to the vendor's own config directory.`;
         }
+      } else if (homeShimGap) {
+        health.warning = `\`${c.command}\` resolves through ${homeShimGap.manager} (~/${homeShimGap.dotpath}), which is not in home: [${(c.home ?? []).join(", ")}] — a version-managed binary cannot be scoped narrowly: add '${homeShimGap.dotpath}' to home: too (this exposes every toolchain ${homeShimGap.manager} manages, not just this connector) or install \`${c.command}\` outside a version manager.`;
       }
       if (c.kind === "cli" && c.command) health.cli = { command: c.command, probe: probe(c.command) };
       if (c.kind === "mcp" && c.server) health.mcp = { server: c.server };

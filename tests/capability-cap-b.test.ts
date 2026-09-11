@@ -551,4 +551,24 @@ describe("SUBSCRIPTION_HOME_SHIM_GAP warning (validatePath, real PATH resolution
       rmSync(homeDir, { recursive: true, force: true });
     }
   });
+
+  // NOTES home-any-auth: the same shim gap, but for an auth: env connector — the version-manager
+  // resolution problem is a property of `command`/`home:` alone, not of the auth mode wrapping them.
+  test("fires for an auth: env connector too — the shim gap doesn't care how the connector authenticates", () => {
+    const homeDir = mkdtempSync(join(tmpdir(), "levare-shim-gap-home-"));
+    const dir = connectorStudio('auth: env\nenv: [GEMINI_API_KEY]\nhome: [".gemini"]');
+    try {
+      withFakeVoltaShimOnPath(homeDir, () => {
+        const r = validatePath(dir);
+        expect(r.ok).toBe(true);
+        const w = r.warnings.find((w) => w.code === "SUBSCRIPTION_HOME_SHIM_GAP");
+        expect(w).toBeDefined();
+        expect(w!.message).toContain("Volta");
+        expect(w!.message).toContain("~/.volta");
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
 });

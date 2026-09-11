@@ -26,7 +26,7 @@ An external system a member can be granted.
 | `effects` | enum | — | — | `read` · `write` | Whether a grant lets a member merely read through this connector (default) or write through it — a side-effecting action against the outside world. A write connector's env is withheld from members; only levare's own execution step (on gate approval) reads it. |
 | `gate` | enum | — | — | `proposal` · `trusted` | Only meaningful when effects: write. proposal (default) — the grant is 'may draft a proposal', never 'holds the credential'. trusted — the declared, visible opt-out that injects exactly as an effects: read connector always has. |
 | `actions` | map (action name → argv template array) | — | — | — | Required (non-empty) for effects: write connectors — the declared action vocabulary: action name → argv template array with {placeholder} slots. A member proposing against this connector names an action and fills placeholders with params:, never raw argv. |
-| `home` | string[] | — | — | — | Dotpaths under $HOME this connector's own backend actually needs (e.g. [".codex"]) — the one, auditable, per-connector way to declare a real-HOME path a spawned process needs, symlinked into a scratch $HOME rather than left unscoped. |
+| `home` | string[] | — | — | — | Dotpaths under $HOME this connector's own backend actually needs (e.g. [".codex"]) — the one, auditable, per-connector way to declare a real-HOME path a spawned process needs, symlinked into a scratch $HOME rather than left unscoped. Applies to any auth mode (env or subscription) and either kind — every granted connector's home: is honoured, not just one. |
 
 ## Minimal valid skeleton
 

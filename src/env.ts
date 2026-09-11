@@ -148,6 +148,25 @@ export function describeMemberEnv(env: Record<string, string | undefined>): Arra
 }
 
 /**
+ * The `home:` grant a member actually holds — the UNION of every granted connector's own declared
+ * `home:` dotpaths (agent grants ∪ team grants, via `grantedConnectors`), deduplicated. Originally this
+ * was `subscriptionConnector(repo, member)?.home` alone — a single-connector shape that silently
+ * dropped an `auth: env` connector's own `home:` (e.g. `connectors/gemini.md: home: [".gemini",
+ * ".volta"]`): the connector validated and passed doctor, but the member spawned with its real,
+ * unscoped HOME under a profile that denies it (EPERM opening its own config). `home:` is a
+ * per-connector declaration (Connector.home's own doc) — any auth mode, any kind — so what a member is
+ * actually entitled to is every declared dotpath across every connector it holds, not just the one
+ * `subscriptionConnector` happens to find.
+ */
+export function grantedHomeDotpaths(repo: Repo, member: string): string[] {
+  const dotpaths = new Set<string>();
+  for (const c of grantedConnectors(repo, member)) {
+    for (const d of c.home ?? []) dotpaths.add(d);
+  }
+  return [...dotpaths];
+}
+
+/**
  * NOTES CAP-B (v1.1 capability layer, part B, item 4): the outcome of `scopeHome` below — `env` is
  * `buildMemberEnv`'s own record, with `HOME` overridden to a scratch directory when scoping applied
  * (unchanged otherwise, same object reference when there was nothing to scope). `cleanup()` removes the
@@ -211,9 +230,15 @@ export interface ScopeHomeOptions {
  * thrown) and named in the returned `skipped` list; every other declared dotpath still scopes normally.
  */
 export function scopeHomeForConnector(connector: Connector | undefined, env: Record<string, string>, opts: ScopeHomeOptions = {}): ScopedHome {
-  const dotpaths = connector?.home;
+  return scopeHomeForDotpaths(connector?.home ?? [], env, opts);
+}
+
+// Shared by `scopeHomeForConnector` (a single connector's own `home:`, the remote/MCP dispatch path)
+// and `scopeHome` below (a member's FULL granted-home union, the cli/native dispatch path) — the actual
+// symlink-scratch-HOME mechanics never differ between the two; only which dotpaths get scoped does.
+function scopeHomeForDotpaths(dotpaths: string[], env: Record<string, string>, opts: ScopeHomeOptions = {}): ScopedHome {
   const realHome = env.HOME;
-  if (!dotpaths || dotpaths.length === 0 || !realHome) return { env, cleanup() {}, skipped: [] };
+  if (dotpaths.length === 0 || !realHome) return { env, cleanup() {}, skipped: [] };
 
   const scratch = mkdtempSync(join(opts.tmpRoot ?? tmpdir(), "levare-home-"));
   const skipped: string[] = [];
@@ -263,12 +288,13 @@ export function scopeHomeForConnector(connector: Connector | undefined, env: Rec
   };
 }
 
-/** The `cli`/`native` member-scoped counterpart to `scopeHomeForConnector` — resolves `member`'s own
- * granted `auth: subscription` connector (the only connector kind this call site has ever scoped
- * against) and delegates. Unchanged behaviour from before NOTES MCP-1C; the remote/MCP dispatch path
- * (adapters.ts#createAsyncStdioRemoteBoundary) calls `scopeHomeForConnector` directly with its own
- * resolved `kind: mcp` connector instead, since a remote member's `home:`-declaring connector need not
- * be `auth: subscription` at all (ruling R3: "the connector's existing home: mechanism", generalized). */
+/** The `cli`/`native` member-scoped counterpart to `scopeHomeForConnector` — scopes against
+ * `grantedHomeDotpaths(repo, member)`, the UNION of every granted connector's own declared `home:`
+ * (any auth mode, any kind), not just a single `auth: subscription` connector. The remote/MCP dispatch
+ * path (adapters.ts#createAsyncStdioRemoteBoundary) calls `scopeHomeForConnector` directly with its own
+ * resolved `kind: mcp` connector instead — an MCP server spawn scopes to that ONE connector's own
+ * `home:`, never the member's whole grant set, since it's a single spawned process serving one
+ * connector's declared reach (ruling R3: "the connector's existing home: mechanism", generalized). */
 export function scopeHome(repo: Repo, member: string, env: Record<string, string>, opts: ScopeHomeOptions = {}): ScopedHome {
-  return scopeHomeForConnector(subscriptionConnector(repo, member), env, opts);
+  return scopeHomeForDotpaths(grantedHomeDotpaths(repo, member), env, opts);
 }

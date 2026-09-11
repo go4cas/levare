@@ -177,10 +177,17 @@ purpose, not by omission.
 
 `home` names dotpaths under the operator's real `$HOME` (e.g. `[".config/gh"]`) a connector's backend
 genuinely needs, symlinked into a scratch `$HOME` at dispatch rather than handing a granted member the
-operator's entire home directory. Traversal and absolute paths are rejected outright
-(`UNSAFE_HOME_PATH`); a subscription connector left with no `home:` at all still validates (the
-pre-existing default — the whole `$HOME`, unscoped) but gets a warning naming the gap
-(`SUBSCRIPTION_NO_HOME`), same as a subscription connector with no `role:` (`SUBSCRIPTION_NO_ROLE`).
+operator's entire home directory. This is per-connector and works the same regardless of `auth`: an
+`env` connector needing on-disk config (e.g. a Volta-managed CLI reading `~/.gemini`) scopes it exactly
+like a `subscription` connector's own on-disk login does. A member's actual scratch `$HOME` is the
+*union* of `home:` across every connector it's granted (its own `connectors:` plus its team's) — not
+just one of them. Traversal and absolute paths are rejected outright (`UNSAFE_HOME_PATH`); a subscription
+connector left with no `home:` at all still validates (the pre-existing default — the whole `$HOME`,
+unscoped) but gets a warning naming the gap (`SUBSCRIPTION_NO_HOME`), same as a subscription connector
+with no `role:` (`SUBSCRIPTION_NO_ROLE`). A version-managed `command` (Volta, nvm, asdf, mise, pyenv,
+rbenv) whose own shim resolves outside the declared `home:` gets `SUBSCRIPTION_HOME_SHIM_GAP` too — for
+any connector declaring `home:`, any `auth` mode, not only `subscription` ones (the warning's name is
+historical).
 
 ```markdown
 ---
