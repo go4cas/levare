@@ -37,7 +37,7 @@ import { existsSync, statSync, accessSync, mkdirSync, mkdtempSync, rmSync, const
 import { isAbsolute, dirname, join as pathJoin } from "node:path";
 import { tmpdir } from "node:os";
 import { normalizeReceipt } from "./receipts.ts";
-import { buildMemberEnv, teamOf, subscriptionConnector, scopeHome, scopeHomeForConnector, memberNetworkAllowed, grantedConnectors } from "./env.ts";
+import { buildMemberEnv, teamOf, subscriptionConnector, scopeHome, scopeHomeForConnector, memberNetworkAllowed, grantedConnectors, grantedHomeDotpaths } from "./env.ts";
 import { connectStdioMcpServer, type McpToolCallResult } from "./mcp-client.ts";
 import { allowedTools } from "./guardrails.ts";
 import { assembleContext, unitArtifactPaths } from "./context.ts";
@@ -1427,8 +1427,9 @@ export function buildDispatchSandboxPolicy(
   baseEnv?: Record<string, string | undefined>,
 ): SandboxPolicy {
   const { readOnlyPaths, operatorHome, darwinTempDir } = baseSandboxContext(repo, cwd, argv0, req.env.PATH, baseEnv);
-  const sub = subscriptionConnector(repo, req.member);
-  const grantedHomeTargets = operatorHome ? (sub?.home ?? []).filter(isSafeHomeDotpath).map((dotpath) => pathJoin(operatorHome, dotpath)) : [];
+  // NOTES home-any-auth: the UNION of every granted connector's own `home:` (env.ts#grantedHomeDotpaths),
+  // not just a single `auth: subscription` connector — see that function's own doc for why.
+  const grantedHomeTargets = operatorHome ? grantedHomeDotpaths(repo, req.member).filter(isSafeHomeDotpath).map((dotpath) => pathJoin(operatorHome, dotpath)) : [];
   // Finding 120: the SAME resolved path `gitConfigRedirectEnv` points a "full"-tier dispatch's
   // GIT_CONFIG_VALUE_0 at — granted read-only here (a single file, never the containing directory or
   // the rest of operatorHome) so that redirect actually resolves to something readable under the
@@ -1628,8 +1629,9 @@ export function buildNativeSandboxPolicy(
 ): SandboxPolicy {
   const { readOnlyPaths, operatorHome, darwinTempDir } = baseSandboxContext(repo, cwd, undefined, req.env.PATH, baseEnv);
   const treeDirs = (p: string) => [dirname(p), dirname(dirname(p))];
-  const sub = subscriptionConnector(repo, req.member);
-  const grantedHomeTargets = operatorHome ? (sub?.home ?? []).filter(isSafeHomeDotpath).map((dotpath) => pathJoin(operatorHome, dotpath)) : [];
+  // NOTES home-any-auth: see buildDispatchSandboxPolicy's identical comment above — the union across
+  // every granted connector, not just a single `auth: subscription` one.
+  const grantedHomeTargets = operatorHome ? grantedHomeDotpaths(repo, req.member).filter(isSafeHomeDotpath).map((dotpath) => pathJoin(operatorHome, dotpath)) : [];
   return {
     cwd,
     home: req.env.HOME,
