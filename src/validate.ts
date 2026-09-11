@@ -785,14 +785,17 @@ const CONNECTOR_SCHEMA: Schema = {
       required: false,
       description: "Required (non-empty) for effects: write connectors — the declared action vocabulary: action name → argv template array with {placeholder} slots. A member proposing against this connector names an action and fills placeholders with params:, never raw argv.",
     },
-    // NOTES CAP-B / NOTES MCP-1C: dotpaths under $HOME this connector's backend needs (e.g. [".codex"],
-    // or [".npm"] for an MCP server) — originally auth: subscription only, generalized by ruling R3 to
-    // any kind: mcp connector's own declared reach; see env.ts#scopeHomeForConnector and Connector.home's
-    // own doc (types.ts).
+    // NOTES CAP-B / NOTES MCP-1C / NOTES home-any-auth: dotpaths under $HOME this connector's backend
+    // needs (e.g. [".codex"], or [".npm"] for an MCP server) — originally auth: subscription only,
+    // generalized by ruling R3 to any kind: mcp connector's own declared reach, then generalized again
+    // (home-any-auth) to every granted connector regardless of kind/auth: env.ts#scopeHome scopes the
+    // UNION of every granted connector's own home:, and env.ts#scopeHomeForConnector scopes any single
+    // connector's home: the same way, whichever auth mode it declares; see both functions' own doc and
+    // Connector.home's own doc (types.ts).
     home: {
       type: "str[]",
       required: false,
-      description: "Dotpaths under $HOME this connector's own backend actually needs (e.g. [\".codex\"]) — the one, auditable, per-connector way to declare a real-HOME path a spawned process needs, symlinked into a scratch $HOME rather than left unscoped.",
+      description: "Dotpaths under $HOME this connector's own backend actually needs (e.g. [\".codex\"]) — the one, auditable, per-connector way to declare a real-HOME path a spawned process needs, symlinked into a scratch $HOME rather than left unscoped. Applies to any auth mode (env or subscription) and either kind — every granted connector's home: is honoured, not just one.",
     },
   },
 };
