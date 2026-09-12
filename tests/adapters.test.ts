@@ -4022,6 +4022,50 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
     },
   );
 
+  // Goal 2026-09-12 (defect 1 — "git is unusable inside a dispatch worktree"): the live buildlog
+  // incident (dispatch-logs/2026-09-12T08-08-32-543Z-app-skeleton-code-mason.json). A worktree's own
+  // `.git` is a FILE pointing at `<repo>/.git/worktrees/<name>` — git resolves `commondir` from there
+  // and reads `config`/`HEAD`/`packed-refs`/`info/exclude` straight out of the ORIGINAL repo's shared
+  // `.git` directory, never copying them into the worktree admin dir. `dispatchGitWriteGrant`
+  // (adapters.ts) — and this profile's own `reallowReads`/`readOnlyPaths` — only ever name
+  // `objects`/`refs`/`logs`/this dispatch's own `worktrees/<name>` admin dir: `config`/`HEAD`/
+  // `packed-refs`/`info` are covered by NO re-allow anywhere, so they stay denied by the operator-home/
+  // `/Users` deny (darwin) or simply absent from bubblewrap's own empty-root allow-list (linux) — `git
+  // status`/`git diff` inside the worktree die with `fatal: cannot access '<repo>/.git/config': ...`
+  // (EPERM on darwin, ENOENT-shaped-as-denied on an empty-root linux sandbox). A REAL spawn, gated
+  // exactly like every other "must actually run under the host's own working primitive" proof in this
+  // file — a profile-string assertion alone would not catch this, since the missing grant is an
+  // OMISSION (nothing to assert against), not a wrong value.
+  test.skipIf(hostSandbox.level !== "full")(
+    "git status / git diff --stat succeed inside a sandboxed dispatch worktree (must read the original repo's .git config/HEAD/packed-refs, not just objects/refs/logs)",
+    async () => {
+      const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+      try {
+        const repo = repoWithRealStorefrontRepo(projectRepo);
+        const runGit = (args: string[]) => (req: InvokeRequest) => ["git", "-C", req.projectRepoPath!, ...args];
+        const statusRunner = new AdapterRunner(repo, {
+          pricing,
+          capabilities: [{ member: "finch", kind: "review" }],
+          native: nativeMock,
+          remote: remoteMock,
+          cliCommand: runGit(["status", "--porcelain"]),
+        });
+        await expect(statusRunner.produceAsync("finch", "review", "checkout-flow", "storefront")).resolves.toBeTruthy();
+
+        const diffRunner = new AdapterRunner(repo, {
+          pricing,
+          capabilities: [{ member: "finch", kind: "review" }],
+          native: nativeMock,
+          remote: remoteMock,
+          cliCommand: runGit(["diff", "--stat", "main...HEAD"]),
+        });
+        await expect(diffRunner.produceAsync("finch", "review", "checkout-flow", "storefront")).resolves.toBeTruthy();
+      } finally {
+        rmSync(projectRepo, { recursive: true, force: true });
+      }
+    },
+  );
+
   // NOTES R4-SANDBOX-FIX-14 (round 3, live host): the ladder's parity check isolated a live case where
   // `resolveDispatchRepo`'s own precondition was independently verified to hold, yet the actual dispatch
   // still declined a worktree — a silent divergence with no way to see where it happened. These three

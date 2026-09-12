@@ -181,7 +181,14 @@ connector already uses), the studio root itself (read-only — so a command chec
 `context_artifacts: paths` member's own consumed-artifact reads, both keep working), the running levare
 binary's own install and wherever the member's own interpreter resolves to, and a small set of baseline
 system paths — nothing else; a decoy file anywhere outside that reach is genuinely unreadable, proven by
-a dedicated test for both `cli` and `remote`. Network is best-effort — denied unless the member holds a
+a dedicated test for both `cli` and `remote`. A member dispatched inside a per-dispatch worktree can read
+the ORIGINAL project repo's whole `.git` directory — `config`, `HEAD`, `packed-refs`, `objects`, `refs`,
+`logs`, `info`, every worktree admin dir, all of it — so ordinary git commands (`git status`, `git diff`,
+`git log`) work exactly as they would unsandboxed; only WRITE is narrowed, to the four subpaths a
+worktree's own commit actually needs (`objects`, `refs`, `logs`, its own `worktrees/<name>` admin dir) —
+writing `.git/config` or `.git/hooks/*` stays denied on every platform, since either would let a member
+plant something that runs unconfined the next time any git operation touches this repo outside the
+sandbox. Network is best-effort — denied unless the member holds a
 connector granting it somewhere to reach (a `remote` member always holds at least its own MCP server
 connector, so this is granted by construction for it). **Detection is never assumed from the platform:** a host can
 have `bubblewrap` on `PATH` and still not actually support it (this project's own dev container is exactly
