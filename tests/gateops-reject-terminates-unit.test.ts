@@ -49,8 +49,9 @@ describe("Finding 165: reject terminates the unit", () => {
       expect(before).toContain("status: active");
 
       const result = await resolveGate(root, "storefront", "spec-checkout-flow-v1", "reject", { today: "2026-07-12" });
-      expect(result.ok).toBe(true);
-      if (!result.ok) return;
+      // Hygiene (CI run 34681975863, macOS runner, intermittent): a bare `expect(result.ok).toBe(true)`
+      // swallowed the actual `error` on failure, leaving only a bare boolean mismatch to debug from.
+      if (!result.ok) throw new Error(result.error);
       // Both files land in the one resolution commit — mirrors doApproveMerge's own two-file pattern.
       expect(result.changedFiles.some((f) => f.endsWith("unit.md"))).toBe(true);
       expect(result.changedFiles.some((f) => f.endsWith("spec-checkout-flow-v1.md"))).toBe(true);
