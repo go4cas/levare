@@ -40,7 +40,7 @@ import { normalizeReceipt } from "./receipts.ts";
 import { buildMemberEnv, teamOf, subscriptionConnector, scopeHome, scopeHomeForConnector, memberNetworkAllowed, grantedConnectors, grantedHomeDotpaths } from "./env.ts";
 import { connectStdioMcpServer, type McpToolCallResult } from "./mcp-client.ts";
 import { allowedTools } from "./guardrails.ts";
-import { assembleContext, unitArtifactPaths } from "./context.ts";
+import { assembleContext, unitArtifactPaths, withDispatchWorktreeLine } from "./context.ts";
 import {
   asyncSdkTransport,
   bunSdkTransport,
@@ -490,12 +490,27 @@ function dispatchGitWriteGrant(worktreeGitDir: string): { root: string; subpaths
   return { root: gitCommonDir, subpaths: [pathJoin(gitCommonDir, "objects"), pathJoin(gitCommonDir, "refs"), logs, worktreeGitDir] };
 }
 
-function nativeWorkerRequest(req: InvokeRequest, pathToClaudeCodeExecutable: string | undefined, idleTimeoutMs: number) {
+// Goal 2026-09-11 ("native member cwd"): unlike a `cli` member (whose `cwd:` is a required, documented
+// template — `resolveFeatureRepo` above is entirely its own), a native member's `cwd:` is optional, and
+// the scaffold's own canonical native example declares none (init.ts#AGENT_LYRA). Before this, an
+// undeclared `agent.cwd` made `resolveFeatureRepo` bail to `undefined` immediately — silently discarding
+// whatever dispatch worktree `withDispatchWorktree` had just set on `req.projectRepoPath` (Phase 1's own
+// failing test: the live mason incident, a real worktree recorded on the dispatch trace, a member whose
+// own `pwd` reported the studio). A declared `cwd:` still wins outright, with `{feature_repo}`
+// substituted exactly as before; absent one, this defaults to the dispatch worktree/project repo path,
+// falling back to the studio root only when there is no repo-bearing project at all — a native member
+// never spawns with an unresolved (`undefined`) cwd anymore.
+function resolveNativeCwd(agentCwd: string | undefined, projectRepoPath: string | undefined, studioRoot: string | undefined): string | undefined {
+  if (agentCwd !== undefined) return resolveFeatureRepo(agentCwd, projectRepoPath);
+  return projectRepoPath ?? studioRoot;
+}
+
+function nativeWorkerRequest(req: InvokeRequest, pathToClaudeCodeExecutable: string | undefined, idleTimeoutMs: number, studioRoot: string | undefined) {
   // Tool allowlist (security-audit Surface 3/8's now-closed K5 pre-arm): `req.tools` is
   // `guardrails.ts#allowedTools(agent)` — exactly the agent's declared `tools:`, `[]` when it
   // declares none. Passed as BOTH `tools` and `allowedTools` so an agent declaring no tools reaches
   // the SDK with an empty allowlist, never an implicit/full one.
-  const cwd = resolveFeatureRepo(req.agent.cwd, req.projectRepoPath);
+  const cwd = resolveNativeCwd(req.agent.cwd, req.projectRepoPath, studioRoot);
   return { prompt: req.context, model: req.agent.model, tools: req.tools, allowedTools: req.tools, cwd, pathToClaudeCodeExecutable, idleTimeoutMs };
 }
 
@@ -599,7 +614,7 @@ export function createSdkNativeBoundary(opts: SdkNativeBoundaryOptions = {}): Na
         const startedAt = new Date().toISOString();
         const traceCtx = { startedAt, timeoutMs, baseEnv, pathToClaudeCodeExecutable };
         traceNativeDispatchStart(opts.studioRoot, req, traceCtx);
-        const res = transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable, idleTimeoutMs), { env, timeoutMs, wrapWorkerSpawn });
+        const res = transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable, idleTimeoutMs, opts.studioRoot), { env, timeoutMs, wrapWorkerSpawn });
         traceNativeDispatchFinish(opts.studioRoot, req, res, traceCtx);
         return res;
       };
@@ -652,7 +667,7 @@ export function createAsyncSdkNativeBoundary(opts: AsyncSdkNativeBoundaryOptions
         const startedAt = new Date().toISOString();
         const traceCtx = { startedAt, timeoutMs, baseEnv, pathToClaudeCodeExecutable };
         traceNativeDispatchStart(opts.studioRoot, req, traceCtx);
-        const res = await transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable, idleTimeoutMs), { env, timeoutMs, wrapWorkerSpawn });
+        const res = await transport.run(nativeWorkerRequest(req, pathToClaudeCodeExecutable, idleTimeoutMs, opts.studioRoot), { env, timeoutMs, wrapWorkerSpawn });
         traceNativeDispatchFinish(opts.studioRoot, req, res, traceCtx);
         return res;
       };
@@ -1924,7 +1939,16 @@ export class AdapterRunner implements MemberRunner {
     }
     AdapterRunner.logWorktreeDebug(`dispatch worktree created for '${member}' at '${created.worktree.path}' (gitDir '${created.worktree.gitDir}') for branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}'`);
     try {
-      return fn({ ...req, projectRepoPath: created.worktree.path, dispatchGitWriteGrant: dispatchGitWriteGrant(created.worktree.gitDir), dispatchWorktreeBaseSha: created.worktree.baseSha });
+      // Goal 2026-09-11 ("native member cwd"): the worktree's own path only exists from this point on —
+      // spliced into the already-assembled §6 task section (context.ts#withDispatchWorktreeLine's own
+      // doc) rather than threaded through assembleContext itself, since the worktree postdates it.
+      return fn({
+        ...req,
+        context: withDispatchWorktreeLine(req.context, created.worktree.path),
+        projectRepoPath: created.worktree.path,
+        dispatchGitWriteGrant: dispatchGitWriteGrant(created.worktree.gitDir),
+        dispatchWorktreeBaseSha: created.worktree.baseSha,
+      });
     } finally {
       created.worktree.cleanup();
     }
@@ -1951,7 +1975,15 @@ export class AdapterRunner implements MemberRunner {
     }
     AdapterRunner.logWorktreeDebug(`dispatch worktree created for '${member}' at '${created.worktree.path}' (gitDir '${created.worktree.gitDir}') for branch '${dispatchRepo.branch}' in '${dispatchRepo.repoPath}'`);
     try {
-      return await fn({ ...req, projectRepoPath: created.worktree.path, dispatchGitWriteGrant: dispatchGitWriteGrant(created.worktree.gitDir), dispatchWorktreeBaseSha: created.worktree.baseSha });
+      // Goal 2026-09-11 ("native member cwd"): see withDispatchWorktree's own identical comment above —
+      // the sync/async split has no bearing on this, the worktree still postdates context assembly.
+      return await fn({
+        ...req,
+        context: withDispatchWorktreeLine(req.context, created.worktree.path),
+        projectRepoPath: created.worktree.path,
+        dispatchGitWriteGrant: dispatchGitWriteGrant(created.worktree.gitDir),
+        dispatchWorktreeBaseSha: created.worktree.baseSha,
+      });
     } finally {
       created.worktree.cleanup();
     }
@@ -2116,6 +2148,17 @@ export class AdapterRunner implements MemberRunner {
     // indistinguishable from one that committed real work. A failed commit attempt never reaches this
     // line at all (`commitCodeChanges` throws before `author()` is ever called).
     if (codeCommit) lines.push(`code_commit: ${codeCommit.committed ? codeCommit.commit : "none"}`);
+    // Goal 2026-09-11 ("native member cwd"): the live mason incident's own shape — a dispatch that DID
+    // have a real dispatch worktree, produced a clean-looking `in-review` artifact, yet `code_commit:
+    // none` — is otherwise indistinguishable from the ordinary, unremarkable case of a member correctly
+    // deciding there was nothing to change (a review artifact, say). `code_commit: none` alone already
+    // records that fact; this ADDS a loud, greppable signal specifically for the worktree-existed case,
+    // so `levare validate`/the artifact card can flag it for a human to check rather than let a
+    // no-code dispatch pass as silently as a real one. Present ONLY on `reason: "clean"` — never on a
+    // committed dispatch, and never when there was no worktree at all (nothing to warn about).
+    if (codeCommit && !codeCommit.committed && codeCommit.reason === "clean") {
+      lines.push(`code_commit_warning: this dispatch had a real dispatch worktree but nothing was committed — verify the member actually made the intended changes`);
+    }
     // Unit "member authorship survives a self-commit": present ONLY when the landed commit's own
     // author/committer doesn't match `memberIdentity(req.member)` — a member's own bare commit resolving
     // some other ambient identity (the live defect this unit closes), or a member deliberately overriding

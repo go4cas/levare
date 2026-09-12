@@ -26,6 +26,7 @@ import {
   type SpawnResult,
 } from "../src/adapters.ts";
 import type { SdkTransport, AsyncSdkTransport } from "../src/sdk-transport.ts";
+import { createBunSdkTransport } from "../src/sdk-transport.ts";
 import { DISPATCH_LOG_DIR_NAME } from "../src/dispatch-trace.ts";
 import { validateArtifactSource } from "../src/validate.ts";
 import { connectStdioMcpServer } from "../src/mcp-client.ts";
@@ -3106,6 +3107,37 @@ describe("commit-on-produce (goal, Finding 74) — a dispatch's own worktree fil
       const { doc } = await runner.produceAsync("lyra", "spec", "checkout-flow", "storefront");
       expect(git(projectRepo, ["rev-parse", "levare/checkout-flow"]).trim()).toBe(beforeSha);
       expect(doc).toContain("code_commit: none");
+      // Goal 2026-09-11 ("native member cwd"): a worktree-existed-but-nothing-committed dispatch is
+      // exactly the live mason incident's own shape — flagged with a loud, greppable warning field
+      // rather than looking identical to an ordinary "nothing to change" dispatch.
+      expect(doc).toContain("code_commit_warning: this dispatch had a real dispatch worktree but nothing was committed");
+    } finally {
+      rmSync(projectRepo, { recursive: true, force: true });
+    }
+  });
+
+  test("code_commit_warning is absent when a real commit landed, and absent when there was no dispatch worktree at all", async () => {
+    const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+    try {
+      const repo = repoWithRealStorefrontRepo(projectRepo);
+      const asyncNative = {
+        invoke: async (r: InvokeRequest) => {
+          writeFileSync(join(r.projectRepoPath!, "jot-list.ts"), "export function list() {}\n");
+          return { doc: render(r.member, r.kind, r.unit, r.project) };
+        },
+      };
+      const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native: nativeMock, asyncNative, remote: remoteMock });
+      const { doc: committedDoc } = await runner.produceAsync("lyra", "spec", "checkout-flow", "storefront");
+      expect(committedDoc).toContain("code_commit:");
+      expect(committedDoc).not.toContain("code_commit_warning:");
+
+      // The golden fixture's own `storefront` (UNTOUCHED — no real local checkout): no dispatch
+      // worktree, so `code_commit` itself is absent and there is nothing to warn about.
+      const goldenRepo = loadRepo(ROOT);
+      const runnerNoRepo = new AdapterRunner(goldenRepo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native: nativeMock, remote: remoteMock });
+      const { doc: noWorktreeDoc } = runnerNoRepo.produce("lyra", "spec", "checkout-flow", "storefront");
+      expect(noWorktreeDoc).not.toContain("code_commit:");
+      expect(noWorktreeDoc).not.toContain("code_commit_warning:");
     } finally {
       rmSync(projectRepo, { recursive: true, force: true });
     }
@@ -4094,6 +4126,157 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
       console.error = origError;
       if (prior === undefined) delete process.env.LEVARE_SANDBOX_DEBUG;
       else process.env.LEVARE_SANDBOX_DEBUG = prior;
+      rmSync(projectRepo, { recursive: true, force: true });
+    }
+  });
+
+  // Goal 2026-09-11 ("native member cwd"): a native member's own `cwd:` is optional — the scaffold's
+  // own `lyra` example declares none (init.ts#AGENT_LYRA) — but `resolveFeatureRepo` (adapters.ts) only
+  // ever substitutes `{feature_repo}` INTO an already-declared `agent.cwd` template. With no template to
+  // substitute into, `nativeWorkerRequest`'s own `cwd` stays `undefined`; separately,
+  // `sdk-transport.ts#workerSpawnCwd` (the worker PROCESS's own OS-level `Bun.spawn`/`Bun.spawnSync`
+  // cwd) is a pure function of `workerPath`/`isCompiledBuild()` alone, pinned to `LEVARE_ROOT` — it
+  // never reads `req.cwd` either. Both gaps fire from the SAME dispatch, together, exactly reproducing
+  // the live 2026-09-11 incident (studio ~/studio, unit buildlog/app-skeleton, member forge/mason): the
+  // dispatch trace recorded a real worktree, but the member's own `pwd` reported the studio and it built
+  // the whole unit outside the worktree. This one test drives one real dispatch — the SAME native member
+  // with no declared `cwd:` (the real production shape), through a REAL `createBunSdkTransport` spawn
+  // (a genuine `Bun.spawnSync` of a test-double worker script, not a mocked `SdkTransport`) — and proves
+  // BOTH ends of that divergence fail together against the SAME independently-recovered worktree path.
+  test("a native member with no declared cwd: neither the SDK boundary's cwd nor the worker process's own OS-level spawn cwd is the dispatch worktree — proven together, in one dispatch", () => {
+    const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+    const scriptDir = mkdtempSync(join(tmpdir(), "levare-cwd-worker-"));
+    const prior = process.env.LEVARE_SANDBOX_DEBUG;
+    const origError = console.error;
+    const debugLines: string[] = [];
+    console.error = (...args: unknown[]) => {
+      debugLines.push(args.map(String).join(" "));
+    };
+    try {
+      process.env.LEVARE_SANDBOX_DEBUG = "1";
+      const repo = repoWithRealStorefrontRepo(projectRepo);
+      expect(repo.agents.get("lyra")!.cwd).toBeUndefined(); // the scaffold's own native shape — the real production case
+
+      const workerPath = join(scriptDir, "cwd-reporting-worker.ts");
+      // A real, spawnable test-double worker (mirrors sdk-transport-hermetic.test.ts's own
+      // `writeFastReplacementWorker` convention) — reads the real request off stdin (exactly like
+      // sdk-worker.ts's own `runSdkWorkerFromStdin`), then reports BOTH the request's own `cwd` field
+      // (the SDK boundary — what `buildQueryOptions`/the SDK's own `query()` would see) and this
+      // process's actual OS-level `process.cwd()` (the worker process's own spawn cwd), checked and
+      // reported from INSIDE the dispatch, before `withDispatchWorktree`'s own `finally` tears the
+      // worktree down (the live incident's own "worktree was torn down empty" shape — unrecoverable
+      // from outside afterward). Embedded as a marker-prefixed line, not returned as pure JSON:
+      // `produce()` wraps the raw native result inside a full artifact document (frontmatter + body via
+      // `AdapterRunner#author`), so the report must be pulled back out of that body.
+      // macOS follow-up: `mkdtempSync`'s own `tmpdir()` base is `/var/folders/...` on macOS, a symlink
+      // onto `/private/var/folders/...` — `process.cwd()` inside a real spawned process always resolves
+      // to the canonical form (`getcwd()`'s own OS behaviour), so comparing it against a NON-canonicalized
+      // `req.cwd` fails on macOS alone (the fix/home-grants-any-auth test hit the identical tmpdir-symlink
+      // case) even though both name the same directory. Normalised with `realpathSync` HERE, inside the
+      // worker script, while the worktree still exists — by the time this test reads `doc` back, the
+      // worktree is already torn down (`withDispatchWorktree`'s own `finally`), so nothing outside the
+      // dispatch can resolve these paths after the fact. Mirrors sandbox.test.ts's own identical
+      // `realpathSync` normalisation for the same class of comparison.
+      writeFileSync(
+        workerPath,
+        [
+          'const fs = require("node:fs");',
+          "const req = JSON.parse(await Bun.stdin.text());",
+          "const report = JSON.stringify({ reqCwd: req.cwd ? fs.realpathSync(req.cwd) : null, workerOsCwd: fs.realpathSync(process.cwd()) });",
+          'console.log(JSON.stringify({ ok: true, result: "CWD-REPORT:" + report }));',
+        ].join("\n"),
+      );
+
+      const native = createSdkNativeBoundary({ transport: createBunSdkTransport(workerPath), repo });
+      const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native, remote: remoteMock });
+      const { doc } = runner.produce("lyra", "spec", "checkout-flow", "storefront");
+
+      // The ACTUAL worktree levare created for this dispatch, recovered independently of both sides of
+      // the cwd chain under test — from `withDispatchWorktree`'s own debug line (adapters.ts#logWorktreeDebug),
+      // the same source tests/adapters.test.ts's own "LEVARE_SANDBOX_DEBUG=1 prints 'dispatch worktree
+      // created'" test already trusts.
+      const createdLine = debugLines.find((l) => l.includes("dispatch worktree created for 'lyra'"));
+      expect(createdLine).toBeDefined();
+      const worktreeMatch = createdLine!.match(/dispatch worktree created for 'lyra' at '([^']+)'/);
+      expect(worktreeMatch).toBeDefined();
+      const actualWorktreePath = worktreeMatch![1];
+      expect(actualWorktreePath).not.toBe(projectRepo);
+
+      const reportMatch = doc.match(/CWD-REPORT:(\{.*\})/);
+      expect(reportMatch).toBeDefined();
+      const { reqCwd, workerOsCwd } = JSON.parse(reportMatch![1]) as { reqCwd: string | null; workerOsCwd: string };
+
+      // Both halves are asserted TOGETHER, in one `expect`, specifically so a failure on (A) can never
+      // short-circuit (B) out of the run — a plain `expect(reqCwd).toBe(...)` followed by
+      // `expect(workerOsCwd).toBe(...)` would throw on the first mismatch and never even evaluate the
+      // second. Comparing both actual values against both expected (worktree) values in one object
+      // forces both comparisons to execute, and the failure's own diff shows both mismatches at once.
+      expect({
+        // (A) The SDK boundary: `nativeWorkerRequest`'s own `cwd` — what the SDK's `query()` options
+        // (sdk-worker.ts#buildQueryOptions) carry — must be the real dispatch worktree.
+        reqCwd,
+        // (B) The worker PROCESS's own OS-level spawn cwd — what `pwd` reports from inside it, exactly
+        // what the live mason incident showed diverging from the dispatch trace's own cwd — must ALSO be
+        // the same worktree, not `LEVARE_ROOT`/ambient.
+        workerOsCwd,
+      }).toEqual({ reqCwd: actualWorktreePath, workerOsCwd: actualWorktreePath });
+    } finally {
+      console.error = origError;
+      if (prior === undefined) delete process.env.LEVARE_SANDBOX_DEBUG;
+      else process.env.LEVARE_SANDBOX_DEBUG = prior;
+      rmSync(projectRepo, { recursive: true, force: true });
+      rmSync(scriptDir, { recursive: true, force: true });
+    }
+  });
+
+  // Goal 2026-09-11 ("native member cwd"), Phase 2: a real dispatch with a worktree hands the member the
+  // explicit "your working directory is..." line (context.ts#withDispatchWorktreeLine) inside the SAME
+  // prompt the SDK boundary receives — proven end to end here rather than only at the pure-function
+  // level (tests/context.test.ts) — and a dispatch with no worktree never gets the line at all.
+  test("a real dispatch with a worktree hands the member the explicit worktree line in its own prompt; a dispatch with no worktree never does", () => {
+    const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+    try {
+      const repo = repoWithRealStorefrontRepo(projectRepo);
+      let seenPrompt: string | undefined;
+      let cwdWasAlreadyCanonical: boolean | undefined;
+      const transport: SdkTransport = {
+        run(req) {
+          seenPrompt = req.prompt;
+          // macOS follow-up: checked HERE, before `withDispatchWorktree`'s own `finally` tears the
+          // worktree down — `realpathSync` needs the directory to still exist. If `req.cwd` (what
+          // resolveNativeCwd fed the SDK boundary — the same path the context line below quotes) were
+          // NOT already the canonical form, a member's own `pwd` would print a DIFFERENT spelling than
+          // the line told it to look for.
+          cwdWasAlreadyCanonical = req.cwd !== undefined && realpathSync(req.cwd) === req.cwd;
+          return { ok: true, result: "native output" };
+        },
+      };
+      const native = createSdkNativeBoundary({ transport, repo });
+      const runner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native, remote: remoteMock });
+      runner.produce("lyra", "spec", "checkout-flow", "storefront");
+      expect(seenPrompt).toBeDefined();
+      expect(seenPrompt).toContain("Your working directory is this unit's worktree at ");
+      expect(seenPrompt).toContain(". Build there; levare commits it.");
+      // The context line's own quoted path is already the form `process.cwd()`/a member's `pwd` will
+      // print — never a symlinked spelling a member would have to resolve itself to find the same place.
+      expect(cwdWasAlreadyCanonical).toBe(true);
+
+      // The golden fixture's own `storefront` (UNTOUCHED — no real local checkout, NOTES MERGE-1): no
+      // worktree, so the line must be entirely absent.
+      let seenPromptNoRepo: string | undefined;
+      const transportNoRepo: SdkTransport = {
+        run(req) {
+          seenPromptNoRepo = req.prompt;
+          return { ok: true, result: "native output" };
+        },
+      };
+      const goldenRepo = loadRepo(ROOT);
+      const nativeNoRepo = createSdkNativeBoundary({ transport: transportNoRepo, repo: goldenRepo });
+      const runnerNoRepo = new AdapterRunner(goldenRepo, { pricing, capabilities: [{ member: "lyra", kind: "spec" }], native: nativeNoRepo, remote: remoteMock });
+      runnerNoRepo.produce("lyra", "spec", "checkout-flow", "storefront");
+      expect(seenPromptNoRepo).toBeDefined();
+      expect(seenPromptNoRepo).not.toContain("Your working directory is this unit's worktree at");
+    } finally {
       rmSync(projectRepo, { recursive: true, force: true });
     }
   });

@@ -18,6 +18,13 @@
 //   9. capability: proposal-gated connectors — unchanged from before (NOTES CAP-A item 5), renumbered
 //      from its former "8" to make room for the note above.
 //
+// A third conditional is not a numbered section but a single line spliced INTO item 6 itself, after
+// this module has already returned: a dispatch with a real dispatch worktree gets an explicit "your
+// working directory is this unit's worktree at <path>" line — see `withDispatchWorktreeLine` below and
+// its only caller, `adapters.ts#withDispatchWorktree`/`withDispatchWorktreeAsync` (the worktree is
+// created strictly after `assembleContext` returns, so it can never be a plain parameter here). Absent
+// for every dispatch without a worktree, so that context stays byte-for-byte unchanged too.
+//
 // Finding 163: item 6 used to be the flow step's label alone (e.g. `spec`) — the member never saw the
 // unit's name, its type, or a syllable of what the operator wrote in `unit.md`. The type template
 // (`types/<type>.md`) was itself never read past its frontmatter (`expects`/`gates`/`glyph`) anywhere
@@ -131,6 +138,31 @@ export interface AssembleOptions {
    * runner.ts) always supplies it explicitly.
    */
   requestChangesNote?: { note: string; on?: string };
+}
+
+// Goal 2026-09-11 ("native member cwd"): the exact item-6 header `withDispatchWorktreeLine` below
+// splices its own line after — a named constant so the two never drift apart silently.
+export const TASK_SECTION_HEADER = "── 6. task ──";
+
+/**
+ * Goal 2026-09-11 ("native member cwd"): the explicit line a dispatch WITH a real dispatch worktree
+ * gets — "your working directory is the unit's worktree at <path>; write there", so a member never has
+ * to discover it on its own (the live mason incident: a member that never knew where its worktree was
+ * built the whole unit under its own ambient cwd instead). Not a parameter threaded through
+ * `assembleContext` itself: the worktree is created strictly AFTER this module has already assembled
+ * and returned the context string (`AdapterRunner#prepare` resolves `dispatchRepo` only after calling
+ * `assemble`; the worktree itself is created later still, inside `withDispatchWorktree`/
+ * `withDispatchWorktreeAsync`, wrapping the actual dispatch) — so this is a deliberate post-hoc splice,
+ * the only place that ever calls it. A dispatch with no worktree never calls this at all, so its own
+ * context stays byte-for-byte unchanged, exactly like every other conditional section in this file.
+ */
+export function withDispatchWorktreeLine(context: string, worktreePath: string): string {
+  const marker = `${TASK_SECTION_HEADER}\n`;
+  const idx = context.indexOf(marker);
+  if (idx === -1) return context; // defensive: context assembly itself failed (AdapterRunner#assemble's own catch returns "").
+  const insertAt = idx + marker.length;
+  const line = `Your working directory is this unit's worktree at ${worktreePath}. Build there; levare commits it.\n\n`;
+  return context.slice(0, insertAt) + line + context.slice(insertAt);
 }
 
 /** Assemble the §6 context for an agent at a step in a unit and return it as an exact string. */

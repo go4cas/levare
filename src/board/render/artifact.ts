@@ -16,7 +16,7 @@ import { loadExtras } from "../../extra.ts";
 import type { DaemonInvocation } from "../../daemon.ts";
 import { resolveOrchestratorStatus, type OrchestratorStatus } from "../../orchestrator-status.ts";
 import { fromArtifactStatus } from "../status.ts";
-import { statusBadge, neutralChip, orchTurn } from "../components.ts";
+import { statusBadge, neutralChip, orchTurn, callout } from "../components.ts";
 import {
   shell,
   pageBody,
@@ -115,6 +115,7 @@ export function renderArtifact(
     <div class="prow"><span class="k">approved by</span><span class="v mono">${art.approved_by ? esc(art.approved_by) : "&mdash;"}</span></div>
     ${art.files.length ? `<div class="prow"><span class="k">files</span><span class="v mono">${art.files.map(esc).join(", ")}</span></div>` : ""}
     ${costLabel(art.usage) ? `<div class="prow"><span class="k">cost</span><span class="v cost">${costLabel(art.usage)}</span></div>` : ""}
+    ${art.code_commit_warning ? callout("warning", esc(art.code_commit_warning)) : ""}
   </div>`;
 
   const bodyCard = `<div class="card">

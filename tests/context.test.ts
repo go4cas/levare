@@ -3,7 +3,7 @@ import { readFileSync, mkdtempSync, cpSync, rmSync, mkdirSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRepo } from "../src/repo.ts";
-import { assembleContext, ContextError } from "../src/context.ts";
+import { assembleContext, ContextError, withDispatchWorktreeLine, TASK_SECTION_HEADER } from "../src/context.ts";
 import { main } from "../src/cli.ts";
 import { BODY_PURPOSE } from "../scripts/generate-cheatsheets.ts";
 import { CAPABILITIES } from "../fixtures/stubs/member-stub.ts";
@@ -461,5 +461,36 @@ describe("context: bare `[--root]` defaults to the current directory (Finding 18
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// Goal 2026-09-11 ("native member cwd"): the explicit worktree line adapters.ts#withDispatchWorktree/
+// withDispatchWorktreeAsync splice into item 6 for a dispatch that had a real dispatch worktree — see
+// withDispatchWorktreeLine's own doc for why this is a post-hoc splice, not a plain assembleContext
+// parameter. Tested directly against a real assembled context (fixtures/golden/lyra, checkout-flow) so
+// the marker it searches for is proven to be the genuine item-6 header, not a hand-written stand-in.
+describe("withDispatchWorktreeLine — the explicit worktree line spliced into a real dispatch worktree's context", () => {
+  const repo = loadRepo(ROOT);
+
+  test("inserts the line immediately after the item-6 header, naming the exact worktree path", () => {
+    const context = assembleContext(repo, { root: ROOT, agent: "lyra", unit: "checkout-flow", kind: "spec", capabilities: CAPABILITIES });
+    const spliced = withDispatchWorktreeLine(context, "/tmp/levare-dispatchwt-abc123");
+    const marker = `${TASK_SECTION_HEADER}\n`;
+    const idx = spliced.indexOf(marker);
+    expect(idx).toBeGreaterThan(-1);
+    const afterHeader = spliced.slice(idx + marker.length);
+    expect(afterHeader.startsWith("Your working directory is this unit's worktree at /tmp/levare-dispatchwt-abc123. Build there; levare commits it.\n")).toBe(true);
+    // Every byte of the original context survives, unrelocated, around the one inserted line.
+    expect(spliced).toContain(context.slice(0, idx + marker.length));
+    expect(spliced.length).toBe(context.length + "Your working directory is this unit's worktree at /tmp/levare-dispatchwt-abc123. Build there; levare commits it.\n\n".length);
+  });
+
+  test("a dispatch with no worktree never calls it — the plain assembled context is untouched (byte-identical)", () => {
+    const context = assembleContext(repo, { root: ROOT, agent: "lyra", unit: "checkout-flow", kind: "spec", capabilities: CAPABILITIES });
+    expect(context).not.toContain("Your working directory is this unit's worktree at");
+  });
+
+  test("is a no-op (never throws, never mangles) against a string with no item-6 header at all", () => {
+    expect(withDispatchWorktreeLine("no recipe here", "/tmp/wt")).toBe("no recipe here");
   });
 });
