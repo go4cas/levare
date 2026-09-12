@@ -387,6 +387,42 @@ describe("wrapForSandbox — pure argv construction, no OS sandbox required to v
     expect(wrapped.argv[gitDirIdx - 1]).toBe("--bind"); // never --ro-bind-try for a writable path
   });
 
+  // Goal 2026-09-12 (defect 1 — "git is unusable inside a dispatch worktree"): bubblewrap has no
+  // `gitWriteGrant` concept of its own — the whole common `.git` directory must be `--ro-bind`'d (never
+  // an enumerated file list, which rots) so `git status`/`git diff`/`git log` can read `config`/`HEAD`/
+  // `packed-refs`/etc, while the four git-write subpaths (already duplicated into `writablePaths` by
+  // `adapters.ts#buildDispatchSandboxPolicy`) stay read-write. Mount-stacking is order-dependent: the
+  // `--ro-bind` for the common dir must appear BEFORE the `--bind`s for its own subpaths in argv, or the
+  // later read-only mount would win and silently reseal the subpaths back to read-only.
+  test("bubblewrap: the common .git root is --ro-bind'd (whole directory, not an enumerated list), BEFORE its own writable subpaths are --bind'd on top", () => {
+    const detection: SandboxDetection = { platform: "linux", primitive: "bubblewrap", level: "full", bin: "/usr/bin/bwrap" };
+    const root = "/proj/repo/.git";
+    const subpaths = ["/proj/repo/.git/objects", "/proj/repo/.git/refs", "/proj/repo/.git/logs", "/proj/repo/.git/worktrees/wt-1"];
+    const wrapped = wrapForSandbox(["git", "status"], { ...policy, gitWriteGrant: { root, subpaths }, writablePaths: subpaths }, detection);
+    expect(wrapped.argv).toEqual(expect.arrayContaining(["--ro-bind", root, root]));
+    const rootRoBindIdx = wrapped.argv.indexOf("--ro-bind");
+    for (const sub of subpaths) {
+      // Every subpath's OWN --bind must come strictly after the common root's --ro-bind, so the
+      // subpath's read-write mount stacks on top of (never before, never instead of) the read-only
+      // parent — a bind emitted earlier would be shadowed by the later read-only mount.
+      let idx = -1;
+      for (let i = 0; i < wrapped.argv.length; i++) {
+        if (wrapped.argv[i] === "--bind" && wrapped.argv[i + 1] === sub) {
+          idx = i;
+          break;
+        }
+      }
+      expect(idx).toBeGreaterThan(-1);
+      expect(idx).toBeGreaterThan(rootRoBindIdx);
+    }
+  });
+
+  test("bubblewrap: absent gitWriteGrant is a legal no-op — no --ro-bind of any kind emitted for it", () => {
+    const detection: SandboxDetection = { platform: "linux", primitive: "bubblewrap", level: "full", bin: "/usr/bin/bwrap" };
+    const wrapped = wrapForSandbox(["codex"], policy, detection);
+    expect(wrapped.argv).not.toContain("--ro-bind");
+  });
+
   // NOTES R4-SANDBOX-APPSERVER: before this fix, `bubblewrapArgv` never read `grantedHomeTargets` at
   // all — under bubblewrap's own empty-`--tmpfs /` root, a granted connector's real home target was
   // simply never mounted into the sandboxed process's view of the filesystem, so a scratch-HOME symlink

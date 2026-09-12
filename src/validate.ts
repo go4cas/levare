@@ -459,7 +459,7 @@ export const ARTIFACT_SCHEMA: Schema = {
       type: "str",
       required: false,
       nullable: true,
-      description: "Present only when code_commit: none was recorded for a dispatch that DID have a real dispatch worktree — flags a dispatch that produced a clean-looking artifact with no code changes for a human to check. Absent when there was no worktree, or a real commit landed.",
+      description: "Present only when code_commit: none was recorded for a dispatch that DID have a real dispatch worktree AND the dispatched kind is a code-producing one (kindMatches(kind, \"code\") — goal 2026-09-12 defect 2) — flags a dispatch that produced a clean-looking artifact with no code changes for a human to check. Absent when there was no worktree, a real commit landed, or the kind never produces code in the first place (e.g. a review).",
     },
   },
 };

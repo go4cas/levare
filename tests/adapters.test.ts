@@ -3107,10 +3107,10 @@ describe("commit-on-produce (goal, Finding 74) — a dispatch's own worktree fil
       const { doc } = await runner.produceAsync("lyra", "spec", "checkout-flow", "storefront");
       expect(git(projectRepo, ["rev-parse", "levare/checkout-flow"]).trim()).toBe(beforeSha);
       expect(doc).toContain("code_commit: none");
-      // Goal 2026-09-11 ("native member cwd"): a worktree-existed-but-nothing-committed dispatch is
-      // exactly the live mason incident's own shape — flagged with a loud, greppable warning field
-      // rather than looking identical to an ordinary "nothing to change" dispatch.
-      expect(doc).toContain("code_commit_warning: this dispatch had a real dispatch worktree but nothing was committed");
+      // Goal 2026-09-12 (defect 2): `kind: spec` is not a code-producing kind (kindMatches(kind,
+      // "code") is false for it) — a spec dispatch legitimately produces no code, so no warning fires
+      // here; see the dedicated kind: code vs kind: review test below for the positive case.
+      expect(doc).not.toContain("code_commit_warning:");
     } finally {
       rmSync(projectRepo, { recursive: true, force: true });
     }
@@ -3138,6 +3138,38 @@ describe("commit-on-produce (goal, Finding 74) — a dispatch's own worktree fil
       const { doc: noWorktreeDoc } = runnerNoRepo.produce("lyra", "spec", "checkout-flow", "storefront");
       expect(noWorktreeDoc).not.toContain("code_commit:");
       expect(noWorktreeDoc).not.toContain("code_commit_warning:");
+    } finally {
+      rmSync(projectRepo, { recursive: true, force: true });
+    }
+  });
+
+  // Goal 2026-09-12 (defect 2 — "code_commit_warning is emitted on artifacts that never produce code").
+  // The live buildlog incident: Corvid's review-app-skeleton-v2 (kind: review) carried this warning even
+  // though a review artifact has no business self-committing code at all. `author()` (adapters.ts) today
+  // emits the warning whenever a worktree existed and `commitCodeChanges` came back `reason: "clean"`,
+  // with no check of `req.kind` at all — the SAME clean/no-commit outcome must warn for a code-producing
+  // kind and stay silent for a review (or any other non-code) kind.
+  test("code_commit_warning fires for kind: code but not for kind: review, on the identical clean/no-commit fixture", async () => {
+    const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+    try {
+      const repo = repoWithRealStorefrontRepo(projectRepo);
+      // The golden fixture's own kestrel team has no code-producing step at all (it shapes product specs,
+      // never ships code — see fixtures/golden/teams/kestrel.md) — a "code" step is grafted onto lyra's
+      // in-memory flow here, the minimal shape `context.ts#agentSteps` needs to accept a `kind: "code"`
+      // dispatch at all, without touching the on-disk fixture every other test in this file also loads.
+      const kestrel = repo.teams.get("kestrel")!;
+      repo.teams.set("kestrel", { ...kestrel, produces: [...kestrel.produces, "code"], flow: [...kestrel.flow, { kind: "step" as const, step: "code" }] });
+      const fixedDoc = () => ({ doc: "Nothing to report." });
+
+      const codeRunner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "code" }], native: { invoke: fixedDoc }, remote: remoteMock });
+      const { doc: codeDoc } = await codeRunner.produceAsync("lyra", "code", "checkout-flow", "storefront");
+      expect(codeDoc).toContain("code_commit: none");
+      expect(codeDoc).toContain("code_commit_warning:");
+
+      const reviewRunner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "review" }], native: { invoke: fixedDoc }, remote: remoteMock });
+      const { doc: reviewDoc } = await reviewRunner.produceAsync("lyra", "review", "checkout-flow", "storefront");
+      expect(reviewDoc).toContain("code_commit: none");
+      expect(reviewDoc).not.toContain("code_commit_warning:");
     } finally {
       rmSync(projectRepo, { recursive: true, force: true });
     }
@@ -4017,6 +4049,67 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
         console.error = origError;
         if (prior === undefined) delete process.env.LEVARE_SANDBOX_DEBUG;
         else process.env.LEVARE_SANDBOX_DEBUG = prior;
+        rmSync(projectRepo, { recursive: true, force: true });
+      }
+    },
+  );
+
+  // Goal 2026-09-12 (defect 1 — "git is unusable inside a dispatch worktree"): the live buildlog
+  // incident (dispatch-logs/2026-09-12T08-08-32-543Z-app-skeleton-code-mason.json). A worktree's own
+  // `.git` is a FILE pointing at `<repo>/.git/worktrees/<name>` — git resolves `commondir` from there
+  // and reads `config`/`HEAD`/`packed-refs`/`info/exclude` straight out of the ORIGINAL repo's shared
+  // `.git` directory, never copying them into the worktree admin dir. `dispatchGitWriteGrant`
+  // (adapters.ts) — and this profile's own `reallowReads`/`readOnlyPaths` — only ever name
+  // `objects`/`refs`/`logs`/this dispatch's own `worktrees/<name>` admin dir: `config`/`HEAD`/
+  // `packed-refs`/`info` are covered by NO re-allow anywhere, so they stay denied by the operator-home/
+  // `/Users` deny (darwin) or simply absent from bubblewrap's own empty-root allow-list (linux) — `git
+  // status`/`git diff` inside the worktree die with `fatal: cannot access '<repo>/.git/config': ...`
+  // (EPERM on darwin, ENOENT-shaped-as-denied on an empty-root linux sandbox). A REAL spawn, gated
+  // exactly like every other "must actually run under the host's own working primitive" proof in this
+  // file — a profile-string assertion alone would not catch this, since the missing grant is an
+  // OMISSION (nothing to assert against), not a wrong value.
+  //
+  // Live-gate correction (macOS, reproduced directly): the FIRST version of this test used `git status
+  // --porcelain` and asserted only `.resolves.toBeTruthy()` — the read grant actually worked (git exited
+  // 0 under the seatbelt), but a clean worktree's `--porcelain` output is EMPTY, and an empty member body
+  // is refused by `author()` ("produced no usable content") for a reason that has nothing to do with the
+  // sandbox. Fixed by using the LONG forms, whose success output only exists if the read genuinely
+  // reached the original repo's `.git` (`git status` prints "On branch <name>", which needs HEAD/refs;
+  // `git diff --stat` prints the changed-file line, which needs the `main` ref plus packed-refs/objects),
+  // and by asserting on that actual content rather than mere truthiness — a `.resolves.toBeTruthy()` on
+  // a rejected promise prints only `Promise { <rejected> }`, hiding the real `AdapterError` message; a
+  // plain `await` lets that message surface directly instead.
+  //
+  // This test SKIPS on the Linux `test` CI job (no bubblewrap on that runner — `hostSandbox.level` is
+  // `"none"` there) — `macos-build` (real `sandbox-exec`, `hostSandbox.level: "full"`) is the job that
+  // actually proves this.
+  test.skipIf(hostSandbox.level !== "full")(
+    "git status / git diff --stat succeed inside a sandboxed dispatch worktree (must read the original repo's .git config/HEAD/packed-refs, not just objects/refs/logs)",
+    async () => {
+      const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+      try {
+        const repo = repoWithRealStorefrontRepo(projectRepo);
+        const runGit = (args: string[]) => (req: InvokeRequest) => ["git", "-C", req.projectRepoPath!, ...args];
+        const statusRunner = new AdapterRunner(repo, {
+          pricing,
+          capabilities: [{ member: "finch", kind: "review" }],
+          native: nativeMock,
+          remote: remoteMock,
+          cliCommand: runGit(["status"]),
+        });
+        const { doc: statusDoc } = await statusRunner.produceAsync("finch", "review", "checkout-flow", "storefront");
+        expect(statusDoc).toContain("levare/checkout-flow");
+
+        const diffRunner = new AdapterRunner(repo, {
+          pricing,
+          capabilities: [{ member: "finch", kind: "review" }],
+          native: nativeMock,
+          remote: remoteMock,
+          cliCommand: runGit(["diff", "--stat", "main...HEAD"]),
+        });
+        const { doc: diffDoc } = await diffRunner.produceAsync("finch", "review", "checkout-flow", "storefront");
+        expect(diffDoc).toContain("marker.txt");
+      } finally {
         rmSync(projectRepo, { recursive: true, force: true });
       }
     },

@@ -41,6 +41,7 @@ import { buildMemberEnv, teamOf, subscriptionConnector, scopeHome, scopeHomeForC
 import { connectStdioMcpServer, type McpToolCallResult } from "./mcp-client.ts";
 import { allowedTools } from "./guardrails.ts";
 import { assembleContext, unitArtifactPaths, withDispatchWorktreeLine } from "./context.ts";
+import { kindMatches } from "./flow.ts";
 import {
   asyncSdkTransport,
   bunSdkTransport,
@@ -760,6 +761,11 @@ function traceNativeDispatchFinish(studioRoot: string | undefined, req: InvokeRe
       // a real, priced cost on an error-result failure (error_max_turns etc.), matching the ORCHESTRATOR
       // trace's own `buildOrchestratorTrace` (dispatch-trace.ts), which never had this gate.
       receipt: res.receipt,
+      // Goal 2026-09-12 (defect 3): threaded from the worker's own count of refused
+      // `dangerouslyDisableSandbox` Bash calls (sdk-worker.ts#evaluateBashSandboxGuard) — absent only
+      // when a transport-level failure kept the worker's own `respond()` from ever running, exactly
+      // `wide.receipt`'s own no-report case.
+      sandboxDeniedBashCount: wide.sandboxDeniedBashCount,
     },
     nativeDispatchTraceIdentityOpts(req, ctx, nativeDispatchFinishNativeBinaryResolved(res, ctx)),
   );
@@ -2156,7 +2162,17 @@ export class AdapterRunner implements MemberRunner {
     // so `levare validate`/the artifact card can flag it for a human to check rather than let a
     // no-code dispatch pass as silently as a real one. Present ONLY on `reason: "clean"` — never on a
     // committed dispatch, and never when there was no worktree at all (nothing to warn about).
-    if (codeCommit && !codeCommit.committed && codeCommit.reason === "clean") {
+    //
+    // Goal 2026-09-12 (defect 2 — "code_commit_warning is emitted on artifacts that never produce
+    // code"): the live buildlog incident's own Corvid dispatch (kind: review) carried this warning even
+    // though a review artifact never self-commits code at all — this line used to fire for EVERY kind,
+    // worktree-existed-but-clean alone. No type-level "produces code" flag exists in the registry yet
+    // (types.ts#TypeTemplate has no such field — see Phase 1's own report); `kindMatches` (flow.ts) is
+    // the existing, already-shipped convention for "this kind names/suffixes a code-producing step"
+    // (`kindMatches(kind, "code")` — true for `code` itself and for a suffixed label like `fix-code`,
+    // the same rule a flow step binds a member to), reused here rather than a bare `req.kind === "code"`
+    // that a project author's own suffixed kind name would silently miss.
+    if (codeCommit && !codeCommit.committed && codeCommit.reason === "clean" && kindMatches(req.kind, "code")) {
       lines.push(`code_commit_warning: this dispatch had a real dispatch worktree but nothing was committed — verify the member actually made the intended changes`);
     }
     // Unit "member authorship survives a self-commit": present ONLY when the landed commit's own

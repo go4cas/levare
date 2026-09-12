@@ -31,7 +31,7 @@
 
 import { existsSync } from "node:fs";
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { SettingSource, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { SettingSource, SDKMessage, HookCallbackMatcher, PreToolUseHookInput } from "@anthropic-ai/claude-agent-sdk";
 import { extractFromBunfs } from "@anthropic-ai/claude-agent-sdk/extract";
 import type { SdkWorkerRequest, SdkWorkerResponse, FailureClass } from "./sdk-transport.ts";
 import type { Receipt } from "./types.ts";
@@ -67,6 +67,71 @@ function resolvePathToClaudeCodeExecutable(requested: string | undefined): strin
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Goal 2026-09-12 (defect 3 — "sdk-worker.ts runs with permissionMode bypassPermissions"). Mason (the
+ * live buildlog dispatch) reached for `dangerouslyDisableSandbox: true` on six Bash calls while fighting
+ * defect 1's own git-read denial — the identical flag this codebase's own Bash tool schema documents as
+ * "dangerously override sandbox mode and run commands without sandboxing" for the CALLING Claude Code
+ * session's own optional inner sandbox. `permissionMode: "bypassPermissions"` (below) means every tool
+ * call is auto-approved with no `canUseTool` check at all — nothing stopped a member from setting the
+ * identical flag against LEVARE's own sandbox until this guard.
+ *
+ * STATIC PROOF this is a policy/reporting guard, never an escape-prevention one — do not "upgrade" it
+ * into a runtime check that tries to verify the sandbox actually held: `dangerouslyDisableSandbox` is
+ * read only by the vendor SDK's own in-process Bash tool implementation, a DESCENDANT of the process
+ * `nativeWrapWorkerSpawn`/`wrapForSandbox` (adapters.ts) already wrapped in a kernel-enforced bwrap
+ * mount-namespace / seatbelt profile BEFORE `query()` ever ran — that wrap is computed once, from
+ * dispatch metadata, with no code path anywhere that re-reads a tool call's input to loosen it
+ * afterward. A userspace flag interpreted deep inside an already-confined process has no privileged
+ * syscall available to lift a kernel-enforced namespace or seatbelt profile; the flag simply cannot
+ * reach the layer it would need to disable. This guard's only job is to refuse and RECORD the attempt —
+ * there is nothing at the OS level for it to additionally verify.
+ */
+export const SANDBOX_ESCAPE_DENIAL_MESSAGE =
+  "levare: this dispatch's sandbox belongs to levare, not to you — dangerouslyDisableSandbox is refused. " +
+  "If a legitimate operation is blocked, that is the actual defect to report: see this dispatch's own trace " +
+  "under .levare/dispatch-logs/ (sandbox_denied_bash_count) for what was refused.";
+
+/** Pure decision — Bash + the flag set to exactly `true` is denied; everything else (a different tool,
+ * a missing/false/non-boolean flag, malformed input) passes through untouched. Factored out (mirrors
+ * `classifyLocalSdkError`/`isNonRetryableAuthStatus`'s own precedent) so this is testable without
+ * spawning the real SDK or wiring a real `query()` hook. */
+export function evaluateBashSandboxGuard(toolName: string, input: unknown): { permissionDecision: "deny"; permissionDecisionReason: string } | undefined {
+  if (toolName !== "Bash") return undefined;
+  if (!input || typeof input !== "object") return undefined;
+  if ((input as Record<string, unknown>).dangerouslyDisableSandbox !== true) return undefined;
+  return { permissionDecision: "deny", permissionDecisionReason: SANDBOX_ESCAPE_DENIAL_MESSAGE };
+}
+
+/**
+ * Wires `evaluateBashSandboxGuard` into the SDK's own `hooks.PreToolUse` — a PreToolUse hook deny
+ * "bypasses `canUseTool`" per the vendor SDK's own documented semantics (its deny fires regardless of
+ * `permissionMode`, unlike `canUseTool`, which `bypassPermissions` may skip calling at all — see this
+ * file's own `buildQueryOptions` doc for why `hooks`, not `canUseTool`, is the layer this guard must
+ * live on). `onDenied` fires once per refused call — the caller uses it to bump a per-dispatch counter
+ * reported on the dispatch trace (Goal 2026-09-12: "a counted event, not just a log line"), never to
+ * change the decision itself.
+ */
+export function buildSandboxEscapeHook(onDenied: () => void): HookCallbackMatcher {
+  return {
+    hooks: [
+      async (input) => {
+        if (input.hook_event_name !== "PreToolUse") return { continue: true };
+        const preToolUse = input as PreToolUseHookInput;
+        const verdict = evaluateBashSandboxGuard(preToolUse.tool_name, preToolUse.tool_input);
+        if (!verdict) return { continue: true };
+        console.error(`levare: sdk worker refused a Bash call carrying dangerouslyDisableSandbox: true (tool_use_id=${preToolUse.tool_use_id})`);
+        onDenied();
+        return {
+          continue: false,
+          stopReason: verdict.permissionDecisionReason,
+          hookSpecificOutput: { hookEventName: "PreToolUse", ...verdict },
+        };
+      },
+    ],
+  };
 }
 
 /**
@@ -465,6 +530,11 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
   // internal resolution call is a same-value passthrough, not a second extraction attempt.
   const resolvedBinaryPath = resolvePathToClaudeCodeExecutable(req.pathToClaudeCodeExecutable);
   const nativeBinaryResolved = resolvedBinaryPath !== undefined;
+  // Goal 2026-09-12 (defect 3): counted here, in THIS worker — the only place `evaluateBashSandboxGuard`
+  // ever runs — and reported on every `respond()` below regardless of how the dispatch otherwise
+  // finished, so a member that got refused and then failed/succeeded anyway still leaves the refusal on
+  // the record rather than it vanishing into stderr alone.
+  let sandboxDeniedCount = 0;
   try {
     // Finding 92: `authFailure` set the moment a non-retryable status is seen, checked right after the
     // loop exits — takes precedence over both the success/failure result branches and the generic catch,
@@ -475,7 +545,11 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
     const consumed = await consumeQuery(
       query({
         prompt: req.prompt,
-        options: { ...buildQueryOptions({ ...req, pathToClaudeCodeExecutable: resolvedBinaryPath }), abortController },
+        options: {
+          ...buildQueryOptions({ ...req, pathToClaudeCodeExecutable: resolvedBinaryPath }),
+          abortController,
+          hooks: { PreToolUse: [buildSandboxEscapeHook(() => sandboxDeniedCount++)] },
+        },
       }),
       { idleTimeoutMs: req.idleTimeoutMs, abortController, startedAt, reqModel: req.model },
     );
@@ -490,6 +564,7 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
         errorClass: "operator",
         errorClassSource: "status",
         nativeBinaryResolved,
+        sandboxDeniedBashCount: sandboxDeniedCount,
       });
       return;
     }
@@ -500,11 +575,18 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
         errorClass: "operator",
         errorClassSource: "status",
         nativeBinaryResolved,
+        sandboxDeniedBashCount: sandboxDeniedCount,
       });
       return;
     }
     if (consumed.idle) {
-      respond({ ok: false, error: formatIdleFailureError(req.idleTimeoutMs as number, Date.now() - startedAt), idle: true, nativeBinaryResolved });
+      respond({
+        ok: false,
+        error: formatIdleFailureError(req.idleTimeoutMs as number, Date.now() - startedAt),
+        idle: true,
+        nativeBinaryResolved,
+        sandboxDeniedBashCount: sandboxDeniedCount,
+      });
       return;
     }
     if (!consumed.sawSuccess) {
@@ -521,10 +603,18 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
         errorClassSource: consumed.retryCount > 0 ? "status" : undefined,
         nativeBinaryResolved,
         receipt: consumed.receipt,
+        sandboxDeniedBashCount: sandboxDeniedCount,
       });
       return;
     }
-    respond({ ok: true, result: consumed.resultText, structuredOutput: consumed.structuredOutput, receipt: consumed.receipt, nativeBinaryResolved });
+    respond({
+      ok: true,
+      result: consumed.resultText,
+      structuredOutput: consumed.structuredOutput,
+      receipt: consumed.receipt,
+      nativeBinaryResolved,
+      sandboxDeniedBashCount: sandboxDeniedCount,
+    });
   } catch (e) {
     console.error(`levare: sdk worker query() threw after ${Date.now() - startedAt}ms`);
     const message = e instanceof Error ? e.message : String(e);
@@ -537,6 +627,7 @@ export async function runSdkWorkerFromStdin(): Promise<void> {
       errorClass,
       errorClassSource: errorClass ? "message" : undefined,
       nativeBinaryResolved,
+      sandboxDeniedBashCount: sandboxDeniedCount,
     });
   }
 }

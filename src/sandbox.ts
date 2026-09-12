@@ -572,6 +572,19 @@ function bubblewrapArgv(bin: string, argv: string[], policy: SandboxPolicy): str
   // treatment `policy.home` itself gets, matching darwin's own `grantedHomeTargets` re-allow (below)
   // rather than leaving Linux the ONE platform where this field was silently inert.
   for (const p of policy.grantedHomeTargets ?? []) out.push("--bind-try", p, p);
+  // Goal 2026-09-12 (defect 1 — "git is unusable inside a dispatch worktree"): bubblewrap has no
+  // `gitWriteGrant` concept of its own (see `SandboxPolicy.gitWriteGrant`'s own doc) — but a worktree
+  // commit needs to READ the whole original repo's `.git` (config/HEAD/packed-refs/info/objects/refs/
+  // logs/description/etc — an enumerated list rots the moment git reads one more file this generator
+  // never anticipated), while still writing ONLY the four subpaths `dispatchGitWriteGrant` names.
+  // Bubblewrap's own mount-stacking semantics do this for free: `--ro-bind` the WHOLE common dir first
+  // (read-only, recursively, no enumeration), then `--bind` (read-write) the four subpaths — already
+  // present in `policy.writablePaths` (adapters.ts#buildDispatchSandboxPolicy) — mounted AFTER it in
+  // argv order, so bwrap remounts exactly those four child paths read-write on top of the read-only
+  // parent, leaving everything else under the common dir (`.git/hooks`, `.git/config`) read-only, never
+  // writable. Order here is load-bearing: emitted BEFORE the `writablePaths` loop below, exactly the
+  // same "later bind wins" mount-stacking discipline `bubblewrapArgv`'s own tests assert on.
+  if (policy.gitWriteGrant) out.push("--ro-bind", policy.gitWriteGrant.root, policy.gitWriteGrant.root);
   for (const p of policy.writablePaths ?? []) out.push("--bind", p, p);
   if (!policy.allowNetwork) out.push("--unshare-net");
   out.push("--die-with-parent", "--", ...argv);
@@ -759,7 +772,19 @@ export function buildSandboxExecProfile(policy: SandboxPolicy): string {
   const xcrunTempDir = policy.darwinXcrunTempDir ? canon(policy.darwinXcrunTempDir) : undefined;
   const xcrunRegexPattern = xcrunTempDir ? `^${escapeSeatbeltRegex(xcrunTempDir)}/xcrun_db-[^/]+$` : undefined;
 
-  const reallowReads = dedupe([cwd, ...(scopedHome ? [scopedHome] : []), ...grantedTargets, ...readOnly, ...writable, ...gitSubpaths]);
+  // Goal 2026-09-12 (defect 1 — "git is unusable inside a dispatch worktree"): before this, only
+  // `gitSubpaths` (`objects`/`refs`/`logs`/this dispatch's own `worktrees/<name>`) were read-reallowed —
+  // `config`/`HEAD`/`packed-refs`/`info/exclude`/`description` and anything else git reads straight out
+  // of the common `.git` root stayed covered by NO re-allow, denied by the `operatorHome`/`/Users` deny
+  // below exactly like the live buildlog incident's own `fatal: cannot access '.../.git/config'`. Fixed
+  // by re-allowing READ of `gitRoot` itself (recursive `subpath`, not an enumerated file list — the same
+  // "a list rots" reasoning this module's own header gives for the platform read-only baseline) —
+  // harmless: this only widens READS (`.git/hooks`/`.git/config` included — the worktree's own `config`
+  // already points `core.hooksPath` elsewhere, so reading the shared one changes nothing executable).
+  // The FIX-12 write reseal below is untouched and still wins for WRITES: `gitRoot` denied, only the
+  // four `gitSubpaths` re-allowed — read and write are separate Seatbelt operation classes, so widening
+  // one has no bearing on the other's own last-rule-wins ordering.
+  const reallowReads = dedupe([cwd, ...(scopedHome ? [scopedHome] : []), ...grantedTargets, ...readOnly, ...writable, ...gitSubpaths, ...(gitRoot ? [gitRoot] : [])]);
   // NOTES R4-SANDBOX-APPSERVER: `grantedTargets` used to appear in `reallowReads` ONLY — but
   // `scopedHome` (above) is a scratch directory containing SYMLINKS to these same real targets
   // (env.ts#scopeHomeForConnector), and `scopedHome`'s own `(subpath ...)` write re-allow covers the
@@ -776,10 +801,10 @@ export function buildSandboxExecProfile(policy: SandboxPolicy): string {
   // "cache path closure... proactive, not live-confirmed" posture NOTES R4-VENDOR-CLI round 1 already
   // took for gh's own `$TMPDIR/gh-cli-cache` fallback.
   const reallowWrites = dedupe([cwd, ...(scopedHome ? [scopedHome] : []), ...grantedTargets, ...writable]);
-  // DEFECT 2: ancestor metadata for every read re-allow (now including the git-write subpaths, which are
-  // read-reallowed above but write-reallowed separately below) plus `gitRoot` itself, so traversal INTO
-  // the reseal's own re-allowed subpaths survives the reseal's own deny of their shared parent.
-  const ancestorMetadata = dedupe([...reallowReads, ...(gitRoot ? [gitRoot] : [])].flatMap(ancestorsOf));
+  // DEFECT 2: ancestor metadata for every read re-allow — `gitRoot` is now itself a member of
+  // `reallowReads` (defect 1, above), so this no longer needs to name it a second time; ancestors of
+  // `gitRoot` are exactly ancestors of one of `reallowReads`' own entries.
+  const ancestorMetadata = dedupe(reallowReads.flatMap(ancestorsOf));
 
   const lines = dedupe(
     [
