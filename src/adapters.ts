@@ -761,6 +761,11 @@ function traceNativeDispatchFinish(studioRoot: string | undefined, req: InvokeRe
       // a real, priced cost on an error-result failure (error_max_turns etc.), matching the ORCHESTRATOR
       // trace's own `buildOrchestratorTrace` (dispatch-trace.ts), which never had this gate.
       receipt: res.receipt,
+      // Goal 2026-09-12 (defect 3): threaded from the worker's own count of refused
+      // `dangerouslyDisableSandbox` Bash calls (sdk-worker.ts#evaluateBashSandboxGuard) — absent only
+      // when a transport-level failure kept the worker's own `respond()` from ever running, exactly
+      // `wide.receipt`'s own no-report case.
+      sandboxDeniedBashCount: wide.sandboxDeniedBashCount,
     },
     nativeDispatchTraceIdentityOpts(req, ctx, nativeDispatchFinishNativeBinaryResolved(res, ctx)),
   );

@@ -192,6 +192,28 @@ describe("buildDispatchTrace — outcome/timing/truncation shape", () => {
     expect(finishRecord.ended_at).toBe("2026-08-19T00:00:01.234Z");
   });
 
+  // Goal 2026-09-12 (defect 3 — "sdk-worker.ts runs with permissionMode bypassPermissions"): a refused
+  // `dangerouslyDisableSandbox` Bash call must land on the trace as a COUNTED field, not just a stderr
+  // log line a Conductor has to go dig `worker_stderr` for.
+  describe("sandbox_denied_bash_count (defect 3 — a refused dangerouslyDisableSandbox Bash call is a counted event on the trace)", () => {
+    const identityOpts = { homeScoped: false, anthropicApiKeyPresent: true, nativeBinaryResolved: true, startedAt: "2026-08-19T00:00:00.000Z", timeoutMs: 600_000 };
+
+    test("threaded straight from the outcome's own sandboxDeniedBashCount", () => {
+      const record = buildDispatchTrace(baseReq(), okOutcome({ sandboxDeniedBashCount: 2 }), identityOpts);
+      expect(record.sandbox_denied_bash_count).toBe(2);
+    });
+
+    test("absent (never 0) when the worker never reported one — a transport-level failure that never reached respond()", () => {
+      const record = buildDispatchTrace(baseReq(), okOutcome(), identityOpts);
+      expect(record.sandbox_denied_bash_count).toBeUndefined();
+    });
+
+    test("a start trace never carries it either — only knowable once the dispatch finishes", () => {
+      const startRecord = buildDispatchTraceStart(baseReq(), identityOpts);
+      expect(startRecord.sandbox_denied_bash_count).toBeUndefined();
+    });
+  });
+
   test("a field longer than the cap is truncated and flagged, never silently dropped or silently shortened", () => {
     const req = baseReq({ context: "x".repeat(300_000) });
     const record = buildDispatchTrace(req, okOutcome({ stderr: "y".repeat(300_000) }), {

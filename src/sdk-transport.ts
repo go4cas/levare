@@ -163,12 +163,19 @@ export type FailureClassSource = "status" | "message";
 // script not found, timed out before responding, exited without valid JSON) never reaches the worker's
 // own `respond()` call at all, so the transport's own synthesized `{ok:false,...}` legitimately has no
 // value to report — absent, not `false`: the resolution outcome is genuinely unknown, not a negative.
+// Goal 2026-09-12 (defect 3): the number of Bash calls THIS worker's own `evaluateBashSandboxGuard`
+// refused (sdk-worker.ts#buildSandboxEscapeHook) — reported on every branch the worker itself produces,
+// success or failure alike, so a member that got refused and then still succeeded/failed doesn't lose
+// the refusal. Optional for the identical reason `nativeBinaryResolved` is: a transport-level failure
+// (script not found, timed out before responding, malformed JSON) never reaches the worker's own
+// `respond()` at all, so there is genuinely nothing to report — absent, never a stand-in `0`.
 export type SdkWorkerResponse =
-  | { ok: true; result: string; structuredOutput?: unknown; receipt?: Receipt; nativeBinaryResolved?: boolean }
+  | { ok: true; result: string; structuredOutput?: unknown; receipt?: Receipt; nativeBinaryResolved?: boolean; sandboxDeniedBashCount?: number }
   | {
       ok: false;
       error: string;
       nativeBinaryResolved?: boolean;
+      sandboxDeniedBashCount?: number;
       /** Finding 124: set only when THIS worker's own idle bound fired (`SdkWorkerRequest.idleTimeoutMs`
        * — no stream activity for that long) — distinct from the transport's outer wall-clock kill, which
        * never reaches this response at all (the transport synthesizes its own `{ok:false,...}` after

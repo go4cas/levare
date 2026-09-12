@@ -119,6 +119,14 @@ export interface DispatchTraceRecord {
   worker_stderr?: string;
   worker_stderr_truncated?: boolean;
   receipt?: Receipt;
+  /** Goal 2026-09-12 (defect 3 — "sdk-worker.ts runs with permissionMode bypassPermissions"): how many
+   * Bash calls this dispatch's own worker refused for carrying `dangerouslyDisableSandbox: true`
+   * (sdk-worker.ts#evaluateBashSandboxGuard) — a counted event on the record itself, not just a stderr
+   * log line, so a Conductor auditing dispatch traces can find every attempt without re-reading raw
+   * worker output. Populated only by the finish builder (`buildDispatchTrace`), like `duration_ms`;
+   * absent (never `0`) on the start trace and on a transport-level failure that never reached the
+   * worker's own `respond()` at all (see `SdkWorkerResponse.sandboxDeniedBashCount`'s own doc). */
+  sandbox_denied_bash_count?: number;
 }
 
 export interface NativeDispatchOutcome {
@@ -140,6 +148,9 @@ export interface NativeDispatchOutcome {
   stdout: string;
   stderr: string;
   receipt?: Receipt;
+  /** See `DispatchTraceRecord.sandbox_denied_bash_count`'s own doc — threaded straight from
+   * `SdkWorkerResponse.sandboxDeniedBashCount` (via `asSdkTransportResult`) by the caller. */
+  sandboxDeniedBashCount?: number;
 }
 
 export interface DispatchTraceIdentityOpts {
@@ -237,6 +248,9 @@ export function buildDispatchTrace(req: InvokeRequest, outcome: NativeDispatchOu
     worker_stderr: stderr.value,
     worker_stderr_truncated: stderr.truncated,
     receipt: outcome.receipt,
+    // Goal 2026-09-12 (defect 3): threaded straight from the worker's own report — see
+    // `DispatchTraceRecord.sandbox_denied_bash_count`'s own doc.
+    sandbox_denied_bash_count: outcome.sandboxDeniedBashCount,
   };
 }
 
