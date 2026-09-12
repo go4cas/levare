@@ -4168,11 +4168,21 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
       // from outside afterward). Embedded as a marker-prefixed line, not returned as pure JSON:
       // `produce()` wraps the raw native result inside a full artifact document (frontmatter + body via
       // `AdapterRunner#author`), so the report must be pulled back out of that body.
+      // macOS follow-up: `mkdtempSync`'s own `tmpdir()` base is `/var/folders/...` on macOS, a symlink
+      // onto `/private/var/folders/...` — `process.cwd()` inside a real spawned process always resolves
+      // to the canonical form (`getcwd()`'s own OS behaviour), so comparing it against a NON-canonicalized
+      // `req.cwd` fails on macOS alone (the fix/home-grants-any-auth test hit the identical tmpdir-symlink
+      // case) even though both name the same directory. Normalised with `realpathSync` HERE, inside the
+      // worker script, while the worktree still exists — by the time this test reads `doc` back, the
+      // worktree is already torn down (`withDispatchWorktree`'s own `finally`), so nothing outside the
+      // dispatch can resolve these paths after the fact. Mirrors sandbox.test.ts's own identical
+      // `realpathSync` normalisation for the same class of comparison.
       writeFileSync(
         workerPath,
         [
+          'const fs = require("node:fs");',
           "const req = JSON.parse(await Bun.stdin.text());",
-          'const report = JSON.stringify({ reqCwd: req.cwd ?? null, workerOsCwd: process.cwd() });',
+          "const report = JSON.stringify({ reqCwd: req.cwd ? fs.realpathSync(req.cwd) : null, workerOsCwd: fs.realpathSync(process.cwd()) });",
           'console.log(JSON.stringify({ ok: true, result: "CWD-REPORT:" + report }));',
         ].join("\n"),
       );
@@ -4228,9 +4238,16 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
     try {
       const repo = repoWithRealStorefrontRepo(projectRepo);
       let seenPrompt: string | undefined;
+      let cwdWasAlreadyCanonical: boolean | undefined;
       const transport: SdkTransport = {
         run(req) {
           seenPrompt = req.prompt;
+          // macOS follow-up: checked HERE, before `withDispatchWorktree`'s own `finally` tears the
+          // worktree down — `realpathSync` needs the directory to still exist. If `req.cwd` (what
+          // resolveNativeCwd fed the SDK boundary — the same path the context line below quotes) were
+          // NOT already the canonical form, a member's own `pwd` would print a DIFFERENT spelling than
+          // the line told it to look for.
+          cwdWasAlreadyCanonical = req.cwd !== undefined && realpathSync(req.cwd) === req.cwd;
           return { ok: true, result: "native output" };
         },
       };
@@ -4240,6 +4257,9 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
       expect(seenPrompt).toBeDefined();
       expect(seenPrompt).toContain("Your working directory is this unit's worktree at ");
       expect(seenPrompt).toContain(". Build there; levare commits it.");
+      // The context line's own quoted path is already the form `process.cwd()`/a member's `pwd` will
+      // print — never a symlinked spelling a member would have to resolve itself to find the same place.
+      expect(cwdWasAlreadyCanonical).toBe(true);
 
       // The golden fixture's own `storefront` (UNTOUCHED — no real local checkout, NOTES MERGE-1): no
       // worktree, so the line must be entirely absent.

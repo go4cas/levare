@@ -271,7 +271,16 @@ function configureDispatchWorktreeGitConfig(repoPath: string, worktreePath: stri
 }
 
 export function createDispatchWorktree(repoPath: string, branch: string, identity: { name: string; email: string }): CreateDispatchWorktreeResult {
-  const scratch = mkdtempSync(join(tmpdir(), "levare-dispatchwt-"));
+  // Goal 2026-09-11 ("native member cwd"), macOS follow-up: `mkdtempSync` returns whatever spelling
+  // `tmpdir()` gave it — on macOS that's `/var/folders/...`, a symlink onto `/private/var/folders/...`.
+  // A member's own process (its shell's `pwd`, `process.cwd()`, any tool it runs) resolves the OS-level
+  // cwd to the CANONICAL form regardless — `getcwd()` always does — so a member spawned at the raw,
+  // unresolved path would see one spelling on disk while `withDispatchWorktreeLine`'s own context line
+  // (built from this function's returned `path`) named the other: two spellings of the same directory.
+  // Canonicalizing here, once, before this path is used for anything else (git, the returned `path`,
+  // every downstream cwd resolution), makes every consumer agree on the one spelling a member will
+  // actually see.
+  const scratch = realpathSync(mkdtempSync(join(tmpdir(), "levare-dispatchwt-")));
   const wt = git(repoPath, ["worktree", "add", "-q", scratch, branch]);
   if (wt.status !== 0) {
     rmSync(scratch, { recursive: true, force: true });
