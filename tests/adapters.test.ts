@@ -3107,10 +3107,10 @@ describe("commit-on-produce (goal, Finding 74) — a dispatch's own worktree fil
       const { doc } = await runner.produceAsync("lyra", "spec", "checkout-flow", "storefront");
       expect(git(projectRepo, ["rev-parse", "levare/checkout-flow"]).trim()).toBe(beforeSha);
       expect(doc).toContain("code_commit: none");
-      // Goal 2026-09-11 ("native member cwd"): a worktree-existed-but-nothing-committed dispatch is
-      // exactly the live mason incident's own shape — flagged with a loud, greppable warning field
-      // rather than looking identical to an ordinary "nothing to change" dispatch.
-      expect(doc).toContain("code_commit_warning: this dispatch had a real dispatch worktree but nothing was committed");
+      // Goal 2026-09-12 (defect 2): `kind: spec` is not a code-producing kind (kindMatches(kind,
+      // "code") is false for it) — a spec dispatch legitimately produces no code, so no warning fires
+      // here; see the dedicated kind: code vs kind: review test below for the positive case.
+      expect(doc).not.toContain("code_commit_warning:");
     } finally {
       rmSync(projectRepo, { recursive: true, force: true });
     }
@@ -3138,6 +3138,38 @@ describe("commit-on-produce (goal, Finding 74) — a dispatch's own worktree fil
       const { doc: noWorktreeDoc } = runnerNoRepo.produce("lyra", "spec", "checkout-flow", "storefront");
       expect(noWorktreeDoc).not.toContain("code_commit:");
       expect(noWorktreeDoc).not.toContain("code_commit_warning:");
+    } finally {
+      rmSync(projectRepo, { recursive: true, force: true });
+    }
+  });
+
+  // Goal 2026-09-12 (defect 2 — "code_commit_warning is emitted on artifacts that never produce code").
+  // The live buildlog incident: Corvid's review-app-skeleton-v2 (kind: review) carried this warning even
+  // though a review artifact has no business self-committing code at all. `author()` (adapters.ts) today
+  // emits the warning whenever a worktree existed and `commitCodeChanges` came back `reason: "clean"`,
+  // with no check of `req.kind` at all — the SAME clean/no-commit outcome must warn for a code-producing
+  // kind and stay silent for a review (or any other non-code) kind.
+  test("code_commit_warning fires for kind: code but not for kind: review, on the identical clean/no-commit fixture", async () => {
+    const projectRepo = makeProjectRepoWithBranches(["checkout-flow"]);
+    try {
+      const repo = repoWithRealStorefrontRepo(projectRepo);
+      // The golden fixture's own kestrel team has no code-producing step at all (it shapes product specs,
+      // never ships code — see fixtures/golden/teams/kestrel.md) — a "code" step is grafted onto lyra's
+      // in-memory flow here, the minimal shape `context.ts#agentSteps` needs to accept a `kind: "code"`
+      // dispatch at all, without touching the on-disk fixture every other test in this file also loads.
+      const kestrel = repo.teams.get("kestrel")!;
+      repo.teams.set("kestrel", { ...kestrel, produces: [...kestrel.produces, "code"], flow: [...kestrel.flow, { kind: "step" as const, step: "code" }] });
+      const fixedDoc = () => ({ doc: "Nothing to report." });
+
+      const codeRunner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "code" }], native: { invoke: fixedDoc }, remote: remoteMock });
+      const { doc: codeDoc } = await codeRunner.produceAsync("lyra", "code", "checkout-flow", "storefront");
+      expect(codeDoc).toContain("code_commit: none");
+      expect(codeDoc).toContain("code_commit_warning:");
+
+      const reviewRunner = new AdapterRunner(repo, { pricing, capabilities: [{ member: "lyra", kind: "review" }], native: { invoke: fixedDoc }, remote: remoteMock });
+      const { doc: reviewDoc } = await reviewRunner.produceAsync("lyra", "review", "checkout-flow", "storefront");
+      expect(reviewDoc).toContain("code_commit: none");
+      expect(reviewDoc).not.toContain("code_commit_warning:");
     } finally {
       rmSync(projectRepo, { recursive: true, force: true });
     }
