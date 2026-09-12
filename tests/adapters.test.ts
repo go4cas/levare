@@ -4068,6 +4068,21 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
   // exactly like every other "must actually run under the host's own working primitive" proof in this
   // file — a profile-string assertion alone would not catch this, since the missing grant is an
   // OMISSION (nothing to assert against), not a wrong value.
+  //
+  // Live-gate correction (macOS, reproduced directly): the FIRST version of this test used `git status
+  // --porcelain` and asserted only `.resolves.toBeTruthy()` — the read grant actually worked (git exited
+  // 0 under the seatbelt), but a clean worktree's `--porcelain` output is EMPTY, and an empty member body
+  // is refused by `author()` ("produced no usable content") for a reason that has nothing to do with the
+  // sandbox. Fixed by using the LONG forms, whose success output only exists if the read genuinely
+  // reached the original repo's `.git` (`git status` prints "On branch <name>", which needs HEAD/refs;
+  // `git diff --stat` prints the changed-file line, which needs the `main` ref plus packed-refs/objects),
+  // and by asserting on that actual content rather than mere truthiness — a `.resolves.toBeTruthy()` on
+  // a rejected promise prints only `Promise { <rejected> }`, hiding the real `AdapterError` message; a
+  // plain `await` lets that message surface directly instead.
+  //
+  // This test SKIPS on the Linux `test` CI job (no bubblewrap on that runner — `hostSandbox.level` is
+  // `"none"` there) — `macos-build` (real `sandbox-exec`, `hostSandbox.level: "full"`) is the job that
+  // actually proves this.
   test.skipIf(hostSandbox.level !== "full")(
     "git status / git diff --stat succeed inside a sandboxed dispatch worktree (must read the original repo's .git config/HEAD/packed-refs, not just objects/refs/logs)",
     async () => {
@@ -4080,9 +4095,10 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
           capabilities: [{ member: "finch", kind: "review" }],
           native: nativeMock,
           remote: remoteMock,
-          cliCommand: runGit(["status", "--porcelain"]),
+          cliCommand: runGit(["status"]),
         });
-        await expect(statusRunner.produceAsync("finch", "review", "checkout-flow", "storefront")).resolves.toBeTruthy();
+        const { doc: statusDoc } = await statusRunner.produceAsync("finch", "review", "checkout-flow", "storefront");
+        expect(statusDoc).toContain("levare/checkout-flow");
 
         const diffRunner = new AdapterRunner(repo, {
           pricing,
@@ -4091,7 +4107,8 @@ describe("NOTES R4-SANDBOX Ruling 2 — OS sandbox wrapping of the real CLI spaw
           remote: remoteMock,
           cliCommand: runGit(["diff", "--stat", "main...HEAD"]),
         });
-        await expect(diffRunner.produceAsync("finch", "review", "checkout-flow", "storefront")).resolves.toBeTruthy();
+        const { doc: diffDoc } = await diffRunner.produceAsync("finch", "review", "checkout-flow", "storefront");
+        expect(diffDoc).toContain("marker.txt");
       } finally {
         rmSync(projectRepo, { recursive: true, force: true });
       }
